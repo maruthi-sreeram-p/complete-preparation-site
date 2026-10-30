@@ -1,6 +1,6 @@
 import { Link, NavLink, matchPath, useLocation, useNavigate } from 'react-router-dom'
 import { House, LayoutDashboard, Waypoints } from 'lucide-react'
-import { APP_NAME, APP_NAME_PARTS } from '@/config.js'
+import Wordmark from '@/components/ui/Wordmark.jsx'
 import { getRoadmap, listRoadmaps } from '@/lib/content/registry.js'
 import { computeStats } from '@/lib/progress/state.js'
 import { useProgressStore } from '@/features/progress/ProgressProvider.jsx'
@@ -35,13 +35,8 @@ export default function Header() {
       <div className="grid h-full w-full grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-3">
           <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight">
-            <span className="logo-mark size-7 shrink-0" aria-hidden="true" />
-            <span className="hidden text-lg font-bold sm:inline" aria-label={APP_NAME}>
-              {APP_NAME_PARTS[0]}
-              <span className="bg-linear-to-r from-accent to-accent-2 bg-clip-text text-transparent">
-                {APP_NAME_PARTS[1]}
-              </span>
-            </span>
+            <span className="logo-mark size-8 shrink-0" aria-hidden="true" />
+            <Wordmark className="hidden text-2xl sm:inline" />
           </Link>
           {roadmap && roadmaps.length > 1 && (
             <select
