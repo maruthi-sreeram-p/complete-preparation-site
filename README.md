@@ -1,4 +1,4 @@
-# Prep Site
+# JavaTrail
 
 A personal learning platform: an interactive roadmap (React Flow) that opens structured,
 visually explained topic pages built from your own material.

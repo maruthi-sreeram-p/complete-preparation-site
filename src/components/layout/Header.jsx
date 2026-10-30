@@ -1,9 +1,10 @@
 import { Link, NavLink, matchPath, useLocation, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Waypoints } from 'lucide-react'
+import { House, LayoutDashboard, Waypoints } from 'lucide-react'
 import { APP_NAME } from '@/config.js'
 import { getRoadmap, listRoadmaps } from '@/lib/content/registry.js'
 import { computeStats } from '@/lib/progress/state.js'
 import { useProgressStore } from '@/features/progress/ProgressProvider.jsx'
+import { ThemeToggle } from '@/features/theme/ThemeProvider.jsx'
 import { cn, paths } from '@/lib/util.js'
 
 const navClass = ({ isActive }) =>
@@ -19,7 +20,9 @@ export default function Header() {
   const roadmaps = listRoadmaps()
 
   const roadmapId = matchPath('/r/:roadmapId/*', pathname)?.params.roadmapId
-  const roadmap = roadmapId ? getRoadmap(roadmapId) : null
+  const roadmap = roadmapId
+    ? getRoadmap(roadmapId)
+    : (roadmaps.find((r) => r.id === state.activeRoadmapId) ?? roadmaps[0] ?? null)
   const percent = roadmap ? computeStats(roadmap, state.roadmaps[roadmap.id]).percent : null
 
   return (
@@ -49,11 +52,14 @@ export default function Header() {
               </select>
             )}
             <nav className="ml-1 flex items-center gap-1" aria-label="Main">
+              <NavLink to="/" end className={navClass}>
+                <House size={15} /> <span className="hidden sm:inline">Home</span>
+              </NavLink>
               <NavLink to={paths.roadmap(roadmap.id)} className={navClass}>
-                <Waypoints size={15} /> Roadmap
+                <Waypoints size={15} /> <span className="hidden sm:inline">Roadmap</span>
               </NavLink>
               <NavLink to={paths.dashboard(roadmap.id)} end className={navClass}>
-                <LayoutDashboard size={15} /> Dashboard
+                <LayoutDashboard size={15} /> <span className="hidden sm:inline">Dashboard</span>
               </NavLink>
             </nav>
             <Link
@@ -72,6 +78,7 @@ export default function Header() {
             </Link>
           </>
         )}
+        <ThemeToggle className={roadmap ? undefined : 'ml-auto'} />
       </div>
     </header>
   )

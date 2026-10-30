@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Expand, X } from 'lucide-react'
 import { renderMermaid } from '@/lib/content/mermaid.js'
+import { useTheme } from '@/features/theme/ThemeProvider.jsx'
 import Markdown from './Markdown.jsx'
 
 /**
@@ -11,6 +12,7 @@ import Markdown from './Markdown.jsx'
 export default function DiagramBlock({ title, format = 'mermaid', code, svg, width, alt, caption, components }) {
   const [state, setState] = useState({ status: 'loading' })
   const [expanded, setExpanded] = useState(false)
+  const { theme } = useTheme()
 
   useEffect(() => {
     if (format === 'svg') {
@@ -23,13 +25,13 @@ export default function DiagramBlock({ title, format = 'mermaid', code, svg, wid
     }
     let alive = true
     setState({ status: 'loading' })
-    renderMermaid(code ?? '')
+    renderMermaid(code ?? '', theme)
       .then((svg) => alive && setState({ status: 'ready', svg }))
       .catch((err) => alive && setState({ status: 'error', message: String(err?.message ?? err) }))
     return () => {
       alive = false
     }
-  }, [format, code, svg])
+  }, [format, code, svg, theme])
 
   useEffect(() => {
     if (!expanded) return

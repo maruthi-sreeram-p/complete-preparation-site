@@ -255,6 +255,14 @@ def theme_color(color, role):
     return hex_color(rgb)
 
 
+def paint(color, role):
+    """CSS paint that follows the site theme: the PDF's own colour in light mode, an adapted one in dark mode."""
+    rgb = color_rgb(color)
+    if rgb is None:
+        return "none"
+    return f"light-dark({hex_color(rgb)},{theme_color(color, role)})"
+
+
 def xml_escape(text):
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
@@ -275,9 +283,9 @@ def svg_for_region(drawings, chars, box):
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.1f} {height:.1f}" '
            f'font-family="Inter Variable, ui-sans-serif, system-ui, sans-serif">']
     for obj in drawings:
-        fill = theme_color(obj.get("non_stroking_color"), "fill") if obj.get("fill") else "none"
-        stroke = theme_color(obj.get("stroking_color"), "stroke") if obj.get("stroke") else "none"
-        attrs = f'fill="{fill}" stroke="{stroke}"'
+        fill = paint(obj.get("non_stroking_color"), "fill") if obj.get("fill") else "none"
+        stroke = paint(obj.get("stroking_color"), "stroke") if obj.get("stroke") else "none"
+        attrs = f'style="fill:{fill};stroke:{stroke}"'
         if stroke != "none":
             attrs += f' stroke-width="{max(obj.get("linewidth") or 0.5, 0.5):.2f}" stroke-linejoin="round"'
             dash = obj.get("dash")
@@ -306,7 +314,7 @@ def svg_for_region(drawings, chars, box):
         py = col[0]["bottom"] if upward else col[0]["top"]
         out.append(
             f'<text transform="translate({px - x0:.1f} {py - top:.1f}) rotate({-90 if upward else 90})" '
-            f'font-size="{fs:.1f}" fill="{theme_color(col[0].get("non_stroking_color"), "text")}" '
+            f'font-size="{fs:.1f}" style="fill:{paint(col[0].get("non_stroking_color"), "text")}" '
             f'textLength="{length:.1f}" lengthAdjust="spacingAndGlyphs">{xml_escape(text.strip())}</text>')
 
     for line in lines_of([c for c in chars if c.get("upright", True)]):
@@ -328,7 +336,7 @@ def svg_for_region(drawings, chars, box):
             end = cs[-1]
             length = end["x1"] - start["x0"]
             attrs = (f'x="{start["x0"] - x0:.1f}" y="{start["bottom"] - 0.236 * start["size"] - top:.1f}" '
-                     f'font-size="{size}" fill="{theme_color(start.get("non_stroking_color"), "text")}"')
+                     f'font-size="{size}" style="fill:{paint(start.get("non_stroking_color"), "text")}"')
             if mono:
                 attrs += ' font-family="JetBrains Mono Variable, ui-monospace, monospace"'
             if bold:

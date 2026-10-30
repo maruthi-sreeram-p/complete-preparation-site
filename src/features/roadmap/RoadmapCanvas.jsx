@@ -14,6 +14,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Funnel, Maximize, Search, ZoomIn, ZoomOut } from 'lucide-react'
 import { useRoadmapScope } from './RoadmapScope.jsx'
+import { useTheme } from '@/features/theme/ThemeProvider.jsx'
 import TopicNode, { StageNode } from './TopicNode.jsx'
 import { NODE_SIZE, TREE, computeLayout } from '@/lib/roadmap/layout.js'
 import { ancestorsOf, descendantsOf } from '@/lib/roadmap/model.js'
@@ -28,12 +29,17 @@ const TOP_MARGIN = 70
 const MIN_START_ZOOM = 0.55
 const SIDE_MARGIN = 150 // keeps the widest row clear of the minimap at the start
 
-const EDGE_COLORS = { idle: '#555555', done: '#7c6cf0', active: '#a99cff' }
+const CANVAS_COLORS = {
+  dark: { idle: '#555555', done: '#7c6cf0', active: '#a99cff', dots: '#333333', mask: 'rgb(17 17 17 / 0.72)' },
+  light: { idle: '#a1a1aa', done: '#6d5ce7', active: '#5b21b6', dots: '#d4d4d8', mask: 'rgb(250 250 250 / 0.72)' },
+}
 
 function RoadmapFlow() {
   const scope = useRoadmapScope()
   const { roadmap, statusOf, subProgress, setTopicStatus, stats, continueTarget } = scope
   const isTree = roadmap.layout === 'tree'
+  const { theme } = useTheme()
+  const colors = CANVAS_COLORS[theme]
   const navigate = useNavigate()
   const { zoomIn, zoomOut, fitView, setCenter, setViewport } = useReactFlow()
   const width = useStore((s) => s.width)
@@ -129,7 +135,7 @@ function RoadmapFlow() {
     return roadmap.edges.map((edge) => {
       const active = hoverSet?.has(edge.source) && hoverSet.has(edge.target)
       const done = statusOf(edge.source) === STATUS.COMPLETED
-      const color = active ? EDGE_COLORS.active : done ? EDGE_COLORS.done : EDGE_COLORS.idle
+      const color = active ? colors.active : done ? colors.done : colors.idle
       const opacity = hoverSet && !active ? 0.2 : 1
       const key = `${color}|${opacity}`
       const prev = cache.get(edge.id)
@@ -143,7 +149,7 @@ function RoadmapFlow() {
       cache.set(edge.id, { key, edge: built })
       return built
     })
-  }, [roadmap, layout, isTree, statusOf, hoverSet])
+  }, [roadmap, isTree, statusOf, hoverSet, colors])
 
   // Start at a readable zoom, centred on the map and anchored at its top, rather than
   // shrinking a large roadmap to fit. The "Fit to screen" button gives the overview.
@@ -186,7 +192,7 @@ function RoadmapFlow() {
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
-      colorMode="dark"
+      colorMode={theme}
       minZoom={0.15}
       maxZoom={1.75}
       nodesDraggable={false}
@@ -198,7 +204,7 @@ function RoadmapFlow() {
       onNodeMouseEnter={isTree ? undefined : (_, node) => setHoverId(node.id)}
       onNodeMouseLeave={isTree ? undefined : () => setHoverId(null)}
     >
-      <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#333333" />
+      <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color={colors.dots} />
       <MiniMap
         pannable
         zoomable
@@ -207,7 +213,7 @@ function RoadmapFlow() {
         nodeColor={(n) => (n.type === 'stage' ? 'transparent' : n.data.category.color)}
         nodeStrokeWidth={0}
         nodeBorderRadius={2}
-        maskColor="rgb(17 17 17 / 0.72)"
+        maskColor={colors.mask}
       />
 
       <Panel position="top-left" className="!m-3 flex max-w-[calc(100%-1.5rem)] flex-col gap-2">

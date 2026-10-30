@@ -6,6 +6,7 @@ import '@fontsource-variable/jetbrains-mono'
 import './index.css'
 import App from './App.jsx'
 import { ProgressProvider } from '@/features/progress/ProgressProvider.jsx'
+import { ThemeProvider } from '@/features/theme/ThemeProvider.jsx'
 import { createLocalStorageRepository } from '@/lib/progress/storage.js'
 import { PROGRESS_STORAGE_KEY } from '@/config.js'
 
@@ -14,10 +15,12 @@ const progressRepository = createLocalStorageRepository(PROGRESS_STORAGE_KEY)
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <BrowserRouter>
-      <ProgressProvider repository={progressRepository}>
-        <App />
-      </ProgressProvider>
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <ProgressProvider repository={progressRepository}>
+          <App />
+        </ProgressProvider>
+      </BrowserRouter>
+    </ThemeProvider>
   </StrictMode>,
 )
