@@ -1,0 +1,2093 @@
+{
+  "source": {
+    "document": "DSA_Patterns.pdf",
+    "pages": "23-67",
+    "planDays": "2–6, 8–11"
+  },
+  "sections": [
+    {
+      "id": "ch-2-1",
+      "type": "concept",
+      "title": "Prefix Sum and Difference Array",
+      "subtopicId": "2-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Consider a sequence of queries, each requesting the sum of the elements from index l to index r. Direct evaluation by a loop costs O(n) per query. For an array of n elements and q queries the total is O(n × q); with n = q = 100,000 this requires ten billion additions, which exceeds a typical limit of 1 to 2 seconds.\n\nThe redundancy is that each query re-adds elements already added by earlier queries. A **prefix sum** array performs the addition once, during preprocessing, and answers each query with a single subtraction. The inverse construction, the **difference array**, applies range updates in O(1) each. Together they solve the class of range-sum and subarray-count problems.\n\n### The idea\n\nLet `prefix[i]` be the sum of the first `i` elements, that is `nums[0] + ... + nums[i-1]`. Note the shift: `prefix` has `n + 1` entries and `prefix[0] = 0` (the sum of nothing). Then the sum of `nums[l..r]` (both ends included) is\n\n`prefix[r + 1] - prefix[l]`\n\nbecause `prefix[r+1]` accumulates all elements up to index `r` and `prefix[l]` accumulates all elements before index `l`. The leading zero removes the need for a special case when `l = 0`.\n\n**How to recognise it.** The following clues in a problem statement indicate the pattern:\n\n- \"sum of elements between indices l and r\", asked many times, with no updates in between (immutable array).\n- \"number of subarrays whose sum is exactly k\" or \"divisible by k\" (prefix sums plus a hash map).\n- \"apply +x to every element from l to r\", repeated many times, then read the final array (difference array).\n- \"sum of a rectangle in a matrix\" (2D prefix sums).\n- Any \"balance\" question, such as equal numbers of 0s and 1s: replace 0 by -1 and look for a subarray with sum 0.\n\n**Subarray sum equals k.** For the counting variant, a subarray `nums[i..j]` has sum k exactly when `prefix[j+1] -` `prefix[i] == k`, which is the same as `prefix[i] == prefix[j+1] - k`. Hence a left-to-right scan maintains a hash map from each prefix value seen so far to its number of occurrences. At each position the count stored for `running - k` is added to the answer. This reduces an O(n²) pair search to O(n) and remains valid for negative elements, for which a sliding window is not applicable."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// range queries\nlong[] prefix = new long[n + 1];\nfor (int i = 0; i < n; i++) prefix[i + 1] = prefix[i] + nums[i];\nlong sum = prefix[r + 1] - prefix[l];\n\n// count subarrays with sum k\nMap<Integer, Integer> seen = new HashMap<>();\nseen.put(0, 1);                                  // empty prefix\nint running = 0, count = 0;\nfor (int x : nums) {\n    running += x;\n    count += seen.getOrDefault(running - k, 0);  // look BEFORE inserting\n    seen.merge(running, 1, Integer::sum);\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**The difference array.** Store `diff[i] = a[i] - a[i-1]`. Adding `v` to every element in `[l, r]` requires `diff[l] += v` and `diff[r+1] -= v`: two writes, independent of the range length. After all updates, a running sum of `diff` reconstructs the final array. It is the exact inverse of the prefix sum and is the standard technique for batched range updates (for example flight bookings and car pooling).\n\n**The 2D version.** For a matrix, `p[i][j]` is the sum of the rectangle from the top-left corner to cell `(i-1, j-1)`. It is built by inclusion and exclusion: `p[i+1][j+1] = m[i][j] + p[i][j+1] + p[i+1][j] - p[i][j]`. A query for the rectangle with corners `(r1, c1)` and `(r2, c2)` is `p[r2+1][c2+1] - p[r1][c2+1] - p[r2+1][c1] + p[r1][c1]`: the enclosing rectangle minus the strip above and the strip to the left, plus the corner region subtracted twice.\n\n### Dry run\n\nFirst the range-sum part. Input: `nums = [3, 1, 4, 1, 5, 9, 2, 6]`. The program builds `prefix = [0, 3, 4, 8, 9,` `14, 23, 25, 31]`. The query `sum[2..5]` is `prefix[6] - prefix[2] = 23 - 4 = 19`, which is `4 + 1 + 5 + 9`. The whole array is `prefix[8] - prefix[0] = 31`.\n\nNow the counting variant. Input: `nums = [1, 2, 3, -1, 2]`, `k = 3`. The map starts as `{0=1}`. Each row below is real output of the traced program."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "i",
+            "x",
+            "running",
+            "need",
+            "add",
+            "count",
+            "map after the step"
+          ],
+          "rows": [
+            [
+              "`0`",
+              "`1`",
+              "`1`",
+              "`-2`",
+              "`0`",
+              "`0`",
+              "`{0=1, 1=1}`"
+            ],
+            [
+              "`1`",
+              "`2`",
+              "`3`",
+              "`0`",
+              "`1`",
+              "`1`",
+              "`{0=1, 1=1, 3=1}`"
+            ],
+            [
+              "`2`",
+              "`3`",
+              "`6`",
+              "`3`",
+              "`1`",
+              "`2`",
+              "`{0=1, 1=1, 3=1, 6=1}`"
+            ],
+            [
+              "`3`",
+              "`-1`",
+              "`5`",
+              "`2`",
+              "`0`",
+              "`2`",
+              "`{0=1, 1=1, 3=1, 5=1, 6=1}`"
+            ],
+            [
+              "`4`",
+              "`2`",
+              "`7`",
+              "`4`",
+              "`0`",
+              "`2`",
+              "`{0=1, 1=1, 3=1, 5=1, 6=1, 7=1}`"
+            ]
+          ],
+          "caption": "Subarray sum equals 3: one row per element."
+        },
+        {
+          "type": "markdown",
+          "text": "At `i = 1` the running sum is 3 and `need = 0`. The map holds `0` once (the empty prefix), so the prefix `[1, 2]` has sum 3 and the count becomes 1. At `i = 2` the running sum is 6 and `need = 3`; the prefix value 3 occurred after `i = 1`, so the subarray following that point, `[3]`, has sum 3 and the count becomes 2. The remaining rows find no match. The two subarrays are `[1, 2]` and `[3]`.\n\nFor the difference array, take `n = 5` and three updates `(l, r, v)`: `(1, 3, +2)`, `(2, 4, +3)`, `(0, 1, +1)`. The program ends with `diff = [1, 2, 2, 0, -2, -3]`; running sums give `[1, 3, 5, 5, 3]`. Index 2 lies in the first and second ranges only, giving `2 + 3 = 5`, which agrees.\n\n### Java code"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\nimport java.util.HashMap;\nimport java.util.Map;\n\npublic class Main {\n    // Prefix sums: prefix[i] = sum of nums[0..i-1], so prefix has n+1 entries.\n    static long[] buildPrefix(int[] nums) {\n        long[] prefix = new long[nums.length + 1];\n        for (int i = 0; i < nums.length; i++) {\n            prefix[i + 1] = prefix[i] + nums[i];\n        }\n        return prefix;\n    }\n\n    // Sum of nums[l..r] inclusive in O(1).\n    static long rangeSum(long[] prefix, int l, int r) {\n        return prefix[r + 1] - prefix[l];\n    }\n\n    // Count subarrays whose sum equals k (works with negatives).\n    static int subarraySum(int[] nums, int k, boolean trace) {\n        Map<Integer, Integer> seen = new HashMap<>();\n        seen.put(0, 1);                       // the empty prefix\n        int running = 0, count = 0;\n        for (int i = 0; i < nums.length; i++) {\n            running += nums[i];\n            int need = running - k;\n            int add = seen.getOrDefault(need, 0);\n            count += add;\n            seen.merge(running, 1, Integer::sum);\n            if (trace) {\n                System.out.printf(\"i=%d x=%2d running=%2d need=%2d add=%d count=%d map=%s%n\",\n                        i, nums[i], running, need, add, count, seen);\n            }\n        }\n        return count;\n    }\n\n    static int subarraySumBrute(int[] nums, int k) {\n        int count = 0;\n        for (int i = 0; i < nums.length; i++) {\n            int sum = 0;\n            for (int j = i; j < nums.length; j++) {\n                sum += nums[j];\n                if (sum == k) count++;\n            }\n        }\n        return count;\n    }\n\n    // Difference array: add 'delta' to every element in [l, r] in O(1).\n    static int[] applyUpdates(int n, int[][] updates) {\n        int[] diff = new int[n + 1];\n        for (int[] u : updates) {\n            diff[u[0]] += u[2];\n            diff[u[1] + 1] -= u[2];\n        }\n        int[] result = new int[n];\n        int running = 0;\n        for (int i = 0; i < n; i++) {\n            running += diff[i];\n            result[i] = running;\n        }\n        System.out.println(\"diff   = \" + Arrays.toString(diff));\n        return result;\n    }\n\n    // 2D prefix sums: p[i][j] = sum of matrix[0..i-1][0..j-1].\n    static int[][] build2D(int[][] m) {\n        int[][] p = new int[m.length + 1][m[0].length + 1];\n        for (int i = 0; i < m.length; i++) {\n            for (int j = 0; j < m[0].length; j++) {\n                p[i + 1][j + 1] = m[i][j] + p[i][j + 1] + p[i + 1][j] - p[i][j];\n            }\n        }\n        return p;\n    }\n\n    static int region(int[][] p, int r1, int c1, int r2, int c2) {\n        return p[r2 + 1][c2 + 1] - p[r1][c2 + 1] - p[r2 + 1][c1] + p[r1][c1];\n    }\n\n    public static void main(String[] args) {\n        int[] nums = {3, 1, 4, 1, 5, 9, 2, 6};\n        long[] prefix = buildPrefix(nums);\n        System.out.println(\"prefix = \" + Arrays.toString(prefix));\n        System.out.println(\"sum[2..5] = \" + rangeSum(prefix, 2, 5));\n        System.out.println(\"sum[0..7] = \" + rangeSum(prefix, 0, 7));\n\n        int[] a = {1, 2, 3, -1, 2};\n        System.out.println(\"-- subarray sum equals 3, trace --\");\n        System.out.println(\"answer = \" + subarraySum(a, 3, true));\n        System.out.println(\"brute  = \" + subarraySumBrute(a, 3));\n\n        System.out.println(\"-- difference array --\");\n        int[][] updates = {{1, 3, 2}, {2, 4, 3}, {0, 1, 1}};\n        System.out.println(\"result = \" + Arrays.toString(applyUpdates(5, updates)));\n\n        System.out.println(\"-- 2D prefix --\");\n        int[][] m = {{3, 0, 1}, {5, 6, 3}, {1, 2, 0}};\n        int[][] p = build2D(m);\n        for (int[] row : p) System.out.println(Arrays.toString(row));\n        System.out.println(\"region(1,1)-(2,2) = \" + region(p, 1, 1, 2, 2));\n        System.out.println(\"region(0,0)-(1,2) = \" + region(p, 0, 0, 1, 2));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nprefix = [0, 3, 4, 8, 9, 14, 23, 25, 31]\nsum[2..5] = 19\nsum[0..7] = 31\n-- subarray sum equals 3, trace --\ni=0 x= 1 running= 1 need=-2 add=0 count=0 map={0=1, 1=1}\ni=1 x= 2 running= 3 need= 0 add=1 count=1 map={0=1, 1=1, 3=1}\ni=2 x= 3 running= 6 need= 3 add=1 count=2 map={0=1, 1=1, 3=1, 6=1}\ni=3 x=-1 running= 5 need= 2 add=0 count=2 map={0=1, 1=1, 3=1, 5=1, 6=1}\ni=4 x= 2 running= 7 need= 4 add=0 count=2 map={0=1, 1=1, 3=1, 5=1, 6=1, 7=1}\nanswer = 2\nbrute  = 2\n-- difference array --\ndiff   = [1, 2, 2, 0, -2, -3]\nresult = [1, 3, 5, 5, 3]\n-- 2D prefix --\n[0, 0, 0, 0]\n[0, 3, 3, 4]\n[0, 8, 14, 18]\n[0, 9, 17, 21]\nregion(1,1)-(2,2) = 11\nregion(0,0)-(1,2) = 18",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** `seen.put(0, 1)` is the empty prefix; omitting it loses every subarray that starts at index 0. The lookup precedes the insertion; otherwise, for `k = 0`, an empty subarray would be counted. `prefix` is `long[]` because a sum of many `int` values may overflow `int` without any exception. The 2D region result `11` is `6 + 3 + 2 + 0`, the bottom-right 2×2 block of the matrix.\n\n### Complexity and mistakes\n\nBuilding a prefix array is O(n) time and O(n) space; each query is O(1). The hash-map counting version is O(n) time and O(n) space, against O(n²) for the brute force that tries every start and end. The difference array applies each update in O(1) and rebuilds in O(n), so m updates cost O(n + m) instead of O(n × m). The 2D prefix table costs O(rows × cols) once, then O(1) per rectangle.\n\nCommon mistakes:\n\n- **Index-shift error.** The formula `prefix[r + 1] - prefix[l]` requires an array of size `n + 1`. Mixing conventions (size `n`, `prefix[r] - prefix[l-1]`) yields index -1 when `l = 0`.\n- **Omitting the empty prefix** `seen.put(0, 1)`, which loses subarrays beginning at index 0.\n- **Overflow.** Sums of `int` values can exceed 2.1 billion. `long` is required when n × (maximum value) can exceed that bound.\n- **Inserting before the lookup** in the counting loop. The lookup must precede the insertion.\n- **Difference array end index.** `diff` requires `n + 1` slots so that `diff[r + 1]` is a valid index when `r = n - 1`.\n- **Divisible-by-k with negatives.** In Java `-7 % 5` is `-2`, not `3`. The remainder must be normalised with `((sum % k) +` `k) % k` before use as a map key.\n\n### Questions to expect\n\n1. \"Given an immutable array, answer many range-sum queries quickly.\" Clue: many queries, no updates. Build a prefix array; each query is O(1). Follow-up: if updates are interleaved with queries, prefix sums are insufficient and a Fenwick tree or segment tree is required.\n2. \"Count subarrays with sum exactly k; the array may contain negatives.\" Clue: an exact sum with negative elements excludes a sliding window. Prefix sum plus hash map in O(n).\n3. \"Longest subarray with equal numbers of 0s and 1s.\" Map 0 to -1, then find the longest subarray with sum 0 by storing the first index of each prefix value.\n4. \"Is there a subarray of length at least 2 whose sum is a multiple of k?\" Store the first index of each `prefix % k`; a repeated remainder at distance at least 2 gives a positive answer.\n5. \"Apply a million range increments, then print the array.\" Difference array, O(n + m).\n6. \"Sum of a sub-rectangle of a matrix, many queries.\" 2D prefix sums, O(1) per query.\n7. \"Return the array where each element is the product of all the others, without division.\" A product analogue of prefix and suffix scans; each result is `prefixProduct * suffixProduct`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does \"subarray sum equals k\" not work with a sliding window? A sliding window shrinks when the sum is too large and grows when it is too small. This presupposes that adding an element never decreases the sum, that is, that all elements are non-negative. With negative elements the monotonicity precondition fails and the pointer logic is invalid. The prefix-sum approach does not depend on monotonicity: it tests only whether a prefix equal to `running - k` occurred earlier. It runs in O(n) time and O(n) space for arbitrary integers."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`303`",
+              "Range Sum Query - Immutable",
+              "Easy",
+              "Prefix array, answer each query by one subtraction"
+            ],
+            [
+              "`724`",
+              "Find Pivot Index",
+              "Easy",
+              "Total sum minus left prefix minus current must equal left prefix"
+            ],
+            [
+              "`560`",
+              "Subarray Sum Equals K",
+              "Medium",
+              "Prefix sum plus hash map of counts"
+            ],
+            [
+              "`304`",
+              "Range Sum Query 2D - Immutable",
+              "Medium",
+              "2D prefix with inclusion and exclusion"
+            ],
+            [
+              "`525`",
+              "Contiguous Array",
+              "Medium",
+              "Map 0 to -1, store first index of each prefix value"
+            ],
+            [
+              "`523`",
+              "Continuous Subarray Sum",
+              "Medium",
+              "Store first index of each prefix remainder mod k"
+            ],
+            [
+              "`974`",
+              "Subarray Sums Divisible by K",
+              "Medium",
+              "Count equal remainders; normalise negative remainders"
+            ],
+            [
+              "`1109`",
+              "Corporate Flight Bookings",
+              "Medium",
+              "Difference array over the booking ranges"
+            ],
+            [
+              "`1094`",
+              "Car Pooling",
+              "Medium",
+              "Difference array over stops, check capacity on the running sum"
+            ],
+            [
+              "`238`",
+              "Product of Array Except Self",
+              "Medium",
+              "Prefix products times suffix products, no division"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Prefix sums and difference arrays\n\n- `prefix[i]` is the sum of the first `i` elements; any range sum is `prefix[r+1] - prefix[l]`, an O(1) query after an O(n) build.\n- For \"count subarrays with sum k\", keep a map of prefix values seen so far and look up `running - k` before inserting; seed it with `{0=1}`.\n- A difference array applies range updates in O(1) each; a running sum rebuilds the final array.\n- Use `long` for sums, size the arrays `n + 1`, and normalise negative remainders before using them as keys."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-2",
+      "type": "concept",
+      "title": "Two Pointers",
+      "subtopicId": "2-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Consider the problem of finding two elements of a sorted array whose sum equals a target. Exhaustive pair enumeration costs O(n²), about five billion pair checks for n = 100,000. The enumeration ignores the ordering of the input: when a pair sum is too large, the ordering identifies which end of the pair must change.\n\nThe **two-pointers** pattern maintains two indices into one array (or two arrays) and advances them by a fixed rule so that each index moves in one direction only. Since no index moves backwards, the total number of moves is at most 2n, giving O(n) instead of O(n²).\n\n### The idea\n\nThere are three common shapes:\n\n- **Opposite ends.** `lo` starts at the left, `hi` at the right, and they move toward each other. Used on sorted arrays (pair sums, 3Sum), for palindromes, and for \"container\" problems where moving the shorter side is the only move that can help.\n- **Same direction (read and write).** A `read` pointer scans every element and a `write` pointer marks the position of the next retained element. Used for removing duplicates, moving zeroes, partitioning in place.\n- **Two arrays.** One pointer per array, advanced by comparing the current elements (merging two sorted arrays, intersection of two sorted lists).\n\n**How to recognise it.** Clue phrases: \"sorted array\" plus \"pair/triplet with sum\"; \"in place with O(1) extra space\"; \"remove duplicates / zeroes in place\"; \"palindrome\"; \"maximise area/width between two positions\"; \"merge two sorted arrays\".\n\nThe correctness of the opposite-ends strategy rests on an **invariant**, a condition that holds before and after every iteration. For the sorted pair sum the invariant is: if a valid pair exists, it lies within `[lo, hi]`. If `a[lo] + a[hi]` is less than the target, then `a[lo]` combined with any element at or left of `hi` is also less than the target, so `lo` cannot belong to a solution and may be discarded. The symmetric argument discards `hi` when the sum exceeds the target."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// opposite ends (sorted input)\nint lo = 0, hi = a.length - 1;\nwhile (lo < hi) {\n    int sum = a[lo] + a[hi];\n    if (sum == target) return new int[]{lo, hi};\n    if (sum < target) lo++; else hi--;\n}\n\n// read / write pointers (in-place filter)\nint w = 0;\nfor (int r = 0; r < a.length; r++) {\n    if (keep(a[r])) a[w++] = a[r];\n}\n// a[0..w-1] is the result",
+          "title": "Template.java"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 318.9 80.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M2.0 51.3 L36.0 51.3 L36.0 27.3 L2.0 27.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M36.0 51.3 L70.0 51.3 L70.0 27.3 L36.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M70.0 51.3 L104.0 51.3 L104.0 27.3 L70.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M104.0 51.3 L138.0 51.3 L138.0 27.3 L104.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M138.0 51.3 L172.0 51.3 L172.0 27.3 L138.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.0 51.3 L206.0 51.3 L206.0 27.3 L172.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M206.0 51.3 L240.0 51.3 L240.0 27.3 L206.0 27.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M19.0 25.3 L21.2 20.8 L16.8 20.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M223.0 25.3 L225.2 20.8 L220.8 20.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"12.9\" y=\"6.3\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"12.2\" lengthAdjust=\"spacingAndGlyphs\">left</text><text x=\"214.4\" y=\"6.3\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"17.3\" lengthAdjust=\"spacingAndGlyphs\">right</text><text x=\"16.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"50.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"84.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"118.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"152.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">8</text><text x=\"184.5\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"9.0\" lengthAdjust=\"spacingAndGlyphs\">11</text><text x=\"218.5\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"9.0\" lengthAdjust=\"spacingAndGlyphs\">15</text><text x=\"250.0\" y=\"43.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"66.9\" lengthAdjust=\"spacingAndGlyphs\">sum &lt; target: left++</text><text x=\"250.0\" y=\"55.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"65.4\" lengthAdjust=\"spacingAndGlyphs\">sum &gt; target: right--</text></svg>",
+          "width": 319,
+          "caption": "The two pointers approach each other on a sorted array; each step discards one end, so there are at most n steps in total.",
+          "alt": "left right | 1 3 4 6 8 11 15 sum < target: left++ | sum > target: right--"
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nProblem: in the sorted array `[1, 3, 4, 6, 8, 11]` find two numbers that add up to 10. Each row is real output of the traced program."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "lo",
+            "hi",
+            "a\\[lo\\], a\\[hi\\]",
+            "sum",
+            "action"
+          ],
+          "rows": [
+            [
+              "`1`",
+              "`0`",
+              "`5`",
+              "`1, 11`",
+              "`12`",
+              "`too big, hi--`"
+            ],
+            [
+              "`2`",
+              "`0`",
+              "`4`",
+              "`1, 8`",
+              "`9`",
+              "`too small, lo++`"
+            ],
+            [
+              "`3`",
+              "`1`",
+              "`4`",
+              "`3, 8`",
+              "`11`",
+              "`too big, hi--`"
+            ],
+            [
+              "`4`",
+              "`1`",
+              "`3`",
+              "`3, 6`",
+              "`9`",
+              "`too small, lo++`"
+            ],
+            [
+              "`5`",
+              "`2`",
+              "`3`",
+              "`4, 6`",
+              "`10`",
+              "`match, return [2, 3]`"
+            ]
+          ],
+          "caption": "Two sum on a sorted array, target 10."
+        },
+        {
+          "type": "markdown",
+          "text": "The search terminates after five steps for six elements; the pointers moved inward only. The container problem is analysed next. The heights are `[1, 8, 6, 2, 5, 4, 8, 3, 7]`; the water held between lines `lo` and `hi` is `min(h[lo],` `h[hi]) * (hi - lo)`. The **shorter** line is always advanced, because the area is bounded by it: retaining the shorter line while reducing the width cannot yield a larger area."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "lo",
+            "hi",
+            "h\\[lo\\]",
+            "h\\[hi\\]",
+            "area",
+            "best"
+          ],
+          "rows": [
+            [
+              "`1`",
+              "`0`",
+              "`8`",
+              "`1`",
+              "`7`",
+              "`8`",
+              "`8`"
+            ],
+            [
+              "`2`",
+              "`1`",
+              "`8`",
+              "`8`",
+              "`7`",
+              "`49`",
+              "`49`"
+            ],
+            [
+              "`3`",
+              "`1`",
+              "`7`",
+              "`8`",
+              "`3`",
+              "`18`",
+              "`49`"
+            ],
+            [
+              "`4`",
+              "`1`",
+              "`6`",
+              "`8`",
+              "`8`",
+              "`40`",
+              "`49`"
+            ],
+            [
+              "`5`",
+              "`1`",
+              "`5`",
+              "`8`",
+              "`4`",
+              "`16`",
+              "`49`"
+            ],
+            [
+              "`6`",
+              "`1`",
+              "`4`",
+              "`8`",
+              "`5`",
+              "`15`",
+              "`49`"
+            ],
+            [
+              "`7`",
+              "`1`",
+              "`3`",
+              "`8`",
+              "`2`",
+              "`4`",
+              "`49`"
+            ],
+            [
+              "`8`",
+              "`1`",
+              "`2`",
+              "`8`",
+              "`6`",
+              "`6`",
+              "`49`"
+            ]
+          ],
+          "caption": "Container with most water."
+        },
+        {
+          "type": "markdown",
+          "text": "Step 1 advances `lo` because 1 is shorter than 7. Step 2 attains the maximum area, 49 (width 7, height 7). The remaining steps reduce the width and none exceeds 49.\n\n### Java code"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.List;\n\npublic class Main {\n    // Opposite ends: sorted array, find a pair with the given sum. Returns indices or {-1,-1}.\n    static int[] twoSumSorted(int[] a, int target, boolean trace) {\n        int lo = 0, hi = a.length - 1, step = 1;\n        while (lo < hi) {\n            int sum = a[lo] + a[hi];\n            if (trace) {\n                System.out.printf(\"step %d lo=%d hi=%d a[lo]=%d a[hi]=%d sum=%d%n\",\n                        step++, lo, hi, a[lo], a[hi], sum);\n            }\n            if (sum == target) return new int[]{lo, hi};\n            if (sum < target) lo++; else hi--;\n        }\n        return new int[]{-1, -1};\n    }\n\n    // Same direction: write pointer 'w' trails read pointer 'r'.\n    static int removeDuplicates(int[] a) {\n        if (a.length == 0) return 0;\n        int w = 1;\n        for (int r = 1; r < a.length; r++) {\n            if (a[r] != a[w - 1]) a[w++] = a[r];\n        }\n        return w;\n    }\n\n    static void moveZeroes(int[] a) {\n        int w = 0;\n        for (int r = 0; r < a.length; r++) {\n            if (a[r] != 0) {\n                int t = a[w]; a[w] = a[r]; a[r] = t;\n                w++;\n            }\n        }\n    }\n\n    // 3Sum: sort, fix i, two pointers on the rest, skip duplicates.\n    static List<List<Integer>> threeSum(int[] nums) {\n        int[] a = nums.clone();\n        Arrays.sort(a);\n        List<List<Integer>> out = new ArrayList<>();\n        for (int i = 0; i < a.length - 2; i++) {\n            if (a[i] > 0) break;\n            if (i > 0 && a[i] == a[i - 1]) continue;\n            int lo = i + 1, hi = a.length - 1;\n            while (lo < hi) {\n                int sum = a[i] + a[lo] + a[hi];\n                if (sum < 0) lo++;\n                else if (sum > 0) hi--;\n                else {\n                    out.add(List.of(a[i], a[lo], a[hi]));\n                    lo++; hi--;\n                    while (lo < hi && a[lo] == a[lo - 1]) lo++;\n                    while (lo < hi && a[hi] == a[hi + 1]) hi--;\n                }\n            }\n        }\n        return out;\n    }\n\n    static int maxArea(int[] h, boolean trace) {\n        int lo = 0, hi = h.length - 1, best = 0, step = 1;\n        while (lo < hi) {\n            int area = Math.min(h[lo], h[hi]) * (hi - lo);\n            best = Math.max(best, area);\n            if (trace) {\n                System.out.printf(\"step %d lo=%d hi=%d h[lo]=%d h[hi]=%d area=%2d best=%2d%n\",\n                        step++, lo, hi, h[lo], h[hi], area, best);\n            }\n            if (h[lo] < h[hi]) lo++; else hi--;\n        }\n        return best;\n    }\n\n    static int maxAreaBrute(int[] h) {\n        int best = 0;\n        for (int i = 0; i < h.length; i++)\n            for (int j = i + 1; j < h.length; j++)\n                best = Math.max(best, Math.min(h[i], h[j]) * (j - i));\n        return best;\n    }\n\n    static boolean isPalindrome(String s) {\n        int lo = 0, hi = s.length() - 1;\n        while (lo < hi) {\n            while (lo < hi && !Character.isLetterOrDigit(s.charAt(lo))) lo++;\n            while (lo < hi && !Character.isLetterOrDigit(s.charAt(hi))) hi--;\n            if (Character.toLowerCase(s.charAt(lo)) != Character.toLowerCase(s.charAt(hi))) {\n                return false;\n            }\n            lo++; hi--;\n        }\n        return true;\n    }\n\n    public static void main(String[] args) {\n        int[] sorted = {1, 3, 4, 6, 8, 11};\n        System.out.println(\"-- two sum on sorted, target 10 --\");\n        System.out.println(Arrays.toString(twoSumSorted(sorted, 10, true)));\n\n        int[] heights = {1, 8, 6, 2, 5, 4, 8, 3, 7};\n        System.out.println(\"-- container with most water --\");\n        System.out.println(\"answer = \" + maxArea(heights, true));\n        System.out.println(\"brute  = \" + maxAreaBrute(heights));\n\n        int[] d = {0, 0, 1, 1, 1, 2, 2, 3};\n        int len = removeDuplicates(d);\n        System.out.println(\"unique length \" + len + \" -> \"\n                + Arrays.toString(Arrays.copyOf(d, len)));\n        int[] z = {0, 1, 0, 3, 12};\n        moveZeroes(z);\n        System.out.println(\"moveZeroes -> \" + Arrays.toString(z));\n        System.out.println(\"3sum -> \" + threeSum(new int[]{-1, 0, 1, 2, -1, -4}));\n        System.out.println(\"3sum all zeros -> \" + threeSum(new int[]{0, 0, 0, 0}));\n        System.out.println(isPalindrome(\"A man, a plan, a canal: Panama\"));\n        System.out.println(isPalindrome(\"race a car\"));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n-- two sum on sorted, target 10 --\nstep 1 lo=0 hi=5 a[lo]=1 a[hi]=11 sum=12\nstep 2 lo=0 hi=4 a[lo]=1 a[hi]=8 sum=9\nstep 3 lo=1 hi=4 a[lo]=3 a[hi]=8 sum=11\nstep 4 lo=1 hi=3 a[lo]=3 a[hi]=6 sum=9\nstep 5 lo=2 hi=3 a[lo]=4 a[hi]=6 sum=10\n[2, 3]\n-- container with most water --\nstep 1 lo=0 hi=8 h[lo]=1 h[hi]=7 area= 8 best= 8\nstep 2 lo=1 hi=8 h[lo]=8 h[hi]=7 area=49 best=49\nstep 3 lo=1 hi=7 h[lo]=8 h[hi]=3 area=18 best=49\nstep 4 lo=1 hi=6 h[lo]=8 h[hi]=8 area=40 best=49\nstep 5 lo=1 hi=5 h[lo]=8 h[hi]=4 area=16 best=49\nstep 6 lo=1 hi=4 h[lo]=8 h[hi]=5 area=15 best=49\nstep 7 lo=1 hi=3 h[lo]=8 h[hi]=2 area= 4 best=49\nstep 8 lo=1 hi=2 h[lo]=8 h[hi]=6 area= 6 best=49\nanswer = 49\nbrute  = 49\nunique length 4 -> [0, 1, 2, 3]\nmoveZeroes -> [1, 3, 12, 0, 0]\n3sum -> [[-1, -1, 2], [-1, 0, 1]]\n3sum all zeros -> [[0, 0, 0]]\ntrue\nfalse",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** In `removeDuplicates` the write pointer `w` addresses the next free slot, and a value is retained only if it differs from the last retained value `a[w - 1]`. In `threeSum` the outer index is skipped when it equals its predecessor, and after a triple is recorded both inner pointers skip repeated values; duplicates are thereby excluded without a `Set`. The early `break` when `a[i] > 0` is valid because the array is sorted and three positive values cannot sum to zero. `List.of` produces an immutable list, which suffices for results.\n\n### Complexity and mistakes\n\nOpposite-ends and read/write scans run in O(n) time and O(1) extra space, because each pointer moves at most n times. 3Sum is O(n²): sorting costs O(n log n), after which each of the n choices of the first element is followed by a linear two-pointer scan. `Arrays.sort` on a primitive `int[]` is the standard choice.\n\nCommon mistakes:\n\n- **Incorrect loop condition.** Pairs require `lo < hi`; `lo <= hi` would pair an element with itself.\n- **Applying the pattern to unsorted data.** The inward-move argument holds only for sorted input; an unsorted pair sum requires a hash map.\n- **Duplicate triples in 3Sum.** Failing to skip equal neighbours (for `i`, and for `lo` and `hi` after a match) yields repeated results.\n- **Out-of-bounds access in skip loops.** The condition `lo < hi` must be retained inside every `while` loop that skips duplicates.\n- **Overflow.** `a[lo] + a[hi]` can overflow `int` when values are near 2^31. A cast to `long` is required if the constraints permit large values.\n- **Advancing the wrong side in the container problem.** The shorter wall must be advanced, never the taller.\n\n### Questions to expect\n\n1. \"Two sum, but the array is sorted.\" Clue: sorted input. Opposite ends give O(n) time and O(1) space (a hash map also works but uses O(n) space).\n2. \"Find all unique triplets that sum to zero.\" Clue: triplet plus uniqueness. Sort, fix one element, apply two pointers to the remainder, skip duplicates. Follow-up: 4Sum adds one loop (O(n³)); k-Sum is recursion over the pair scan.\n3. \"Remove duplicates from a sorted array in place; return the new length.\" Clue: in place, sorted. Read/write pointers. Follow-up: allowing each value at most twice requires comparison with `a[w - 2]`.\n4. \"Move all zeroes to the end, keep the order of the others.\" Clue: stable partition in place. Swap each non-zero element to the write position.\n5. \"Is this string a palindrome, ignoring punctuation and case?\" Clue: palindrome. Opposite ends with skipping. Follow-up: with one deletion permitted, test both skip options at the first mismatch.\n6. \"Container with the most water.\" Clue: maximise area between two positions. Opposite ends, move the shorter side.\n7. \"Sort an array of 0s, 1s and 2s in one pass.\" Clue: three-way partition. Three pointers (Dutch national flag partition).\n8. \"Squares of a sorted array (which may contain negatives), returned sorted.\" Clue: the largest square lies at one of the two ends. Opposite pointers fill the result from the back."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is the container solution correct? Can the optimal pair be skipped? Assume the left wall is shorter. Any container retaining this wall with a closer right wall has a smaller width and is bounded by the same height, so its capacity does not exceed the one just measured. The left wall can therefore be discarded and `lo` advanced. Each step permanently discards one wall without excluding the optimum, and the loop terminates after n - 1 steps: O(n) time, O(1) space."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`125`",
+              "Valid Palindrome",
+              "Easy",
+              "Opposite ends, skip non-alphanumeric characters"
+            ],
+            [
+              "`26`",
+              "Remove Duplicates from Sorted Array",
+              "Easy",
+              "Read and write pointers, compare with last kept"
+            ],
+            [
+              "`283`",
+              "Move Zeroes",
+              "Easy",
+              "Swap each non-zero into the write position"
+            ],
+            [
+              "`977`",
+              "Squares of a Sorted Array",
+              "Easy",
+              "Compare absolute values at both ends, fill from the back"
+            ],
+            [
+              "`680`",
+              "Valid Palindrome II",
+              "Easy",
+              "On first mismatch check both skip-one cases"
+            ],
+            [
+              "`167`",
+              "Two Sum II - Input Array Is Sorted",
+              "Medium",
+              "Opposite ends on sorted input"
+            ],
+            [
+              "`75`",
+              "Sort Colors",
+              "Medium",
+              "Three pointers partition in one pass"
+            ],
+            [
+              "`11`",
+              "Container With Most Water",
+              "Medium",
+              "Move the shorter wall"
+            ],
+            [
+              "`15`",
+              "3Sum",
+              "Medium",
+              "Sort, fix one, two pointers, skip duplicates"
+            ],
+            [
+              "`16`",
+              "3Sum Closest",
+              "Medium",
+              "Same as 3Sum, track the smallest distance to target"
+            ],
+            [
+              "`18`",
+              "4Sum",
+              "Medium",
+              "Two nested loops plus a two-pointer scan"
+            ],
+            [
+              "`42`",
+              "Trapping Rain Water",
+              "Hard",
+              "Two pointers with running left and right maxima"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Two pointers\n\n- Pointers move in one direction each, so the work is O(n) after at most an O(n log n) sort.\n- Opposite-ends movement requires a justification (sorted order or a monotone quantity) for discarding one side; the invariant should be stated explicitly.\n- Read/write pointers filter or partition in place with O(1) extra space.\n- For k-Sum problems: sort, fix elements with loops, finish with a pair scan, and skip duplicates explicitly."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-3",
+      "type": "concept",
+      "title": "Sliding Window: Fixed Size",
+      "subtopicId": "2-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Consider the problem of finding the maximum sum over all groups of k consecutive elements. Recomputing each group from scratch costs O(n × k), which approaches O(n²) when k is proportional to n. Adjacent windows, however, share all but two elements, and recomputing the shared part is redundant.\n\nA **sliding window** exploits that overlap. For a window of fixed size k, a shift of one position adds the entering element on the right and removes the leaving element on the left. Each shift costs O(1), so the complete scan is O(n).\n\n### The idea\n\nA running value (a sum, a count or a frequency table) is maintained for the current window. The first window is built in k steps. Thereafter, for each `right` from k to n-1, `a[right]` is added, `a[right - k]` is removed, and the answer is updated.\n\n**How to recognise it.** The window length is fixed by the statement: \"subarray of size k\", \"every k consecutive\", \"substring of length k\", \"k cards from the ends\" (the complement is a window of size n - k), \"all anagrams of p in s\" (window length equals `p.length()`), \"repeated 10-letter sequences\"."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "int window = 0;\nfor (int i = 0; i < k; i++) window += a[i];      // first window\nint best = window;\nfor (int right = k; right < a.length; right++) {\n    window += a[right] - a[right - k];           // enter right, leave right-k\n    best = Math.max(best, window);\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "When the window state is a frequency table (anagram problems), \"add\" and \"remove\" become `count[c]++` and `count[c]--`, and the check is a comparison of two 26-slot arrays, which costs 26 steps, a constant.\n\n### Dry run\n\nInput: `a = [2, 1, 5, 1, 3, 2]`, `k = 3`. Each row is real output."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "action",
+            "window",
+            "sum",
+            "best",
+            "note"
+          ],
+          "rows": [
+            [
+              "`0`",
+              "`build first window`",
+              "`[0..2]`",
+              "`8`",
+              "`8`",
+              "`2 + 1 + 5`"
+            ],
+            [
+              "`1`",
+              "`add a[3]=1, drop a[0]=2`",
+              "`[1..3]`",
+              "`7`",
+              "`8`",
+              "`8 + 1 - 2`"
+            ],
+            [
+              "`2`",
+              "`add a[4]=3, drop a[1]=1`",
+              "`[2..4]`",
+              "`9`",
+              "`9`",
+              "`7 + 3 - 1`"
+            ],
+            [
+              "`3`",
+              "`add a[5]=2, drop a[2]=5`",
+              "`[3..5]`",
+              "`6`",
+              "`9`",
+              "`9 + 2 - 5`"
+            ]
+          ],
+          "caption": "Maximum sum of 3 consecutive elements."
+        },
+        {
+          "type": "markdown",
+          "text": "Four window updates replace 4 × 3 = 12 element additions. The maximum is attained by `[5, 1, 3]` with sum 9.\n\n### Java code"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.List;\n\npublic class Main {\n    // Maximum sum of any k consecutive elements.\n    static int maxSumWindow(int[] a, int k, boolean trace) {\n        int window = 0;\n        for (int i = 0; i < k; i++) window += a[i];\n        int best = window;\n        if (trace) System.out.printf(\"init window [0..%d] sum=%d best=%d%n\", k - 1, window, best);\n        for (int right = k; right < a.length; right++) {\n            int left = right - k;                 // element leaving the window\n            window += a[right] - a[left];\n            best = Math.max(best, window);\n            if (trace) {\n                System.out.printf(\"add a[%d]=%d drop a[%d]=%d -> window [%d..%d] sum=%d best=%d%n\",\n                        right, a[right], left, a[left], left + 1, right, window, best);\n            }\n        }\n        return best;\n    }\n\n    static int maxSumBrute(int[] a, int k) {\n        int best = Integer.MIN_VALUE;\n        for (int i = 0; i + k <= a.length; i++) {\n            int sum = 0;\n            for (int j = i; j < i + k; j++) sum += a[j];\n            best = Math.max(best, sum);\n        }\n        return best;\n    }\n\n    static double maxAverage(int[] a, int k) {\n        long window = 0;\n        for (int i = 0; i < k; i++) window += a[i];\n        long best = window;\n        for (int i = k; i < a.length; i++) {\n            window += a[i] - a[i - k];\n            best = Math.max(best, window);\n        }\n        return (double) best / k;\n    }\n\n    // Fixed window over a string: start indices of anagrams of p inside s.\n    static List<Integer> findAnagrams(String s, String p) {\n        List<Integer> out = new ArrayList<>();\n        if (p.length() > s.length()) return out;\n        int[] need = new int[26], have = new int[26];\n        for (char c : p.toCharArray()) need[c - 'a']++;\n        for (int i = 0; i < s.length(); i++) {\n            have[s.charAt(i) - 'a']++;\n            if (i >= p.length()) have[s.charAt(i - p.length()) - 'a']--;\n            if (i >= p.length() - 1 && Arrays.equals(need, have)) out.add(i - p.length() + 1);\n        }\n        return out;\n    }\n\n    // Max vowels in any substring of length k.\n    static int maxVowels(String s, int k) {\n        int cur = 0, best = 0;\n        for (int i = 0; i < s.length(); i++) {\n            if (\"aeiou\".indexOf(s.charAt(i)) >= 0) cur++;\n            if (i >= k && \"aeiou\".indexOf(s.charAt(i - k)) >= 0) cur--;\n            best = Math.max(best, cur);\n        }\n        return best;\n    }\n\n    public static void main(String[] args) {\n        int[] a = {2, 1, 5, 1, 3, 2};\n        System.out.println(\"-- max sum of 3 consecutive --\");\n        System.out.println(\"answer = \" + maxSumWindow(a, 3, true));\n        System.out.println(\"brute  = \" + maxSumBrute(a, 3));\n        System.out.println(\"max average k=4: \" + maxAverage(new int[]{1, 12, -5, -6, 50, 3}, 4));\n        System.out.println(\"anagrams: \" + findAnagrams(\"cbaebabacd\", \"abc\"));\n        System.out.println(\"anagrams: \" + findAnagrams(\"abab\", \"ab\"));\n        System.out.println(\"vowels: \" + maxVowels(\"abciiidef\", 3));\n        int[] big = {Integer.MAX_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE};\n        int bad = 0;\n        for (int x : big) bad += x;\n        long ok = 0;\n        for (int x : big) ok += x;\n        System.out.println(\"int sum = \" + bad + \", long sum = \" + ok);\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n-- max sum of 3 consecutive --\ninit window [0..2] sum=8 best=8\nadd a[3]=1 drop a[0]=2 -> window [1..3] sum=7 best=8\nadd a[4]=3 drop a[1]=1 -> window [2..4] sum=9 best=9\nadd a[5]=2 drop a[2]=5 -> window [3..5] sum=6 best=9\nanswer = 9\nbrute  = 9\nmax average k=4: 12.75\nanagrams: [0, 6]\nanagrams: [0, 1, 2]\nvowels: 3\nint sum = 2147483645, long sum = 6442450941",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** `findAnagrams` removes the leaving character only once the window is full (`i >= p.length()`) and compares only when the window holds `p.length()` characters. `Arrays.equals(int[], int[])` compares contents, whereas `==` on arrays compares references. In `maxAverage` the running sum is a `long`; the last output line shows the reason: three `Integer.MAX_VALUE` values sum to `2147483645` in `int` (after wrap-around) but to `6442450941` in `long`.\n\n### Complexity and mistakes\n\nTime is O(n): one pass, constant work per step (O(n × 26) for the anagram check, still linear). Space is O(1) for sums and O(alphabet) for frequency tables.\n\n- **Off-by-one on the leaving element.** The element leaving when `right` enters is `a[right - k]`, not `a[right - k` `+ 1]`. Tracing the first two windows verifies the index.\n- **k larger than n.** The precondition `k <= a.length` must be checked before the first window is built.\n- **Overflow** of the running sum: `long` is required when values or k are large.\n- **Initialising** `best` **to 0** when all elements may be negative; the first window value is the correct initial value.\n- **Premature division.** For an average, the integer sum is tracked and divided once at the end; repeated division accumulates rounding error.\n\n### Questions to expect\n\n1. \"Maximum average of any subarray of length k.\" Clue: fixed length. Maximise the sum and divide once at the end.\n2. \"Find all start indices of anagrams of p in s.\" Clue: window length equals `p.length()`. Slide a 26-slot count array and compare after each shift.\n3. \"Does s2 contain a permutation of s1?\" As above; return true at the first match.\n4. \"Pick exactly k cards from either end to maximise the score.\" Clue: the cards not taken form a contiguous block of n - k. Minimise that window, or slide the split point.\n5. \"Maximum number of vowels in a substring of length k.\" Update the vowel count for the entering and the leaving character.\n6. \"Is there a duplicate within distance k?\" Window of size k as a `HashSet`: add the new element, remove `a[i - k]`.\n7. \"Maximum of every window of size k.\" The running sum is replaced by a monotonic deque (treated in the chapter on queues and deques); O(n) overall."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "The fixed-window loop is O(n). Can the asymptotic bound be improved? No, for a single query: every element must be inspected at least once, so Ω(n) is a lower bound. For many window-sum queries on the same array, prefix sums are preferable: O(n) preprocessing and O(1) per query for any window size."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`643`",
+              "Maximum Average Subarray I",
+              "Easy",
+              "Running sum of size k, divide once"
+            ],
+            [
+              "`219`",
+              "Contains Duplicate II",
+              "Easy",
+              "HashSet holding the last k elements"
+            ],
+            [
+              "`1343`",
+              "Number of Sub-arrays of Size K and Average Greater than or Equal to Threshold",
+              "Medium",
+              "Compare window sum with k times threshold"
+            ],
+            [
+              "`1456`",
+              "Maximum Number of Vowels in a Substring of Given Length",
+              "Medium",
+              "Add and remove a vowel count"
+            ],
+            [
+              "`1052`",
+              "Grumpy Bookstore Owner",
+              "Medium",
+              "Best fixed window of extra satisfied customers"
+            ],
+            [
+              "`1423`",
+              "Maximum Points You Can Obtain from Cards",
+              "Medium",
+              "Minimise the middle window of size n - k"
+            ],
+            [
+              "`2090`",
+              "K Radius Subarray Averages",
+              "Medium",
+              "Window of size 2k + 1 with long sums"
+            ],
+            [
+              "`438`",
+              "Find All Anagrams in a String",
+              "Medium",
+              "Slide a 26-slot count array"
+            ],
+            [
+              "`567`",
+              "Permutation in String",
+              "Medium",
+              "Same count-array comparison, stop at first match"
+            ],
+            [
+              "`187`",
+              "Repeated DNA Sequences",
+              "Medium",
+              "Slide a 10-character window, HashSet of seen"
+            ],
+            [
+              "`239`",
+              "Sliding Window Maximum",
+              "Hard",
+              "Monotonic deque of candidate indices"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Fixed-size sliding window\n\n- Build the first window, then slide by adding `a[right]` and removing `a[right - k]`: O(n) total.\n- Window state can be a sum, a count, or a frequency array compared with `Arrays.equals`.\n- Watch the leaving index, k greater than n, and `int` overflow of the sum.\n- If the window size is not fixed, the variable-size version of the pattern applies."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-4",
+      "type": "concept",
+      "title": "Sliding Window: Variable Size",
+      "subtopicId": "2-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Here the window length is not given, as in \"longest substring without repeating characters\" or \"smallest subarray with sum at least s\". Enumerating every start and end gives O(n²) windows, and validating each in O(n) gives O(n³), which is infeasible for n = 100,000.\n\nThe **variable-size sliding window** maintains a window `[left, right]` that grows and shrinks. The right edge advances to admit a new element; the left edge advances only to restore validity when the window rule is violated. Since both edges move monotonically to the right, there are at most 2n moves in total: O(n).\n\n### The idea\n\nThere are two variants, which differ in the position at which the answer is updated:\n\n- **Longest valid window.** Expand `right`. While the window is invalid, advance `left` until validity is restored. Then record `right - left + 1`.\n- **Shortest valid window.** Expand `right` until the window is valid. While it remains valid, record its length and advance `left`.\n\n**How to recognise it.** The statement asks for the longest or shortest contiguous subarray or substring subject to a condition: \"without repeating\", \"at most k distinct\", \"sum at least s\", \"contains all characters of t\", \"at most k replacements\". The condition must be **monotone**: removing elements from a valid window preserves validity (longest variant), or adding elements to a valid window preserves validity (shortest variant). Hence non-negative elements are a precondition for \"sum at least s\"; with negative values validity cannot be restored by moving one edge."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// longest window satisfying a rule\nint left = 0, best = 0;\nfor (int right = 0; right < n; right++) {\n    add(a[right]);                       // include the new element\n    while (!valid()) {                   // shrink until valid again\n        remove(a[left]);\n        left++;\n    }\n    best = Math.max(best, right - left + 1);\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For \"exactly k\" conditions the standard reduction is `exactly(k) = atMost(k) - atMost(k - 1)`, because \"at most\" conditions are monotone while \"exactly\" conditions are not."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 276.0 80.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M68.0 54.3 L174.0 54.3 L174.0 24.3 L68.0 24.3 Z\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.60\" stroke-linejoin=\"round\"/><path d=\"M2.0 51.3 L36.0 51.3 L36.0 27.3 L2.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M36.0 51.3 L70.0 51.3 L70.0 27.3 L36.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M70.0 51.3 L104.0 51.3 L104.0 27.3 L70.0 27.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M104.0 51.3 L138.0 51.3 L138.0 27.3 L104.0 27.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M138.0 51.3 L172.0 51.3 L172.0 27.3 L138.0 27.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.0 51.3 L206.0 51.3 L206.0 27.3 L172.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M206.0 51.3 L240.0 51.3 L240.0 27.3 L206.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M240.0 51.3 L274.0 51.3 L274.0 27.3 L240.0 27.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M87.0 25.3 L89.2 20.8 L84.8 20.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 25.3 L157.2 20.8 L152.8 20.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"80.9\" y=\"6.3\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"12.2\" lengthAdjust=\"spacingAndGlyphs\">left</text><text x=\"146.4\" y=\"6.3\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"17.3\" lengthAdjust=\"spacingAndGlyphs\">right</text><text x=\"16.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"50.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"84.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"118.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"152.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"186.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"220.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"254.7\" y=\"41.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"22.1\" y=\"67.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"197.8\" lengthAdjust=\"spacingAndGlyphs\">window [left, right]: expand right; shrink left to restore validity</text></svg>",
+          "width": 276,
+          "caption": "The right edge only advances; the left edge advances only to restore validity, so no element is visited more than twice.",
+          "alt": "left right | 2 1 5 1 3 2 4 1 | window [left, right]: expand right; shrink left to restore validity"
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nProblem: longest substring without repeating characters in `\"abcabcbb\"`. The window holds a set of its characters. Each row is real output of the traced program (the window is shown after repairs)."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "right",
+            "char",
+            "left",
+            "window",
+            "length",
+            "best"
+          ],
+          "rows": [
+            [
+              "`1`",
+              "`0`",
+              "`a`",
+              "`0`",
+              "`a`",
+              "`1`",
+              "`1`"
+            ],
+            [
+              "`2`",
+              "`1`",
+              "`b`",
+              "`0`",
+              "`ab`",
+              "`2`",
+              "`2`"
+            ],
+            [
+              "`3`",
+              "`2`",
+              "`c`",
+              "`0`",
+              "`abc`",
+              "`3`",
+              "`3`"
+            ],
+            [
+              "`4`",
+              "`3`",
+              "`a`",
+              "`1`",
+              "`bca`",
+              "`3`",
+              "`3`"
+            ],
+            [
+              "`5`",
+              "`4`",
+              "`b`",
+              "`2`",
+              "`cab`",
+              "`3`",
+              "`3`"
+            ],
+            [
+              "`6`",
+              "`5`",
+              "`c`",
+              "`3`",
+              "`abc`",
+              "`3`",
+              "`3`"
+            ],
+            [
+              "`7`",
+              "`6`",
+              "`b`",
+              "`5`",
+              "`cb`",
+              "`2`",
+              "`3`"
+            ],
+            [
+              "`8`",
+              "`7`",
+              "`b`",
+              "`7`",
+              "`b`",
+              "`1`",
+              "`3`"
+            ]
+          ],
+          "caption": "Longest substring without repeating characters: abcabcbb."
+        },
+        {
+          "type": "markdown",
+          "text": "At step 4 the incoming `a` is already in the set, so the left edge advances by one (removing the old `a`) and the window becomes `bca`. At step 7 the incoming `b` conflicts with the `b` at index 4: the left edge removes `a` and then `b` (one `while` iteration each), leaving `c`, and `cb` after the insertion. At step 8 the conflict is with the immediately preceding `b`, so the window reduces to the single `b`. The answer is 3.\n\n### Java code"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.Map;\nimport java.util.Set;\n\npublic class Main {\n    // Longest substring with all distinct characters (set version, with trace).\n    static int lengthOfLongest(String s, boolean trace) {\n        Set<Character> inWindow = new HashSet<>();\n        int left = 0, best = 0, step = 1;\n        for (int right = 0; right < s.length(); right++) {\n            char c = s.charAt(right);\n            while (inWindow.contains(c)) {\n                inWindow.remove(s.charAt(left));\n                left++;\n            }\n            inWindow.add(c);\n            best = Math.max(best, right - left + 1);\n            if (trace) {\n                String win = s.substring(left, right + 1);\n                System.out.printf(\"step %d right=%d char=%s left=%d window=%s len=%d best=%d%n\",\n                        step++, right, c, left, win, right - left + 1, best);\n            }\n        }\n        return best;\n    }\n\n    // Same problem with a last-seen map: the left edge jumps.\n    static int lengthOfLongestJump(String s) {\n        Map<Character, Integer> last = new HashMap<>();\n        int left = 0, best = 0;\n        for (int right = 0; right < s.length(); right++) {\n            char c = s.charAt(right);\n            if (last.containsKey(c)) left = Math.max(left, last.get(c) + 1);\n            last.put(c, right);\n            best = Math.max(best, right - left + 1);\n        }\n        return best;\n    }\n\n    static int lengthOfLongestBrute(String s) {\n        int best = 0;\n        for (int i = 0; i < s.length(); i++) {\n            Set<Character> seen = new HashSet<>();\n            for (int j = i; j < s.length(); j++) {\n                if (!seen.add(s.charAt(j))) break;\n                best = Math.max(best, j - i + 1);\n            }\n        }\n        return best;\n    }\n\n    // Longest substring with at most k distinct characters.\n    static int longestKDistinct(String s, int k) {\n        Map<Character, Integer> count = new HashMap<>();\n        int left = 0, best = 0;\n        for (int right = 0; right < s.length(); right++) {\n            count.merge(s.charAt(right), 1, Integer::sum);\n            while (count.size() > k) {\n                char out = s.charAt(left++);\n                if (count.merge(out, -1, Integer::sum) == 0) count.remove(out);\n            }\n            best = Math.max(best, right - left + 1);\n        }\n        return best;\n    }\n\n    // Longest repeating character replacement.\n    static int characterReplacement(String s, int k) {\n        int[] count = new int[26];\n        int left = 0, maxFreq = 0, best = 0;\n        for (int right = 0; right < s.length(); right++) {\n            maxFreq = Math.max(maxFreq, ++count[s.charAt(right) - 'A']);\n            while (right - left + 1 - maxFreq > k) {\n                count[s.charAt(left++) - 'A']--;\n            }\n            best = Math.max(best, right - left + 1);\n        }\n        return best;\n    }\n\n    // Minimum window substring: smallest window of s containing all chars of t.\n    static String minWindow(String s, String t, boolean trace) {\n        int[] need = new int[128];\n        for (char c : t.toCharArray()) need[c]++;\n        int missing = t.length();\n        int left = 0, bestStart = 0, bestLen = Integer.MAX_VALUE;\n        for (int right = 0; right < s.length(); right++) {\n            if (need[s.charAt(right)]-- > 0) missing--;\n            while (missing == 0) {\n                if (right - left + 1 < bestLen) {\n                    bestLen = right - left + 1;\n                    bestStart = left;\n                    if (trace) System.out.println(\"  valid window [\" + left + \"..\" + right + \"] = \"\n                            + s.substring(left, right + 1));\n                }\n                if (++need[s.charAt(left++)] > 0) missing++;\n            }\n        }\n        return bestLen == Integer.MAX_VALUE ? \"\" : s.substring(bestStart, bestStart + bestLen);\n    }\n\n    // Subarrays with sum <= goal (non-negative array). Exactly g = atMost(g) - atMost(g-1).\n    static int atMost(int[] a, int goal) {\n        if (goal < 0) return 0;\n        int left = 0, sum = 0, count = 0;\n        for (int right = 0; right < a.length; right++) {\n            sum += a[right];\n            while (sum > goal) sum -= a[left++];\n            count += right - left + 1;\n        }\n        return count;\n    }\n\n    public static void main(String[] args) {\n        System.out.println(\"-- longest substring without repeats: abcabcbb --\");\n        System.out.println(\"answer = \" + lengthOfLongest(\"abcabcbb\", true));\n        System.out.println(\"jump   = \" + lengthOfLongestJump(\"abcabcbb\"));\n        System.out.println(\"brute  = \" + lengthOfLongestBrute(\"abcabcbb\"));\n        System.out.println(\"abba -> \" + lengthOfLongest(\"abba\", false) + \", jump \"\n                + lengthOfLongestJump(\"abba\"));\n        System.out.println(\"at most 2 distinct in eceba: \" + longestKDistinct(\"eceba\", 2));\n        System.out.println(\"replacement AABABBA k=1: \" + characterReplacement(\"AABABBA\", 1));\n        System.out.println(\"-- minimum window ADOBECODEBANC / ABC --\");\n        System.out.println(\"answer = \" + minWindow(\"ADOBECODEBANC\", \"ABC\", true));\n        int[] bin = {1, 0, 1, 0, 1};\n        System.out.println(\"exactly 2: \" + (atMost(bin, 2) - atMost(bin, 1)));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n-- longest substring without repeats: abcabcbb --\nstep 1 right=0 char=a left=0 window=a len=1 best=1\nstep 2 right=1 char=b left=0 window=ab len=2 best=2\nstep 3 right=2 char=c left=0 window=abc len=3 best=3\nstep 4 right=3 char=a left=1 window=bca len=3 best=3\nstep 5 right=4 char=b left=2 window=cab len=3 best=3\nstep 6 right=5 char=c left=3 window=abc len=3 best=3\nstep 7 right=6 char=b left=5 window=cb len=2 best=3\nstep 8 right=7 char=b left=7 window=b len=1 best=3\nanswer = 3\njump   = 3\nbrute  = 3\nabba -> 2, jump 2\nat most 2 distinct in eceba: 3\nreplacement AABABBA k=1: 4\n-- minimum window ADOBECODEBANC / ABC --\n  valid window [0..5] = ADOBEC\n  valid window [8..12] = EBANC\n  valid window [9..12] = BANC\nanswer = BANC\nexactly 2: 4",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The `jump` version stores the last index of each character, so `left` advances directly past the previous occurrence. The `Math.max(left, ...)` is essential: in `\"abba\"`, when the final `a` arrives its last index is 0 while `left` is already 2, and moving `left` back to 1 would violate the window invariant. In `minWindow`, the `need` array goes negative for surplus characters, so only a decrement from a positive value reduces `missing`; the condition \"all required characters present\" is thereby tested in O(1). The three \"valid window\" lines illustrate the shortest-window variant: each valid window is recorded and then shrunk. `characterReplacement` never lowers `maxFreq` when the window shrinks; this is deliberate, because the answer can improve only when `maxFreq` actually increases.\n\n### Complexity and mistakes\n\nTime is O(n): `right` advances n times and `left` at most n times in total, although a `while` loop is nested in a `for` loop (amortised analysis). Space is O(min(n, alphabet)) for the set or map. The brute force is O(n²) with an early break, or O(n³) without one.\n\n- **Updating the answer at the wrong point.** For the longest window the update follows the repair; for the shortest it occurs while the window is valid and before shrinking.\n- **Shrinking with** `if` **instead of** `while`**.** A single removal may not restore validity.\n- **Omitting** `Math.max(left, last + 1)` in the jump version (the `\"abba\"` defect).\n- **Retained map entries.** If `count.size()` is used as the distinct count, a key must be deleted when its count reaches 0.\n- **Applying the pattern to negative numbers** under sum conditions. Prefix sums with a hash map are required instead.\n- **Characters outside the table.** `need[128]` covers ASCII only; arbitrary Unicode requires a `HashMap<Character,` `Integer>`.\n\n### Questions to expect\n\n1. \"Longest substring without repeating characters.\" Clue: longest, no repeats. Set or last-seen map.\n2. \"Shortest subarray of positive integers with sum at least s.\" Clue: shortest, positive elements. Expand until valid, then shrink while valid.\n3. \"Longest substring with at most k distinct characters.\" Clue: at most k distinct. Frequency map; shrink while `map.size() > k`. Follow-up: fruit baskets is the case k = 2.\n4. \"Smallest window of s containing all characters of t.\" Clue: shortest, must contain a multiset. Need-array with a `missing` counter.\n5. \"Longest run of equal letters after at most k replacements.\" Clue: window length minus the maximum letter frequency must not exceed k.\n6. \"Longest run of 1s if at most k zeroes may be flipped.\" Same shape: window with at most k zeroes.\n7. \"Count subarrays with exactly k distinct values.\" Clue: exactly k. `atMost(k) - atMost(k - 1)`.\n8. \"Do this on a stream.\" The window state consists of counters, so elements are processed one at a time with O(window) memory."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is the window algorithm O(n) when a while loop is nested in a for loop? The pointer moves are counted rather than the loops. `right` is incremented once per outer iteration, n times in total. `left` is incremented in the inner loop, but it never passes `right`, so it moves at most n times over the whole run. The total is at most 2n pointer moves, hence O(n) amortised."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`3`",
+              "Longest Substring Without Repeating Characters",
+              "Medium",
+              "Set or last-seen map; shrink on duplicate"
+            ],
+            [
+              "`209`",
+              "Minimum Size Subarray Sum",
+              "Medium",
+              "Shortest window with sum at least target (positives)"
+            ],
+            [
+              "`904`",
+              "Fruit Into Baskets",
+              "Medium",
+              "Longest window with at most two distinct values"
+            ],
+            [
+              "`424`",
+              "Longest Repeating Character Replacement",
+              "Medium",
+              "Window length minus max frequency at most k"
+            ],
+            [
+              "`1004`",
+              "Max Consecutive Ones III",
+              "Medium",
+              "Longest window with at most k zeroes"
+            ],
+            [
+              "`930`",
+              "Binary Subarrays With Sum",
+              "Medium",
+              "atMost(goal) minus atMost(goal - 1)"
+            ],
+            [
+              "`1838`",
+              "Frequency of the Most Frequent Element",
+              "Medium",
+              "Sort, window where cost to raise all to max is within k"
+            ],
+            [
+              "`1658`",
+              "Minimum Operations to Reduce X to Zero",
+              "Medium",
+              "Longest middle window with sum total - x"
+            ],
+            [
+              "`76`",
+              "Minimum Window Substring",
+              "Hard",
+              "Need-array with a missing counter"
+            ],
+            [
+              "`992`",
+              "Subarrays with K Different Integers",
+              "Hard",
+              "atMost(k) minus atMost(k - 1)"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Variable-size sliding window\n\n- Right edge expands every step; left edge moves forward only to repair the window. Total O(n).\n- Longest window: record the answer after repairing. Shortest window: record while valid, then shrink.\n- The rule must be monotone; for sums, this means non-negative values.\n- \"Exactly k\" is `atMost(k) - atMost(k - 1)`.\n- Use `while` (not `if`) for shrinking, and `long` for sums that can get large."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-5",
+      "type": "concept",
+      "title": "Hash Map and Frequency Counting",
+      "subtopicId": "2-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Many array and string problems require deciding whether an element occurred earlier or how many times it occurred. Scanning the preceding elements costs O(n) per query and O(n²) overall. A **hash table** answers both questions in O(1) on average, so a single pass suffices.\n\nIn Java the available structures are `HashMap<K, V>` (key to value), `HashSet<E>` (membership only), and `int[26]` or `int[128]` arrays when the keys are letters. The choice among them is part of the solution.\n\n### The idea\n\nThe pattern has four common forms:\n\n- **Storing earlier elements to locate a partner.** Two sum: for each `x`, search for `target - x` among earlier elements.\n- **Counting frequencies and comparing.** Anagrams, top k frequent, majority element. Two strings are anagrams exactly when their letter counts are equal.\n- **Canonical form as key.** Group anagrams: the sorted letters of each word (or the 26 counts) serve as the map key. The same technique groups shifted strings and isomorphic patterns.\n- **Set membership and run-start tests.** Longest consecutive sequence: counting begins only at a number whose predecessor is absent.\n\n**How to recognise it.** \"Find two elements that...\", \"first non-repeating\", \"duplicate\", \"anagram\", \"group by\", \"most frequent\", \"consecutive numbers in any order\", and any statement that excludes sorting or requires better than O(n log n)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Map<Integer, Integer> freq = new HashMap<>();\nfor (int x : nums) freq.merge(x, 1, Integer::sum);       // count\n\nMap<String, List<String>> groups = new HashMap<>();\ngroups.computeIfAbsent(key, k -> new ArrayList<>()).add(word);   // group\n\nSet<Integer> seen = new HashSet<>();\nif (!seen.add(x)) { /* x was already present */ }        // duplicate test",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`HashMap` provides O(1) average `get` and `put`. In the worst case a bucket with many collisions is converted (since Java 8) into a balanced tree, bounding the cost of adversarial keys by O(log n) per operation. A `TreeMap` costs O(log n) per operation and keeps keys sorted. For lowercase-letter keys an `int[26]` is faster and simpler than any map.\n\n### Dry run\n\nProblem: longest consecutive sequence in `[100, 4, 200, 1, 3, 2]` in O(n) without sorting. All numbers are inserted into a set. For each number `x`: if `x - 1` is in the set, `x` is inside a run and is skipped; otherwise `x` starts a run, which is extended while `cur + 1` is present."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "x",
+            "is x-1 in the set?",
+            "action",
+            "best"
+          ],
+          "rows": [
+            [
+              "`100`",
+              "no",
+              "start; 101 absent; run length 1",
+              "1"
+            ],
+            [
+              "`4`",
+              "yes (3)",
+              "not a start, skip",
+              "1"
+            ],
+            [
+              "`200`",
+              "no",
+              "start; 201 absent; run length 1",
+              "1"
+            ],
+            [
+              "`1`",
+              "no",
+              "start; walk 2, 3, 4; run 1..4 length 4",
+              "4"
+            ],
+            [
+              "`3`",
+              "yes (2)",
+              "skip",
+              "4"
+            ],
+            [
+              "`2`",
+              "yes (1)",
+              "skip",
+              "4"
+            ]
+          ],
+          "caption": "Longest consecutive sequence."
+        },
+        {
+          "type": "markdown",
+          "text": "The inner `while` loop executes only from run starts, so each number is traversed at most once in total: O(n) despite the nested loop. For the two sum trace, with `[2, 11, 7, 15, 3]` and target 9: at `i = 0` the map is empty and `2 -> 0` is stored; at `i = 1`, `need = -2` is absent and `11 -> 1` is stored; at `i = 2`, `x = 7` and `need = 2` is present at index 0, so the result is `[0, 2]`.\n\n### Java code"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Set;\n\npublic class Main {\n    static int[] twoSum(int[] nums, int target, boolean trace) {\n        Map<Integer, Integer> indexOf = new HashMap<>();   // value -> index\n        for (int i = 0; i < nums.length; i++) {\n            int need = target - nums[i];\n            if (trace) System.out.printf(\"i=%d x=%d need=%d map=%s%n\", i, nums[i], need, indexOf);\n            Integer j = indexOf.get(need);\n            if (j != null) return new int[]{j, i};\n            indexOf.put(nums[i], i);\n        }\n        return new int[]{-1, -1};\n    }\n\n    static boolean isAnagram(String a, String b) {\n        if (a.length() != b.length()) return false;\n        int[] count = new int[26];\n        for (int i = 0; i < a.length(); i++) {\n            count[a.charAt(i) - 'a']++;\n            count[b.charAt(i) - 'a']--;\n        }\n        for (int c : count) if (c != 0) return false;\n        return true;\n    }\n\n    static List<List<String>> groupAnagrams(String[] words) {\n        Map<String, List<String>> groups = new HashMap<>();\n        for (String w : words) {\n            char[] cs = w.toCharArray();\n            Arrays.sort(cs);\n            groups.computeIfAbsent(new String(cs), k -> new ArrayList<>()).add(w);\n        }\n        return new ArrayList<>(groups.values());\n    }\n\n    // Top k frequent by bucket sort: bucket[f] holds the values that occur f times.\n    static List<Integer> topK(int[] nums, int k) {\n        Map<Integer, Integer> freq = new HashMap<>();\n        for (int x : nums) freq.merge(x, 1, Integer::sum);\n        List<List<Integer>> bucket = new ArrayList<>();\n        for (int i = 0; i <= nums.length; i++) bucket.add(new ArrayList<>());\n        for (var e : freq.entrySet()) bucket.get(e.getValue()).add(e.getKey());\n        List<Integer> out = new ArrayList<>();\n        for (int f = nums.length; f >= 1 && out.size() < k; f--) {\n            for (int v : bucket.get(f)) {\n                if (out.size() < k) out.add(v);\n            }\n        }\n        return out;\n    }\n\n    static int longestConsecutive(int[] nums, boolean trace) {\n        Set<Integer> set = new HashSet<>();\n        for (int x : nums) set.add(x);\n        int best = 0;\n        for (int x : nums) {\n            if (set.contains(x - 1)) {\n                if (trace) {\n                    System.out.println(\"x=\" + x + \": \" + (x - 1) + \" exists, not a start, skip\");\n                }\n                continue;\n            }\n            int cur = x, len = 1;\n            while (set.contains(cur + 1)) { cur++; len++; }\n            best = Math.max(best, len);\n            if (trace) {\n                System.out.println(\"x=\" + x + \": start, run \" + x + \"..\" + cur\n                        + \" length \" + len + \", best=\" + best);\n            }\n        }\n        return best;\n    }\n\n    static boolean hasDuplicate(int[] nums) {\n        Set<Integer> seen = new HashSet<>();\n        for (int x : nums) if (!seen.add(x)) return true;\n        return false;\n    }\n\n    public static void main(String[] args) {\n        System.out.println(\"-- two sum: [2, 11, 7, 15, 3], target 9 --\");\n        System.out.println(Arrays.toString(twoSum(new int[]{2, 11, 7, 15, 3}, 9, true)));\n        System.out.println(isAnagram(\"listen\", \"silent\") + \" \" + isAnagram(\"rat\", \"car\"));\n        System.out.println(groupAnagrams(new String[]{\"eat\", \"tea\", \"tan\", \"ate\", \"nat\", \"bat\"}));\n        System.out.println(\"top2: \" + topK(new int[]{1, 1, 1, 2, 2, 3}, 2));\n        System.out.println(\"-- longest consecutive: [100, 4, 200, 1, 3, 2] --\");\n        System.out.println(\"answer = \" + longestConsecutive(new int[]{100, 4, 200, 1, 3, 2}, true));\n        System.out.println(\"duplicate? \" + hasDuplicate(new int[]{1, 2, 3, 1}));\n\n        Integer a = 127, b = 127, c = 1000, d = 1000;\n        System.out.println(\"127 == 127 : \" + (a == b) + \", 1000 == 1000 : \" + (c == d)\n                + \", equals : \" + c.equals(d));\n        Map<Integer, Integer> m = new HashMap<>();\n        m.put(1000, 5);\n        m.put(1000, 7);\n        System.out.println(\"map = \" + m + \" size \" + m.size());\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n-- two sum: [2, 11, 7, 15, 3], target 9 --\ni=0 x=2 need=7 map={}\ni=1 x=11 need=-2 map={2=0}\ni=2 x=7 need=2 map={2=0, 11=1}\n[0, 2]\ntrue false\n[[eat, tea, ate], [bat], [tan, nat]]\ntop2: [1, 2]\n-- longest consecutive: [100, 4, 200, 1, 3, 2] --\nx=100: start, run 100..100 length 1, best=1\nx=4: 3 exists, not a start, skip\nx=200: start, run 200..200 length 1, best=1\nx=1: start, run 1..4 length 4, best=4\nx=3: 2 exists, not a start, skip\nx=2: 1 exists, not a start, skip\nanswer = 4\nduplicate? true\n127 == 127 : true, 1000 == 1000 : false, equals : true\nmap = {1000=7} size 1",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "The order of groups in `groupAnagrams` follows `HashMap` iteration order, so another JDK may print them in a different order; the groups themselves are the same.\n\n**What to notice.** `twoSum` searches for the partner **before** inserting the current element, so an element is never paired with itself. `merge(x, 1, Integer::sum)` is the idiomatic counting operation. `topK` uses bucket sort: no value occurs more than `n` times, so `bucket[f]` lists the values with frequency `f`, and reading the buckets from high to low yields the top k in O(n) without a heap. In the last lines, `Integer` objects between -128 and 127 are cached, so `==` succeeds for 127 but fails for 1000; boxed values must be compared with `equals`. `HashMap` itself uses `equals`, so the second `put(1000, 7)` replaces the first.\n\n### Complexity and mistakes\n\nEach pass is O(n) time on average with O(n) space for the table. Sorting-based alternatives cost O(n log n) time but may need only O(1) extra space. The anagram check is O(n) time and O(1) space (26 counters). Group anagrams with sorted keys costs O(n × L log L) for n words of length L; counting keys cost O(n × L).\n\n- **Comparing** `Integer` **with** `==`**.** `equals` or unboxing to `int` is required.\n- **Pairing an element with itself.** The lookup must precede the insertion (two sum with `target = 2x`).\n- **Mutable or array keys.** An `int[]` used as a `HashMap` key is hashed by identity, so arrays with equal contents are distinct keys. A `String`, `List<Integer>` or `Arrays.toString` form must be used instead.\n- `map.get(k) + 1` **on a missing key** throws `NullPointerException` (unboxing of null); `getOrDefault` or `merge` avoids this.\n- **Omitting the anagram length check.** Strings of different lengths are never anagrams; testing this first avoids unnecessary work.\n- **Invalid** `char` **arithmetic.** `count[c - 'a']` is valid only for lowercase `a` to `z`; mixed input requires an array of 128 or 256 slots.\n\n### Questions to expect\n\n1. \"Two sum on an unsorted array.\" Clue: a partner value is required. One-pass map from value to index.\n2. \"Are two strings anagrams?\" Clue: same letters, same counts. Count array: increment for one string, decrement for the other.\n3. \"Group the words that are anagrams of each other.\" Clue: group by canonical form. The sorted word (or a 26-count string) as key.\n4. \"Return the k most frequent elements, better than O(n log n).\" Clue: top k with a target better than sorting. Bucket sort by frequency (a min-heap of size k gives O(n log k) and is treated in the chapter on heaps).\n5. \"Longest consecutive sequence in O(n).\" Clue: \"consecutive in any order\" with an O(n) bound. Set with a run-start test.\n6. \"First non-repeating character.\" Clue: count, then scan. Two passes over a count array.\n7. \"Does the array contain duplicates? Within distance k?\" Set for the first, sliding window of a set for the second.\n8. \"Count pairs `(i, j, k, l)` from four arrays summing to zero.\" Clue: split into two halves. Map the pair sums of the first two arrays and look up the negated pair sums of the other two."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is HashMap lookup O(1), and under what conditions does it cease to be O(1)? The key's `hashCode()` selects a bucket in an array, so a lookup addresses it directly; with a well-distributed hash and the default load factor of 0.75 the buckets remain short. Performance degrades when many keys share a bucket: a long chain is scanned (since Java 8 it may be held in a tree and searched in O(log n)). Hashing a long `String` costs time proportional to its length. Resizing makes an individual `put` occasionally O(n), but the amortised cost remains O(1)."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`1`",
+              "Two Sum",
+              "Easy",
+              "Map from value to index, look up target minus x"
+            ],
+            [
+              "`217`",
+              "Contains Duplicate",
+              "Easy",
+              "HashSet add returns false on a repeat"
+            ],
+            [
+              "`242`",
+              "Valid Anagram",
+              "Easy",
+              "Count array incremented and decremented"
+            ],
+            [
+              "`383`",
+              "Ransom Note",
+              "Easy",
+              "Count magazine letters, spend them for the note"
+            ],
+            [
+              "`205`",
+              "Isomorphic Strings",
+              "Easy",
+              "Two-way character mapping"
+            ],
+            [
+              "`387`",
+              "First Unique Character in a String",
+              "Easy",
+              "Count pass, then first index with count 1"
+            ],
+            [
+              "`290`",
+              "Word Pattern",
+              "Easy",
+              "Two-way map between pattern letters and words"
+            ],
+            [
+              "`49`",
+              "Group Anagrams",
+              "Medium",
+              "Sorted word or count signature as the key"
+            ],
+            [
+              "`347`",
+              "Top K Frequent Elements",
+              "Medium",
+              "Frequency map, then buckets indexed by count"
+            ],
+            [
+              "`451`",
+              "Sort Characters By Frequency",
+              "Medium",
+              "Count, then buckets or a sorted list of entries"
+            ],
+            [
+              "`454`",
+              "4Sum II",
+              "Medium",
+              "Map of pair sums from two arrays, look up the negation"
+            ],
+            [
+              "`36`",
+              "Valid Sudoku",
+              "Medium",
+              "One set per row, column and box"
+            ],
+            [
+              "`128`",
+              "Longest Consecutive Sequence",
+              "Medium",
+              "Set; count only from numbers with no predecessor"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Hash map and frequency counting\n\n- A hash table answers membership and count queries in O(1) average time, reducing many O(n²) scans to O(n).\n- Use `int[26]` for lowercase letters, `HashSet` for membership, `HashMap` with `merge` or `computeIfAbsent` for counts and groups.\n- The lookup precedes the insertion; canonical forms serve as keys; arrays and mutable objects must not be used as keys.\n- Boxed integers are compared with `equals`; because of the `Integer` cache, `==` is reliable only for -128 to 127."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-6",
+      "type": "concept",
+      "title": "Binary search on sorted arrays",
+      "subtopicId": "2-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Binary search locates a key in a sorted sequence by repeatedly comparing it with the middle element and discarding the half that cannot contain it. Each comparison halves the search interval, so a sorted array of 10^9 elements requires at most about 30 comparisons, whereas a linear scan requires up to 10^9.\n\nThe principle is simple, but implementations are error-prone: off-by-one errors, non-terminating loops and integer overflow in the midpoint computation are well-documented defects, the last of which was present in the JDK's own `Arrays.binarySearch` for years. This chapter fixes a single loop template with a clear invariant and applies it to lower bound, upper bound, first and last position, rotated arrays and peak finding. The next chapter generalises the same template to problems without an array.\n\n### The idea\n\nBinary search requires one precondition: a predicate whose value changes **exactly once** along the search range. In a sorted array, the predicate `a[i] >= target` evaluates to `false false false true true true`. The boundary between the last `false` and the first `true` is the result. Each iteration evaluates the predicate at the midpoint and discards the half that cannot contain the boundary.\n\nRecognition clues in a problem statement:\n\n- \"sorted array\" (or \"sorted in ascending order\", or \"rotated sorted array\")\n- \"find the first / last / leftmost / rightmost position of ...\"\n- a required complexity of O(log n), or \"better than linear\"\n- \"the array is large (10^5 to 10^9 elements)\" and linear scan is too slow\n- \"find a peak\" or \"find the minimum\" in an array that is only partially ordered\n\nThe template below is the reference form. The search range is the **half-open interval** `[lo, hi)`: `lo` is a candidate result and `hi` is one past the last candidate. The loop executes while the range is non-empty, and the range strictly decreases in every iteration."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// returns the first index i in [0, n] with isTrue(i); n means \"none\"\nint lo = 0, hi = n;\nwhile (lo < hi) {\n    int mid = lo + (hi - lo) / 2;      // never (lo + hi) / 2: it can overflow\n    if (isTrue(mid)) hi = mid;          // mid might be the answer: keep it\n    else lo = mid + 1;                  // mid is not the answer: drop it\n}\nreturn lo;                              // lo == hi: the boundary",
+          "title": "Template: first index where the condition is true"
+        },
+        {
+          "type": "markdown",
+          "text": "Correctness argument. The invariant is: every index below `lo` has predicate value `false`, and every index at or above `hi` has predicate value `true`. When `isTrue(mid)` holds, `hi = mid` preserves the invariant, since `mid` itself may be the first true index. When it does not hold, `lo = mid + 1` preserves it, since `mid` is certainly not the result. Because `lo <=` `mid < hi`, both updates strictly reduce `hi - lo`, so the loop terminates with `lo == hi`, the boundary. If every value is `false`, the boundary is `n`; hence the result range is `[0, n]` rather than `[0, n-1]`.\n\nDefining `isTrue(i)` as `a[i] >= target` yields the **lower bound**: the first position at which `target` can be inserted without violating the order. Defining it as `a[i] > target` yields the **upper bound**: the position immediately after the last occurrence of `target`. Every variant in this chapter reduces to one of these two with a different predicate."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`(lo + hi) / 2` overflows once `lo + hi` exceeds `Integer.MAX_VALUE` (about 2.1 billion). With `lo = 2,000,000,000` and `hi = 2,100,000,000` the sum wraps to a negative number and `mid` becomes negative. The correct form is `lo + (hi -` `lo) / 2`. The defect was reported in the JDK's binary search implementation in 2006 and is a standard interview topic."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nInput: `a = [1, 2, 4, 4, 4, 7, 9]` (three occurrences of 4) and `target = 4`. The objective is the lower bound, i.e. the index of the **first** 4. Here `n = 7`, so the initial state is `lo = 0`, `hi = 7`. The trace was printed by an instrumented version of the program in the next section."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "lo",
+            "hi",
+            "mid",
+            "a\\[mid\\]",
+            "action"
+          ],
+          "rows": [
+            [
+              "1",
+              "`0`",
+              "`7`",
+              "`3`",
+              "`4`",
+              "4 \\>= 4 is true, so hi = mid = 3"
+            ],
+            [
+              "2",
+              "`0`",
+              "`3`",
+              "`1`",
+              "`2`",
+              "2 \\>= 4 is false, so lo = mid + 1 = 2"
+            ],
+            [
+              "3",
+              "`2`",
+              "`3`",
+              "`2`",
+              "`4`",
+              "4 \\>= 4 is true, so hi = mid = 2"
+            ],
+            [
+              "end",
+              "`2`",
+              "`2`",
+              "`-`",
+              "`-`",
+              "lo == hi: answer is index 2"
+            ]
+          ],
+          "caption": "Lower bound of 4 in [1, 2, 4, 4, 4, 7, 9]."
+        },
+        {
+          "type": "markdown",
+          "text": "The table describes a shrinking interval. After step 1 the result lies in `[0, 3]`, because the 4 at index 3 may be the first one and is therefore retained. After step 2, index 1 holds a 2, so the result lies in `[2, 3]`. After step 3 the interval is `[2,` `2]` and the loop terminates. Index 2 is the first 4. Terminating at the first match would have returned index 3, which is a valid match but not the first occurrence; this is the distinction between finding a match and finding a boundary.\n\nA second trace covers the rotated-array search on `[4, 5, 6, 7, 0, 1, 2]` with `target = 0`. A **rotated sorted array** is a sorted array whose prefix has been moved to the end. At every step at least one of the two halves delimited by `mid` is sorted, and a single comparison identifies which one."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "lo",
+            "hi",
+            "mid",
+            "a\\[mid\\]",
+            "reasoning"
+          ],
+          "rows": [
+            [
+              "1",
+              "`0`",
+              "`6`",
+              "`3`",
+              "`7`",
+              "a\\[lo\\]=4 \\<= 7: left half \\[4..7\\] is sorted and 0 is not in it, so lo = 4"
+            ],
+            [
+              "2",
+              "`4`",
+              "`6`",
+              "`5`",
+              "`1`",
+              "a\\[lo\\]=0 \\<= 1: left half \\[0..1\\] sorted and 0 is in it, so hi = mid - 1 = 4"
+            ],
+            [
+              "3",
+              "`4`",
+              "`4`",
+              "`4`",
+              "`0`",
+              "a\\[mid\\] == target: return 4"
+            ]
+          ],
+          "caption": "Search for 0 in the rotated array [4, 5, 6, 7, 0, 1, 2] (closed range, lo <= hi)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Java code\n\nAll variants below share one skeleton. `firstLast` finds the first and last position, `searchRotated` and `findMin` handle rotation, `findPeak` requires no global order, and `searchMatrix` treats a row-major sorted matrix as a single sequence."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\n\npublic class Main {\n    // first index i with a[i] >= target (a.length if none)\n    static int lowerBound(int[] a, int target) {\n        int lo = 0, hi = a.length;\n        while (lo < hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (a[mid] >= target) hi = mid;\n            else lo = mid + 1;\n        }\n        return lo;\n    }\n\n    // first index i with a[i] > target\n    static int upperBound(int[] a, int target) {\n        int lo = 0, hi = a.length;\n        while (lo < hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (a[mid] > target) hi = mid;\n            else lo = mid + 1;\n        }\n        return lo;\n    }\n\n    static int[] firstLast(int[] a, int target) {\n        int first = lowerBound(a, target);\n        if (first == a.length || a[first] != target) return new int[] {-1, -1};\n        return new int[] {first, upperBound(a, target) - 1};\n    }\n\n    static int searchRotated(int[] a, int target) {\n        int lo = 0, hi = a.length - 1;\n        while (lo <= hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (a[mid] == target) return mid;\n            if (a[lo] <= a[mid]) {                    // left half sorted\n                if (a[lo] <= target && target < a[mid]) hi = mid - 1;\n                else lo = mid + 1;\n            } else {                                  // right half sorted\n                if (a[mid] < target && target <= a[hi]) lo = mid + 1;\n                else hi = mid - 1;\n            }\n        }\n        return -1;\n    }\n\n    static int findMin(int[] a) {\n        int lo = 0, hi = a.length - 1;\n        while (lo < hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (a[mid] > a[hi]) lo = mid + 1;\n            else hi = mid;\n        }\n        return a[lo];\n    }\n\n    static int findPeak(int[] a) {\n        int lo = 0, hi = a.length - 1;\n        while (lo < hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (a[mid] < a[mid + 1]) lo = mid + 1;\n            else hi = mid;\n        }\n        return lo;\n    }\n\n    static boolean searchMatrix(int[][] m, int target) {\n        int rows = m.length, cols = m[0].length;\n        int lo = 0, hi = rows * cols - 1;\n        while (lo <= hi) {\n            int mid = lo + (hi - lo) / 2;\n            int v = m[mid / cols][mid % cols];\n            if (v == target) return true;\n            if (v < target) lo = mid + 1;\n            else hi = mid - 1;\n        }\n        return false;\n    }\n\n    public static void main(String[] args) {\n        int[] a = {1, 2, 4, 4, 4, 7, 9};\n        System.out.println(\"lowerBound(4) = \" + lowerBound(a, 4));\n        System.out.println(\"upperBound(4) = \" + upperBound(a, 4));\n        System.out.println(\"lowerBound(5) = \" + lowerBound(a, 5));\n        System.out.println(\"lowerBound(10) = \" + lowerBound(a, 10));\n        System.out.println(\"firstLast(4) = \" + Arrays.toString(firstLast(a, 4)));\n        System.out.println(\"firstLast(5) = \" + Arrays.toString(firstLast(a, 5)));\n        int[] r = {4, 5, 6, 7, 0, 1, 2};\n        System.out.println(\"rotated search 0 -> \" + searchRotated(r, 0));\n        System.out.println(\"rotated search 3 -> \" + searchRotated(r, 3));\n        System.out.println(\"rotated min -> \" + findMin(r));\n        System.out.println(\"peak index -> \" + findPeak(new int[] {1, 3, 5, 4, 2}));\n        int[][] m = {{1, 3, 5, 7}, {10, 11, 16, 20}, {23, 30, 34, 60}};\n        System.out.println(\"matrix has 16 -> \" + searchMatrix(m, 16));\n        System.out.println(\"matrix has 13 -> \" + searchMatrix(m, 13));\n        System.out.println(\"Arrays.binarySearch(a, 4) = \" + Arrays.binarySearch(a, 4));\n        System.out.println(\"Arrays.binarySearch(a, 5) = \" + Arrays.binarySearch(a, 5));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nlowerBound(4) = 2\nupperBound(4) = 5\nlowerBound(5) = 5\nlowerBound(10) = 7\nfirstLast(4) = [2, 4]\nfirstLast(5) = [-1, -1]\nrotated search 0 -> 4\nrotated search 3 -> -1\nrotated min -> 0\npeak index -> 2\nmatrix has 16 -> true\nmatrix has 13 -> false\nArrays.binarySearch(a, 4) = 3\nArrays.binarySearch(a, 5) = -6",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `lowerBound` and `upperBound` differ in one operator (`>=` versus `>`). `firstLast` uses both; the last position is `upperBound - 1`. The test `first == a.length || a[first] != target` is required, because the lower bound of an absent value designates an unrelated element.\n- `searchRotated` uses the **closed** range `[lo, hi]` with `while (lo <= hi)` and the updates `mid - 1` and `mid + 1`. This second template is appropriate when a match can be recognised directly (`a[mid] == target`) and returned immediately; the half-open template is appropriate for boundary searches.\n- `findMin` compares `a[mid]` with `a[hi]`, not with `a[lo]`. If `a[mid] > a[hi]` the minimum is strictly to the right of `mid`; otherwise `mid` may be the minimum, so `hi = mid`.\n- `findPeak` compares `a[mid]` with its neighbour `a[mid + 1]`; the local slope determines which side must contain a peak. Because `lo < hi` inside the loop, `mid + 1` is always a valid index.\n- `Arrays.binarySearch(a, 4)` returned 3: in the presence of duplicates it may return **any** matching index. For an absent key it returns `-(insertion point) - 1`, so `-6` denotes insertion point 5, the value that `lowerBound(a, 5)` printed.\n\n### Complexity and mistakes\n\n**Time:** each iteration halves the range, so the loop executes at most about log2(n) + 1 times: O(log n); for n = 10^9 this is about 30 iterations. **Space:** O(1) for the iterative version; a recursive formulation uses O(log n) stack space. If the input is unsorted, sorting costs O(n log n), so binary search is justified only when several queries are performed.\n\nCommon defects:\n\n- **Mixing templates.** Combining `while (lo < hi)` with `hi = n - 1`, or `while (lo <= hi)` with `hi = mid`, causes non-termination or skipped candidates. Initial `hi`, loop condition and update rules must be consistent with a single template.\n- **Non-termination with** `lo = mid`**.** An update `lo = mid` requires the upper midpoint `lo + (hi - lo + 1) / 2`; otherwise `mid == lo` on a two-element range and the interval does not shrink.\n- **Overflow** in `mid`, as shown above. Subtraction-based comparisons such as `target - a[mid]` can also overflow; `Integer.compare` or relational operators avoid this.\n- **Unhandled absence.** After a lower bound, `lo` can equal `n`, and evaluating `a[lo]` then throws `ArrayIndexOutOfBoundsException`.\n- **Duplicates in a rotated array.** With duplicates such as `[1, 0, 1, 1, 1]`, the test `a[lo] <= a[mid]` no longer establishes that the left half is sorted. The remedy is `lo++` (and `hi--`) when `a[lo] == a[mid] == a[hi]`, which degrades the worst case to O(n); this is the additional difficulty of the \"II\" variant.\n\n### Questions to expect\n\n1. **\"Find the first and last position of a target in a sorted array.\"** Clue: sorted, duplicates, O(log n). Two boundary searches: lower bound and upper bound minus one.\n2. **\"Search a target in a rotated sorted array.\"** Clue: sorted but rotated. Identify the sorted half, then test whether the target lies inside it.\n3. **\"Find the minimum in a rotated sorted array.\"** Compare `a[mid]` with `a[hi]`. Follow-up: what changes if there are duplicates? (Worst case O(n).)\n4. **\"Find a peak element; neighbours are never equal.\"** Clue: no sorted order but a local property. Follow the ascending side.\n5. **\"Search a matrix where each row is sorted and each row starts after the previous one ends.\"** Flatten the index: `row = mid / cols`, `col = mid % cols`. If rows and columns are sorted but rows are not chained, use the staircase walk from the top-right corner in O(rows + cols).\n6. **\"Integer square root without** `Math.sqrt`**.\"** Binary search on `x` for the largest `r` with `r * r <= x`; use `long` for the product.\n7. **\"Median of two sorted arrays in O(log(min(m, n))).\"** Binary search on the partition point of the shorter array. This is the hardest classic of the pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Interviewer: \"Can you search this sorted array faster than O(n)?\" Candidate: \"Binary search, O(log n) time and O(1) space. The search uses a half-open range `[lo, hi)`, computes `mid` as `lo + (hi - lo) / 2` to avoid overflow, and shrinks with `hi = mid` or `lo = mid + 1`.\" Interviewer: \"How is the first occurrence found when duplicates exist?\" Candidate: \"The task becomes a boundary search rather than a match search: the lower bound with `a[mid] >= target`, followed by verification that `a[lo] == target`.\" Interviewer: \"And for a rotated array?\" Candidate: \"At each step one half is sorted, identified by `a[lo] <= a[mid]`. If the target lies within that sorted half the other half is discarded, otherwise the sorted half is discarded. The complexity remains O(log n) without duplicates.\""
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`704`",
+              "Binary Search",
+              "Easy",
+              "Plain template; return the index or -1"
+            ],
+            [
+              "`35`",
+              "Search Insert Position",
+              "Easy",
+              "Exactly the lower bound"
+            ],
+            [
+              "`69`",
+              "Sqrt(x)",
+              "Easy",
+              "Largest r with r\\*r \\<= x; use long"
+            ],
+            [
+              "`34`",
+              "Find First and Last Position of Element in Sorted Array",
+              "Medium",
+              "Lower bound and upper bound minus one"
+            ],
+            [
+              "`74`",
+              "Search a 2D Matrix",
+              "Medium",
+              "Treat the matrix as one sorted array of rows\\*cols items"
+            ],
+            [
+              "`153`",
+              "Find Minimum in Rotated Sorted Array",
+              "Medium",
+              "Compare a\\[mid\\] with a\\[hi\\]"
+            ],
+            [
+              "`33`",
+              "Search in Rotated Sorted Array",
+              "Medium",
+              "Find the sorted half, then test the target against it"
+            ],
+            [
+              "`162`",
+              "Find Peak Element",
+              "Medium",
+              "Move towards the larger neighbour"
+            ],
+            [
+              "`81`",
+              "Search in Rotated Sorted Array II",
+              "Medium",
+              "As 33, but shrink both ends when a\\[lo\\] == a\\[mid\\] == a\\[hi\\]"
+            ],
+            [
+              "`4`",
+              "Median of Two Sorted Arrays",
+              "Hard",
+              "Binary search the partition of the shorter array"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Binary search finds the boundary of a monotone predicate; sortedness of an array is the most common way to obtain one.\n- Reference template: half-open `[lo, hi)`, `mid = lo + (hi - lo) / 2`, `hi = mid` when true, `lo = mid + 1` when false.\n- Lower bound is `a[mid] >= target`, upper bound is `a[mid] > target`; first and last position use both.\n- For rotated arrays decide which half is sorted; for peaks follow the slope; with duplicates the worst case degrades to O(n).\n- `Arrays.binarySearch` returns any match, or `-(insertion point) - 1`, so it does not give the first occurrence."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-7",
+      "type": "concept",
+      "title": "Binary search on the answer",
+      "subtopicId": "2-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Some problems provide no sorted array. Consider: \"What is the smallest eating speed that allows all banana piles to be finished within h hours?\" The candidate answers form a numeric range (1 to the largest pile), and testing each speed from 1 upward costs O(max pile) feasibility checks of O(n) each. With piles up to 10^9 this is infeasible.\n\nThe technique is to apply binary search to the **answer space** instead of the input. The result is a value in a known range, and for each candidate a feasibility question is answered. If that question is monotone (true for a candidate implies true for every larger candidate), the template of the previous chapter finds the smallest feasible candidate with O(log R) evaluations, where R is the size of the range.\n\n### The idea\n\nDefine a **predicate** `ok(x)`: \"the goal is achievable with parameter `x`\". The technique requires `ok` to be **monotonic**: `false false false true true true` over the candidate range (or its mirror image for maximisation). The sequence is never materialised; `ok` is evaluated only at the probed midpoints, and each evaluation is typically a single greedy O(n) pass.\n\nRecognition clues:\n\n- \"minimise the maximum\" or \"maximise the minimum\" (largest sum, longest wait, smallest capacity, largest minimum distance)\n- \"find the smallest / largest X such that ...\", where X is a speed, capacity, time, distance, divisor or number of days\n- Verifying a given X is simple (a greedy pass), whereas computing the optimum directly is difficult\n- The answer range is large (up to 10^9 or 10^18) while the input size is moderate\n- Increasing capacity, time or speed never reduces feasibility (monotonicity)"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 462.9 79.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M300.3 50.3 L302.5 45.8 L298.1 45.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 36.3 L47.9 36.3 L47.9 14.3 L2.0 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M47.9 36.3 L93.8 36.3 L93.8 14.3 L47.9 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M93.8 36.3 L139.7 36.3 L139.7 14.3 L93.8 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M139.7 36.3 L185.6 36.3 L185.6 14.3 L139.7 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M185.6 36.3 L231.4 36.3 L231.4 14.3 L185.6 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M231.4 36.3 L277.3 36.3 L277.3 14.3 L231.4 14.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M277.3 36.3 L323.2 36.3 L323.2 14.3 L277.3 14.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M323.2 36.3 L369.1 36.3 L369.1 14.3 L323.2 14.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M369.1 36.3 L415.0 36.3 L415.0 14.3 L369.1 14.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M415.0 36.3 L460.9 36.3 L460.9 14.3 L415.0 14.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"113.1\" y=\"6.3\" font-size=\"7.0\" fill=\"#efa39f\" font-weight=\"700\" textLength=\"53.2\" lengthAdjust=\"spacingAndGlyphs\">predicate false</text><text x=\"343.7\" y=\"6.3\" font-size=\"7.0\" fill=\"#abe3c4\" font-weight=\"700\" textLength=\"50.9\" lengthAdjust=\"spacingAndGlyphs\">predicate true</text><text x=\"22.7\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"68.6\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"114.5\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"160.4\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"206.2\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"252.1\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"298.0\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">7</text><text x=\"343.9\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">8</text><text x=\"389.8\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">9</text><text x=\"433.4\" y=\"27.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"9.0\" lengthAdjust=\"spacingAndGlyphs\">10</text><text x=\"256.2\" y=\"62.3\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"88.1\" lengthAdjust=\"spacingAndGlyphs\">smallest feasible answer</text></svg>",
+          "width": 463,
+          "caption": "The search happens over the range of possible answers [lo, hi]; each probe tests one candidate and halves the range, exactly like searching an array.",
+          "alt": "predicate false predicate true | 1 2 3 4 5 6 7 8 9 10 | smallest feasible answer"
+        },
+        {
+          "type": "markdown",
+          "text": "The skeleton is the template of the previous chapter, with the array replaced by a numeric range and `isTrue(mid)` replaced by `ok(mid)`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "static int firstTrue(int lo, int hi, IntPredicate ok) {\n    while (lo < hi) {\n        int mid = lo + (hi - lo) / 2;\n        if (ok.test(mid)) hi = mid;      // mid works: try something smaller\n        else lo = mid + 1;               // mid fails: the answer is larger\n    }\n    return lo;\n}",
+          "title": "Template: smallest x in [lo, hi] with ok(x)"
+        },
+        {
+          "type": "markdown",
+          "text": "Three design decisions determine correctness. **Bounds:** `lo` must be a value that can be the answer (for example the largest single item, since no smaller capacity can carry it), and `hi` a value that is guaranteed feasible (for example the total sum). **Direction:** minimisation searches for the first true; maximisation searches for the last true, implemented by inverting the predicate or by using the upper midpoint. **Check:** a greedy pass whose correctness must be argued and whose cost is O(n) or close to it.\n\n### Dry run\n\nKoko Eating Bananas. Piles `[3, 6, 7, 11]`, `h = 8` hours. At speed `k`, a pile of `p` bananas requires `ceil(p / k)` hours (one pile is processed per hour). The answer lies in `[1, 11]`: speed 1 is the minimum meaningful speed and speed 11 finishes every pile in one hour. The objective is the smallest `k` whose total is at most 8 hours."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "lo",
+            "hi",
+            "k",
+            "hours per pile",
+            "total",
+            "ok?"
+          ],
+          "rows": [
+            [
+              "1",
+              "`1`",
+              "`11`",
+              "`6`",
+              "`1 1 2 2`",
+              "6",
+              "true"
+            ],
+            [
+              "2",
+              "`1`",
+              "`6`",
+              "`3`",
+              "`1 2 3 4`",
+              "10",
+              "false"
+            ],
+            [
+              "3",
+              "`4`",
+              "`6`",
+              "`5`",
+              "`1 2 2 3`",
+              "8",
+              "true"
+            ],
+            [
+              "4",
+              "`4`",
+              "`5`",
+              "`4`",
+              "`1 2 2 3`",
+              "8",
+              "true"
+            ],
+            [
+              "end",
+              "`4`",
+              "`4`",
+              "`-`",
+              "`-`",
+              "-",
+              "answer 4"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Binary search over speeds. Hours per pile are ceil(3/k), ceil(6/k), ceil(7/k), ceil(11/k).*\n\nSpeed 6 is feasible, so the answer is at most 6 (`hi = 6`). Speed 3 requires 10 hours, which is infeasible, so the answer exceeds 3 (`lo = 4`). Speeds 5 and 4 are feasible, and the interval collapses to `[4, 4]`. Since speed 3 failed, 4 is minimal. Four probes replace eleven; for a range of 10^9 about thirty probes suffice.\n\n### Java code\n\nOne generic `firstTrue` is combined with four predicates. Only the bounds and the O(n) check differ between problems."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\nimport java.util.function.IntPredicate;\n\npublic class Main {\n    // smallest x in [lo, hi] with ok(x) true; ok must be false...false true...true\n    static int firstTrue(int lo, int hi, IntPredicate ok) {\n        while (lo < hi) {\n            int mid = lo + (hi - lo) / 2;\n            if (ok.test(mid)) hi = mid;\n            else lo = mid + 1;\n    }\n    return lo;\n}\n\nstatic int kokoSpeed(int[] piles, int h) {\n    int max = Arrays.stream(piles).max().getAsInt();\n    return firstTrue(1, max, k -> {\n        long hours = 0;\n        for (int p : piles) hours += (p + k - 1) / k;      // ceil(p / k)\n        return hours <= h;\n    });\n}\n\nstatic int shipCapacity(int[] w, int days) {\n    int lo = Arrays.stream(w).max().getAsInt();\n    int hi = Arrays.stream(w).sum();\n    return firstTrue(lo, hi, cap -> {\n        int used = 1, load = 0;\n        for (int x : w) {\n            if (load + x > cap) { used++; load = 0; }\n            load += x;\n        }\n        return used <= days;\n    });\n}\n\nstatic int splitArray(int[] nums, int k) {\n    int lo = Arrays.stream(nums).max().getAsInt();\n    int hi = Arrays.stream(nums).sum();\n    return firstTrue(lo, hi, limit -> {\n        int parts = 1, sum = 0;\n        for (int x : nums) {\n            if (sum + x > limit) { parts++; sum = 0; }\n            sum += x;\n        }\n        return parts <= k;\n    });\n}\n\nstatic int minDaysBouquets(int[] bloom, int m, int k) {\n    if ((long) m * k > bloom.length) return -1;\n    int lo = Arrays.stream(bloom).min().getAsInt();\n    int hi = Arrays.stream(bloom).max().getAsInt();\n    return firstTrue(lo, hi, day -> {\n        int made = 0, run = 0;\n        for (int b : bloom) {\n            if (b <= day) { if (++run == k) { made++; run = 0; } }\n            else run = 0;\n        }\n        return made >= m;\n    });\n}\n\nstatic int isqrt(int x) {            // largest r with r*r <= x\n    int lo = 0, hi = Math.min(x, 46340);\n    while (lo < hi) {\n        int mid = lo + (hi - lo + 1) / 2;          // upper mid: avoids infinite loop\n        if ((long) mid * mid <= x) lo = mid;\n        else hi = mid - 1;\n    }\n    return lo;\n}\n\npublic static void main(String[] args) {\n    System.out.println(\"koko [3,6,7,11] h=8 -> \" + kokoSpeed(new int[] {3, 6, 7, 11}, 8));\n    System.out.println(\"koko [30,11,23,4,20] h=5 -> \"\n        + kokoSpeed(new int[] {30, 11, 23, 4, 20}, 5));\n    System.out.println(\"ship -> \" + shipCapacity(new int[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 5));\n    System.out.println(\"split [7,2,5,10,8] k=2 -> \"\n        + splitArray(new int[] {7, 2, 5, 10, 8}, 2));\n    System.out.println(\"bouquets -> \" + minDaysBouquets(new int[] {1, 10, 3, 10, 2}, 3, 1));\n    System.out.println(\"bouquets m=3,k=2 -> \"\n        + minDaysBouquets(new int[] {1, 10, 3, 10, 2}, 3, 2));\n    System.out.println(\"isqrt(8) = \" + isqrt(8) + \", isqrt(2147395600) = \" + isqrt(2147395600));\n        int lo = 2_000_000_000, hi = 2_100_000_000;\n        System.out.println(\"(lo+hi)/2 overflow: \" + (lo + hi) / 2 + \" vs \" + (lo + (hi - lo) / 2));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nkoko [3,6,7,11] h=8 -> 4\nkoko [30,11,23,4,20] h=5 -> 30\nship -> 15\nsplit [7,2,5,10,8] k=2 -> 18\nbouquets -> 3\nbouquets m=3,k=2 -> -1\nisqrt(8) = 2, isqrt(2147395600) = 46340\n(lo+hi)/2 overflow: -97483648 vs 2050000000",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Koko.** `(p + k - 1) / k` is integer ceiling division. The accumulator `hours` is a `long` because many large piles at speed 1 can exceed the `int` range.\n- **Ship packages.** The lower bound is the heaviest single package (a smaller capacity cannot carry it) and the upper bound is the total weight (one day). The check simulates loading in order and starts a new day when the next package does not fit.\n- **Split array largest sum.** \"Minimise the largest sum among `k` parts\" is equivalent to \"find the smallest limit such that the array can be cut into at most `k` parts, each with sum at most the limit\". Dynamic programming solves it in O(k n^2); the binary search takes O(n log(sum)).\n- **Bouquets.** The predicate scans for `k` adjacent flowers that have bloomed by the given day. The early test `m * k >` `n` uses a `long` cast because the product may overflow `int`.\n- **Integer square root.** This variant seeks the **last** true (`mid * mid <= x`), hence the upper midpoint `lo + (hi - lo` `+ 1) / 2` with the updates `lo = mid` and `hi = mid - 1`. The cap 46340 is the largest `r` for which `r * r` fits in `int`; the cast to `long` is an additional safeguard.\n- The last output line demonstrates the overflow of `(lo + hi) / 2`.\n\n### Complexity and mistakes\n\n**Time:** O(n log R), where `R = hi - lo` is the size of the answer range and `n` is the cost of one check; for Koko with piles up to 10^9 this is about 30 checks of O(n). **Space:** O(1) beyond the input.\n\nCommon defects:\n\n- **Incorrect bounds.** A `lo` above the true answer excludes it; a `hi` for which `ok(hi)` is false makes the result meaningless. The weakest justifiable bounds should be chosen, with a proof that `ok(hi)` holds.\n- **Non-monotonic predicate.** If `ok(5)` is true and `ok(6)` is false, binary search yields an arbitrary result. Monotonicity must be argued before coding.\n- **Maximisation with the lower midpoint.** For \"last true\" with `lo = mid`, the upper midpoint `lo + (hi - lo + 1) /` `2` is required; otherwise the loop does not terminate on a two-element range.\n- **Overflow in the check.** Sums of weights, `hours`, `mid * mid` and time-times-trips products often need `long`.\n- **Incorrect greedy check.** The check must be an exact feasibility test. In ship packages the order of packages must be preserved; in \"magnetic force\" the next ball is placed at the first position at least `d` from the previous one."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Binary search on the answer is used to determine a limit when only a pass/fail test exists: the largest batch size that fits in memory, the lowest timeout that passes a test suite, or `git bisect`, which searches commit history for the first failing commit using the test as the predicate."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. **\"Minimum eating speed so all piles finish within h hours.\"** Clue: smallest speed, feasibility is easy. Search `[1, max]`, check with ceiling divisions.\n2. **\"Least ship capacity to deliver all packages in D days, order fixed.\"** Clue: minimise a maximum with a fixed order. Search `[max, sum]`.\n3. **\"Split an array into k non-empty parts to minimise the largest part sum.\"** Clue: \"minimise the largest sum\". Same as 2. Follow-up: how does it compare with DP? (DP is O(k n^2).)\n4. **\"Earliest day on which you can make m bouquets of k adjacent flowers.\"** Clue: earliest day, predicate counts runs. Return -1 when `m * k > n`.\n5. **\"Smallest divisor so that the sum of ceilings is at most a threshold.\"** Clue: smallest x with a monotone sum.\n6. **\"Place c balls into baskets so the minimum distance between any two is maximal.\"** Clue: \"maximise the minimum\". Sort, then greedily place a ball whenever the gap is at least `d`.\n7. **\"Minimum time for all buses to complete at least** `totalTrips` **trips.\"** Clue: time as the answer, trips = sum of `time / period`; the upper bound needs `long`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Interviewer: \"How do you know binary search applies here? There is no sorted array.\" Candidate: \"The answer is a number in a range, and feasibility is monotone: if speed k is feasible then any larger speed is feasible. Hence `ok(k)` has the form `false...false true...true`, and binary search finds the first true.\" Interviewer: \"What is the complexity?\" Candidate: \"O(n log(max - min)): a logarithmic number of probes, each an O(n) greedy check. Space is O(1).\" Interviewer: \"Why is the greedy check correct?\" Candidate: \"For a fixed capacity, packing as much as possible into each day never uses more days than any other packing, so if the greedy needs more than D days, no packing exists.\""
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`744`",
+              "Find Smallest Letter Greater Than Target",
+              "Easy",
+              "Upper bound on a sorted letter array, wrap around to index 0"
+            ],
+            [
+              "`875`",
+              "Koko Eating Bananas",
+              "Medium",
+              "Search speed in \\[1, max\\]; check with ceiling division"
+            ],
+            [
+              "`1011`",
+              "Capacity To Ship Packages Within D Days",
+              "Medium",
+              "Search capacity in \\[max, sum\\]; greedy day counting"
+            ],
+            [
+              "`1283`",
+              "Find the Smallest Divisor Given a Threshold",
+              "Medium",
+              "Smallest divisor whose ceiling-sum fits"
+            ],
+            [
+              "`1482`",
+              "Minimum Number of Days to Make m Bouquets",
+              "Medium",
+              "Search the day; count runs of k bloomed flowers"
+            ],
+            [
+              "`1552`",
+              "Magnetic Force Between Two Balls",
+              "Medium",
+              "Maximise the minimum gap; greedy placement on sorted positions"
+            ],
+            [
+              "`2187`",
+              "Minimum Time to Complete Trips",
+              "Medium",
+              "Search time; trips = sum of time / period (use long)"
+            ],
+            [
+              "`410`",
+              "Split Array Largest Sum",
+              "Hard",
+              "Minimise the largest part sum; greedy count of parts"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Binary search on the answer requires a monotone predicate `ok(x)` and a range `[lo, hi]` guaranteed to contain the answer.\n- The code is the template of the previous chapter, `firstTrue(lo, hi, ok)`; only the bounds and the O(n) check vary.\n- Phrases like \"minimise the maximum\" and \"maximise the minimum\" are the strongest clues.\n- Time is O(n log R); the midpoint variant matters for \"last true\", and checks often require `long`.\n- Monotonicity must be justified before coding; it is the part most often examined."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-8",
+      "type": "concept",
+      "title": "Sorting-based problems and merge intervals",
+      "subtopicId": "2-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Scheduling problems require detecting conflicts between time ranges, merging overlapping ranges into maximal blocks, and computing the peak number of simultaneously active ranges. Pairwise comparison of n intervals costs O(n^2). Sorting by start time places all relevant information in adjacent positions, so a single linear scan suffices and the total cost is O(n log n), dominated by the sort.\n\nThis chapter treats a family of problems with a common shape: items with a start and an end, an order imposed by sorting, and a linear sweep.\n\n### The idea\n\nAn interval `[start, end]` overlaps its successor in start order exactly when `next.start <= current.end`. After sorting by start, an interval can overlap only with its immediate predecessors in the merged block, so a single \"current\" interval is maintained and either extended or closed. The choice of sort key (start, end, or starts and ends separately) is the essential design decision.\n\nRecognition clues:\n\n- Input is a list of pairs, \"intervals\", \"meetings\", \"ranges\", \"bookings\", \"segments\"\n- \"merge overlapping\", \"insert into a sorted list of non-overlapping\", \"can a person attend all meetings\"\n- \"minimum number of rooms / platforms / arrows / groups\"\n- \"remove the minimum number of intervals so the rest do not overlap\"\n- The input order is arbitrary and the result is independent of it, which indicates that sorting is admissible\n\nThe sort key is selected according to the objective, as summarised below."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "Sort by",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Merge overlapping intervals",
+              "start",
+              "Overlaps can then only be with the interval just before"
+            ],
+            [
+              "Keep the most intervals without overlap",
+              "end",
+              "Finishing earliest leaves the most room (greedy)"
+            ],
+            [
+              "Burst balloons with fewest arrows",
+              "end",
+              "Same as above: shoot at the earliest end"
+            ],
+            [
+              "Count the busiest moment (rooms, platforms)",
+              "starts and ends in two separate arrays",
+              "Walk time forward, +1 on start, -1 on end"
+            ],
+            [
+              "Compare two sorted lists of intervals",
+              "already sorted",
+              "Two pointers, advance the one that ends first"
+            ]
+          ],
+          "caption": "Choosing what to sort by."
+        },
+        {
+          "type": "markdown",
+          "text": "The skeleton for merging, which most other problems adapt:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Arrays.sort(a, (x, y) -> Integer.compare(x[0], y[0]));\nList<int[]> out = new ArrayList<>();\nint[] cur = a[0].clone();\nfor (int i = 1; i < a.length; i++) {\n    if (a[i][0] <= cur[1]) cur[1] = Math.max(cur[1], a[i][1]);   // overlap: extend\n    else { out.add(cur); cur = a[i].clone(); }                   // gap: close and restart\n}\nout.add(cur);",
+          "title": "Template: sort by start, keep one current interval"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A comparator of the form `(x, y) -> x[0] - y[0]` is incorrect. If the operands have opposite signs and large magnitude (for example `Integer.MIN_VALUE` and a positive value), the subtraction overflows and returns the wrong sign, which makes the ordering inconsistent. `Integer.compare(x[0], y[0])` is the correct form. Note also that `Arrays.sort` with a comparator requires an object array; `int[][]` qualifies, because it is an array of `int[]` objects, whereas a primitive `int[]` cannot take a comparator."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nInput: `[[1,3], [8,10], [2,6], [15,18], [17,20]]`. The task is to merge all overlapping intervals. Step 0 sorts by start and produces `[[1,3], [2,6], [8,10], [15,18], [17,20]]`. A sweep then maintains `cur` as the interval under construction."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "next interval",
+            "decision",
+            "cur afterwards",
+            "finished list"
+          ],
+          "rows": [
+            [
+              "start",
+              "`-`",
+              "`cur = first interval`",
+              "`[1, 3]`",
+              "empty"
+            ],
+            [
+              "1",
+              "`[2, 6]`",
+              "`2 <= 3: overlap, end =` `max(3, 6)`",
+              "`[1, 6]`",
+              "empty"
+            ],
+            [
+              "2",
+              "`[8, 10]`",
+              "`8 > 6: gap, close cur`",
+              "`[8, 10]`",
+              "\\[1, 6\\]"
+            ],
+            [
+              "3",
+              "`[15, 18]`",
+              "`15 > 10: gap, close cur`",
+              "`[15, 18]`",
+              "\\[1, 6\\] \\[8, 10\\]"
+            ],
+            [
+              "4",
+              "`[17, 20]`",
+              "`17 <= 18: overlap, end` `= max(18, 20)`",
+              "`[15, 20]`",
+              "\\[1, 6\\] \\[8, 10\\]"
+            ],
+            [
+              "end",
+              "`-`",
+              "`add the last cur`",
+              "`-`",
+              "\\[1, 6\\] \\[8, 10\\] \\[15, 20\\]"
+            ]
+          ],
+          "caption": "Merge sweep after sorting by start."
+        },
+        {
+          "type": "markdown",
+          "text": "Two details determine correctness. First, the new end is `max(cur[1], next[1])`, not `next[1]`, because an interval may be contained in the current one (for example `[2, 3]` inside `[1, 10]`). Second, the test uses `<=`, so intervals that merely touch, such as `[1,4]` and `[4,5]`, are merged into `[1,5]`. Whether touching constitutes overlap is a specification question that should be clarified; the examples in the statement decide it.\n\n### Java code\n\nThe program below contains the family of solutions: merge, insert into a sorted list (three phases: before, overlapping, after), minimum number of meeting rooms by a two-array sweep, minimum removals by sorting on the end, intersection of two interval lists by two pointers, car pooling by a difference array, and a custom comparator (largest number)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.List;\n\npublic class Main {\n    static int[][] merge(int[][] intervals) {\n        int[][] a = intervals.clone();\n        Arrays.sort(a, (x, y) -> Integer.compare(x[0], y[0]));\n        List<int[]> out = new ArrayList<>();\n        int[] cur = a[0].clone();\n        for (int i = 1; i < a.length; i++) {\n            if (a[i][0] <= cur[1]) cur[1] = Math.max(cur[1], a[i][1]);   // overlap: extend\n            else { out.add(cur); cur = a[i].clone(); }                   // gap: close current\n        }\n        out.add(cur);\n        return out.toArray(new int[0][]);\n    }\n\n    static int[][] insert(int[][] sorted, int[] nw) {\n        List<int[]> out = new ArrayList<>();\n        int i = 0, n = sorted.length;\n        while (i < n && sorted[i][1] < nw[0]) out.add(sorted[i++]);          // entirely before\n        int[] cur = nw.clone();\n        while (i < n && sorted[i][0] <= cur[1]) {                            // overlapping\n            cur[0] = Math.min(cur[0], sorted[i][0]);\n            cur[1] = Math.max(cur[1], sorted[i][1]);\n            i++;\n        }\n        out.add(cur);\n        while (i < n) out.add(sorted[i++]);                                  // entirely after\n        return out.toArray(new int[0][]);\n    }\n\n    // minimum number of rooms = maximum number of overlapping meetings\n    static int minRooms(int[][] meetings) {\n        int n = meetings.length;\n        int[] starts = new int[n], ends = new int[n];\n        for (int i = 0; i < n; i++) { starts[i] = meetings[i][0]; ends[i] = meetings[i][1]; }\n        Arrays.sort(starts);\n        Arrays.sort(ends);\n        int rooms = 0, best = 0, j = 0;\n        for (int i = 0; i < n; i++) {\n            while (ends[j] <= starts[i]) { j++; rooms--; }     // a meeting finished: free a room\n            rooms++;\n            best = Math.max(best, rooms);\n        }\n        return best;\n    }\n\n    // fewest intervals to remove so the rest do not overlap: keep earliest finishing ones\n    static int eraseOverlap(int[][] intervals) {\n        int[][] a = intervals.clone();\n        Arrays.sort(a, (x, y) -> Integer.compare(x[1], y[1]));\n        int kept = 0, end = Integer.MIN_VALUE;\n        for (int[] iv : a) {\n            if (iv[0] >= end) { kept++; end = iv[1]; }\n        }\n        return a.length - kept;\n    }\n\n    static int[][] intersect(int[][] A, int[][] B) {\n        List<int[]> out = new ArrayList<>();\n        int i = 0, j = 0;\n        while (i < A.length && j < B.length) {\n            int lo = Math.max(A[i][0], B[j][0]);\n            int hi = Math.min(A[i][1], B[j][1]);\n            if (lo <= hi) out.add(new int[] {lo, hi});\n            if (A[i][1] < B[j][1]) i++; else j++;                 // drop the one that ends first\n        }\n        return out.toArray(new int[0][]);\n    }\n\n    static boolean carPooling(int[][] trips, int capacity) {      // trip = {people, from, to}\n        int[] delta = new int[1001];\n        for (int[] t : trips) { delta[t[1]] += t[0]; delta[t[2]] -= t[0]; }\n        int load = 0;\n        for (int d : delta) { load += d; if (load > capacity) return false; }\n        return true;\n    }\n\n    public static void main(String[] args) {\n        System.out.println(Arrays.deepToString(\n            merge(new int[][] {{1,3},{8,10},{2,6},{15,18},{17,20}})));\n        System.out.println(Arrays.deepToString(merge(new int[][] {{1,4},{4,5}})));\n        System.out.println(Arrays.deepToString(\n            insert(new int[][] {{1,2},{3,5},{6,7},{8,10},{12,16}}, new int[] {4, 8})));\n        System.out.println(\"rooms = \" + minRooms(new int[][] {{0,30},{5,10},{15,20}}));\n        System.out.println(\"rooms = \" + minRooms(new int[][] {{7,10},{2,4}}));\n        System.out.println(\"remove = \" + eraseOverlap(new int[][] {{1,2},{2,3},{3,4},{1,3}}));\n        System.out.println(Arrays.deepToString(intersect(new int[][] {{0,2},{5,10},{13,23},{24,25}},\n            new int[][] {{1,5},{8,12},{15,24},{25,26}})));\n        System.out.println(\"carPooling = \" + carPooling(new int[][] {{2,1,5},{3,3,7}}, 4)\n            + \", \" + carPooling(new int[][] {{2,1,5},{3,5,7}}, 3));\n        Integer[] nums = {3, 30, 34, 5, 9};\n        Arrays.sort(nums, (x, y) -> (y.toString() + x).compareTo(x.toString() + y));\n        System.out.println(\"largest number: \"\n            + String.join(\"\", Arrays.stream(nums).map(String::valueOf).toList()));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n[[1, 6], [8, 10], [15, 20]]\n[[1, 5]]\n[[1, 2], [3, 10], [12, 16]]\nrooms = 2\nrooms = 1\nremove = 1\n[[1, 2], [5, 5], [8, 10], [15, 23], [24, 24], [25, 25]]\ncarPooling = false, true\nlargest number: 9534330",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Insert interval** needs no sort because the list is already sorted: it copies all intervals that end before the new one, merges those that overlap it, and copies the rest. Three loops, O(n).\n- **Meeting rooms** sorts `starts` and `ends` separately. This discards the pairing but remains valid: the number of rooms in use at any instant depends only on how many meetings have started and how many have ended. The condition `ends[j] <= starts[i]` treats a meeting ending at time 10 as finished when another starts at time 10. (The original \"Meeting Rooms II\" problem is premium-only, so the practice table lists a free equivalent.)\n- **Erase overlap** sorts by **end** and keeps every interval that starts at or after the end of the last kept one. This is the standard activity-selection greedy: the interval that finishes first leaves the largest remaining time.\n- **Intersections** advance the pointer of the interval that ends first, because that interval cannot intersect anything further in the other list.\n- **Car pooling** is a sweep line: passengers are added at the pick-up index and subtracted at the drop-off index, and a running sum is maintained. This is the difference-array technique of the prefix-sum chapter.\n- **Largest number** uses a non-numeric comparator: `a` precedes `b` when the string `a + b` is lexicographically larger than `b + a`. Sorting `[3, 30, 34, 5, 9]` accordingly gives `9534330`.\n\n### Complexity and mistakes\n\n**Time:** O(n log n) for the sort plus O(n) for the sweep, hence O(n log n). The sweep alone is linear; when the input is already sorted (insert interval, intersections) the whole solution is O(n). **Space:** O(n) for the output; `Arrays.sort` on an object array with a comparator is a stable merge-based sort (TimSort) that may use up to O(n) auxiliary memory.\n\nCommon defects:\n\n- **Mutating the input.** The assignment `cur = a[i]` followed by `cur[1] = ...` modifies the original array. Cloning, or constructing new `int[]` objects, is required when the caller reuses the data.\n- `<` **instead of** `<=` (or the reverse) in the overlap test. The treatment of touching intervals must be decided and verified on an example such as `[1,4]` and `[4,5]`.\n- **Using** `next.end` **instead of** `max(cur.end, next.end)`, which can shrink the current interval.\n- **Forgetting to add the last interval** after the loop.\n- **Sorting by an unsuitable key** for greedy selection: sorting by start for \"maximum number of non-overlapping intervals\" fails on `[1,100], [2,3], [4,5]`, whereas sorting by end is correct.\n- **Empty input.** `a[0]` throws on an empty array; a guard such as `if (a.length == 0) return ...` is required.\n\n### Questions to expect\n\n1. **\"Merge all overlapping intervals.\"** Clue: arbitrary order, \"overlap\". Sort by start, sweep with one current interval.\n2. **\"Insert a new interval into a sorted, non-overlapping list.\"** Clue: already sorted. Linear three-phase scan, no sort needed. Follow-up: use binary search to find the position, then merge (still O(n) to rebuild the list).\n3. **\"Can one person attend all meetings?\"** Sort by start, check that every start is at least the previous end. (Premium problem; the idea is one line.)\n4. **\"How many conference rooms are needed?\"** Clue: \"at the same time\". Sort starts and ends separately, or use a min-heap of end times. The heap version also tells you which room is reused.\n5. **\"Remove the minimum number of intervals so the rest do not overlap.\"** Clue: minimum removals = n minus maximum kept. Sort by end, keep greedily.\n6. **\"Minimum arrows to burst all balloons.\"** Same greedy as 5, but touching balloons share an arrow (`<=`).\n7. **\"Do these bookings ever exceed the capacity?\"** Clue: running total over time. Difference array or sweep over sorted events. Follow-up: coordinates up to 10^9, so use a `TreeMap` of events instead of an array.\n8. **\"Arrange numbers to form the largest value.\"** Clue: custom order. Comparator on concatenations."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Interviewer: \"Why does sorting by start work for merging but sorting by end for scheduling?\" Candidate: \"For merging, every potential overlap partner must be adjacent. In start order, any interval that overlaps the current block starts no later than the block's end, so only the next interval needs inspection. For maximum non-overlapping selection the objective is to block as little future time as possible, which is achieved by the interval that ends first; hence the sort by end. The proof is an exchange argument: any optimal solution can replace its first interval by the earliest-ending one without losing an interval.\""
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`56`",
+              "Merge Intervals",
+              "Medium",
+              "Sort by start; extend or close the current interval"
+            ],
+            [
+              "`57`",
+              "Insert Interval",
+              "Medium",
+              "Copy before, merge overlapping, copy after"
+            ],
+            [
+              "`729`",
+              "My Calendar I",
+              "Medium",
+              "Reject a booking that overlaps any earlier one; sorted structure or brute force"
+            ],
+            [
+              "`986`",
+              "Interval List Intersections",
+              "Medium",
+              "Two pointers; advance the list that ends first"
+            ],
+            [
+              "`435`",
+              "Non-overlapping Intervals",
+              "Medium",
+              "Sort by end; keep what fits; answer is n minus kept"
+            ],
+            [
+              "`452`",
+              "Minimum Number of Arrows to Burst Balloons",
+              "Medium",
+              "Sort by end; new arrow when the next start is beyond the last arrow"
+            ],
+            [
+              "`1094`",
+              "Car Pooling",
+              "Medium",
+              "Difference array over stops and a running load"
+            ],
+            [
+              "`2406`",
+              "Divide Intervals Into Minimum Number of Groups",
+              "Medium",
+              "Maximum overlap: sorted starts and ends, or a min-heap of ends"
+            ],
+            [
+              "`179`",
+              "Largest Number",
+              "Medium",
+              "Comparator: a before b when a+b \\> b+a as strings"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Sorting reduces a pairwise problem to a single scan; the sort key follows the objective (start for merging, end for greedy selection).\n- Two intervals overlap when `next.start <= cur.end`; merging uses `max` of the ends, and modified arrays are cloned.\n- Counting simultaneous intervals is a sweep: +1 at starts, -1 at ends, track the maximum (two sorted arrays, a heap, or a difference array).\n- Comparators use `Integer.compare`, never subtraction; the treatment of touching intervals must be clarified.\n- Typical cost is O(n log n) time and O(n) space."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-9",
+      "type": "concept",
+      "title": "Kadane, greedy scans and in-place array tricks",
+      "subtopicId": "2-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Many array problems admit a direct solution with nested loops or auxiliary arrays, and are then restated with the requirement of O(n) time and O(1) extra space. The patterns in this chapter satisfy that requirement: a single scan that carries one or two running values (Kadane's maximum subarray, best time to buy and sell), reuse of the array itself as storage (cyclic sort, rotation by reversal, Dutch national flag), or a constant-size voting state (Boyer-Moore). Each is short to implement and sensitive to small errors, so each is derived from the invariant it maintains.\n\n### The idea\n\nThe common element is a **running summary**: after processing `a[0..i]`, a constant amount of information sufficient to answer for the prefix is retained, and it is updated in O(1) when `a[i+1]` is read. Each technique uses a different summary."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Trick",
+            "State carried while scanning",
+            "Typical problem"
+          ],
+          "rows": [
+            [
+              "Kadane",
+              "Best sum of a subarray that ends here, and the best seen so far",
+              "Maximum subarray"
+            ],
+            [
+              "Running minimum",
+              "Cheapest price so far",
+              "Best time to buy and sell stock"
+            ],
+            [
+              "Prefix and suffix products",
+              "Product of everything to the left, then to the right",
+              "Product of array except self"
+            ],
+            [
+              "Dutch national flag",
+              "Three regions: 0s, unknown, 2s, with three pointers",
+              "Sort an array of 0, 1, 2"
+            ],
+            [
+              "Cyclic sort",
+              "Value v belongs at index v - 1; swap until it is there",
+              "First missing positive, duplicates"
+            ],
+            [
+              "Reversal",
+              "Reverse whole, then both parts",
+              "Rotate array by k"
+            ],
+            [
+              "Boyer-Moore voting",
+              "One candidate and a counter",
+              "Majority element"
+            ]
+          ],
+          "caption": "Tricks in this chapter and what each one keeps."
+        },
+        {
+          "type": "markdown",
+          "text": "Recognition clues:\n\n- \"maximum / minimum sum of a contiguous subarray\" (Kadane), or \"maximum product\" (track min and max)\n- \"one pass\", \"O(1) extra space\", \"in place\", \"do not use the library sort\"\n- Values in the range `1..n` stored in an array of length `n`: the indices serve as a hash table (cyclic sort)\n- \"element that appears more than n/2 times (or n/3)\" (voting)\n- Only three distinct values, \"sort colours\" (Dutch flag)\n\nThe skeleton of Kadane's algorithm:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "int best = a[0], cur = a[0];            // cur = best sum of a subarray ENDING at i\nfor (int i = 1; i < a.length; i++) {\n    cur = Math.max(a[i], cur + a[i]);   // extend the previous run, or start fresh at i\n    best = Math.max(best, cur);\n}",
+          "title": "Template: Kadane's algorithm"
+        },
+        {
+          "type": "markdown",
+          "text": "Justification. The best subarray ending at `i` is either `a[i]` alone or the best subarray ending at `i-1` extended by `a[i]`. A negative running sum `cur` can only decrease any extension, so `max(a[i], cur + a[i])` selects `a[i]` alone, which is equivalent to discarding the prefix. Initialising with `a[0]` rather than 0 makes all-negative arrays correct: the result is then the largest single element.\n\n### Dry run\n\nKadane on `[-2, 1, -3, 4, -1, 2, 1, -5, 4]`. The maximum subarray is `[4, -1, 2, 1]` with sum 6. The table is the measured trace; \"restart\" denotes `a[i] > cur + a[i]`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "i",
+            "a\\[i\\]",
+            "decision",
+            "cur",
+            "best"
+          ],
+          "rows": [
+            [
+              "0",
+              "`-2`",
+              "initial",
+              "-2",
+              "-2"
+            ],
+            [
+              "1",
+              "`1`",
+              "restart (1 \\> -2 + 1)",
+              "1",
+              "1"
+            ],
+            [
+              "2",
+              "`-3`",
+              "extend (1 + -3 = -2 is better than -3)",
+              "-2",
+              "1"
+            ],
+            [
+              "3",
+              "`4`",
+              "restart (4 \\> -2 + 4 = 2)",
+              "4",
+              "4"
+            ],
+            [
+              "4",
+              "`-1`",
+              "extend",
+              "3",
+              "4"
+            ],
+            [
+              "5",
+              "`2`",
+              "extend",
+              "5",
+              "5"
+            ],
+            [
+              "6",
+              "`1`",
+              "extend",
+              "6",
+              "6"
+            ],
+            [
+              "7",
+              "`-5`",
+              "extend",
+              "1",
+              "6"
+            ],
+            [
+              "8",
+              "`4`",
+              "extend",
+              "5",
+              "6"
+            ]
+          ],
+          "caption": "Kadane trace."
+        },
+        {
+          "type": "markdown",
+          "text": "The result is 6 at `i = 6`. The run restarted at index 3, the start of the subarray `[4, -1, 2, 1]`. To recover the subarray itself, the index of the last restart and the index at which `best` last improved are recorded.\n\nA second trace covers the Dutch national flag (sorting `[2, 0, 2, 1, 1, 0]`). Three pointers partition the array into four regions: `[0, lo)` contains only 0s, `[lo, mid)` only 1s, `[mid, hi]` is unclassified, and `(hi, n)` contains only 2s. This partition is the loop invariant."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "step",
+            "action",
+            "array",
+            "lo",
+            "mid",
+            "hi"
+          ],
+          "rows": [
+            [
+              "1",
+              "a\\[mid\\]=2: swap(mid, hi), hi--",
+              "`[0, 0, 2, 1, 1, 2]`",
+              "0",
+              "0",
+              "4"
+            ],
+            [
+              "2",
+              "a\\[mid\\]=0: swap(lo, mid), lo++, mid++",
+              "`[0, 0, 2, 1, 1, 2]`",
+              "1",
+              "1",
+              "4"
+            ],
+            [
+              "3",
+              "a\\[mid\\]=0: swap(lo, mid), lo++, mid++",
+              "`[0, 0, 2, 1, 1, 2]`",
+              "2",
+              "2",
+              "4"
+            ],
+            [
+              "4",
+              "a\\[mid\\]=2: swap(mid, hi), hi--",
+              "`[0, 0, 1, 1, 2, 2]`",
+              "2",
+              "2",
+              "3"
+            ],
+            [
+              "5",
+              "a\\[mid\\]=1: mid++",
+              "`[0, 0, 1, 1, 2, 2]`",
+              "2",
+              "3",
+              "3"
+            ],
+            [
+              "6",
+              "a\\[mid\\]=1: mid++",
+              "`[0, 0, 1, 1, 2, 2]`",
+              "2",
+              "4",
+              "3"
+            ]
+          ],
+          "caption": "Dutch national flag trace, array after each action."
+        },
+        {
+          "type": "markdown",
+          "text": "Step 1 illustrates the essential rule: after a 2 is swapped to the back, `mid` is **not** advanced, because the element that arrived from the right end has not yet been classified. After a swap with `lo`, `mid` advances, because the element arriving from the left region is known to be a 1.\n\n### Java code\n\nThe program collects the family: Kadane, one-trade and unlimited-trade stock profit, product except self without division, Dutch flag, first missing positive by cyclic sort, rotation by three reversals, Boyer-Moore for n/2 and n/3, and maximum product (a variant of Kadane that tracks both the maximum and the minimum product, because multiplication by a negative number exchanges their roles)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.Arrays;\nimport java.util.List;\n\npublic class Main {\n    static int maxSubarray(int[] a) {\n        int best = a[0], cur = a[0];\n        for (int i = 1; i < a.length; i++) {\n            cur = Math.max(a[i], cur + a[i]);     // extend the run or restart here\n            best = Math.max(best, cur);\n        }\n        return best;\n    }\n\n    static int maxProfit(int[] prices) {\n        int minSoFar = Integer.MAX_VALUE, best = 0;\n        for (int p : prices) {\n            minSoFar = Math.min(minSoFar, p);\n            best = Math.max(best, p - minSoFar);\n        }\n        return best;\n    }\n\n    static int maxProfitMany(int[] prices) {\n        int total = 0;\n        for (int i = 1; i < prices.length; i++)\n            if (prices[i] > prices[i - 1]) total += prices[i] - prices[i - 1];\n        return total;\n    }\n\n    static int[] productExceptSelf(int[] a) {\n        int n = a.length;\n        int[] out = new int[n];\n        out[0] = 1;\n        for (int i = 1; i < n; i++) out[i] = out[i - 1] * a[i - 1];   // product of all to the left\n        int right = 1;\n        for (int i = n - 1; i >= 0; i--) { out[i] *= right; right *= a[i]; }\n    return out;\n}\n\nstatic void sortColors(int[] a) {                // Dutch national flag\n    int lo = 0, mid = 0, hi = a.length - 1;\n    while (mid <= hi) {\n        if (a[mid] == 0) swap(a, lo++, mid++);\n        else if (a[mid] == 2) swap(a, mid, hi--);   // do not advance mid: new value unseen\n        else mid++;\n    }\n}\n\nstatic void swap(int[] a, int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }\n\nstatic int firstMissingPositive(int[] a) {       // cyclic sort: value v belongs at index v - 1\n    int n = a.length;\n    for (int i = 0; i < n; i++) {\n        while (a[i] >= 1 && a[i] <= n && a[a[i] - 1] != a[i]) swap(a, i, a[i] - 1);\n    }\n    for (int i = 0; i < n; i++) if (a[i] != i + 1) return i + 1;\n    return n + 1;\n}\n\nstatic void rotate(int[] a, int k) {\n    k %= a.length;\n    reverse(a, 0, a.length - 1);\n    reverse(a, 0, k - 1);\n    reverse(a, k, a.length - 1);\n}\n\nstatic void reverse(int[] a, int i, int j) { while (i < j) swap(a, i++, j--); }\n\nstatic int majority(int[] a) {                   // Boyer-Moore voting\n    int cand = 0, count = 0;\n    for (int x : a) {\n        if (count == 0) cand = x;\n        count += (x == cand) ? 1 : -1;\n    }\n    return cand;\n}\n\nstatic List<Integer> majorityThird(int[] a) {\n    int c1 = 0, c2 = 1, n1 = 0, n2 = 0;\n    for (int x : a) {\n        if (x == c1) n1++;\n        else if (x == c2) n2++;\n        else if (n1 == 0) { c1 = x; n1 = 1; }\n        else if (n2 == 0) { c2 = x; n2 = 1; }\n        else { n1--; n2--; }\n    }\n    int k1 = 0, k2 = 0;\n    for (int x : a) { if (x == c1) k1++; else if (x == c2) k2++; }\n    List<Integer> res = new ArrayList<>();\n    if (k1 > a.length / 3) res.add(c1);\n    if (k2 > a.length / 3) res.add(c2);\n    return res;\n}\n\nstatic int maxProduct(int[] a) {\n    int mx = a[0], mn = a[0], best = a[0];\n    for (int i = 1; i < a.length; i++) {\n        int x = a[i];\n        int hi = Math.max(x, Math.max(mx * x, mn * x));\n        int lo = Math.min(x, Math.min(mx * x, mn * x));\n        mx = hi; mn = lo;\n        best = Math.max(best, mx);\n    }\n    return best;\n}\n\npublic static void main(String[] args) {\n    System.out.println(\"kadane = \" + maxSubarray(new int[] {-2, 1, -3, 4, -1, 2, 1, -5, 4}));\n    System.out.println(\"kadane all negative = \" + maxSubarray(new int[] {-3, -1, -2}));\n    System.out.println(\"one trade = \" + maxProfit(new int[] {7, 1, 5, 3, 6, 4}));\n    System.out.println(\"many trades = \" + maxProfitMany(new int[] {7, 1, 5, 3, 6, 4}));\n        System.out.println(Arrays.toString(productExceptSelf(new int[] {1, 2, 3, 4})));\n        System.out.println(Arrays.toString(productExceptSelf(new int[] {-1, 1, 0, -3, 3})));\n        int[] colors = {2, 0, 2, 1, 1, 0};\n        sortColors(colors);\n        System.out.println(Arrays.toString(colors));\n        System.out.println(\"first missing = \" + firstMissingPositive(new int[] {3, 4, -1, 1}));\n        System.out.println(\"first missing = \" + firstMissingPositive(new int[] {7, 8, 9, 11, 12}));\n        int[] r = {1, 2, 3, 4, 5, 6, 7};\n        rotate(r, 3);\n        System.out.println(Arrays.toString(r));\n        System.out.println(\"majority = \" + majority(new int[] {2, 2, 1, 1, 1, 2, 2}));\n        System.out.println(\"n/3 = \" + majorityThird(new int[] {1, 1, 1, 3, 3, 2, 2, 2}));\n        System.out.println(\"max product = \" + maxProduct(new int[] {2, 3, -2, 4, -1}));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nkadane = 6\nkadane all negative = -1\none trade = 5\nmany trades = 7\n[24, 12, 8, 6]\n[0, 0, 9, 0, 0]\n[0, 0, 1, 1, 2, 2]\nfirst missing = 2\nfirst missing = 1\n[5, 6, 7, 1, 2, 3, 4]\nmajority = 2\nn/3 = [2, 1]\nmax product = 48",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Stock, one trade.** The running minimum is the best purchase day so far; `p - minSoFar` is the best profit if the sale occurs today. Time O(n), space O(1). For unlimited trades the result is the sum of all positive day-to-day increases: 7 here (buy at 1, sell at 5; buy at 3, sell at 6).\n- **Product except self.** The first loop stores in `out[i]` the product of all elements left of `i`; the second multiplies in the product of all elements to the right using the single variable `right`. Division is not used, so zeros need no special handling (the second example prints `[0, 0, 9, 0, 0]`).\n- **Cyclic sort.** The `while` loop (not `if`) swaps until `a[i]` is at its home index, is out of range, or duplicates the value at its home index. Each swap places one value permanently, so the total work is O(n) despite the nesting. The first index with `a[i] != i + 1` identifies the missing value.\n- **Rotate.** Reversing the whole array, then the first `k` and the last `n - k` elements, rotates right by `k` in place. The statement `k %= a.length` handles `k >= n`. If `k` becomes 0, `reverse(a, 0, -1)` is a no-op.\n- **Boyer-Moore.** Pairs of distinct elements cancel; if a majority element exists, it survives the cancellation. The n/3 variant keeps two candidates. A second counting pass is **required** whenever the existence of a majority is not guaranteed.\n- **Max product.** Keeping both `mx` and `mn` lets a negative factor exchange their roles. The product may overflow `int` for long arrays; the platform guarantees it does not, but the question may be raised in an interview.\n\n### Complexity and mistakes\n\nAll of these run in **O(n) time and O(1) extra space** (the output array of product-except-self is not counted as extra space in the usual statement). Cyclic sort contains a nested loop, but each swap fixes one element permanently, so the number of swaps is bounded by `n` (an amortised argument). Rotation by reversal performs about `2n` element moves; the direct method with a temporary array costs O(n) space.\n\nCommon defects:\n\n- **Kadane initialised with 0.** An all-negative array then yields 0, which is not the sum of any non-empty subarray. The initial value must be `a[0]`.\n- **Resetting** `cur` **to 0 on a negative value** without first updating `best`. The form `max(a[i], cur + a[i])` avoids the defect.\n- **Stock problems: selling before buying.** The minimum must be updated first, then the profit computed; the initial minimum is `Integer.MAX_VALUE`, not 0.\n- **Dutch flag: advancing** `mid` **after a swap with** `hi`**.** This loses an unclassified element, as shown above.\n- **Cyclic sort with** `if` **instead of** `while`, or non-termination on duplicates; the test `a[a[i]-1] != a[i]` guarantees termination.\n- **Boyer-Moore without verification** when a majority is not guaranteed.\n- **Wrong rotation direction.** Rotation to the right by `k` moves the last `k` elements to the front. Test: `[1,2,3,4,5,6,7]`, `k = 3`, expected `[5,6,7,1,2,3,4]`.\n\n### Questions to expect\n\n1. **\"Largest sum of a contiguous subarray.\"** Clue: contiguous, maximum sum. Kadane in O(n). Follow-up: return the indices; or the circular version (max of Kadane and total minus minimum subarray, with the all-negative edge case).\n2. **\"Best day to buy and sell once, and and unlimited trades?\"** Running minimum; sum of positive differences.\n3. **\"Product of all elements except the current one, no division, O(1) extra space.\"** Left product pass plus right product pass.\n4. **\"Sort an array of 0s, 1s, 2s in one pass without a library sort.\"** Dutch national flag with three pointers. Follow-up: counting sort is two passes, flag is one.\n5. **\"Find the smallest missing positive integer in O(n) time and O(1) space.\"** Cyclic sort; ignore values outside `1..n`. Alternative: use sign marking.\n6. **\"Find all numbers missing from, or duplicated in, an array of 1..n.\"** Cyclic sort, or negate `a[|x|-1]` as a marker. Another route: XOR or the sum formula `n(n+1)/2` for exactly one missing value.\n7. **\"Rotate the array right by k in place.\"** Three reversals. Follow-up: a juggling algorithm using gcd also works.\n8. **\"Majority element (more than n/2), then more than n/3.\"** Boyer-Moore with one or two candidates and a verification pass."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Interviewer: \"Why does Kadane's algorithm work? What is the correctness argument?\" Candidate: \"Define `cur` as the best sum of a subarray ending exactly at index i. It is either `a[i]` alone or the best subarray ending at i-1 extended by `a[i]`, so `cur = max(a[i], cur + a[i])`. The global optimum is the maximum of `cur` over all i, since the optimal subarray ends somewhere. This is a one-dimensional dynamic program; as each step reads only the previous value, a single variable suffices: O(n) time, O(1) space.\" Interviewer: \"And for the maximum product?\" Candidate: \"A negative factor can turn the smallest product into the largest, so both the maximum and the minimum product ending at i are maintained.\""
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`121`",
+              "Best Time to Buy and Sell Stock",
+              "Easy",
+              "Running minimum price; best profit so far"
+            ],
+            [
+              "`169`",
+              "Majority Element",
+              "Easy",
+              "Boyer-Moore voting"
+            ],
+            [
+              "`268`",
+              "Missing Number",
+              "Easy",
+              "Sum formula, XOR, or cyclic sort"
+            ],
+            [
+              "`448`",
+              "Find All Numbers Disappeared in an Array",
+              "Easy",
+              "Place each value at its index, or negate as a marker"
+            ],
+            [
+              "`53`",
+              "Maximum Subarray",
+              "Medium",
+              "Kadane: extend or restart"
+            ],
+            [
+              "`122`",
+              "Best Time to Buy and Sell Stock II",
+              "Medium",
+              "Sum of all positive day-to-day rises"
+            ],
+            [
+              "`238`",
+              "Product of Array Except Self",
+              "Medium",
+              "Left products pass, then right products pass"
+            ],
+            [
+              "`75`",
+              "Sort Colors",
+              "Medium",
+              "Dutch national flag with lo, mid, hi"
+            ],
+            [
+              "`189`",
+              "Rotate Array",
+              "Medium",
+              "Reverse all, reverse first k, reverse the rest"
+            ],
+            [
+              "`229`",
+              "Majority Element II",
+              "Medium",
+              "Boyer-Moore with two candidates plus a count check"
+            ],
+            [
+              "`152`",
+              "Maximum Product Subarray",
+              "Medium",
+              "Track current max and min product"
+            ],
+            [
+              "`287`",
+              "Find the Duplicate Number",
+              "Medium",
+              "Cyclic placement, or fast and slow pointers on the index graph"
+            ],
+            [
+              "`41`",
+              "First Missing Positive",
+              "Hard",
+              "Cyclic sort; answer is the first index with a wrong value"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Kadane: `cur = max(a[i], cur + a[i])`, `best = max(best, cur)`; the initial value is `a[0]` so that negative arrays are handled.\n- Most one-pass techniques carry a constant-size summary (minimum so far, left product, candidate and count) instead of auxiliary arrays.\n- Cyclic sort treats the array as a hash table in which value `v` belongs at index `v - 1`; `while` and the duplicate check are required.\n- The Dutch flag does not advance `mid` after a swap with `hi`; rotation is three reversals; Boyer-Moore needs a verification pass unless a majority is guaranteed.\n- All are O(n) time, O(1) extra space."
+        }
+      ]
+    }
+  ]
+}

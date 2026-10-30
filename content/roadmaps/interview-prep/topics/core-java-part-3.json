@@ -1,0 +1,955 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "73-117",
+    "planDays": "1–2"
+  },
+  "sections": [
+    {
+      "id": "ch-3-3",
+      "type": "concept",
+      "title": "Inheritance",
+      "subtopicId": "3-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Suppose your library system has `Book`, `Magazine` and `DVD`. All three have a title and can be borrowed. Copying the same fields and methods into three classes is tedious and error-prone: fix a bug in one and the other two keep it. **Inheritance** lets a class reuse another class's members by declaring `extends`: the new class (the **subclass**, or child) automatically has everything the **superclass** (parent) has, and may add to it or change it. Inheritance also creates an *is-a* relationship that the type system understands, which is what makes polymorphism, the next chapter's subject, possible.\n\nInheritance is also the most over-used feature in object-oriented programming. This chapter teaches the mechanics precisely, and ends with when not to use it.\n\n### extends and super"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Hier {\n    static class Vehicle {\n        protected final String name;\n        Vehicle(String name) {\n            this.name = name;\n            System.out.println(\"Vehicle(\" + name + \")\");\n        }\n        Vehicle describe() { System.out.println(\"Vehicle \" + name); return this; }\n        static String kind() { return \"vehicle\"; }\n    }\n    static class Car extends Vehicle {\n        private final int doors;\n        Car(String name, int doors) {\n            super(name);                       // must come first\n            this.doors = doors;\n            System.out.println(\"Car(\" + doors + \")\");\n        }\n        Car(String name) { this(name, 4); }\n        @Override Car describe() {             // covariant return type\n            System.out.println(\"Car \" + name + \" doors=\" + doors);\n            return this;\n        }\n        static String kind() { return \"car\"; } // hides, does not override\n    }\n    static class Truck extends Vehicle {\n        Truck() { super(\"truck\"); }\n    }\n\n    public static void main(String[] args) {\n        Car c = new Car(\"Mini\").describe();\n        Vehicle v = c;\n        System.out.println(v.describe() == c);\n        System.out.println(Vehicle.kind() + \" \" + Car.kind());\n        new Truck();\n    }\n}",
+          "title": "Hier.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Hier.java\nVehicle(Mini)\nCar(4)\nCar Mini doors=4\nCar Mini doors=4\ntrue\nvehicle car\nVehicle(truck)",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. Each class extends exactly one other class: Java has single inheritance of classes (multiple inheritance of *type* is available through interfaces, covered later). Every class without an `extends` clause extends `java.lang.Object`, so every object has `toString`, `equals`, `hashCode` and friends. The superclass constructor runs first (`Vehicle(Mini)` printed before `Car(4)`), which is why a subclass constructor starts with `super(...)`. The keyword `super` has two uses: `super(args)` as the first statement of a constructor calls a superclass constructor, and `super.method()` calls the superclass's version of a method from inside an override. `Car.describe()` could have called `super.describe()` to reuse the parent's behaviour and then added to it.\n\n#### Constructors in a hierarchy\n\nConstructors are **not inherited**. If you write no `super(...)` call, the compiler inserts `super();` for you, and that fails to compile if the parent has no no-argument constructor:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Bad1 {\n    static class Parent {\n        Parent(String name) { }\n    }\n    static class Child extends Parent {\n        Child() { }              // implicit super() - Parent has no such constructor\n    }\n}",
+          "title": "Bad1.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Bad1.java\nBad1.java:6: error: constructor Parent in class Parent cannot be applied to given types;\n        Child() { }              // implicit super() - Parent has no such constructor\n                ^\n  required: String\n  found:    no arguments\n  reason: actual and formal argument lists differ in length",
+          "title": "Compile it"
+        },
+        {
+          "type": "markdown",
+          "text": "The fix is an explicit `super(\"something\")`. Since Java 25 (JEP 513, flexible constructor bodies) you may run statements *before* `super(...)` as long as they do not use `this`, for example validating an argument or computing a value to pass up. That is not runnable on Java 21, so earlier code resorts to static helper methods for the same job.\n\n### Overriding rules\n\nA subclass **overrides** an inherited instance method by declaring one with the same name and the same parameter types. The rules the compiler enforces are the Liskov Substitution Principle in code form: anything that works with the parent must still work with the child."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Rule"
+          ],
+          "rows": [
+            [
+              "Access",
+              "Cannot be weaker than the parent's (a `public` method cannot become package-private); may be wider."
+            ],
+            [
+              "Return type",
+              "Same, or a subtype of the parent's (a **covariant return**: `Car describe()` overrides `Vehicle describe()`). Primitives must match exactly."
+            ],
+            [
+              "Checked exceptions",
+              "May throw fewer, or narrower, checked exceptions than the parent; never broader new ones. Unchecked exceptions are unrestricted."
+            ],
+            [
+              "`final` method",
+              "Cannot be overridden."
+            ],
+            [
+              "`static` method",
+              "Cannot be overridden; a same-signature static method **hides** the parent's."
+            ],
+            [
+              "`private` method",
+              "Not inherited, so not overridable; the subclass method is unrelated."
+            ],
+            [
+              "Annotation",
+              "Write `@Override` always."
+            ]
+          ],
+          "caption": "Overriding rules."
+        },
+        {
+          "type": "markdown",
+          "text": "Here is one class that breaks four of those rules at once, together with what the compiler says (shortened):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Bad2 {\n    static class Parent {\n        public void run() { }\n        final void lock() { }\n        void load() throws java.io.IOException { }\n        Number size() { return 1; }\n    }\n    static class Child extends Parent {\n        void run() { }                   // weaker access\n        void lock() { }                  // final in parent\n        void load() throws Exception { } // broader checked exception\n        String size() { return \"\"; }     // not a subtype of Number\n    }\n}",
+          "title": "Bad2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Bad2.java\nBad2.java:9: error: run() in Child cannot override run() in Parent\n  attempting to assign weaker access privileges; was public\nBad2.java:10: error: lock() in Child cannot override lock() in Parent\n  overridden method is final\nBad2.java:11: error: load() in Child cannot override load() in Parent\n  overridden method does not throw Exception\nBad2.java:12: error: size() in Child cannot override size() in Parent\n  return type String is not compatible with Number",
+          "title": "Compile it (shortened)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Always write @Override\n\n`@Override` asks the compiler to verify that you really override something. Without it, a typo (`tostring()`) or a wrong parameter type silently creates a *new* method that is never called polymorphically. The next chapter shows exactly this bug with `equals(Point)` versus `equals(Object)`.\n\n#### Hiding is not overriding\n\nA `static` method with the same signature in a subclass, and a field with the same name, **hide** the parent's. Which one you get depends on the *declared type* of the expression, not on the object:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Hide {\n    static class P {\n        static String who() { return \"P\"; }\n        String id() { return \"P.id\"; }\n    }\n    static class C extends P {\n        static String who() { return \"C\"; }\n        @Override String id() { return \"C.id+\" + super.id(); }\n    }\n    public static void main(String[] a) {\n        P p = new C();\n        System.out.println(p.who() + \" \" + p.id());\n    }\n}",
+          "title": "Hide.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Hide.java\nP C.id+P.id",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "The variable `p` is declared `P`, so `p.who()` is `P.who()`, even though the object is a `C`. The instance method `id()` was overridden, so the object's real class decided. Rule of thumb: only instance methods are polymorphic; fields and static methods are looked up using the declared type.\n\n### final classes and methods\n\n`final` on a method forbids overriding; on a class forbids extending (`String`, `Integer`, and all records are final). Use `final` when a class is not designed for extension, which is true of most classes. A class that allows subclassing must document how overridable methods are used by other methods (the \"self-use\" contract), otherwise a subclass author cannot know which override is safe. Joshua Bloch's advice in *Effective Java*, \"design and document for inheritance or else prohibit it\", is the standing guidance. Sealed classes (a later chapter in this Part) offer a middle path: a closed set of permitted subclasses.\n\n### protected and the fragile base class\n\n`protected` lets subclasses reach into a parent's fields and helper methods. It is convenient, and it welds the subclass to the parent's internals: if the parent later changes how it stores its data, every subclass that touched the field breaks. This is the **fragile base class problem**. A classic example, from *Effective Java*: a `CountingSet` that extends `HashSet` and overrides `add` and `addAll` to count insertions."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Collection;\nimport java.util.HashSet;\nimport java.util.List;\n\npublic class CS {\n    static class CountingSet<E> extends HashSet<E> {\n        int added;\n        @Override public boolean add(E e) { added++; return super.add(e); }\n        @Override public boolean addAll(Collection<? extends E> c) {\n            added += c.size();\n            return super.addAll(c);\n        }\n    }\n    public static void main(String[] a) {\n        CountingSet<String> s = new CountingSet<>();\n        s.addAll(List.of(\"a\", \"b\", \"c\"));\n        System.out.println(s.added);\n    }\n}",
+          "title": "CS.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java CS.java\n6",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "Three elements were added but the counter says 6: the inherited `addAll` implementation calls `add` for each element, so each element was counted twice. The subclass depended on an implementation detail of the parent, which the parent never promised and may change in any release.\n\nThe remedy is usually **composition**: instead of `class CountingSet extends HashSet`, write a class that has a `Set` field and forwards calls to it, adding the counting on top. The forwarding class depends only on the public contract of `Set`. A later chapter on class design develops this fully (\"favour composition over inheritance\").\n\n### When to extend\n\nUse inheritance when all of these are true: the relationship really is *is-a* in every context (a `Car` is a `Vehicle` everywhere a vehicle is accepted), the parent was designed for extension, and you want substitutability (callers should be able to use a child where a parent is expected). Do not use it just to reuse code: a `Stack` that extends `ArrayList` can be indexed and cleared from outside, and a `Square` that extends `Rectangle` breaks the promise that setting the width does not change the height. When in doubt, use composition or an interface."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Run `javac -Xlint:all` to get warnings for risky overriding patterns. It also flags missing `serialVersionUID`, raw types and many other problems at no cost. Many teams make warnings fail the build."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Can you override a static method? A private method? A constructor? No to all three. A static method with the same signature hides the parent's, resolved by declared type. A private method is not inherited, so a same-named method in the subclass is a different method. Constructors are not inherited and cannot be overridden; you call them via `super(...)`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What happens if a superclass constructor calls an overridden method? The overridden version in the subclass runs while the subclass's fields are still at their default values, because the subclass initialisers have not run yet. Avoid calling overridable methods in constructors."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Single inheritance of classes with `extends`; every class ends at `Object`. Constructors are never inherited; `super(...)` chains them, superclass first.\n\n- Overriding: same signature, access not weaker, covariant return, no broader checked exceptions, never `final` or `static`. Always write `@Override`.\n- Fields and static methods are hidden, not overridden; the declared type decides which one you get.\n- `protected` couples subclasses to parent internals (the fragile base class problem).\n- Prefer composition; extend only for a true, designed-for-extension is-a relationship."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-4",
+      "type": "concept",
+      "title": "Polymorphism and Dynamic Dispatch",
+      "subtopicId": "3-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Polymorphism (\"many forms\") is the payoff of inheritance and interfaces: you write code against a general type, and each object responds in its own way. A method `printAll(List<Shape> shapes)` calls `shape.area()` and gets a circle's area for circles and a rectangle's for rectangles, without a single `if`. New shapes can be added later and `printAll` never changes. To use this safely you must know *which* decisions the compiler makes and which the JVM makes at run time. Mixing them up is the cause of a famous category of interview trick questions and of real bugs.\n\n### Static type versus dynamic type\n\nEvery reference expression has two types. The **static type** (declared type) is what the source code says: in `Animal a =` `new Dog();` the static type of `a` is `Animal`. The **dynamic type** (runtime type) is the actual class of the object the reference points to: `Dog`. The compiler knows only static types. It uses them to decide what you are allowed to write: `a.bark()` is rejected if `Animal` has no `bark()`, even though the object could do it.\n\nThe JVM knows dynamic types. When a method is invoked on an object, the JVM picks the implementation by the object's real class. That is **dynamic dispatch**, also called late binding or runtime polymorphism.\n\n### Overriding versus overloading\n\nThese two words sound alike and work in opposite ways."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Overloading",
+            "Overriding"
+          ],
+          "rows": [
+            [
+              "What",
+              "Several methods in one class (or hierarchy) with the same name and different parameter lists",
+              "A subclass replaces an inherited instance method with the same signature"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Overloading",
+            "Overriding"
+          ],
+          "rows": [
+            [
+              "Chosen",
+              "At **compile time**, from the static types of the arguments",
+              "At **run time**, from the dynamic type of the receiver object"
+            ],
+            [
+              "Also called",
+              "Static / early binding",
+              "Dynamic / late binding"
+            ],
+            [
+              "Return type",
+              "May differ (but cannot be the only difference)",
+              "Same or covariant"
+            ]
+          ],
+          "caption": "Overloading vs overriding."
+        },
+        {
+          "type": "markdown",
+          "text": "The program below shows all the dispatch decisions in one place: field hiding, overriding, and an overload that looks like an override."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Dispatch {\n    static class Animal {\n        String name = \"animal-field\";\n        String sound() { return \"...\"; }\n        String greet(Animal other) { return \"Animal meets Animal\"; }\n    }\n    static class Dog extends Animal {\n        String name = \"dog-field\";\n        @Override String sound() { return \"Woof\"; }\n        String greet(Dog other) { return \"Dog meets Dog\"; }   // overload, NOT an override\n    }\n\n    public static void main(String[] args) {\n        Animal a = new Dog();\n        System.out.println(a.sound());         // dynamic: Woof\n        System.out.println(a.name);            // fields use the static type\n        System.out.println(((Dog) a).name);    // cast changes the static type\n        Dog d = new Dog();\n        System.out.println(d.greet(d));        // Dog meets Dog\n        System.out.println(a.greet(d));        // overload chosen by static type of a\n        Animal plain = new Animal();\n        try { Dog bad = (Dog) plain; }\n        catch (ClassCastException e) {\n            System.out.println(\"CCE: \" + e.getMessage().substring(0, 60));\n        }\n        Object o = d;\n        if (o instanceof Dog dd && dd.name.startsWith(\"dog\")) {\n            System.out.println(\"pattern ok: \" + dd.sound());\n        }\n        System.out.println(null instanceof Animal);\n    }\n}",
+          "title": "Dispatch.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Dispatch.java\nWoof\nanimal-field\ndog-field\nDog meets Dog\nAnimal meets Animal\nCCE: class Dispatch$Animal cannot be cast to class Dispatch$Dog (\npattern ok: Woof\nfalse",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice, line by line:\n\n- `a.sound()` prints `Woof`: the method is overridden, so the object's class (`Dog`) decides.\n- `a.name` prints `animal-field`: **fields are never polymorphic**. A `Dog` object contains two separate `name` fields (one from `Animal`, one that hides it), and the static type picks which.\n- `a.greet(d)` prints `Animal meets Animal`. `Dog.greet(Dog)` does not override `Animal.greet(Animal)`; it is an overload with a different parameter type. The compiler looked at `a`'s static type `Animal`, found only `greet(Animal)`, and generated a call to exactly that method. Adding `@Override` to `Dog.greet(Dog)` would have turned this into a compile error and saved you.\n- The `ClassCastException` message names both classes. Casting down to a subtype is checked at run time.\n- `null instanceof Animal` is `false`; `instanceof` never throws on `null`.\n\n#### The classic equals bug\n\nThe same trap appears in real code. Here `equals(P)` overloads rather than overrides `Object.equals(Object)`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.HashSet;\nimport java.util.Set;\n\npublic class Over {\n    static class P {\n        final int x;\n        P(int x) { this.x = x; }\n        public boolean equals(P other) { return other != null && x == other.x; }  // overload!\n        @Override public int hashCode() { return x; }\n    }\n    static void show(Object o) { System.out.println(\"Object\"); }\n    static void show(String s) { System.out.println(\"String\"); }\n    static void pick(long v) { System.out.println(\"long\"); }\n    static void pick(Integer v) { System.out.println(\"Integer\"); }\n    static void pick(int... v) { System.out.println(\"varargs\"); }\n\n    public static void main(String[] args) {\n        P a = new P(1), b = new P(1);\n        Object ob = b;\n        System.out.println(a.equals(b) + \" \" + a.equals(ob));\n        Set<P> s = new HashSet<>();\n        s.add(a);\n        System.out.println(s.contains(b));\n        Object o = \"text\";\n        show(o);                 // static type Object, even though the object is a String\n        show(\"text\");\n        pick(5);\n    }\n}",
+          "title": "Over.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Over.java\ntrue false\nfalse\nObject\nString\nlong",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "`a.equals(b)` is true (the overload matches), but `a.equals(ob)` is false because the static type of `ob` is `Object`, which selects `Object.equals`, the inherited identity version. `HashSet.contains` calls `equals(Object)`, so the set does not find the \"equal\" point. With `@Override` on that method the compiler would have refused. The last three lines show overload resolution: it uses the static type (`show(o)` picks the `Object` version), and prefers widening (`int` to `long`) over boxing (`Integer`) over varargs. Phases are tried in that order: no boxing and no varargs first, then boxing, then varargs.\n\n### How dynamic dispatch works"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 110.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M305.0 68.0 L439.0 68.0 C440.7 68.0 442.0 66.7 442.0 65.0 L442.0 5.0 C442.0 3.3 440.7 2.0 439.0 2.0 L305.0 2.0 C303.3 2.0 302.0 3.3 302.0 5.0 L302.0 65.0 C302.0 66.7 303.3 68.0 305.0 68.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 23.0 L152.0 23.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M252.0 23.0 L302.0 23.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 38.0 L99.0 38.0 C100.7 38.0 102.0 36.7 102.0 35.0 L102.0 11.0 C102.0 9.3 100.7 8.0 99.0 8.0 L5.0 8.0 C3.3 8.0 2.0 9.3 2.0 11.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 38.0 L249.0 38.0 C250.7 38.0 252.0 36.7 252.0 35.0 L252.0 11.0 C252.0 9.3 250.7 8.0 249.0 8.0 L155.0 8.0 C153.3 8.0 152.0 9.3 152.0 11.0 L152.0 35.0 C152.0 36.7 153.3 38.0 155.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 23.0 L146.6 20.4 L146.6 25.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 23.0 L296.6 20.4 L296.6 25.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"31.9\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"40.3\" lengthAdjust=\"spacingAndGlyphs\">Shape s = ...</text><text x=\"178.5\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"47.0\" lengthAdjust=\"spacingAndGlyphs\">object on heap</text><text x=\"32.9\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.3\" lengthAdjust=\"spacingAndGlyphs\">(static type)</text><text x=\"176.2\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"51.6\" lengthAdjust=\"spacingAndGlyphs\">header -&gt; Circle</text><text x=\"341.8\" y=\"28.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"60.3\" lengthAdjust=\"spacingAndGlyphs\">Circle method table</text><text x=\"340.6\" y=\"37.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"62.8\" lengthAdjust=\"spacingAndGlyphs\">area() -&gt; Circle.area</text><text x=\"339.4\" y=\"45.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"65.2\" lengthAdjust=\"spacingAndGlyphs\">toString() -&gt; Object's</text><text x=\"106.6\" y=\"88.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"190.9\" lengthAdjust=\"spacingAndGlyphs\">s.area(): the object's real class picks the method at run time</text></svg>",
+          "width": 444,
+          "caption": "A call through a superclass reference reaches the method of the object's real class through that class's method table.",
+          "alt": "Shape s = ... object on heap | (static type) header -> Circle Circle method table | area() -> Circle.area | toString() -> Object's | s.area(): the object's real class picks the method at run time"
+        },
+        {
+          "type": "markdown",
+          "text": "Conceptually each loaded class has a **method table** (a *vtable*): an array of pointers to the implementation of each virtual method. A subclass copies its parent's table and replaces the entries for methods it overrides; new methods are appended. Each object's header points to its class, so `a.sound()` becomes \"load the class from the object, index into the table at the slot number assigned to `sound`, jump\". The slot number is the same in every subclass, which is why the compiler can emit a fixed instruction while the target varies. Interface methods use a similar structure (an itable), searched by interface. This describes the idea; HotSpot's exact layout is an implementation detail.\n\nYou can see the compile-time part in bytecode. Take this small program:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Call {\n    static class A { void hi() { System.out.println(\"A\"); } }\n    static class B extends A { @Override void hi() { System.out.println(\"B\"); } }\n    static void run(A a) { a.hi(); }\n    public static void main(String[] args) { run(new B()); }\n}",
+          "title": "Call.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Call.java && javap -c -p Call\n  static void run(Call$A);\n    Code:\n       0: aload_0\n       1: invokevirtual #7     // Method Call$A.hi:()V\n       4: return\n$ javap -c -p Dispatch | grep invokevirtual      # trimmed\n 12: invokevirtual #16   // Method Dispatch$Animal.sound:()Ljava/lang/String;\n 54: invokevirtual #33   // Method Dispatch$Dog.greet:(LDispatch$Dog;)Ljava/lang/String;\n 65: invokevirtual #37   // Method Dispatch$Animal.greet:(LDispatch$Animal;)Ljava/lang/String;",
+          "title": "Bytecode of run(), then the calls in Dispatch"
+        },
+        {
+          "type": "markdown",
+          "text": "The instruction names `Call$A.hi`, the *static* type, and the JVM resolves it to `B.hi` when run with a `B`. The last two lines are the overload story: the compiler wrote the chosen parameter types (`Dog` or `Animal`) into the method descriptor. There was no `invokevirtual` for `Dog.greet(Animal)` because that method does not exist; overload choice is finished before the program runs.\n\nThe five invoke instructions tell you how each call is bound:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Instruction",
+            "Used for"
+          ],
+          "rows": [
+            [
+              "`invokevirtual`",
+              "Ordinary instance method calls on a class type; dispatched at run time."
+            ],
+            [
+              "`invokeinterface`",
+              "Calls through an interface type; dispatched at run time."
+            ],
+            [
+              "`invokespecial`",
+              "Constructors, `super.method()` calls and private methods: no dispatch, target fixed."
+            ],
+            [
+              "`invokestatic`",
+              "Static methods; no receiver object."
+            ],
+            [
+              "`invokedynamic`",
+              "Lambdas, string concatenation: target decided on first call by a bootstrap method."
+            ]
+          ],
+          "caption": "JVM invocation instructions."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Is dynamic dispatch slow? Less than you would expect. The JIT compiler (Part 1, Part 9) watches which classes actually reach a call site. If only one does (monomorphic), it inlines that method behind a cheap class check; with two, it inlines both (bimorphic). Only call sites that see many classes (megamorphic) pay for a real table lookup. Class hierarchy analysis lets it skip dispatch entirely when no loaded subclass overrides the method."
+        },
+        {
+          "type": "markdown",
+          "text": "### Casting and instanceof\n\nAn **upcast** (treating a `Dog` as an `Animal`) is always safe and needs no syntax: `Animal a = new Dog();`. A **downcast** goes the other way, `Dog d = (Dog) a;`, and is checked by the JVM at run time: if the object is not a `Dog` (or a subclass), you get `ClassCastException`. The compiler also rejects casts between unrelated classes (`(String) new Dog()` does not compile), but allows any cast between related types and between a class and an interface, because the runtime object might satisfy it.\n\nBefore a downcast, test with `instanceof`. Since Java 16, pattern matching for `instanceof` tests and casts in one step:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Old style\nif (shape instanceof Circle) {\n    Circle c = (Circle) shape;\n    System.out.println(c.radius());\n}\n// Pattern matching (Java 16+): c is in scope where the test is known to be true\nif (shape instanceof Circle c && c.radius() > 1.0) {\n    System.out.println(c.radius());\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "Frequent downcasting is a smell. If you find a chain of `if (x instanceof A) ... else if (x instanceof B) ...` repeated in several places, the behaviour probably belongs in a method on the types themselves (polymorphism), or, for a closed set of types, in a `switch` over a sealed hierarchy with pattern matching, covered later in this Part. Note also that after generics erasure you cannot write `x instanceof List<String>`; only the raw type can be tested at run time.\n\n### Making polymorphism work for you\n\nThe point is to replace type-testing conditionals with method calls. Here is the standard before-and-after, with a discount rule per customer type:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Before: every new customer type means editing this method\ndouble discount(Customer c) {\n    if (c instanceof Regular) return 0.0;\n    else if (c instanceof Premium) return 0.10;\n    else return 0.25;\n}\n\n// After: each type owns its rule; adding a type changes no existing code\nabstract class Customer { abstract double discount(); }\nclass Regular extends Customer { double discount() { return 0.0; } }\nclass Premium extends Customer { double discount() { return 0.10; } }"
+        },
+        {
+          "type": "markdown",
+          "text": "This is the open/closed principle at work (open for extension, closed for modification), which the class design chapter returns to."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Calling an overridable method on `this` from a constructor, a field read through the wrong type, an overload that is not an override, a static method called \"through an object\": all four are the same lesson. Only instance methods are late-bound; everything else is decided by static types or by the order of initialisation."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between method overloading and overriding? Which is compile-time and which is run-time polymorphism? Overloading: same name, different parameters, chosen at compile time by static argument types. Overriding: subclass replaces a parent's instance method with the same signature, chosen at run time by the receiver's actual class. Overriding is the true (run-time) polymorphism."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What does this print? `Animal a = new Dog(); System.out.println(a.name);` when both classes declare a field `name`. The `Animal` field, because fields are resolved by the static type. Only methods are dispatched dynamically."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Every expression has a static type (compiler) and a dynamic type (JVM). Instance methods dispatch on the dynamic type; fields, static methods and overload choice use the static type.\n\n- Overloading is chosen at compile time; overriding at run time. Always use `@Override`.\n- Dispatch is a method-table lookup in concept; the JIT removes most of the cost at monomorphic call sites.\n- Upcasts are implicit and safe; downcasts are runtime-checked. Use `instanceof` patterns, but prefer polymorphic methods over type tests."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-5",
+      "type": "concept",
+      "title": "Abstract Classes and Interfaces",
+      "subtopicId": "3-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Inheritance lets a subclass reuse code. But often you want something different: to say \"anything that can be drawn\", \"anything that can be compared\", without saying how it is drawn or compared, and without forcing all such things into one family tree. Java gives you two tools for this. An **abstract class** is a partly finished class that cannot be instantiated. An **interface** is a pure contract, a list of capabilities that any class, anywhere in the hierarchy, can promise to provide. Knowing when to use which is a staple of design discussions and interviews.\n\n### Abstract classes\n\nAn `abstract` class is declared with the keyword and may contain **abstract methods**: a signature with no body. A concrete subclass must implement every abstract method, or itself be declared abstract. You cannot call `new` on an abstract class; its purpose is to be extended.\n\nWhy would you want that? To share real code and state between related classes while forcing each to supply the part that differs (the **template method** idea). `Shape` below holds the colour and the drawing routine, but leaves `area()` to the subclasses:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Shapes {\n    interface Drawable {\n        void draw();\n        default String label() { return \"Drawable:\" + name(); }\n        private String name() { return getClass().getSimpleName(); }\n        static Drawable of(String text) { return () -> System.out.println(\"text \" + text); }\n    }\n\n    static abstract class Shape implements Drawable {\n        private final String color;\n        Shape(String color) { this.color = color; }       // constructors are allowed\n        abstract double area();                           // subclasses must supply this\n        public void draw() {\n            System.out.println(color + \" \" + getClass().getSimpleName()\n                    + \" area=\" + String.format(\"%.2f\", area()));\n        }\n    }\n    static class Circle extends Shape {\n        private final double r;\n        Circle(String c, double r) { super(c); this.r = r; }\n        double area() { return Math.PI * r * r; }\n    }\n    static class Rect extends Shape {\n        private final double w, h;\n        Rect(String c, double w, double h) { super(c); this.w = w; this.h = h; }\n        double area() { return w * h; }\n    }\n\n    public static void main(String[] args) {\n        Shape[] shapes = { new Circle(\"red\", 1.5), new Rect(\"blue\", 2, 3) };\n        for (Shape s : shapes) {\n            s.draw();\n            System.out.println(s.label());\n        }\n        Drawable.of(\"hello\").draw();\n        // new Shape(\"x\");   // compile error: Shape is abstract; cannot be instantiated\n    }\n}",
+          "title": "Shapes.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Shapes.java\nred Circle area=7.07\nDrawable:Circle\nblue Rect area=6.00\nDrawable:Rect\ntext hello",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `Shape` is abstract but has a constructor, a `private final` field and a concrete method: abstract classes are real classes with state. The loop is polymorphism in action: `s.draw()` runs `Shape.draw`, which calls `area()`, which is dispatched to the circle's or rectangle's version. An abstract class may have no abstract methods at all (just to block instantiation), and a class with even one abstract method must itself be declared abstract.\n\n### Interfaces\n\nAn **interface** declares a set of methods that implementing classes must provide. A class says `implements Drawable` and may implement any number of interfaces. Members of an interface are implicitly `public`; fields are implicitly `public static final` constants. An interface has no constructors and no instance state.\n\nThink of an interface as a role. `Comparable` means \"can be ordered\", `Runnable` means \"can be run\", `AutoCloseable` means \"can be closed\". A `String`, an `Integer` and your own `Book` class share nothing in the hierarchy yet all can be `Comparable`. Code written against the interface works with all of them, and tests can substitute simple fake implementations.\n\n#### Default, static and private methods (Java 8 and 9)\n\nBefore Java 8 an interface could not change without breaking every implementor: adding a method broke all existing classes. **Default methods** (Java 8) have a body and are inherited unless a class overrides them, which let the library designers add `List.sort` and `Collection.stream` without breaking decades of existing code. **Static methods** in interfaces (Java 8) hold factories and helpers belonging to the contract (`Drawable.of(...)`, `List.of(...)`); they are not inherited by implementing classes and must be called through the interface name. **Private methods** (Java 9) let default methods share code without exposing it, as `name()` does in `Drawable`.\n\n#### Multiple inheritance of behaviour: the diamond rules\n\nBecause a class may implement several interfaces that now carry default methods, two inherited defaults can collide. The compiler applies three rules, in this order:\n\n1. **A class wins.** A method declared in the class or inherited from a superclass beats any interface default.\n2. **The most specific interface wins.** If one interface extends the other and both define the default, the sub-interface's version is used.\n3. **Otherwise the class must resolve it.** If two unrelated interfaces provide the same default, the class will not compile until it overrides the method, optionally choosing one with `Interface.super.method()`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Dia {\n    interface A { default String hi() { return \"A\"; } }\n    interface B extends A { default String hi() { return \"B\"; } }\n    interface C { default String hi() { return \"C\"; } }\n    static class Base { public String hi() { return \"Base\"; } }\n    static class X implements A, B { }              // rule 2: B is more specific than A\n    static class Y extends Base implements C { }    // rule 1: the class (Base) wins\n    // static class Z implements A, C { }           // rule 3: does not compile, see below\n\n    public static void main(String[] a) {\n        System.out.println(new X().hi() + \" \" + new Y().hi());\n    }\n}",
+          "title": "Dia.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Dia.java\nB Base\n$ java Dia.java\nDia.java:9: error: types A and C are incompatible;\n    static class Z implements A, C { }\n           ^\n  class Z inherits unrelated defaults for hi() from types A and C",
+          "title": "Run it, then uncomment class Z"
+        },
+        {
+          "type": "markdown",
+          "text": "The fix for `Z` is to override and pick explicitly: `public String hi() { return A.super.hi() + C.super.hi(); }`. This is the only case where you must write code to resolve the clash.\n\n### Functional interfaces: a teaser\n\nAn interface with exactly one abstract method is a **functional interface**. A lambda expression or method reference can then stand in for an implementing class. `Drawable.of` above returned `() -> System.out.println(...)` for the same reason (`Drawable` has a single abstract method, `draw`)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.function.IntBinaryOperator;\n\npublic class Fi {\n    @FunctionalInterface interface Op { int apply(int a, int b); }\n\n    public static void main(String[] args) {\n        Op add = (a, b) -> a + b;\n        Op mul = (a, b) -> a * b;\n        System.out.println(add.apply(3, 4) + \" \" + mul.apply(3, 4));\n        IntBinaryOperator max = Math::max;\n        System.out.println(max.applyAsInt(3, 9));\n    }\n}",
+          "title": "Fi.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Fi.java\n7 12\n9",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "`@FunctionalInterface` is optional but makes the compiler check the single-method rule. Part 7 covers lambdas, the standard interfaces in `java.util.function` and streams in depth.\n\n### Marker interfaces\n\nAn interface with no methods at all is a **marker interface**; it just tags a class. `Serializable` says \"this class may be converted to bytes\", `Cloneable` changes how `Object.clone` behaves, `RandomAccess` tells algorithms that indexed access is fast. They are checked with `instanceof`. Annotations are the modern way to tag things, but the marker interface has one real advantage: it is a *type*, so a method can demand it in its signature.\n\n### Abstract class or interface?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Abstract class",
+            "Interface"
+          ],
+          "rows": [
+            [
+              "Instance state (fields)",
+              "Yes",
+              "No (constants only)"
+            ],
+            [
+              "Constructors",
+              "Yes",
+              "No"
+            ],
+            [
+              "How many can a class use",
+              "One (`extends`)",
+              "Any number (`implements`)"
+            ],
+            [
+              "Method bodies",
+              "Any visibility, any kind",
+              "`default`, `static`, `private` only"
+            ],
+            [
+              "Method access",
+              "Any",
+              "Public (abstract/default), private helpers"
+            ],
+            [
+              "Models",
+              "A family with shared code (\"is-a-kind-of\")",
+              "A capability (\"can-do\"), usable by unrelated classes"
+            ]
+          ],
+          "caption": "Abstract class versus interface."
+        },
+        {
+          "type": "markdown",
+          "text": "Practical guidance: **start with an interface** for the contract. Add an abstract class if several implementations genuinely share state or logic, and have it implement the interface. The JDK does this repeatedly: `List` (interface) with `AbstractList` (skeleton class) with `ArrayList` (concrete). Callers depend on `List`, never on `ArrayList`, which is how you can swap implementations later. Choose an abstract class when you need a constructor, protected hooks, or non-public state; choose an interface when unrelated classes may need to play the role, which is almost always the more flexible choice."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Spring and most backend code is written against interfaces. A `UserRepository` interface with a JPA implementation in production and an in-memory fake in tests; a `PaymentGateway` interface with one implementation per provider. The container wires the implementation in, and callers never name the concrete class. Spring Data even generates the implementation of your repository interface at start-up."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Name interfaces by role (`Comparable`, `Closeable`, `PaymentGateway`), not with an `I` prefix. Java style does not use `IPaymentGateway`. If an implementation has no better name, `Default...` or `...Impl` is common."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Can an interface have a constructor or instance variables? What happens when two interfaces provide the same default method? No constructor and no instance state; fields are `public static final`. If a class inherits two unrelated defaults with the same signature, it does not compile until it overrides the method (it can delegate with `A.super.m()`). A class method always wins over an interface default, and a more specific sub-interface wins over its parent."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Abstract class versus interface: which would you choose, and why? Interface by default, because a class can implement many and the contract stays free of implementation. Abstract class when implementations share state or code, needing constructors or protected helpers. Often both: interface plus an abstract skeleton."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "An abstract class is a partial class with state and constructors; an interface is a contract that unrelated classes can implement.\n\n- Interfaces may carry `default`, `static` and `private` methods; they carry constants but no instance state.\n- Diamond rules: class wins, then the most specific interface, otherwise you must override.\n- A functional interface has one abstract method and can be implemented by a lambda.\n- Design to the interface; add an abstract skeleton class only when implementations share code."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-6",
+      "type": "concept",
+      "title": "The Object Class",
+      "subtopicId": "3-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every class in Java, whether you wrote `extends` or not, descends from `java.lang.Object`. It is the single root of the hierarchy, so a variable of type `Object` can hold any reference, and every object responds to a small set of methods: `equals`, `hashCode`, `toString`, `getClass`, `clone`, the wait/notify family and the legacy `finalize`. Collections, logging, debuggers and frameworks all rely on these. Overriding them correctly is among the most tested topics in Java interviews and among the most common sources of subtle bugs, so this chapter spends most of its time on `equals` and `hashCode`.\n\n### toString\n\n`toString()` returns a text representation of the object. The default implementation returns the class name, an `@`, and the hash code in hexadecimal, such as `java.lang.Object@659e0bfd` (typical output; the number varies between runs). It is useless to humans. `System.out.println(obj)`, string concatenation, loggers and debuggers all call `toString`, so a readable override is the cheapest debugging aid there is:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Override\npublic String toString() {\n    return \"Point[x=\" + x + \", y=\" + y + \"]\";\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "Include the fields that identify the object, never secrets (passwords, tokens, card numbers), because `toString` ends up in log files. Records and IDE generators produce this for you.\n\n### getClass\n\n`getClass()` returns the `Class` object describing the runtime class of an object; it is `final` and cannot be overridden. `obj.getClass() == Point.class` is true only for *exactly* that class, whereas `obj instanceof Point` is also true for subclasses. `getClass().getName()` gives `java.lang.String`, while `getSimpleName()` gives `String`; arrays have names like `[I` for `int[]`. The distinction between these two tests matters when you write `equals`, as the next section shows.\n\n### equals and hashCode\n\n#### What == means and what equals means\n\nFor references, `==` asks \"are these the same object?\" (identity). `equals` asks \"do these represent the same value?\" (equality). `Object.equals` is just `==`, so a class that wants value equality must override it. `String`, `Integer`, `List`, `LocalDate` and all records do.\n\n#### The equals contract\n\nThe Javadoc requires `equals` to be an **equivalence relation**, and to be consistent:\n\n- **Reflexive:** `x.equals(x)` is true.\n- **Symmetric:** `x.equals(y)` is true exactly when `y.equals(x)` is.\n- **Transitive:** if `x.equals(y)` and `y.equals(z)`, then `x.equals(z)`.\n- **Consistent:** repeated calls give the same answer while nothing changed.\n- **Non-null:** `x.equals(null)` is false, never an exception.\n\n#### The hashCode contract\n\n`hashCode()` returns an `int` used by hash-based collections (`HashMap`, `HashSet`) to choose a bucket. The rule that ties it to `equals`:"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Definition",
+          "text": "hashCode contract If `a.equals(b)` is true then `a.hashCode() == b.hashCode()` must be true. The reverse need not hold (different objects may share a hash code, a collision), and the value must stay the same for the same object while the fields used by `equals` do not change."
+        },
+        {
+          "type": "markdown",
+          "text": "Equal objects must produce equal hash codes, otherwise a hash collection looks in the wrong bucket and will not find an object that is \"equal\" to the one it holds.\n\n#### Breaking the contract: a demonstration\n\nThis class overrides `equals` but forgets `hashCode`. A second class does both correctly, and a third shows what happens to a mutable key:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.HashMap;\nimport java.util.HashSet;\nimport java.util.Map;\nimport java.util.Objects;\nimport java.util.Set;\n\npublic class Equality {\n    static class BadPoint {\n        final int x, y;\n        BadPoint(int x, int y) { this.x = x; this.y = y; }\n        @Override public boolean equals(Object o) {\n            return o instanceof BadPoint p && p.x == x && p.y == y;\n        }\n        // hashCode NOT overridden: breaks the contract\n    }\n    static class Point {\n        final int x, y;\n        Point(int x, int y) { this.x = x; this.y = y; }\n        @Override public boolean equals(Object o) {\n            if (this == o) return true;\n            if (o == null || getClass() != o.getClass()) return false;\n            Point p = (Point) o;\n            return x == p.x && y == p.y;\n        }\n        @Override public int hashCode() { return Objects.hash(x, y); }\n        @Override public String toString() { return \"Point[\" + x + \",\" + y + \"]\"; }\n    }\n    static class MutableKey {\n        int id;\n        MutableKey(int id) { this.id = id; }\n        @Override public boolean equals(Object o) {\n            return o instanceof MutableKey k && k.id == id;\n        }\n        @Override public int hashCode() { return Integer.hashCode(id); }\n    }\n\n    public static void main(String[] args) {\n        BadPoint p1 = new BadPoint(1, 2), p2 = new BadPoint(1, 2);\n        System.out.println(\"bad equals: \" + p1.equals(p2));\n        Set<BadPoint> bad = new HashSet<>();\n        bad.add(p1);\n        System.out.println(\"bad contains equal point: \" + bad.contains(p2));\n        Set<Point> good = new HashSet<>();\n        good.add(new Point(1, 2));\n        System.out.println(\"good contains equal point: \" + good.contains(new Point(1, 2)));\n        System.out.println(new Point(3, 4));\n        Map<MutableKey, String> m = new HashMap<>();\n        MutableKey k = new MutableKey(1);\n        m.put(k, \"one\");\n        k.id = 2;\n        System.out.println(\"after mutation: \" + m.get(k) + \" / \"\n                + m.get(new MutableKey(1)) + \" / size \" + m.size());\n    }\n}",
+          "title": "Equality.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Equality.java\nbad equals: true\nbad contains equal point: false\ngood contains equal point: true\nPoint[3,4]\nafter mutation: null / null / size 1",
+          "title": "Run it (the \"bad contains\" line is false in practice but depends on identity hash codes)"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice.\n\n- `BadPoint` objects are `equals`, but the default `hashCode` is derived from object identity, so `p1` and `p2` almost certainly land in different buckets, and `contains` answers false. The set silently misbehaves; no exception tells you.\n- `Point` follows the recipe: the same fields feed both `equals` and `hashCode`. `Objects.hash(x, y)` is a convenient way to combine them (it allocates an array; for hot paths, compute `31 * x + y` by hand or use a record, which generates both for you).\n- `MutableKey` shows the third rule. After `k.id = 2` the entry sits in the bucket for hash `1`, but a lookup with `k` now searches the bucket for hash `2`, and a lookup with a fresh key `1` finds the entry but `equals` fails against the mutated key. The entry is now unreachable yet still counted in `size`: a memory leak. **Never mutate a field that** **participates in** `hashCode` **while the object is a key or set member.** Prefer immutable keys.\n\n#### equals: getClass or instanceof?\n\n`Point.equals` above compared `getClass() != o.getClass()`, which means a `Point` never equals an instance of a subclass. Using `instanceof` instead lets a subclass instance equal a parent, but then symmetry breaks as soon as a subclass adds a field and its own `equals` considers it (the famous `ColorPoint` problem: `point.equals(colorPoint)` is true but the reverse is false). There is no way to extend an instantiable class, add a value component, and keep the `equals` contract. For a final class, `instanceof` is the clean choice, and for a non-final class, `getClass()` preserves the contract. Prefer composition for value types, or make the value class `final` or a record.\n\n#### Recipe for equals and hashCode\n\n1. Use the same fields in both methods, and only those fields.\n2. In `equals`: check `this == o`, then null and class, then cast and compare. Compare primitives with `==` (`Double.compare` for `double`/`float`, to handle `NaN`), and objects with `Objects.equals(a, b)`, which is null-safe.\n3. In `hashCode`: combine the same fields with `Objects.hash(...)` or the `31 * h + field` idiom.\n4. Always pair them, always add `@Override` and always use the parameter type `Object`.\n5. Better still, use a record (`record Point(int x, int y) {}`) or let the IDE generate it, and test it with a small unit test that puts equal objects into a `HashSet`."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "JPA entities are a famous trap. An entity whose `hashCode` uses a database-generated `id` changes hash code when it is first saved (null before, a number after), which breaks any `HashSet` that held it. Common guidance is to base `equals`/`hashCode` on a stable business key or return a constant `getClass().hashCode()`. Lombok's `@EqualsAndHashCode` has the same issue if applied naively to entities."
+        },
+        {
+          "type": "markdown",
+          "text": "### clone, and why to avoid it\n\n`Object.clone()` is `protected` and makes a shallow copy of an object: a new object whose fields hold the same values (the same *references*). It works only if the class implements the marker interface `Cloneable`, otherwise it throws `CloneNotSupportedException`. It creates objects without calling a constructor, interacts badly with `final` fields, and a subclass that forgets to override it correctly breaks the copy. Bloch's verdict in *Effective Java* is blunt: prefer a copy constructor or copy factory. The program shows the central problem, shared mutable state:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\n\npublic class Cloning {\n    static class Team implements Cloneable {\n        String name;\n        int[] scores;\n        Team(String n, int[] s) { name = n; scores = s; }\n        @Override public Team clone() {\n            try { return (Team) super.clone(); }          // shallow copy\n            catch (CloneNotSupportedException e) { throw new AssertionError(e); }\n        }\n    }\n    static class Copyable {\n        final String name;\n        final int[] scores;\n        Copyable(String n, int[] s) { name = n; scores = s.clone(); }\n        Copyable(Copyable o) { this(o.name, o.scores); }   // copy constructor: explicit, deep\n    }\n\n    public static void main(String[] args) {\n        Team a = new Team(\"A\", new int[] {1, 2, 3});\n        Team b = a.clone();\n        b.scores[0] = 99;\n        System.out.println(Arrays.toString(a.scores) + \" shared=\" + (a.scores == b.scores));\n        Copyable c = new Copyable(\"C\", new int[] {1, 2, 3});\n        Copyable d = new Copyable(c);\n        d.scores[0] = 99;\n        System.out.println(Arrays.toString(c.scores));\n    }\n}",
+          "title": "Cloning.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Cloning.java\n[99, 2, 3] shared=true\n[1, 2, 3]",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "The \"copy\" `b` shares the array with `a`, so changing one changed the other. A correct `clone` must also clone the array (`copy.scores = scores.clone()`), which is why the copy constructor is simpler. Arrays are the one place where `clone()` is routine: `int[] copy = original.clone()` is fine and idiomatic (shallow for arrays of objects).\n\n### finalize is on its way out\n\n`Object.finalize()` was meant to release resources just before garbage collection. It is unpredictable (it may run late or never), slows collection, can resurrect objects and has security problems. It has been deprecated for removal since Java 18 (JEP 421), and the compiler now warns when you override it (`warning: [removal] finalize() in Object has` `been deprecated and marked for removal`). Release resources deterministically with `try`-with-resources and `AutoCloseable` (Part 5); use `java.lang.ref.Cleaner` for the rare native-handle safety net.\n\n### wait, notify and the rest\n\n`wait()`, `notify()` and `notifyAll()` are thread-coordination primitives on every object, tied to its monitor lock; Part 8 explains them. `hashCode()` for the default identity version is not the memory address, but a value generated by the JVM and stored in the object header the first time it is requested.\n\n### compareTo and consistency with equals\n\n`Comparable.compareTo` defines a natural ordering, used by `Collections.sort`, `TreeSet` and `TreeMap`. It is not part of `Object`, but it must be **consistent with equals**: `a.compareTo(b) == 0` should imply `a.equals(b)`. The JDK itself violates this in one well-known place, which makes a revealing demo:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.math.BigDecimal;\nimport java.util.HashSet;\nimport java.util.Set;\nimport java.util.TreeSet;\n\npublic class Cmp {\n    public static void main(String[] args) {\n        BigDecimal a = new BigDecimal(\"1.0\"), b = new BigDecimal(\"1.00\");\n        System.out.println(a.equals(b) + \" \" + (a.compareTo(b) == 0));\n        Set<BigDecimal> h = new HashSet<>(Set.of(a, b));\n        Set<BigDecimal> t = new TreeSet<>(Set.of(a, b));\n        System.out.println(\"HashSet size \" + h.size() + \", TreeSet size \" + t.size());\n    }\n}",
+          "title": "Cmp.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Cmp.java\nfalse true\nHashSet size 2, TreeSet size 1",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "`BigDecimal.equals` considers scale (`1.0` is not `1.00`), `compareTo` does not. So a `HashSet` (uses `equals`) holds two elements while a `TreeSet` (uses `compareTo`) holds one. If you write your own `compareTo`, keep it consistent with `equals`, and if you cannot, document it as `BigDecimal` does. Never implement `compareTo` by subtracting integers (`return a -` `b`): overflow gives wrong signs; use `Integer.compare(a, b)`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the contract between equals() and hashCode()? What happens if you override only one? Equal objects must have equal hash codes. If you override `equals` only, hash collections cannot find equal objects (they look in the wrong bucket); if only `hashCode`, `equals` still compares identity, so lookups find the right bucket but fail the equality check. Both must use the same fields, and keys must not change while stored."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is `clone()` considered broken? What do you use instead? It is a shallow copy by default, bypasses constructors, needs a marker interface that has no methods, and clashes with `final` fields. Use a copy constructor, a copy factory (`List.copyOf`) or an immutable design; `array.clone()` is the accepted exception."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "All classes extend `Object`; override `toString` for readable logs, and never put secrets in it.\n\n- `equals` must be reflexive, symmetric, transitive, consistent and null-safe; `hashCode` must agree with it (equal objects, equal hashes).\n- Override both together, with the same fields, `@Override`, and the parameter type `Object`. Records do this for you.\n- Do not mutate hash-relevant fields of objects used as keys; prefer immutable keys.\n- Avoid `clone` (use copy constructors) and `finalize` (deprecated for removal); keep `compareTo` consistent with `equals`."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-12",
+      "type": "concept",
+      "title": "Wrapper Classes, Autoboxing and Identity",
+      "subtopicId": "3-12",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Java has two worlds of values. The eight **primitives** (`int`, `long`, `double`, `boolean`, ...) are raw numbers stored directly in variables and arrays; they are fast, cannot be `null`, and have no methods. **Objects** live on the heap and are reached through references. Many parts of the language only work with objects: generics (`List<int>` is illegal), collections, `Optional`, reflection, and anything typed `Object`. To bridge the two worlds, every primitive has a matching **wrapper** **class**, and the compiler converts between them automatically. That convenience hides several traps: `==` that works for 127 but not for 128, a `NullPointerException` on a line that contains no dot, and loops that quietly allocate millions of objects. This chapter shows how the conversion works so you can predict all of it.\n\n### The eight wrappers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Primitive",
+            "Wrapper",
+            "Superclass",
+            "Cached by valueOf"
+          ],
+          "rows": [
+            [
+              "`byte`",
+              "`Byte`",
+              "Number",
+              "all 256 values"
+            ],
+            [
+              "`short`",
+              "`Short`",
+              "Number",
+              "-128 to 127"
+            ],
+            [
+              "`int`",
+              "`Integer`",
+              "Number",
+              "-128 to 127 (upper bound tunable)"
+            ],
+            [
+              "`long`",
+              "`Long`",
+              "Number",
+              "-128 to 127"
+            ],
+            [
+              "`float`",
+              "`Float`",
+              "Number",
+              "none"
+            ],
+            [
+              "`double`",
+              "`Double`",
+              "Number",
+              "none"
+            ],
+            [
+              "`char`",
+              "`Character`",
+              "Object",
+              "0 to 127"
+            ],
+            [
+              "`boolean`",
+              "`Boolean`",
+              "Object",
+              "TRUE and FALSE only"
+            ]
+          ],
+          "caption": "Primitive types and their wrapper classes (all in java.lang)."
+        },
+        {
+          "type": "markdown",
+          "text": "Wrapper objects are **immutable**: an `Integer` never changes its value, just like a `String`. They are also `final`, so you cannot subclass them. Each wrapper gives you three kinds of members: constants (`Integer.MAX_VALUE`, `Integer.BYTES`), static utilities that work on the primitive (`Integer.parseInt`, `Integer.compare`, `Integer.toBinaryString`, `Character.isDigit`), and instance methods that unwrap the value (`intValue()`, `doubleValue()`). The utilities are the main reason to know the classes even if you never box anything.\n\n### Autoboxing and unboxing\n\n**Boxing** converts a primitive to its wrapper; **unboxing** is the reverse. Since Java 5 the compiler inserts both for you. Nothing magical happens at run time: the compiler rewrites your code into calls to `valueOf` and `xxxValue`. The bytecode of `static int f(Integer i) { Integer j = i + 1; return j; }` shows it (trimmed `javap -c -p` output):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javap -c -p Jp\n  static int f(java.lang.Integer);\n       0: aload_0\n       1: invokevirtual #7    // Method java/lang/Integer.intValue:()I\n       4: iconst_1\n       5: iadd\n       6: invokestatic  #13   // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;\n       9: astore_1\n      10: aload_1\n      11: invokevirtual #7    // Method java/lang/Integer.intValue:()I\n      14: ireturn",
+          "title": "Boxing is just method calls"
+        },
+        {
+          "type": "markdown",
+          "text": "So `i + 1` unboxes `i` with `intValue()`, adds in primitive `int`, boxes the result with `Integer.valueOf(int)`, and `return j` unboxes again. Three method calls hide in one innocent line. Two rules follow immediately:\n\n- Unboxing calls a method on the reference. If the reference is `null`, you get a `NullPointerException` even though your source shows no `.`.\n- Boxing calls `valueOf`, which may allocate a new object. Where it allocates, and where it reuses an existing one, is the source of the identity puzzles below.\n\nUse `Integer.valueOf(int)` (or let autoboxing do it), never `new Integer(5)`. The constructors of all wrappers have been deprecated since Java 9 and marked for removal since Java 16; they always allocate a fresh object and defeat the cache.\n\n### The Integer cache and the == trap\n\n`==` on two references compares **identity** (are they the same object?), not value. For wrappers that is almost never what you want. But a cache makes it appear to work sometimes, which is worse than never working. `Integer.valueOf(int)` keeps a pre-built array of `Integer` objects for -128 to 127 and hands out the same instance every time; outside that range it allocates a new one. The Java Language Specification requires this caching for boxing of small values, so the behaviour is guaranteed, not an implementation accident. Run the following program, which also covers the other traps in this chapter:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\n\npublic class Boxing {\n    public static void main(String[] args) {\n        Integer a = 127, b = 127;\n        Integer c = 128, d = 128;\n        System.out.println(\"127 == 127 : \" + (a == b));\n        System.out.println(\"128 == 128 : \" + (c == d));\n        System.out.println(\"128 equals : \" + c.equals(d));\n        Integer e = Integer.valueOf(1000), f = Integer.valueOf(1000);\n        System.out.println(\"valueOf(1000) == : \" + (e == f));\n        System.out.println(\"Long 127 == : \" + (Long.valueOf(127) == Long.valueOf(127)));\n        System.out.println(\"Long 128 == : \" + (Long.valueOf(128) == Long.valueOf(128)));\n        System.out.println(\"Character 'a' == : \"\n            + (Character.valueOf('a') == Character.valueOf('a')));\n        System.out.println(\"Boolean == : \" + (Boolean.valueOf(true) == Boolean.valueOf(\"TRUE\")));\n        System.out.println(\"Double 1.0 == : \" + (Double.valueOf(1.0) == Double.valueOf(1.0)));\n        System.out.println(\"Integer vs Long equals : \"\n            + Integer.valueOf(5).equals(Long.valueOf(5)));\n        System.out.println(\"Integer == int : \" + (c == 128));\n\n        List<Integer> list = new ArrayList<>(List.of(10, 20, 30, 1));\n        list.remove(1);\n        System.out.println(\"after remove(1)            : \" + list);\n        list.remove(Integer.valueOf(1));\n        System.out.println(\"after remove(Integer 1)    : \" + list);\n\n        Map<String, Integer> stock = new HashMap<>();\n        stock.put(\"pen\", 5);\n        try {\n            int n = stock.get(\"ink\");\n            System.out.println(n);\n        } catch (NullPointerException ex) {\n            System.out.println(\"NPE unboxing a missing map value\");\n        }\n        boolean flag = false;\n        try {\n            Integer r = flag ? 1 : (Integer) null;\n            System.out.println(r);\n        } catch (NullPointerException ex) {\n            System.out.println(\"NPE from ternary with int operand\");\n        }\n        Integer ok = flag ? Integer.valueOf(1) : null;\n        System.out.println(\"both boxed: \" + ok);\n\n        Integer x = 10;\n        Integer y = x;\n        x++;\n        System.out.println(\"x=\" + x + \" y=\" + y);\n\n        Object o = true ? Integer.valueOf(1) : Double.valueOf(2.0);\n        System.out.println(\"mixed ternary: \" + o);\n    }\n}",
+          "title": "Boxing.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Boxing.java\n127 == 127 : true\n128 == 128 : false\n128 equals : true\nvalueOf(1000) == : false\nLong 127 == : true\nLong 128 == : false\nCharacter 'a' == : true\nBoolean == : true\nDouble 1.0 == : false\nInteger vs Long equals : false\nInteger == int : true\nafter remove(1)            : [10, 30, 1]\nafter remove(Integer 1)    : [10, 30]\nNPE unboxing a missing map value\nNPE from ternary with int operand\nboth boxed: null\nx=11 y=10\nmixed ternary: 1.0",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `127 == 127` is `true` and `128 == 128` is `false`. Both use autoboxing; only the first lands in the cache. `equals` compares values and is always right.\n- `Double` has no cache, so `Double.valueOf(1.0) == Double.valueOf(1.0)` is `false`. `Boolean` and the small `Character` and `Byte` values are always shared.\n- `Integer == int` (the line `c == 128`) is a **numeric** comparison: when one operand is a primitive, the other is unboxed and the values are compared. That is the safe form.\n- `Integer.valueOf(5).equals(Long.valueOf(5))` is `false`: `equals` first checks that the other object is an `Integer`. Comparing different wrapper types never succeeds.\n- `x++` on an `Integer` is `x = Integer.valueOf(x.intValue() + 1)`: a **new** object is assigned to `x`. `y` still points to the old one, as immutability promises.\n\n#### The cache range is tunable\n\nThe lower bound -128 is fixed. The upper bound is 127 by default, but the JVM flag `-XX:AutoBoxCacheMax=<n>` (or the system property `java.lang.Integer.IntegerCache.high`) raises it. Re-running the first lines with `java` `-XX:AutoBoxCacheMax=1000 Boxing.java` changes the second line:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -XX:AutoBoxCacheMax=1000 Boxing.java\n127 == 127 : true\n128 == 128 : true\n128 equals : true",
+          "title": "Same code, different answer"
+        },
+        {
+          "type": "markdown",
+          "text": "This is the strongest argument for never using `==` on boxed values: code that \"works\" in your tests may break when a flag or a value changes. Lint rules (SonarQube, Error Prone, IDE inspections) flag it for the same reason."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does `Integer a = 127, b = 127; a == b` give true but `Integer c = 128, d = 128; c == d` give false? `Integer.valueOf` caches instances for -128 to 127, so boxing both 127s returns the same object and `==` (reference comparison) is true. 128 is outside the default cache, so two separate objects are created. The fix is `equals` (or unboxing: `c.intValue() == d.intValue()`). The cache upper bound can be changed with `-XX:AutoBoxCacheMax`, which is one more reason never to depend on it."
+        },
+        {
+          "type": "markdown",
+          "text": "### NullPointerException from unboxing\n\nBecause unboxing calls `xxxValue()`, any place where a `null` wrapper meets a primitive context throws. The three common sources are in the program above:\n\n- **Map lookups.** `Map.get` returns `null` for a missing key, and `int n = stock.get(\"ink\")` unboxes it. Use `getOrDefault(\"ink\", 0)`, or check `containsKey`, or keep the value as `Integer` and test it for `null`.\n- **Mixed ternaries.** In `flag ? 1 : (Integer) null`, one operand is a primitive `int` and the other an `Integer`. The ternary's rules make the result type `int` (binary numeric promotion), so the `null` is unboxed whenever it is chosen. If both operands are wrapper types, as in `flag ? Integer.valueOf(1) : null`, no unboxing happens and the result is simply `null`.\n- **Fields and returns.** An `Integer` field that was never set is `null`, and `return count;` from a method declared `int` unboxes it. Database columns that are nullable map naturally to wrapper fields, so this shows up often in entity classes.\n\nThe last line of the output, `mixed ternary: 1.0`, shows a quieter ternary rule. When both operands of `?:` are convertible to numbers, the result type is the promoted numeric type, so `true ? Integer.valueOf(1) :` `Double.valueOf(2.0)` unboxes the `Integer` and widens it to `double`, printing `1.0`, not `1`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Overloads and boxing interact. `list.remove(1)` on a `List<Integer>` removes the element at **index** 1, because `remove(int index)` is an exact match and wins before any boxing is considered. To remove the **value** 1 you must write `list.remove(Integer.valueOf(1))`. The output above shows both results."
+        },
+        {
+          "type": "markdown",
+          "text": "### Performance cost of boxing\n\nA primitive `int` takes 4 bytes. An `Integer` is an object: a header plus the value, typically 16 bytes on a 64-bit HotSpot JVM with compressed references, and a `List<Integer>` also stores a 4-byte reference to each (the object layout chapter in Part 9 gives the numbers). So a `List<Integer>` of a million numbers needs roughly four times the memory of an `int[]`, and traversing it chases pointers to scattered objects instead of reading a contiguous block, which is slow for the CPU cache. In a hot loop each boxing operation may also allocate, creating garbage for the collector.\n\nThe classic demonstration accumulates into a `Long` instead of a `long`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "long sum = 0;\nfor (long i = 0; i < 100_000_000L; i++) sum += i;      // no allocation\n\nLong boxed = 0L;\nfor (long i = 0; i < 100_000_000L; i++) boxed += i;    // boxed = Long.valueOf(boxed + i)"
+        },
+        {
+          "type": "markdown",
+          "text": "On the build machine (typical, measured with `System.nanoTime`, one run each, no benchmarking harness) the first loop took about 2.2 seconds and the second about 2.7 seconds. The gap here is smaller than folklore suggests, because the JIT compiler can sometimes remove the allocation (escape analysis); on other machines, JVMs or less simple loops the boxed version can be many times slower. Treat these figures as a hint, not a benchmark; the reliable rules are structural:\n\n- Use primitives for local variables, loop counters, accumulators, and fields that can never be absent.\n- Use wrappers only when you need an object: generics, collections, `Optional<Integer>`, nullable database values.\n- For large numeric collections consider primitive streams (`IntStream`) and arrays, or specialised libraries, instead of `List<Integer>`. The streams chapter in Part 7 shows `mapToInt` for exactly this reason.\n\n### The Number hierarchy and parsing\n\n`java.lang.Number` is an abstract class. Six wrappers extend it (`Byte`, `Short`, `Integer`, `Long`, `Float`, `Double`), and so do `BigInteger`, `BigDecimal` and the atomic classes `AtomicInteger` and `AtomicLong`. `Character` and `Boolean` do **not**: they extend `Object` directly. `Number` declares the conversions `intValue()`, `longValue()`, `floatValue()`, `doubleValue()` (plus `byteValue()` and `shortValue()`); they truncate or narrow exactly like a cast, so `Number n = 3.99; n.intValue()` is `3`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.math.BigDecimal;\nimport java.math.BigInteger;\nimport java.util.concurrent.atomic.AtomicInteger;\n\npublic class Nums {\n    public static void main(String[] args) {\n        Class<?>[] types = {Integer.class, Double.class, BigDecimal.class, BigInteger.class,\n            AtomicInteger.class, Character.class, Boolean.class};\n        for (Class<?> t : types) {\n            System.out.println(t.getSimpleName() + \" extends \" + t.getSuperclass().getSimpleName()\n                + \", Number? \" + Number.class.isAssignableFrom(t));\n        }\n        Number n = 3.99;\n        System.out.println(n.intValue() + \" \" + n.longValue() + \" \" + n.doubleValue());\n        System.out.println(Integer.parseInt(\"42\") + 1);\n        System.out.println(Integer.valueOf(\"42\") + 1);\n        System.out.println(Integer.toBinaryString(42) + \" \" + Integer.toHexString(255)\n            + \" \" + Integer.parseInt(\"ff\", 16));\n        System.out.println(Integer.compare(3, 7) + \" \" + Integer.signum(-9)\n            + \" \" + Integer.sum(2, 3) + \" \" + Integer.MAX_VALUE + \" \" + Integer.BYTES);\n        try { Integer.parseInt(\"12x\"); } catch (NumberFormatException e) {\n            System.out.println(e.getMessage());\n        }\n        System.out.println(Double.compare(0.0, -0.0) + \" \" + (0.0 == -0.0)\n            + \" \" + Double.valueOf(0.0).equals(-0.0));\n        System.out.println(Double.valueOf(Double.NaN).equals(Double.NaN)\n            + \" \" + (Double.NaN == Double.NaN));\n    }\n}",
+          "title": "Nums.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Nums.java\nInteger extends Number, Number? true\nDouble extends Number, Number? true\nBigDecimal extends Number, Number? true\nBigInteger extends Number, Number? true\nAtomicInteger extends Number, Number? true\nCharacter extends Object, Number? false\nBoolean extends Object, Number? false\n3 3 3.99\n43\n43\n101010 ff 255\n-1 -1 5 2147483647 4\nFor input string: \"12x\"\n1 true false\ntrue false",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Two points are worth remembering. First, `parseInt(String)` returns a primitive `int` and `valueOf(String)` returns an `Integer` (through the cache); use `parseInt` when you want a number to compute with. Both throw the unchecked `NumberFormatException` for bad input, so validate or catch it when parsing user data. Second, the last two lines show that `Double.equals` and `==` disagree. `equals` follows the bit pattern, so `Double.valueOf(Double.NaN).equals(Double.NaN)` is `true` and `0.0` is not equal to `-0.0`, which keeps `HashMap` lookups consistent. The `==` operator follows IEEE 754, where `NaN != NaN` and `0.0 == -0.0`. Use `Double.compare` when you need a total ordering (for sorting) and mind that `==` on primitive doubles is a numeric comparison."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Prefer the static helpers over hand-written logic: `Integer.compare(a, b)` instead of `a - b` (which overflows), `Integer.sum`, `Integer.max`, `Integer.toString(n, radix)`, `Long.parseLong`, `Character.isLetter`, `Boolean.parseBoolean`. For money and exact decimals use `BigDecimal`, not `Double`, as the type-conversion chapter explained."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring and JPA code, entity ids and nullable columns are usually `Long` or `Integer` (so that \"not saved yet\" can be `null`), while counters and flags inside business logic are primitives. A very common production bug is `if` `(order.getId() == otherOrder.getId())` on two `Long` ids: it works in tests with small ids and silently fails once ids pass 127. Use `Objects.equals(a, b)` or `.equals`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Every primitive has an immutable wrapper; autoboxing is compiler-inserted `valueOf` and `xxxValue()` calls.\n- `==` on wrappers compares identity. Only -128 to 127 (and `Boolean`, small `Character`) are cached, so always compare with `equals`, or unbox with a primitive.\n- Unboxing `null` throws `NullPointerException`: watch map lookups, mixed ternaries and nullable fields.\n- Boxing costs memory, indirection and garbage; use primitives for arithmetic and wrappers only where an object is required.\n- `Number` is the abstract parent of the numeric wrappers, big numbers and atomics; `Character` and `Boolean` are not `Number`s."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Inheritance"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `class A { A() { System.out.print(\"A\"); } } class B extends A { B() {` `System.out.print(\"B\"); } } new B();`",
+              "answer": "`AB`. The superclass constructor runs first (implicit `super()`), then the subclass constructor body."
+            },
+            {
+              "question": "Why does `class Parent { Parent(int x) {} } class Child extends Parent { }` not compile?",
+              "answer": "`Child` has the implicit default constructor, which calls `super()`, but `Parent` has no no-argument constructor. `Child` needs an explicit constructor calling `super(someInt)`."
+            },
+            {
+              "question": "Can a subclass override `public Object get()` with `String get()`? With `private Object get()`? Explain.",
+              "answer": "Yes to `String get()`: covariant return types are allowed. No to `private`: access cannot be weaker than `public`."
+            },
+            {
+              "question": "What does this print? `class P { static String s() { return \"P\"; } } class C extends P { static String` `s() { return \"C\"; } } P p = new C(); System.out.println(p.s());`",
+              "answer": "It prints `P`: static methods are hidden, and the declared type `P` decides."
+            },
+            {
+              "question": "Why is `class Stack extends ArrayList` considered bad design even though it compiles and works?",
+              "answer": "It exposes methods like `add(index, e)` and `remove(index)` that break stack semantics, and it ties the class to `ArrayList` forever. A stack should contain a list (composition)."
+            },
+            {
+              "question": "What is the fragile base class problem?",
+              "answer": "A subclass depends on implementation details of its parent, so a harmless-looking change in the parent breaks the subclass."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Polymorphism and Dynamic Dispatch"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the difference between the static type and the dynamic type of `Animal a = new Dog();`?",
+              "answer": "Static: `Animal`, known to the compiler from the declaration. Dynamic: `Dog`, the real class of the object, known only at run time."
+            },
+            {
+              "question": "What does this print? `static void f(Object o){System.out.print(\"O\");} static void f(String` `s){System.out.print(\"S\");} ... Object x = \"hi\"; f(x); f(\"hi\"); f(null);`",
+              "answer": "`OSS`. The first call uses static type `Object`; for `f(null)` the most specific applicable overload is `String`."
+            },
+            {
+              "question": "Why does a class with `public boolean equals(Point p)` not work in a `HashSet<Point>`? What one-word fix prevents the mistake?",
+              "answer": "It overloads instead of overriding `equals(Object)`, and `HashSet` calls the latter. `@Override` makes the compiler reject it."
+            },
+            {
+              "question": "Which of `a.name`, `a.sound()`, `a.greet(d)` (from `Dispatch`) are resolved at run time?",
+              "answer": "Only `a.sound()` (an overridden instance method). The field read and the overload choice are decided at compile time."
+            },
+            {
+              "question": "When does a downcast throw `ClassCastException`, and how do you avoid it?",
+              "answer": "When the object's real class is not the target type or a subclass. Test first with `instanceof` (ideally the pattern form), or redesign so the cast is unnecessary."
+            },
+            {
+              "question": "Which JVM instruction is used for a call to a `private` method, and why does it need no dispatch?",
+              "answer": "`invokespecial`: a private method cannot be overridden, so the target is known at compile time."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Abstract Classes and Interfaces"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Can an abstract class have a constructor? If you cannot call `new` on it, what is it for?",
+              "answer": "Yes. A subclass constructor calls it with `super(...)` to initialise the shared state. The class exists to be extended."
+            },
+            {
+              "question": "What does `new X().hi()` return if `X implements A, B`, with `B extends A` and both defining `default String hi()`?",
+              "answer": "`B`'s version: the most specific interface wins."
+            },
+            {
+              "question": "This does not compile; what is wrong? `interface P { default void go() {} } interface Q { default void` `go() {} } class R implements P, Q { }`",
+              "answer": "`R` inherits two unrelated defaults for `go()`. It must override `go()`, for example calling `P.super.go()`."
+            },
+            {
+              "question": "Are interface fields modifiable? What are `int MAX = 5;` modifiers inside an interface?",
+              "answer": "No. They are implicitly `public static final`, so `MAX` is a constant."
+            },
+            {
+              "question": "Is `Runnable r = () -> System.out.println(\"x\");` legal? Why?",
+              "answer": "Yes: `Runnable` has one abstract method (`run`), so a lambda can implement it."
+            },
+            {
+              "question": "Give one reason to prefer an interface over an abstract class in a public API.",
+              "answer": "A class can implement many interfaces but extend only one class, and interfaces keep callers independent of any implementation (and make test doubles easy)."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### The Object Class"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does `System.out.println(new Object())` print, and which method produces it?",
+              "answer": "Something like `java.lang.Object@659e0bfd` from `Object.toString`: class name, `@`, hex identity hash (varies per run)."
+            },
+            {
+              "question": "A class overrides `equals(Object)` but not `hashCode()`. Name the concrete symptom in a `HashSet`.",
+              "answer": "Equal objects usually land in different buckets, so `contains`, `remove` and `get` fail to find them and duplicates can be added."
+            },
+            {
+              "question": "What does this print? `BigDecimal a = new BigDecimal(\"2.0\"), b = new BigDecimal(\"2.00\");` `System.out.println(a.equals(b) + \" \" + a.compareTo(b));`",
+              "answer": "`false 0`: `equals` compares scale as well as value, `compareTo` compares only numeric value."
+            },
+            {
+              "question": "Why must you not mutate a field used in `hashCode` after putting the object in a `HashMap` as a key?",
+              "answer": "The entry stays in the bucket for the old hash; lookups now use the new hash and miss it. The entry is lost but still occupies memory."
+            },
+            {
+              "question": "`class Pt { int x; public boolean equals(Pt p) { return p != null && x == p.x; } }` is used as `Set<Pt>`. What is wrong, and what one annotation catches it?",
+              "answer": "It overloads `equals(Pt)` instead of overriding `equals(Object)`, so the set uses identity equality. `@Override` makes the compiler reject it."
+            },
+            {
+              "question": "Why is `int[] b = a.clone();` acceptable while cloning ordinary objects is discouraged?",
+              "answer": "Arrays have a well-defined, compiler-supported `clone` returning the right type; the problems of `Cloneable` (constructors, final fields, deep copy) do not apply to a flat array of primitives."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Wrapper Classes, Autoboxing and Identity"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `Integer a = 200, b = 200; System.out.println((a == b) + \" \" + a.equals(b) + \" \" +` `(a == 200));`",
+              "answer": "`false true true`. 200 is outside the cache so `a == b` compares two different objects; `equals` compares values; `a` `== 200` unboxes `a`."
+            },
+            {
+              "question": "`Map<String, Integer> m = new HashMap<>(); int v = m.get(\"x\");` throws. Which exception, and what are two ways to avoid it?",
+              "answer": "`NullPointerException` (unboxing `null`). Use `m.getOrDefault(\"x\", 0)`, or declare `Integer v` and test it for `null`, or check `containsKey` first."
+            },
+            {
+              "question": "What is the output? `List<Integer> l = new ArrayList<>(List.of(5, 6, 7)); l.remove(1);` `System.out.println(l);` How do you remove the value 6 instead?",
+              "answer": "`[5, 7]`: `remove(1)` removes the element at index 1. Use `l.remove(Integer.valueOf(6))` to remove the value."
+            },
+            {
+              "question": "What does `Long.valueOf(7).equals(7)` return, and why?",
+              "answer": "`false`. The argument `7` is boxed to `Integer`, and `Long.equals` returns `false` for any object that is not a `Long`."
+            },
+            {
+              "question": "What does `Object o = true ? 1 : 2.0; System.out.println(o);` print?",
+              "answer": "`1.0`. One operand is `double`, so the ternary has type `double` and the `1` is widened."
+            },
+            {
+              "question": "Name two reasons to prefer `int` over `Integer` for a loop counter.",
+              "answer": "A primitive avoids an allocation and a `valueOf` call each iteration, uses 4 bytes instead of an object, and can never be `null`, so it cannot throw on unboxing."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1171 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "375-403",
+    "planDays": "11–12"
+  },
+  "sections": [
+    {
+      "id": "ch-9-1",
+      "type": "concept",
+      "title": "Objects in Memory",
+      "subtopicId": "9-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every `new` allocates bytes on the heap, and those bytes are more than your fields. When a service holds ten million small objects, the difference between 16 and 24 bytes per object is 80 MB, and that decides whether the application fits in its container. This chapter shows exactly what the JVM stores for an object or an array, how to measure it, and how the JIT sometimes avoids allocating at all.\n\nThe Part 1 chapter on JVM architecture gave the big picture of the runtime data areas. Here we zoom into one object. Everything below was measured on OpenJDK 21 on a 64-bit Linux machine with default flags; HotSpot (the JVM implementation inside OpenJDK) is the reference.\n\n### The anatomy of an object\n\nAn ordinary object on HotSpot has three parts: a header, the instance fields, and padding."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 434.0 95.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 52.3 L119.0 52.3 C120.7 52.3 122.0 51.0 122.0 49.3 L122.0 19.3 C122.0 17.7 120.7 16.3 119.0 16.3 L5.0 16.3 C3.3 16.3 2.0 17.7 2.0 19.3 L2.0 49.3 C2.0 51.0 3.3 52.3 5.0 52.3 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M125.0 52.3 L209.0 52.3 C210.7 52.3 212.0 51.0 212.0 49.3 L212.0 19.3 C212.0 17.7 210.7 16.3 209.0 16.3 L125.0 16.3 C123.3 16.3 122.0 17.7 122.0 19.3 L122.0 49.3 C122.0 51.0 123.3 52.3 125.0 52.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M215.0 52.3 L279.0 52.3 C280.7 52.3 282.0 51.0 282.0 49.3 L282.0 19.3 C282.0 17.7 280.7 16.3 279.0 16.3 L215.0 16.3 C213.3 16.3 212.0 17.7 212.0 19.3 L212.0 49.3 C212.0 51.0 213.3 52.3 215.0 52.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M285.0 52.3 L379.0 52.3 C380.7 52.3 382.0 51.0 382.0 49.3 L382.0 19.3 C382.0 17.7 380.7 16.3 379.0 16.3 L285.0 16.3 C283.3 16.3 282.0 17.7 282.0 19.3 L282.0 49.3 C282.0 51.0 283.3 52.3 285.0 52.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M385.0 52.3 L429.0 52.3 C430.7 52.3 432.0 51.0 432.0 49.3 L432.0 19.3 C432.0 17.7 430.7 16.3 429.0 16.3 L385.0 16.3 C383.3 16.3 382.0 17.7 382.0 19.3 L382.0 49.3 C382.0 51.0 383.3 52.3 385.0 52.3 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"79.8\" y=\"6.3\" font-size=\"7.0\" fill=\"#c1ace2\" font-weight=\"700\" textLength=\"54.4\" lengthAdjust=\"spacingAndGlyphs\">12-byte header</text><text x=\"337.2\" y=\"6.3\" font-size=\"7.0\" fill=\"#a6c4e8\" font-weight=\"700\" textLength=\"19.6\" lengthAdjust=\"spacingAndGlyphs\">fields</text><text x=\"45.6\" y=\"32.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"32.9\" lengthAdjust=\"spacingAndGlyphs\">mark word</text><text x=\"147.5\" y=\"32.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"39.0\" lengthAdjust=\"spacingAndGlyphs\">class pointer</text><text x=\"239.2\" y=\"32.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">int id</text><text x=\"317.4\" y=\"32.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"29.1\" lengthAdjust=\"spacingAndGlyphs\">long total</text><text x=\"401.2\" y=\"32.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"11.5\" lengthAdjust=\"spacingAndGlyphs\">pad</text><text x=\"50.7\" y=\"40.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.7\" lengthAdjust=\"spacingAndGlyphs\">8 bytes</text><text x=\"155.7\" y=\"40.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.7\" lengthAdjust=\"spacingAndGlyphs\">4 bytes</text><text x=\"235.7\" y=\"40.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.7\" lengthAdjust=\"spacingAndGlyphs\">4 bytes</text><text x=\"320.7\" y=\"40.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.7\" lengthAdjust=\"spacingAndGlyphs\">8 bytes</text><text x=\"405.1\" y=\"40.9\" font-size=\"6.8\" fill=\"#e7e9f3\">4</text><text x=\"156.6\" y=\"76.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"189.7\" lengthAdjust=\"spacingAndGlyphs\">total 32 bytes here; sizes always round up to a multiple of 8</text></svg>",
+          "width": 434,
+          "caption": "Object layout on a 64-bit HotSpot JVM with compressed class pointers: a 12-byte header (mark word plus class pointer), then fields, then padding to a multiple of 8 bytes.",
+          "alt": "12-byte header fields | mark word class pointer int id long total pad | 8 bytes 4 bytes 4 bytes 8 bytes 4 | total 32 bytes here; sizes always round up to a multiple of 8"
+        },
+        {
+          "type": "markdown",
+          "text": "The **header** has two words:\n\n- The **mark word** (8 bytes) holds the identity hash code once it has been requested, the GC age (how many young collections the object survived), and the lock state used by `synchronized`. The same bits are reused for different purposes depending on the object's state.\n- The **class pointer** (4 bytes with compressed class pointers, the default) points to the class metadata in Metaspace. It is how the JVM finds the vtable, the field layout and the type of any object.\n\nSo the header is 12 bytes. The fields follow, and the total size is rounded up to a multiple of 8 bytes (the object alignment, `-XX:ObjectAlignmentInBytes=8` by default). That rounding is **padding**. An object with no fields is therefore 16 bytes, not 12.\n\n#### Measuring it: jcmd class histogram\n\nYou do not have to guess. The `GC.class_histogram` command of `jcmd` prints instance counts and total bytes per class. The program below allocates a million objects of four shapes, keeps them alive in an array, then asks the JVM about itself."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.*;\n\npublic class Histo {\n    static class Empty {}\n    static class OneInt { int a; }\n    static class Mixed { byte b; long l; int i; boolean f; }\n    static class Ref { Object o; }\n    static Object[] keep = new Object[5_000_000];\n\n    public static void main(String[] args) throws Exception {\n        int n = 1_000_000, k = 0;\n        for (int i = 0; i < n; i++) keep[k++] = new Empty();\n        for (int i = 0; i < n; i++) keep[k++] = new OneInt();\n        for (int i = 0; i < n; i++) keep[k++] = new Mixed();\n        for (int i = 0; i < n; i++) keep[k++] = new Ref();\n        long pid = ProcessHandle.current().pid();\n        Process p = new ProcessBuilder(\"jcmd\", String.valueOf(pid), \"GC.class_histogram\")\n            .redirectErrorStream(true).start();\n        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {\n            String line;\n            while ((line = r.readLine()) != null)\n                if (line.contains(\"Histo$\") || line.contains(\"#instances\"))\n                    System.out.println(line);\n        }\n    }\n}",
+          "title": "Histo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx3g -XX:+UseSerialGC Histo.java\n num     #instances         #bytes  class name (module)\n   1:       1000000       32000000  Histo$Mixed\n   3:       1000000       16000000  Histo$Empty\n   4:       1000000       16000000  Histo$OneInt\n   5:       1000000       16000000  Histo$Ref\n$ java -Xmx3g -XX:+UseSerialGC -XX:-UseCompressedOops Histo.java\n num     #instances         #bytes  class name (module)\n   2:       1000000       32000000  Histo$Mixed\n   3:       1000000       24000000  Histo$Ref\n   4:       1000000       16000000  Histo$Empty\n   5:       1000000       16000000  Histo$OneInt",
+          "title": "Default flags (compressed oops on), then with -XX:-UseCompressedOops"
+        },
+        {
+          "type": "markdown",
+          "text": "Read the byte column as bytes per object times a million. `Empty` is 16 bytes (12 header + 4 padding). `OneInt` is also 16: 12 header + 4 for the `int` fits exactly, then 0 padding. `Ref` is 16 with compressed references (12 + a 4-byte reference) and 24 without (12 + 4 padding to align the 8-byte reference + 8). `Mixed` has 1 + 8 + 4 + 1 = 14 bytes of fields but costs 32 bytes in total. Why?\n\n#### Field layout: the JVM reorders your fields\n\nThe JVM is free to place fields in any order, and it does. To waste as little as possible it puts the biggest fields first and fills the gap after the 12-byte header with a smaller field. You can see the real offsets through `sun.misc.Unsafe` (an internal class kept for experiments like this one; never use it in production code):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.Field;\n\npublic class Offsets {\n    static class Mixed { byte b; long l; int i; boolean f; }\n    static class Child extends Mixed { short s; }\n    public static void main(String[] args) throws Exception {\n        Field f = Class.forName(\"sun.misc.Unsafe\").getDeclaredField(\"theUnsafe\");\n        f.setAccessible(true);\n        sun.misc.Unsafe u = (sun.misc.Unsafe) f.get(null);\n        for (Class<?> c : new Class<?>[] {Mixed.class, Child.class})\n            for (Field x : c.getDeclaredFields())\n                System.out.println(c.getSimpleName() + \".\" + x.getName()\n                    + \" (\" + x.getType() + \") offset \" + u.objectFieldOffset(x));\n        System.out.println(\"int[] base offset \" + u.arrayBaseOffset(int[].class)\n            + \", long[] base \" + u.arrayBaseOffset(long[].class)\n            + \", Object[] base \" + u.arrayBaseOffset(Object[].class)\n            + \", Object[] scale \" + u.arrayIndexScale(Object[].class));\n    }\n}",
+          "title": "Offsets.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Offsets.java\nMixed.b (byte) offset 24\nMixed.l (long) offset 16\nMixed.i (int) offset 12\nMixed.f (boolean) offset 25\nChild.s (short) offset 26\nint[] base offset 16, long[] base 16, Object[] base 16, Object[] scale 4",
+          "title": "Typical output on JDK 21 (a deprecation warning for Unsafe is also printed to the error stream)"
+        },
+        {
+          "type": "markdown",
+          "text": "The declared order was `b, l, i, f`; the layout is `i` at 12 (it fills the 4-byte hole right after the header), `l` at 16 (8-aligned), then `b` at 24 and `f` at 25. The object ends at byte 26, and padding rounds it to 32. Two lessons follow:\n\n- Declaration order does not matter for size; HotSpot packs fields itself. Do not reorder fields by hand to save memory.\n- A subclass starts its fields after the superclass's fields. `Child.s` sits at 26, in the tail of `Mixed`. Inheritance never shrinks an object, and a deep hierarchy of classes each holding one `boolean` can still waste bytes.\n\n### Compressed oops\n\nAn **oop** (ordinary object pointer) is the JVM's name for a reference. On a 64-bit JVM a reference would normally be 8 bytes, which doubles the cost of every pointer-heavy structure such as `ArrayList<Object>`, `HashMap` nodes and linked structures. HotSpot avoids this with **compressed oops**: because objects are 8-byte aligned, the low 3 bits of every object address are zero, so the JVM stores `address >> 3` in 32 bits and shifts back when it dereferences. Thirty-two bits times eight bytes covers 32 GB.\n\nThat gives the best-known sizing rule in Java: **keep the heap below 32 GB**. Crossing the line turns compressed oops off and every reference doubles to 8 bytes. A 32 GB heap can hold fewer objects than a 30 GB heap. Check it yourself:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ for m in 30g 31g 32g 33g; do echo -n \"$m: \"; \\\n    java -Xmx$m -XX:+PrintFlagsFinal -version 2>/dev/null \\\n    | grep UseCompressedOops | awk '{print $4}'; done\n30g: true\n31g: true\n32g: false\n33g: false",
+          "title": "Compressed oops switch off as the maximum heap crosses 32 GB"
+        },
+        {
+          "type": "markdown",
+          "text": "Compressed class pointers are a second, separate switch (`UseCompressedClassPointers`, true by default). In the histogram above, turning off compressed oops left the header at 12 bytes, because the class pointer stayed compressed.\n\n### Arrays\n\nAn array is an object with one extra header field: the **length**, 4 bytes, stored right after the 12-byte header. Elements start at offset 16 (`arrayBaseOffset` above printed 16 for `int[]`, `long[]` and `Object[]`). Element size is the primitive's size, or the reference size (4 with compressed oops, 8 without; `arrayIndexScale` printed 4 and 8 in our two runs). The total is again rounded up to a multiple of 8."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Array",
+            "Calculation",
+            "Bytes"
+          ],
+          "rows": [
+            [
+              "`new int[0]`",
+              "16 header+length",
+              "16"
+            ],
+            [
+              "`new int[3]`",
+              "16 + 12 = 28, rounded up",
+              "32"
+            ],
+            [
+              "`new long[10]`",
+              "16 + 80",
+              "96"
+            ],
+            [
+              "`new byte[1000]`",
+              "16 + 1000 = 1016",
+              "1016"
+            ],
+            [
+              "`new Object[100]`",
+              "16 + 400 = 416",
+              "416"
+            ]
+          ],
+          "caption": "Array sizes with compressed oops (typical HotSpot 64-bit)."
+        },
+        {
+          "type": "markdown",
+          "text": "Note that an `Object[]` or `Integer[]` stores only references; each element is a separate object elsewhere in the heap. A `List<Integer>` with a million entries is therefore not 4 MB of ints: each `Integer` costs 16 bytes (12 header + 4 value), plus a 4-byte slot in the backing array, so about 20 MB, plus the cost of cache misses when you walk it. This is the main reason numeric code prefers `int[]` (or `IntStream`) over `List<Integer>`. The wrapper-class chapter in Part 3 covers the boxing side.\n\nA multi-dimensional array is an array of arrays. `new int[1000][2]` creates 1001 objects: an outer `Object[]`-like array of 1000 references and 1000 two-element `int[]` arrays of 24 bytes each (16 + 8), with no padding needed. A flat `int[2000]` is one object of 8016 bytes; the nested version is about 28 KB.\n\n### Estimating without a tool: Runtime totals\n\nA cheaper but coarser way is `Runtime`. `totalMemory() - freeMemory()` is the used heap. It is noisy (other allocations, TLABs, concurrent GC threads), so you must allocate many objects, call `System.gc()` before each reading, and divide. Treat it as a sanity check, not a measurement. For serious sizing use the class histogram above, a heap dump, or the JOL library (Java Object Layout, an OpenJDK project that prints exactly the tables we derived by hand). JOL is a separate dependency, so we do not use it here.\n\n### Compact object headers (JEP 519, JEP 534)\n\nThe 12-byte header is the target of one of the recent footprint projects. **Compact object headers** squeeze the mark word and class pointer into a single 8-byte word. Typical Java heaps are full of small objects (boxed values, strings, list nodes, small records), so 4 bytes saved per object is a real saving. An object with 8 bytes of fields drops from 24 bytes (12 + 8, padded) to 16 (8 + 8).\n\nThe status, from the JEPs:\n\n- Java 24 shipped it as an experimental feature; Java 25 made it a product feature, still opt-in with `-XX:+UseCompactObjectHeaders` (JEP 519).\n- Java 27 turns it on by default (JEP 534).\n\nWe cannot run this on JDK 21 (the flag is rejected: `Unrecognized VM option 'UseCompactObjectHeaders'`), so treat the numbers above as the Java 21 baseline and measure again on your target version. The practical effect is that on Java 25 you can try the flag on a service and compare heap usage and GC time with the class histogram; on Java 27 expect it as the default.\n\n### Where do objects live: heap, stack and escape analysis\n\nThe language says objects live on the heap. The JIT compiler is allowed to do anything that preserves behaviour, and sometimes it avoids the allocation. The analysis is called **escape analysis**: for each `new`, C2 (the optimizing compiler, covered in the JIT chapter at the end of this Part) asks whether the reference can leave the method (stored in a field, returned, passed to code that is not inlined). If it cannot, the object is not needed as an object. The compiler then performs **scalar replacement**: the fields become local variables (often just registers) and no memory is allocated at all. Note that HotSpot does not allocate such objects \"on the stack\" as C++ would; it deletes them."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.management.*;\n\npublic class Escape {\n    record Point(int x, int y) {}\n\n    static int sumDistance(int a, int b) {\n        Point p = new Point(a, b);          // never leaves this method\n        return p.x() * p.x() + p.y() * p.y();\n    }\n\n    public static void main(String[] args) {\n        long total = 0;\n        for (int i = 0; i < 300_000_000; i++) total += sumDistance(i & 1023, 3);\n        long gcs = 0;\n        for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans())\n            gcs += b.getCollectionCount();\n        System.out.println(\"total=\" + total + \" gcCount=\" + gcs);\n    }\n}",
+          "title": "Escape.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx256m -XX:+UseSerialGC -XX:+DoEscapeAnalysis Escape.java\ntotal=104706632657792 gcCount=41\n$ java -Xmx256m -XX:+UseSerialGC -XX:-DoEscapeAnalysis Escape.java\ntotal=104706632657792 gcCount=274",
+          "title": "Typical output (counts vary a little between runs)"
+        },
+        {
+          "type": "markdown",
+          "text": "Three hundred million `Point` objects would be 4.8 GB of garbage. With escape analysis off the JVM ran 274 young collections. With it on, it ran 41; those remaining collections come from the first iterations, which run in the interpreter and the quick C1 compiler before C2 takes over (the same loop reaches C2 by on-stack replacement, explained in the JIT chapter). The answer is identical in both runs; only the cost differs."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Escape analysis is an optimization, not a guarantee. It fails when the object is stored anywhere shared, when a method on it is too big to inline, or when control flow merges two possible objects. You cannot write code that \"requires\" scalar replacement, and you cannot see it in the source. If allocation matters, prove it with a GC log or a profiler (JFR allocation events) instead of assuming."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How much memory does `new Object()` take, and why? 16 bytes on a 64-bit HotSpot JVM with default flags: a 12-byte header (8-byte mark word plus 4-byte compressed class pointer) padded to the 8-byte alignment. With compact object headers (Java 25 opt-in, default in 27) the header is 8 bytes and the object is 8 bytes. Follow-up answer: `Integer` is 16 bytes (12 + 4); `long[0]` is 16 (12 + 4 length); a `String` is a 24-byte object pointing to a separate `byte[]`."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a Spring Boot service the heap is dominated by small objects: `String` and their `byte[]`, `HashMap$Node` (32 bytes each: header 12 + hash 4 + key 4 + value 4 + next 4 = 28, padded to 32), boxed numbers and DTO records. That is why teams measure with a heap histogram before choosing a container memory limit, and why the 32 GB compressed-oops boundary is a standard sizing rule."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "An object is a 12-byte header (mark word + compressed class pointer), fields, and padding to a multiple of 8 bytes.\n\n- An empty object is 16 bytes; HotSpot reorders fields to pack them; arrays add a 4-byte length and start data at offset 16.\n- Compressed oops keep references at 4 bytes up to a heap just under 32 GB; beyond that every reference doubles.\n- Measure with `jcmd <pid> GC.class_histogram` or a heap dump, not with guesses; `Runtime` totals are only a rough check.\n- Compact object headers (8-byte header) are opt-in in Java 25 and default in Java 27; escape analysis can remove allocations entirely but is never guaranteed."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-2",
+      "type": "concept",
+      "title": "Heap Structure and Reference Types",
+      "subtopicId": "9-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "\"The heap\" is not one blob. It is divided into regions with different jobs, and the JVM also uses memory outside the heap that no `-Xmx` limits. If you only know `-Xmx`, you cannot explain why a container with a 512 MB heap gets killed at 700 MB, or why a cache \"leaks\" even though you never hold a strong reference. This chapter maps the memory the JVM uses, and then covers the four reference strengths that let your code cooperate with the garbage collector.\n\n### The generational heap\n\nMeasurements of real programs show the **weak generational hypothesis**: most objects die young (request-scoped data, iterators, temporary strings), and the few that survive tend to live a long time (caches, connection pools, configuration). Collectors exploit this by splitting the heap by age so that the frequent cheap collection touches only the young part."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 124.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M2.0 102.0 L292.0 102.0 L292.0 2.0 L2.0 2.0 Z\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M162.0 59.0 L177.0 59.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M15.0 86.0 L159.0 86.0 C160.7 86.0 162.0 84.7 162.0 83.0 L162.0 35.0 C162.0 33.3 160.7 32.0 159.0 32.0 L15.0 32.0 C13.3 32.0 12.0 33.3 12.0 35.0 L12.0 83.0 C12.0 84.7 13.3 86.0 15.0 86.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M25.0 78.0 L79.0 78.0 C80.7 78.0 82.0 76.7 82.0 75.0 L82.0 59.0 C82.0 57.3 80.7 56.0 79.0 56.0 L25.0 56.0 C23.3 56.0 22.0 57.3 22.0 59.0 L22.0 75.0 C22.0 76.7 23.3 78.0 25.0 78.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M93.0 78.0 L117.0 78.0 C118.7 78.0 120.0 76.7 120.0 75.0 L120.0 59.0 C120.0 57.3 118.7 56.0 117.0 56.0 L93.0 56.0 C91.3 56.0 90.0 57.3 90.0 59.0 L90.0 75.0 C90.0 76.7 91.3 78.0 93.0 78.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M127.0 78.0 L151.0 78.0 C152.7 78.0 154.0 76.7 154.0 75.0 L154.0 59.0 C154.0 57.3 152.7 56.0 151.0 56.0 L127.0 56.0 C125.3 56.0 124.0 57.3 124.0 59.0 L124.0 75.0 C124.0 76.7 125.3 78.0 127.0 78.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M180.0 86.0 L279.0 86.0 C280.7 86.0 282.0 84.7 282.0 83.0 L282.0 35.0 C282.0 33.3 280.7 32.0 279.0 32.0 L180.0 32.0 C178.3 32.0 177.0 33.3 177.0 35.0 L177.0 83.0 C177.0 84.7 178.3 86.0 180.0 86.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M177.0 59.0 L171.6 56.4 L171.6 61.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 52.0 L449.0 52.0 C450.7 52.0 452.0 50.7 452.0 49.0 L452.0 25.0 C452.0 23.3 450.7 22.0 449.0 22.0 L315.0 22.0 C313.3 22.0 312.0 23.3 312.0 25.0 L312.0 49.0 C312.0 50.7 313.3 52.0 315.0 52.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 92.0 L449.0 92.0 C450.7 92.0 452.0 90.7 452.0 89.0 L452.0 65.0 C452.0 63.3 450.7 62.0 449.0 62.0 L315.0 62.0 C313.3 62.0 312.0 63.3 312.0 65.0 L312.0 89.0 C312.0 90.7 313.3 92.0 315.0 92.0 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"129.2\" y=\"14.0\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"35.6\" lengthAdjust=\"spacingAndGlyphs\">Java heap</text><text x=\"366.4\" y=\"35.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"31.2\" lengthAdjust=\"spacingAndGlyphs\">Metaspace</text><text x=\"347.8\" y=\"43.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"68.3\" lengthAdjust=\"spacingAndGlyphs\">class metadata (native)</text><text x=\"206.7\" y=\"57.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"45.6\" lengthAdjust=\"spacingAndGlyphs\">Old generation</text><text x=\"59.0\" y=\"61.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"55.9\" lengthAdjust=\"spacingAndGlyphs\">Young generation</text><text x=\"202.5\" y=\"65.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"54.1\" lengthAdjust=\"spacingAndGlyphs\">long-lived objects</text><text x=\"44.5\" y=\"69.3\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"14.9\" lengthAdjust=\"spacingAndGlyphs\">Eden</text><text x=\"101.3\" y=\"69.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"7.3\" lengthAdjust=\"spacingAndGlyphs\">S0</text><text x=\"135.3\" y=\"69.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"7.3\" lengthAdjust=\"spacingAndGlyphs\">S1</text><text x=\"364.1\" y=\"75.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"35.7\" lengthAdjust=\"spacingAndGlyphs\">Code cache</text><text x=\"370.0\" y=\"83.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"24.0\" lengthAdjust=\"spacingAndGlyphs\">JIT code</text><text x=\"54.0\" y=\"114.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"186.1\" lengthAdjust=\"spacingAndGlyphs\">new objects -&gt; eden; survivors age; old enough -&gt; old gen</text></svg>",
+          "width": 454,
+          "caption": "The generational heap: young generation (eden plus two survivor spaces) and old generation, with the path an object takes as it ages; Metaspace and the code cache live outside the heap.",
+          "alt": "Java heap | Metaspace | class metadata (native) | Old generation | Young generation | long-lived objects | Eden S0 S1 | Code cache | JIT code | new objects -> eden; survivors age; old enough -> old gen"
+        },
+        {
+          "type": "markdown",
+          "text": "- **Eden**: where new objects are allocated. When it fills, a **young (minor) collection** runs.\n- **Survivor spaces** (S0 and S1, or \"from\" and \"to\"): live objects from eden are copied here. At each young collection the survivors of the previous round are copied again into the other survivor space, and their **age** (stored in the header's mark word) goes up by one.\n- **Old generation (tenured)**: objects that reach the **tenuring threshold** (`-XX:MaxTenuringThreshold`, 15 by default, the maximum the header's 4-bit age field can hold) or do not fit in the survivor space are promoted here. The old generation is collected less often, by a more expensive collection.\n- **Humongous objects** (G1 only): objects of at least half a region are allocated directly in special old-generation regions. The chapter on the collectors returns to this.\n\nThe defaults you can read from `-XX:+PrintFlagsFinal` on this machine: `NewRatio=2` (old is twice the size of young for the classic collectors), `SurvivorRatio=8` (eden is 8 times one survivor space), `MaxTenuringThreshold=15`. G1 does not use fixed boundaries; it resizes young dynamically within its pause goal, so these flags matter mostly for Serial and Parallel.\n\n### TLABs: why allocation is fast\n\nAllocating in a shared eden would need a lock or a CAS per `new`. Instead each thread gets a private slice of eden, a **thread-local allocation buffer (TLAB)**. Allocation inside the TLAB is a pointer bump: add the object size to the pointer, check against the limit. No synchronization is needed, which is why `new` in Java can be as fast as a few instructions. When a TLAB is full the thread asks eden for a new one (this is the synchronized slow path); an object too large for the remaining TLAB space may be allocated directly in eden. TLABs are on by default (`UseTLAB`), and `ResizeTLAB` lets the JVM adapt each thread's TLAB size to its allocation rate. You rarely tune them; know the mechanism, because it explains why allocation is cheap and why the cost of an object is paid later, at collection time.\n\n### Memory the JVM uses outside the heap\n\nLook at what the JVM itself reports. This program lists every memory pool and the buffer pools:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.management.*;\nimport java.nio.ByteBuffer;\n\npublic class Pools {\n    public static void main(String[] args) {\n        ByteBuffer direct = ByteBuffer.allocateDirect(8 * 1024 * 1024);\n        for (MemoryPoolMXBean p : ManagementFactory.getMemoryPoolMXBeans()) {\n            MemoryUsage u = p.getUsage();\n            System.out.printf(\"%-30s %-14s used=%6d KB max=%s%n\", p.getName(), p.getType(),\n                u.getUsed() / 1024, u.getMax() < 0 ? \"undefined\" : (u.getMax() / 1024) + \" KB\");\n        }\n        for (BufferPoolMXBean b : ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class))\n            System.out.printf(\"buffer pool %-8s count=%d used=%d KB%n\",\n                b.getName(), b.getCount(), b.getMemoryUsed() / 1024);\n        System.out.println(direct.capacity());\n    }\n}",
+          "title": "Pools.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx512m Pools.java\nCodeHeap 'non-nmethods'        Non-heap memory used=  1437 KB max=5692 KB\nMetaspace                      Non-heap memory used= 10459 KB max=undefined\nCodeHeap 'profiled nmethods'   Non-heap memory used=  2413 KB max=120032 KB\nCompressed Class Space         Non-heap memory used=  1256 KB max=1048576 KB\nG1 Eden Space                  Heap memory    used=  7168 KB max=undefined\nG1 Old Gen                     Heap memory    used=  3634 KB max=524288 KB\nG1 Survivor Space              Heap memory    used=  2048 KB max=undefined\nCodeHeap 'non-profiled nmethods' Non-heap memory used=   496 KB max=120036 KB\nbuffer pool mapped   count=0 used=0 KB\nbuffer pool direct   count=2 used=8200 KB\nbuffer pool mapped - 'non-volatile memory' count=0 used=0 KB\n8388608",
+          "title": "Typical output (JDK 21, default G1, -Xmx512m); sizes vary by run"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Heap pools** carry the collector's name (`G1 Eden Space`; with `-XX:+UseSerialGC` they are `Eden Space`, `Survivor` `Space`, `Tenured Gen`). The maximum of the old pool is the `-Xmx` value, 512 MB here.\n- **Metaspace** holds class metadata (the runtime representation of every loaded class: methods, constant pools, field layouts). It lives in native memory, not the heap, and since Java 8 replaced PermGen it grows on demand. Its limit is `-XX:MaxMetaspaceSize`, which is unlimited by default (`max=undefined`), so a classloader leak shows up as native memory growth. **Compressed Class Space** is the part of it holding the class structures that the 4-byte class pointers address; its default reservation is 1 GB.\n- **Code cache** (the `CodeHeap` pools) stores JIT-compiled machine code. It is segmented into non-method code, profiled code (C1 with profiling) and fully optimized code. The default reserved size here is about 240 MB (`ReservedCodeCacheSize`); if it fills up the JIT stops compiling and performance collapses with a log message.\n- **Direct buffers** from `ByteBuffer.allocateDirect` are native memory outside the heap. Our 8 MB buffer shows in the `direct` pool (the count of 2 and the extra few KB come from a small buffer the JDK allocated itself). The ceiling is `-XX:MaxDirectMemorySize`, which defaults to the maximum heap size. NIO networking, Netty and many databases drivers use them heavily.\n\nNot in the list: thread stacks (each platform thread reserves its stack, typically 1 MB for Java threads on 64-bit Linux, controlled with `-Xss`), the JVM's own C++ data structures, GC bookkeeping (for example remembered sets), and memory used by native libraries. This is the reason **process memory is always larger than** `-Xmx`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Setting `-Xmx` equal to the container memory limit gets the process killed by the operating system's out-of-memory killer. The heap is only one slice. As a starting point, leave 25 to 50 percent of the limit for Metaspace, code cache, thread stacks, direct buffers and GC structures, then watch the real figure with Native Memory Tracking (`-XX:NativeMemoryTracking=summary` and `jcmd <pid> VM.native_memory`). Using `-XX:MaxRAMPercentage` instead of a fixed `-Xmx` is covered in the tuning chapter."
+        },
+        {
+          "type": "markdown",
+          "text": "### Reference types\n\nAn ordinary variable holds a **strong reference**: while it can be reached from a GC root, the object is kept. The package `java.lang.ref` adds three weaker kinds. A **reachability** level is the strongest path from a root to the object, and the GC decides what to clear based on it. All four levels, from strongest to weakest:"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 207.0 116.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 108.0 L89.0 108.0 C90.7 108.0 92.0 106.7 92.0 105.0 L92.0 89.0 C92.0 87.3 90.7 86.0 89.0 86.0 L5.0 86.0 C3.3 86.0 2.0 87.3 2.0 89.0 L2.0 105.0 C2.0 106.7 3.3 108.0 5.0 108.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 80.0 L89.0 80.0 C90.7 80.0 92.0 78.7 92.0 77.0 L92.0 61.0 C92.0 59.3 90.7 58.0 89.0 58.0 L5.0 58.0 C3.3 58.0 2.0 59.3 2.0 61.0 L2.0 77.0 C2.0 78.7 3.3 80.0 5.0 80.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 52.0 L89.0 52.0 C90.7 52.0 92.0 50.7 92.0 49.0 L92.0 33.0 C92.0 31.3 90.7 30.0 89.0 30.0 L5.0 30.0 C3.3 30.0 2.0 31.3 2.0 33.0 L2.0 49.0 C2.0 50.7 3.3 52.0 5.0 52.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 24.0 L89.0 24.0 C90.7 24.0 92.0 22.7 92.0 21.0 L92.0 5.0 C92.0 3.3 90.7 2.0 89.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 21.0 C2.0 22.7 3.3 24.0 5.0 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"34.7\" y=\"15.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"24.7\" lengthAdjust=\"spacingAndGlyphs\">Strong</text><text x=\"107.0\" y=\"18.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"98.0\" lengthAdjust=\"spacingAndGlyphs\">never cleared while reachable</text><text x=\"39.5\" y=\"43.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"15.0\" lengthAdjust=\"spacingAndGlyphs\">Soft</text><text x=\"107.0\" y=\"46.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"97.1\" lengthAdjust=\"spacingAndGlyphs\">cleared when memory is tight</text><text x=\"36.9\" y=\"71.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"20.2\" lengthAdjust=\"spacingAndGlyphs\">Weak</text><text x=\"107.0\" y=\"74.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"73.5\" lengthAdjust=\"spacingAndGlyphs\">cleared at the next GC</text><text x=\"30.7\" y=\"99.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"32.6\" lengthAdjust=\"spacingAndGlyphs\">Phantom</text><text x=\"107.0\" y=\"102.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"93.8\" lengthAdjust=\"spacingAndGlyphs\">after finalisation; for cleanup</text></svg>",
+          "width": 207,
+          "caption": "The four reference strengths and when the collector clears each; the reference queue notifies you after clearing.",
+          "alt": "Strong | never cleared while reachable | Soft | cleared when memory is tight | Weak | cleared at the next GC | Phantom | after finalisation; for cleanup"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Cleared when",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`strong ('Object o = ...')`",
+              "Never, while reachable",
+              "All normal code"
+            ],
+            [
+              "`'SoftReference'`",
+              "When memory is short (before an `OutOfMemoryError`)",
+              "Memory-sensitive caches"
+            ],
+            [
+              "`'WeakReference'`",
+              "At the next GC after only weak paths remain",
+              "Canonicalizing maps, metadata keyed by objects (`WeakHashMap`)"
+            ],
+            [
+              "`'PhantomReference'`",
+              "After the object is finalizable; `get()` always returns `null`",
+              "Cleanup actions after death (`Cleaner`)"
+            ]
+          ],
+          "caption": "Reference types."
+        },
+        {
+          "type": "markdown",
+          "text": "The next program shows all of them. Run it with a small heap so the behaviour is predictable."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.ref.*;\nimport java.util.*;\n\npublic class Refs {\n    static void gc() throws InterruptedException {\n        System.gc();\n        Thread.sleep(200);\n    }\n\n    public static void main(String[] args) throws Exception {\n        Object strong = new Object();\n        WeakReference<Object> weak = new WeakReference<>(new byte[1024]);\n        SoftReference<Object> soft = new SoftReference<>(new byte[1024]);\n        ReferenceQueue<Object> queue = new ReferenceQueue<>();\n        Object victim = new Object();\n        PhantomReference<Object> phantom = new PhantomReference<>(victim, queue);\n\n        System.out.println(\"before gc: weak=\" + (weak.get() != null)\n            + \" soft=\" + (soft.get() != null) + \" phantom.get()=\" + phantom.get());\n        victim = null;\n        gc();\n        System.out.println(\"after gc : weak=\" + (weak.get() != null)\n            + \" soft=\" + (soft.get() != null) + \" strong=\" + (strong != null));\n        System.out.println(\"phantom enqueued: \" + (queue.remove(1000) == phantom));\n\n        WeakHashMap<Object, String> cache = new WeakHashMap<>();\n        Object key = new Object();\n        cache.put(key, \"metadata\");\n        cache.put(new Object(), \"orphan\");\n        gc();\n        System.out.println(\"WeakHashMap size after gc: \" + cache.size());\n        key = null;\n        gc();\n        System.out.println(\"after dropping last key : \" + cache.size());\n    }\n}",
+          "title": "Refs.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx64m Refs.java\nbefore gc: weak=true soft=true phantom.get()=null\nafter gc : weak=false soft=true strong=true\nphantom enqueued: true\nWeakHashMap size after gc: 1\nafter dropping last key : 0",
+          "title": "Output on JDK 21"
+        },
+        {
+          "type": "markdown",
+          "text": "The weak target was cleared by the very next collection even though memory was plentiful; the soft target survived because there was no memory pressure. `phantom.get()` is `null` even before the object dies, because a phantom reference never gives the object back; it only tells you, through the queue, that the object is gone. The `WeakHashMap` entry whose key we kept stayed, the orphan entry disappeared.\n\n#### Soft references under pressure\n\nThe JVM clears soft references when the heap runs low, and, before that, by a policy: a soft reference not used for roughly `SoftRefLRUPolicyMSPerMB` (1000 ms by default) times the free megabytes in the heap is eligible. The guarantee is only that all soft references are cleared before the JVM throws `OutOfMemoryError`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.ref.SoftReference;\nimport java.util.*;\n\npublic class SoftDemo {\n    public static void main(String[] args) {\n        List<SoftReference<byte[]>> cache = new ArrayList<>();\n        for (int i = 0; i < 100; i++) cache.add(new SoftReference<>(new byte[1024 * 1024]));\n        long alive = cache.stream().filter(r -> r.get() != null).count();\n        System.out.println(\"100 MB via soft refs, -Xmx32m; still alive: \" + alive);\n    }\n}",
+          "title": "SoftDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx32m SoftDemo.java\n100 MB via soft refs, -Xmx32m; still alive: 4",
+          "title": "Typical output (the exact number depends on the collector and heap)"
+        },
+        {
+          "type": "markdown",
+          "text": "The program never died: the collector reclaimed about 90 of the 100 soft megabytes (our two runs kept 10 and 4) to make room instead of throwing. That is the behaviour a cache wants. It is also the weakness: the collector, not your code, decides what stays, and clearing happens in bursts that cost GC time. In practice most production code uses a bounded cache with an explicit eviction policy (the Caffeine library in Spring applications) instead of `SoftReference`.\n\n#### WeakHashMap and its trap\n\n`WeakHashMap` holds its **keys** weakly. When no one else references a key, the entry disappears at some later point (stale entries are removed lazily on the next access). It is meant for attaching extra data to objects you do not own. The trap: if the **value** strongly references its own key (directly or through a chain), the key is never weakly-only reachable and the entry is never removed.\n\n### Cleaner: replacing finalize\n\nBefore Java 9 people closed native resources in `finalize()`. Finalization is deprecated for removal (since Java 18): it runs at an unpredictable time, on one thread, can resurrect objects and slows down GC. The replacement is `java.lang.ref.Cleaner`, built on phantom references. You register an object together with a **cleaning action**, and the action runs once, either when you call `clean()` explicitly or after the GC finds the object unreachable."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.ref.Cleaner;\n\npublic class CleanerDemo {\n    static final Cleaner CLEANER = Cleaner.create();\n\n    static class NativeHandle implements AutoCloseable {\n        // The cleaning action must NOT reference the NativeHandle itself.\n        private static class State implements Runnable {\n            final String name;\n            State(String name) { this.name = name; }\n            public void run() { System.out.println(\"cleaned \" + name); }\n        }\n        private final Cleaner.Cleanable cleanable;\n        NativeHandle(String name) { cleanable = CLEANER.register(this, new State(name)); }\n        @Override public void close() { cleanable.clean(); }\n    }\n\n    public static void main(String[] args) throws Exception {\n        try (NativeHandle h = new NativeHandle(\"explicit\")) {\n            System.out.println(\"using \" + h.getClass().getSimpleName());\n        }\n        new NativeHandle(\"forgotten\");\n        System.gc();\n        Thread.sleep(300);\n        System.out.println(\"done\");\n    }\n}",
+          "title": "CleanerDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java CleanerDemo.java\nusing NativeHandle\ncleaned explicit\ncleaned forgotten\ndone",
+          "title": "Typical output: the second \"cleaned\" line depends on the GC running in time"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the cleaning action is a separate static nested class holding only the data it needs (here a name; in real code a native pointer or file descriptor). If it were a lambda or inner class capturing `this`, the handle would stay strongly reachable from the cleaner and would never be collected. And the action runs once: calling `close()` first made the later GC a no-op. The rule is the same as for `finalize`, only safer: **Cleaner is a safety net, not the primary** **mechanism**. Provide `AutoCloseable` and make users close in try-with-resources."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What are the four reference types in Java and where have you seen them used? Strong (default), soft (cleared before OOM, used for caches), weak (cleared at the next GC when only weakly reachable, used by `WeakHashMap` and for listener registries), phantom (`get()` always null, enqueued after the object is dead, the basis of `Cleaner` and direct-buffer cleanup). Add that `ThreadLocal` keys are weak references, which is part of why `ThreadLocal` leaks happen on thread pools (covered in the leaks chapter)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "The heap is split by age: eden, two survivor spaces, old; the young collection is cheap because most objects are dead, and TLABs make allocation a pointer bump.\n\n- Process memory is more than the heap: Metaspace, code cache, direct buffers, thread stacks and GC structures all count against a container limit.\n- Strong, soft, weak and phantom references give the collector different permission to clear; weak clears at the next GC, soft under memory pressure, phantom signals via a queue.\n- `WeakHashMap` entries vanish when the key is unreachable elsewhere, but a value that references its key keeps the entry alive.\n- Use `Cleaner` (not `finalize`) as a safety net behind `AutoCloseable`, with a cleaning action that does not capture the object."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-3",
+      "type": "concept",
+      "title": "Garbage Collection Fundamentals",
+      "subtopicId": "9-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Java has no `free`. The JVM decides when an object is no longer needed and reclaims its memory. That removes whole classes of bugs (dangling pointers, double free), but it moves a cost into the runtime: the collector competes with your code for CPU and sometimes stops your code altogether. To tune a Java service, and to answer interview questions about GC, you need a precise model of what the collector does, rather than the slogan \"it removes unused objects\". This chapter builds that model; the next one applies it to the real collectors.\n\n### What counts as garbage: reachability\n\nThe JVM does not track \"unused\". It tracks **reachability**. An object is **live** if some chain of references leads to it from a **GC root**; everything else is garbage, even if it still points to other objects. The roots are the references the runtime itself holds:\n\n- local variables and parameters in the frames of every live thread's stack (including values in registers and the operand stack of running frames);\n- static fields of loaded classes (the classes themselves are held by their class loader);\n- live threads (a running `Thread` object is a root until it terminates);\n- JNI references held by native code;\n- internal JVM structures: the string table, classes in use, synchronization monitors being held, and so on. `GC roots heap` `┌────────────────┐` `│ local var 'a' │──────▶ A ──▶ B ──▶ C live (reachable from a root)` `│ static field │ ▲` `│ live threads │ F ─────┘ garbage: F is not reachable` `└────────────────┘` `D ◀──▶ E garbage: a cycle, but no root reaches it`\n\nTwo consequences matter in practice. First, **cycles are not a problem**: D and E point at each other, yet both are garbage because no root reaches them. This is the difference from reference counting (used by CPython and Swift, for example), which cannot free a cycle by counting alone. Second, **a leak in Java means unwanted reachability**: an object you no longer need is still reachable from a root (a static `Map`, a listener list, a `ThreadLocal`), so the collector must keep it. That is the topic of the memory-leak chapter.\n\nYou can prove the first point on the real JVM. A weak reference observes whether the cycle was collected:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.ref.WeakReference;\n\npublic class CycleReal {\n    static class Node { Node other; byte[] pad = new byte[1000]; }\n\n    public static void main(String[] args) throws Exception {\n        Node x = new Node(), y = new Node();\n        x.other = y; y.other = x;               // reference cycle\n        WeakReference<Node> probe = new WeakReference<>(x);\n        x = null; y = null;\n        System.gc();\n        Thread.sleep(100);\n        System.out.println(\"cycle collected: \" + (probe.get() == null));\n    }\n}",
+          "title": "CycleReal.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java CycleReal.java\ncycle collected: true",
+          "title": "Output"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 80.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 38.0 L73.0 38.0 C74.7 38.0 76.0 36.7 76.0 35.0 L76.0 5.0 C76.0 3.3 74.7 2.0 73.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M76.0 20.0 L96.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M170.0 20.0 L190.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M264.0 20.0 L284.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M358.0 20.0 L378.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M96.0 20.0 L90.6 17.4 L90.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M99.0 38.0 L167.0 38.0 C168.7 38.0 170.0 36.7 170.0 35.0 L170.0 5.0 C170.0 3.3 168.7 2.0 167.0 2.0 L99.0 2.0 C97.3 2.0 96.0 3.3 96.0 5.0 L96.0 35.0 C96.0 36.7 97.3 38.0 99.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M190.0 20.0 L184.6 17.4 L184.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M193.0 38.0 L261.0 38.0 C262.7 38.0 264.0 36.7 264.0 35.0 L264.0 5.0 C264.0 3.3 262.7 2.0 261.0 2.0 L193.0 2.0 C191.3 2.0 190.0 3.3 190.0 5.0 L190.0 35.0 C190.0 36.7 191.3 38.0 193.0 38.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M284.0 20.0 L278.6 17.4 L278.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M287.0 38.0 L355.0 38.0 C356.7 38.0 358.0 36.7 358.0 35.0 L358.0 5.0 C358.0 3.3 356.7 2.0 355.0 2.0 L287.0 2.0 C285.3 2.0 284.0 3.3 284.0 5.0 L284.0 35.0 C284.0 36.7 285.3 38.0 287.0 38.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M378.0 20.0 L372.6 17.4 L372.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M381.0 38.0 L449.0 38.0 C450.7 38.0 452.0 36.7 452.0 35.0 L452.0 5.0 C452.0 3.3 450.7 2.0 449.0 2.0 L381.0 2.0 C379.3 2.0 378.0 3.3 378.0 5.0 L378.0 35.0 C378.0 36.7 379.3 38.0 381.0 38.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"29.6\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"18.8\" lengthAdjust=\"spacingAndGlyphs\">Pause</text><text x=\"125.2\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">Mark</text><text x=\"206.0\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"42.1\" lengthAdjust=\"spacingAndGlyphs\">Sweep / copy</text><text x=\"306.9\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"28.2\" lengthAdjust=\"spacingAndGlyphs\">Compact</text><text x=\"402.2\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"25.5\" lengthAdjust=\"spacingAndGlyphs\">Resume</text><text x=\"24.4\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"29.3\" lengthAdjust=\"spacingAndGlyphs\">safepoint</text><text x=\"110.9\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"44.1\" lengthAdjust=\"spacingAndGlyphs\">from GC roots</text><text x=\"215.3\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"23.4\" lengthAdjust=\"spacingAndGlyphs\">reclaim</text><text x=\"305.8\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"30.4\" lengthAdjust=\"spacingAndGlyphs\">(optional)</text><text x=\"397.6\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"34.7\" lengthAdjust=\"spacingAndGlyphs\">application</text><text x=\"133.1\" y=\"64.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"236.7\" lengthAdjust=\"spacingAndGlyphs\">concurrent collectors do most marking while the application keeps running</text></svg>",
+          "width": 454,
+          "caption": "One GC cycle: stop (or not) the application, mark from roots, reclaim or copy, optionally compact, resume; the cost of each phase depends on live data or on heap size.",
+          "alt": "Pause Mark Sweep / copy Compact Resume | safepoint from GC roots reclaim (optional) application | concurrent collectors do most marking while the application keeps running"
+        },
+        {
+          "type": "markdown",
+          "text": "### Mark-sweep-compact\n\nThe oldest and simplest tracing algorithm has two phases (plus one optional one):\n\n1. **Mark**: start at the roots, follow every reference, and set a mark on each object reached. (Real collectors keep mark bits in a side bitmap or in the header, and use an explicit work queue instead of recursion so deep structures do not overflow the stack.)\n2. **Sweep**: walk the whole heap and reclaim every unmarked object, adding its space to a free list.\n3. **Compact** (optional): slide the live objects together to remove the holes left behind.\n\nThis toy collector runs the same algorithm over a small graph, using exactly the picture above:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class ToyGc {\n    static class Node {\n        final String name;\n        final List<Node> refs = new ArrayList<>();\n        boolean marked;\n        Node(String name) { this.name = name; }\n    }\n\n    static void mark(Node n) {\n        if (n == null || n.marked) return;      // the marked flag also stops cycles\n        n.marked = true;\n        for (Node r : n.refs) mark(r);\n    }\n\n    public static void main(String[] args) {\n        Node a = new Node(\"A\"), b = new Node(\"B\"), c = new Node(\"C\");\n        Node d = new Node(\"D\"), e = new Node(\"E\"), f = new Node(\"F\");\n        a.refs.add(b);  b.refs.add(c);          // root -> A -> B -> C\n        d.refs.add(e);  e.refs.add(d);          // D <-> E : a cycle nobody points to\n        f.refs.add(c);                          // F -> C, but nobody points to F\n        List<Node> heap = List.of(a, b, c, d, e, f);\n        List<Node> roots = List.of(a);          // a local variable holds A\n\n        for (Node r : roots) mark(r);           // phase 1: mark everything reachable\n        List<Node> survivors = new ArrayList<>();\n        for (Node n : heap) {                   // phase 2: sweep the rest\n            if (n.marked) survivors.add(n);\n            else System.out.println(\"sweep \" + n.name);\n        }\n        System.out.println(\"survivors: \" + survivors.stream().map(n -> n.name).toList());\n    }\n}",
+          "title": "ToyGc.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java ToyGc.java\nsweep D\nsweep E\nsweep F\nsurvivors: [A, B, C]",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Note that the work in the mark phase is proportional to the number of **live** objects, while the sweep phase is proportional to the heap size. Garbage is never visited by the marker. This is why tracing GC cost depends on how much survives, not on how much you allocated.\n\nPlain mark-sweep leaves **fragmentation**: free space exists but in holes too small for a big array, and allocation has to search a free list instead of bumping a pointer. **Compaction** fixes both, at the price of moving objects, which means every reference to them must be updated. That is cheap if the world is stopped and expensive if the application is running (the next chapter shows how ZGC does it concurrently using load barriers).\n\n### Copying collection\n\nInstead of marking and then sweeping in place, a **copying collector** divides a space into two halves. It allocates in one half (\"from-space\"), and when that fills it copies every live object into the empty other half (\"to-space\"), then declares the whole from-space free in one step. After copying, the survivors sit contiguously, so there is no fragmentation and allocation is again a pointer bump.\n\nThe cost is proportional to the number of survivors only: dead objects cost nothing, because they are never touched. The price is wasted space (you reserve room to copy into). Copying is therefore perfect when most objects are dead, which is exactly what the generational hypothesis says about young objects. That is why the young generation uses eden plus two small survivor spaces and a copying collector, while the old generation, where most objects survive, uses mark-compact or a region-based variant.\n\n### The generational hypothesis in practice\n\nPutting it together, a **young collection** (also called minor GC):\n\n- marks from the roots, **plus** from the old objects that point into young ones. Searching the whole old generation for such pointers would defeat the purpose, so the JVM keeps a **card table**: a write barrier marks a small region (a \"card\") of the heap as dirty whenever a reference is stored into an old object. At a young collection only dirty cards are scanned;\n- copies live eden and survivor objects into the other survivor space, or promotes them to old if old enough;\n- frees eden and the old survivor space wholesale.\n\nThe cost of a young collection scales with the live data in young and the number of dirty cards, not with the heap size. A **full GC** (or major collection) examines the whole heap and is the expensive event you want to avoid. When the old generation fills up, or a promotion fails, you get one. Even so, on modern JVMs the line between \"young\" and \"full\" is blurry for concurrent collectors (G1 adds \"mixed\" collections that clean part of the old generation), as the next chapter shows.\n\n### Stop-the-world and safepoints\n\nMoving an object is only safe if no thread is looking at it at that moment. Most collectors therefore stop all application threads for at least part of each cycle; this is a **stop-the-world (STW) pause**. The JVM does not interrupt a thread at an arbitrary instruction. A thread has to reach a **safepoint**: a point where its state (where its references are on the stack and in registers) is exactly known to the JVM. JIT-compiled code contains safepoint polls at method returns and loop back-edges. When a collection is requested, the JVM raises a flag, each thread notices it at the next poll, parks, and the collector runs once all threads have stopped.\n\nYou can see this in the unified logging system. This run used a 64 MB heap, the Serial collector and `-Xlog:gc,safepoint`; the interesting lines are trimmed:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx64m -XX:+UseSerialGC -Xlog:gc,safepoint Safepoint.java\n[6.402s][info][gc] GC(0) Pause Young (Allocation Failure) 18M->4M(61M) 175.498ms\n[6.406s][info][safepoint] Safepoint \"GenCollectForAllocation\", Reaching safepoint: 3649 ns,\n    Cleanup: 34419 ns, At safepoint: 179615774 ns, ...\n[8.660s][info][gc] GC(4) Pause Full (Allocation Failure) 45M->24M(61M) 132.744ms",
+          "title": "Typical output, slow shared machine (pause times are inflated)"
+        },
+        {
+          "type": "markdown",
+          "text": "Read the safepoint line from left to right: \"Reaching safepoint\" is how long it took to get all threads to stop (here microseconds), \"At safepoint\" is the time the VM operation, the GC, actually took. In a healthy system \"reaching\" is tiny. A long reaching time means one thread was in a long loop without a safepoint poll (classically a counted `int` loop with no calls, which older JITs left unpolled), and everyone else waited for it. Also, other VM operations besides GC use safepoints: biased-lock revocation in old versions, deoptimization, heap dumps, `jstack` thread dumps in some cases. If your pauses are not GC pauses, `-Xlog:safepoint` is where to look."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`System.gc()` is a request for a full collection, not a command. HotSpot honours it by default (and runs it as a stop-the-world full GC) unless `-XX:+DisableExplicitGC` is set. Libraries sometimes call it behind your back; direct `ByteBuffer` cleanup and RMI's distributed GC are the classic examples. If you see periodic `Pause Full (System.gc())` lines in a GC log, search for the caller instead of tuning the collector."
+        },
+        {
+          "type": "markdown",
+          "text": "### The three goals: throughput, latency, footprint\n\nNo collector can be best at everything. Three measures pull against each other:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Goal",
+            "What it means",
+            "How you lose it"
+          ],
+          "rows": [
+            [
+              "**Throughput**",
+              "Percentage of total time spent running your code rather than GC",
+              "Small heaps and frequent collections; barrier overhead in concurrent collectors"
+            ],
+            [
+              "**Latency**",
+              "Length of the longest pause (matters for request tail latency, p99)",
+              "A big stop-the-world collection of a large live set"
+            ],
+            [
+              "**Footprint**",
+              "Memory the JVM needs beyond your live data",
+              "Headroom for copying, region bookkeeping, concurrent collectors that need slack to keep up"
+            ]
+          ],
+          "caption": "The GC trade-off triangle."
+        },
+        {
+          "type": "markdown",
+          "text": "A batch job that only cares about finishing sooner wants throughput; a trading or interactive system wants low latency and will pay with memory and CPU; a small container wants footprint. More heap generally buys both throughput and lower pause frequency, but costs memory. A concurrent collector works alongside your threads and so keeps pauses short, but spends CPU on barriers and background threads. The collectors in the next chapter are different points on this triangle. A useful working rule is: choose the goal first, then the collector, and set the heap before touching any other flag.\n\nTwo small numbers help you reason. **Allocation rate** (MB per second) determines how often young collections happen: a 600 MB eden with a 1.2 GB/s allocation rate is collected twice a second. **Survival rate** determines how long each one takes. Reducing allocation rate (fewer temporary objects) is usually the cheapest GC tuning there is."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does the JVM decide an object is eligible for garbage collection, and can a reference cycle leak memory? An object is eligible when it is not reachable from any GC root (thread stack variables, static fields, JNI references, live threads). Reachability is computed by tracing from the roots, so a cycle with no path from a root is collected; Java does not use reference counting. A \"leak\" in Java is an object that is still reachable but no longer needed."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "The GC finds live objects by tracing from roots (stack variables, statics, live threads, JNI); unreachable objects, including cycles, are garbage.\n\n- Mark-sweep costs time proportional to live objects plus heap size and fragments memory; compaction and copying fix fragmentation by moving objects.\n- Copying costs only the survivors, which is why the young generation uses it; a card table lets young collections skip the old generation.\n- Stop-the-world pauses need all threads at safepoints; `-Xlog:safepoint` shows time to reach it versus time spent in the operation.\n- Throughput, latency and footprint trade against each other; reducing allocation rate is the cheapest tuning."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-4",
+      "type": "concept",
+      "title": "The Collectors",
+      "subtopicId": "9-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "HotSpot ships several garbage collectors because no single design wins on every axis from the previous chapter. You choose one with a command-line flag, and the choice changes pause times, CPU use and memory overhead more than any other flag. This chapter describes each collector by how it works, what it is good at, and when to pick it. All measurements are from OpenJDK 21 on a 2-CPU build machine; the log lines are real, but absolute pause times on a small shared machine are not representative of production hardware.\n\n### The lineup at a glance"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Collector",
+            "Flag",
+            "Strength",
+            "Weakness"
+          ],
+          "rows": [
+            [
+              "Serial",
+              "`'-XX:+UseSerialGC'`",
+              "Tiny footprint, no GC threads",
+              "Single-threaded, stop-the-world for everything"
+            ],
+            [
+              "Parallel",
+              "`'-XX:+UseParallelGC'`",
+              "Highest raw throughput for batch work",
+              "Pauses grow with the live set"
+            ],
+            [
+              "G1",
+              "`'-XX:+UseG1GC'`",
+              "Balanced; pause-time goal; the default",
+              "Barrier and bookkeeping overhead; pauses still scale with the live young set"
+            ],
+            [
+              "ZGC",
+              "`'-XX:+UseZGC'`",
+              "Pauses of well under a millisecond, independent of heap size",
+              "More CPU and memory overhead; needs headroom"
+            ],
+            [
+              "Shenandoah",
+              "`'-XX:+UseShenandoahG` `C'`",
+              "Low pauses, concurrent compaction",
+              "Not in every vendor's build (check yours)"
+            ],
+            [
+              "Epsilon",
+              "`'-XX:+UseEpsilonGC'`",
+              "Allocates, never frees",
+              "The JVM exits when the heap is full"
+            ]
+          ],
+          "caption": "The HotSpot collectors (Java 21 flags; Java 25 availability noted in the text)."
+        },
+        {
+          "type": "markdown",
+          "text": "Confirm which one you are on in code or by logging:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.management.*;\n\npublic class WhichGc {\n    public static void main(String[] args) {\n        Runtime rt = Runtime.getRuntime();\n        System.out.println(\"cpus=\" + rt.availableProcessors()\n            + \" maxHeapMB=\" + rt.maxMemory() / (1024 * 1024));\n        for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans())\n            System.out.println(\"  collector: \" + b.getName());\n    }\n}",
+          "title": "WhichGc.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java WhichGc.java\ncpus=2 maxHeapMB=1496\n  collector: G1 Young Generation\n  collector: G1 Concurrent GC\n  collector: G1 Old Generation\n$ java -XX:+UseSerialGC WhichGc.java\ncpus=2 maxHeapMB=1446\n  collector: Copy\n  collector: MarkSweepCompact\n$ java -XX:+UseParallelGC WhichGc.java\ncpus=2 maxHeapMB=1330\n  collector: PS MarkSweep\n  collector: PS Scavenge",
+          "title": "Output on the build machine (2 CPUs, 6 GB RAM)"
+        },
+        {
+          "type": "markdown",
+          "text": "The first line is the **default** here, which brings us to the question of which GC you get without asking.\n\n### Which collector is the default?\n\n- Java 9 to 26: **G1** on a \"server-class\" machine, which means at least 2 available CPUs and at least about 1.8 GB of memory (1792 MB); otherwise **Serial**. A small container with one CPU or a low memory limit therefore silently gets Serial. This catches people out: the same jar behaves differently in a 1-CPU Kubernetes pod and on a laptop.\n- Java 27 (JEP 523): **G1 everywhere**, regardless of CPU count or memory. Explicit flags still override.\n- The JVM looks at the container's limits when counting CPUs and memory (container awareness), not the host's.\n\n`java -XX:+PrintFlagsFinal -version | grep Use.*GC` shows which collectors are enabled on this machine (`UseG1GC` `= true` above in our flag listing).\n\n### Serial and Parallel\n\nBoth are **generational, stop-the-world, copying-young / mark-compact-old** collectors, exactly the model from the previous chapter. **Serial** does everything on one thread. It has the lowest overhead and memory use, and is the right choice for small heaps (up to a few hundred MB), single-CPU containers, command-line tools and short-lived programs. **Parallel** (the Java 8 default, also called the throughput collector) runs the same algorithms on several GC threads (`-XX:ParallelGCThreads`). For a batch job where no one cares about an occasional two-second pause, Parallel often completes the job fastest because it has no concurrent bookkeeping and no read/write barriers beyond the card mark. Its pauses grow with the amount of live data, so it is a poor fit for latency-sensitive services with big heaps. Here is Parallel in the log, for a program `Churn` that allocates mostly short-lived 1 KB arrays and keeps about 2 percent (we reuse it below; compile once with `javac Churn.java`):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Churn {\n    public static void main(String[] args) {\n        List<byte[]> retained = new ArrayList<>();\n        long sum = 0;\n        for (int i = 0; i < 3_000_000; i++) {\n            byte[] tmp = new byte[1024];            // short-lived\n            sum += tmp.length;\n            if (i % 50 == 0) {                      // 2% of the data survives\n                retained.add(new byte[1024]);\n                if (retained.size() > 20_000) retained.subList(0, 10_000).clear();\n            }\n        }\n        System.out.println(sum + \" retained=\" + retained.size());\n    }\n}",
+          "title": "Churn.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xms128m -Xmx128m -XX:+UseParallelGC -Xlog:gc Churn\n[0.034s][info][gc] Using Parallel\n[0.377s][info][gc] GC(0) Pause Young (Allocation Failure) 33M->1M(123M) 1.846ms\n[0.425s][info][gc] GC(1) Pause Young (Allocation Failure) 34M->2M(123M) 0.974ms\n[0.473s][info][gc] GC(3) Pause Young (Allocation Failure) 35M->11M(123M) 29.196ms",
+          "title": "Parallel: every young collection is a stop-the-world copy; 128 MB heap"
+        },
+        {
+          "type": "markdown",
+          "text": "### G1: the default\n\n**G1** (Garbage-First) is designed for heaps from a few hundred MB to tens of GB and for a configurable pause-time goal. It still has generations, but not as contiguous blocks."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 422.0 117.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M2.0 76.5 L42.0 76.5 L42.0 46.5 L2.0 46.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 42.5 L42.0 42.5 L42.0 12.5 L2.0 12.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M44.0 42.5 L84.0 42.5 L84.0 12.5 L44.0 12.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M86.0 42.5 L126.0 42.5 L126.0 12.5 L86.0 12.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M128.0 42.5 L168.0 42.5 L168.0 12.5 L128.0 12.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M170.0 42.5 L210.0 42.5 L210.0 12.5 L170.0 12.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M212.0 42.5 L252.0 42.5 L252.0 12.5 L212.0 12.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M254.0 42.5 L294.0 42.5 L294.0 12.5 L254.0 12.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M296.0 42.5 L336.0 42.5 L336.0 12.5 L296.0 12.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M338.0 42.5 L378.0 42.5 L378.0 12.5 L338.0 12.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.0 42.5 L420.0 42.5 L420.0 12.5 L380.0 12.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M44.0 76.5 L84.0 76.5 L84.0 46.5 L44.0 46.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M86.0 76.5 L126.0 76.5 L126.0 46.5 L86.0 46.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M128.0 76.5 L168.0 76.5 L168.0 46.5 L128.0 46.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M170.0 76.5 L210.0 76.5 L210.0 46.5 L170.0 46.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M212.0 76.5 L252.0 76.5 L252.0 46.5 L212.0 46.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M254.0 76.5 L294.0 76.5 L294.0 46.5 L254.0 46.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M296.0 76.5 L336.0 76.5 L336.0 46.5 L296.0 46.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M338.0 76.5 L378.0 76.5 L378.0 46.5 L338.0 46.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.0 76.5 L420.0 76.5 L420.0 46.5 L380.0 46.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"136.8\" y=\"6.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"160.3\" lengthAdjust=\"spacingAndGlyphs\">equal-sized regions; roles change over time</text><text x=\"19.7\" y=\"30.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"61.7\" y=\"30.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"103.2\" y=\"30.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"145.6\" y=\"30.5\" font-size=\"7.4\" fill=\"#99edf4\" font-weight=\"700\">S</text><text x=\"187.2\" y=\"30.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"229.7\" y=\"30.5\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\">F</text><text x=\"271.7\" y=\"30.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"313.2\" y=\"30.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"355.2\" y=\"30.5\" font-size=\"7.4\" fill=\"#c1ace2\" font-weight=\"700\">H</text><text x=\"397.2\" y=\"30.5\" font-size=\"7.4\" fill=\"#c1ace2\" font-weight=\"700\">H</text><text x=\"19.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"61.2\" y=\"64.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"103.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\">F</text><text x=\"145.6\" y=\"64.5\" font-size=\"7.4\" fill=\"#99edf4\" font-weight=\"700\">S</text><text x=\"187.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"229.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"271.2\" y=\"64.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"313.2\" y=\"64.5\" font-size=\"7.4\" fill=\"#eec7a0\" font-weight=\"700\">O</text><text x=\"355.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\">F</text><text x=\"397.7\" y=\"64.5\" font-size=\"7.4\" fill=\"#abe3c4\" font-weight=\"700\">E</text><text x=\"113.4\" y=\"102.5\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"207.2\" lengthAdjust=\"spacingAndGlyphs\">E eden, S survivor, O old, H humongous (big arrays), blank = free</text></svg>",
+          "width": 422,
+          "caption": "G1 divides the heap into equal-sized regions that are each eden, survivor, old or humongous; collection picks the regions with the most garbage first.",
+          "alt": "equal-sized regions; roles change over time | E E O S O F E O H H | E O F S E E O O F E | E eden, S survivor, O old, H humongous (big arrays), blank = free"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Regions\n\nThe heap is divided into about 2000 equal **regions** (1 MB to 32 MB, a power of two chosen from the heap size; the log of our 128 MB heap printed `Heap Region Size: 1M`). Each region plays a role at a given time: eden, survivor, old, or **humongous** (an object at least half a region large gets its own contiguous run of regions; that is expensive, so avoid frequent allocation of multi-megabyte arrays under G1). Because the role is per region, G1 can resize the young generation by giving or taking regions, and can collect any set of regions it likes.\n\n#### Young collections\n\nWhen eden regions are full G1 stops the world and evacuates the live objects of the **collection set** (all young regions) into new survivor or old regions, in parallel across GC threads. It sizes the number of young regions to meet the pause goal `-XX:MaxGCPauseMillis` (200 ms by default). Each region has a **remembered set** that records which other regions point into it, so a region can be collected without scanning the rest of the heap.\n\n#### Concurrent marking and mixed collections\n\nTo clean the old generation without a long pause, G1 starts a **concurrent marking cycle** when the heap occupancy reaches the **initiating heap occupancy** (`-XX:InitiatingHeapOccupancyPercent`, 45 by default; G1 also adapts this value at run time). Marking runs alongside the application and uses a snapshot-at-the-beginning (SATB) technique: a write barrier records the old value of any reference that is overwritten, so objects alive when marking started are not lost. After marking, G1 knows how much garbage each old region holds. The next few young collections become **mixed** **collections**: they collect all young regions plus the old regions with the **most garbage** (hence the name Garbage-First), as many as the pause goal allows. The old generation is thus compacted gradually, in small steps, rather than in one big pause. If G1 cannot keep up and runs out of space, it falls back to a **full GC** which is single-threaded in older releases and parallel since Java 10; a full GC in a G1 log is a sign that the heap is too small or the allocation rate too high.\n\nThe following trimmed log comes from `Fill`, which is like `Churn` but retains one array in eight, so the old generation really fills up. It is the same code with different numbers:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Fill {\n    public static void main(String[] args) {\n        List<byte[]> retained = new ArrayList<>();\n        long sum = 0;\n        for (int i = 0; i < 4_000_000; i++) {\n            byte[] tmp = new byte[1024];\n            sum += tmp.length;\n            if (i % 8 == 0) {\n                retained.add(new byte[1024]);\n                if (retained.size() > 60_000) retained.subList(0, 30_000).clear();\n            }\n        }\n        System.out.println(sum + \" retained=\" + retained.size());\n    }\n}",
+          "title": "Fill.java"
+        },
+        {
+          "type": "markdown",
+          "text": "On a 128 MB heap it shows each phase:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xms128m -Xmx128m -XX:+UseG1GC -Xlog:gc Fill\n[0.317s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 7M->1M(128M) 15.244ms\n[1.039s][info][gc] GC(7) Pause Young (Normal) (G1 Evacuation Pause) 75M->62M(128M) 22.031ms\n[1.046s][info][gc] GC(8) Pause Young (Concurrent Start) (G1 Evacuation Pause) 86M->65M(128M) 3.113ms\n[1.047s][info][gc] GC(9) Concurrent Mark Cycle\n[1.054s][info][gc] GC(9) Pause Remark 80M->53M(128M) 0.305ms\n[1.099s][info][gc] GC(9) Pause Cleanup 60M->60M(128M) 0.074ms\n[1.100s][info][gc] GC(9) Concurrent Mark Cycle 53.165ms\n[1.127s][info][gc] GC(11) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 79M->70M(128M) 23.806ms\n[1.140s][info][gc] GC(12) Pause Young (Mixed) (G1 Evacuation Pause) 90M->89M(128M) 9.127ms",
+          "title": "G1, real output, trimmed"
+        },
+        {
+          "type": "markdown",
+          "text": "Reading it: GC(8) is a young pause that also **starts** the concurrent cycle; GC(9) is the marking, mostly concurrent, with only two tiny pauses (Remark and Cleanup, 0.3 and 0.07 ms); GC(11) \"Prepare Mixed\" and GC(12) \"Mixed\" then reclaim old regions. Each line has the form `before->after(committed)` followed by the pause.\n\n#### When G1 is the right choice\n\nFor most services with heaps of 4 GB to a few tens of GB and a latency target in the tens to hundreds of milliseconds, G1 with the defaults is the right place to start, and you add flags only when logs show a problem. Its costs: extra memory for remembered sets and other bookkeeping, and extra barrier work for the application. Recent releases keep improving this: Java 26 reduces synchronization in G1's write barriers for better throughput (JEP 522), and Java 27 makes it the default everywhere.\n\n### ZGC: pauses that do not grow with the heap\n\n**ZGC** targets pause times that stay below a millisecond or so and **do not depend on the heap size or the live-set** **size**; it is built for heaps from a few GB to many TB. Its trick is that nearly everything, including moving objects, is done concurrently with the application:\n\n- It uses **load barriers**: a small piece of code the JIT inserts at every reference load from the heap. If the reference points at an object that is being relocated, or its \"color\" bits show it is stale, the barrier fixes it on the spot (healing the pointer), so the application never sees an old address.\n- Colored pointers carry metadata bits in the 64-bit reference itself, which is why ZGC does not use compressed oops.\n- The only stop-the-world phases are short ones that scan roots; their length does not scale with heap size.\n\nIn Java 21, ZGC became generational: `-XX:+UseZGC -XX:+ZGenerational` (JEP 439) collects young objects separately, which greatly cuts the CPU and headroom the non-generational version needed. In Java 23 generational became the default mode of ZGC, and in Java 24 the non-generational mode was removed (JEP 490), so on Java 25 `-XX:+UseZGC` simply means generational ZGC. The price: ZGC uses more CPU than G1 (barriers and concurrent threads), needs free headroom (if the application allocates faster than ZGC can reclaim, threads are stalled; you see `Allocation Stall` in the log), and uses more memory. On our small 2-CPU build machine with a 128 MB heap it behaves exactly like that:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xms128m -Xmx128m -XX:+UseZGC -Xlog:gc Churn\n[0.136s][info][gc] Using The Z Garbage Collector\n[0.735s][info][gc] GC(0) Garbage Collection (Warmup) 50M(39%)->48M(38%)\n[1.166s][info][gc] Allocation Stall (main) 24.367ms\n[1.329s][info][gc] GC(3) Garbage Collection (Allocation Stall) 24M(19%)->24M(19%)",
+          "title": "ZGC (non-generational, JDK 21 default mode) on a tiny heap; this is a stress case, not typical"
+        },
+        {
+          "type": "markdown",
+          "text": "The lesson: do not judge ZGC on a 128 MB heap. Use it where it is designed to shine, a multi-GB heap, several spare cores and a hard latency requirement, and give it room.\n\n### Shenandoah\n\n**Shenandoah** (included in many OpenJDK builds, such as those from Linux distributions and Adoptium; not in every vendor's build, and it was present in the JDK 21 used here) also compacts concurrently, with a different mechanism: a **load-reference barrier** ensures that all accesses go to the new copy of a moved object. Its pauses are short and mostly independent of heap size, like ZGC's. A generational mode of Shenandoah became a product feature in Java 25 (JEP 521); check the release notes of your build before relying on it. Shenandoah is a good alternative where ZGC is unavailable or where you want its heap-sizing behaviour; run the same load against both and compare."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xms128m -Xmx128m -XX:+UseShenandoahGC -Xlog:gc Churn\n[0.050s][info][gc] Using Shenandoah\n[0.387s][info][gc] Trigger: Learning 1 of 5. Free (90880K) is below initial threshold (91750K)\n[0.387s][info][gc] GC(0) Pause Init Mark (unload classes) 0.010ms\n[0.392s][info][gc] GC(0) Concurrent marking (unload classes) 4.641ms",
+          "title": "Shenandoah log start, JDK 21, trimmed"
+        },
+        {
+          "type": "markdown",
+          "text": "### Epsilon: the collector that does nothing\n\n`-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC` gives you a heap that is allocated but never reclaimed. When it fills up, the JVM exits. It sounds useless, but it has real uses: short-lived programs sized never to fill the heap, performance tests where you want to measure your code without GC noise, and experiments to measure how much of a slowdown is GC."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xmx16m Churn\nTerminating due to java.lang.OutOfMemoryError: Java heap space",
+          "title": "Epsilon on a 16 MB heap, with Churn"
+        },
+        {
+          "type": "markdown",
+          "text": "### How to choose\n\nUse this order of questions:\n\n#### 1. Is the heap tiny or the container limited to one CPU? Serial.\n\n1. **Is it a batch job, a build, a data-processing run, where total run time matters and pauses do not?** Parallel (or G1 if you are unsure; the difference is usually modest).\n2. **Is it an ordinary service (REST, Spring Boot, Kafka consumers) with a heap up to a few tens of GB?** G1, defaults first.\n3. **Do you have a hard latency SLO, big heaps, and spare CPU?** Try ZGC (or Shenandoah), and compare p99 latency and CPU against G1 with a load test, not by reasoning.\n4. **Experiments or ultra-short tasks?** Epsilon.\n\nDo not switch collector because a blog said so. Switch when a GC log or a tool like JFR shows pauses that violate your latency target, or throughput lost to GC that you cannot fix by raising the heap or reducing allocation."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Which garbage collector does Java use by default and how do you pick another? G1 since Java 9 on server-class machines (at least 2 CPUs and about 1.8 GB), Serial on smaller ones; Java 27 will make G1 the default everywhere. You pick another with `-XX:+UseSerialGC`, `-XX:+UseParallelGC`, `-XX:+UseZGC`, `-XX:+UseShenandoahGC`. Say what you would pick: G1 for general services, ZGC for strict low latency on large heaps, Parallel for batch throughput, Serial for tiny containers."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Most Spring Boot services run happily on the default G1. Teams move to ZGC when they have p99 latency targets that a G1 mixed pause breaks, and they do it behind a flag in the deployment (`JAVA_TOOL_OPTIONS=-XX:+UseZGC`) after a canary comparison. Many small microservices pods (1 CPU, 512 MB) get Serial automatically before Java 27, and that is often the correct choice."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Serial, Parallel, G1, ZGC, Shenandoah and Epsilon are points on the throughput, latency and footprint triangle; pick by goal, then verify with a load test.\n\n- Default: G1 on 2 or more CPUs and about 1.8 GB or more, Serial otherwise; Java 27 makes G1 the default everywhere.\n- G1 uses equal-size regions, a pause goal (`MaxGCPauseMillis`, 200 ms), concurrent marking and mixed collections that take the most garbage-heavy old regions first.\n- ZGC and Shenandoah compact concurrently, keeping pauses very short at the price of CPU, headroom and barriers; ZGC is generational by default from Java 23 and non-generational mode is gone in Java 24.\n- Epsilon never collects, which is useful only for tests and very short programs."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-5",
+      "type": "concept",
+      "title": "Reading GC Logs and Tuning",
+      "subtopicId": "9-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Tuning without a log is guessing. The JVM can tell you exactly when each collection ran, how long it stopped your threads, and how much memory it recovered. This chapter shows how to switch that on, how to read a line, which handful of flags matter, and how to size the JVM inside a container. We close with a procedure you can follow on a real service.\n\n### Sizing the heap: -Xms and -Xmx\n\n`-Xmx` sets the maximum heap size and `-Xms` the initial size (for example `-Xms512m -Xmx2g`; units `k`, `m`, `g`). If you set nothing, the JVM decides from the machine: the maximum is `MaxRAMPercentage`, **25 percent** of the physical memory by default, and the initial size is `InitialRAMPercentage`, about 1.6 percent. On the 6 GB build machine the default maximum was 1496 MB and the initial heap about 94 MB, both visible in `-XX:+PrintFlagsFinal`.\n\nFor servers the usual advice is to set `-Xms` equal to `-Xmx`. The heap then never has to grow or shrink, which avoids resize pauses and makes memory use predictable, and the OS maps the memory only as it is touched anyway. For tiny tools, leave the defaults.\n\nDoes a bigger heap help? Run the same allocation-heavy program (a variant of `Fill` that prints the collector statistics from `GarbageCollectorMXBean` at the end) with different heap sizes:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.management.*;\nimport java.util.*;\n\npublic class GcStats {\n    public static void main(String[] args) {\n        List<byte[]> retained = new ArrayList<>();\n        long start = System.nanoTime();\n        for (int i = 0; i < 4_000_000; i++) {\n            byte[] tmp = new byte[1024];\n            if (i % 8 == 0) {\n                retained.add(new byte[1024]);\n                if (retained.size() > 60_000) retained.subList(0, 30_000).clear();\n            }\n        }\n        long ms = (System.nanoTime() - start) / 1_000_000;\n        long count = 0, gcMs = 0;\n        for (GarbageCollectorMXBean b : ManagementFactory.getGarbageCollectorMXBeans()) {\n            count += b.getCollectionCount();\n            gcMs += b.getCollectionTime();\n        }\n        System.out.println(\"maxHeap=\" + Runtime.getRuntime().maxMemory() / (1 << 20)\n            + \"MB wall=\" + ms + \"ms collections=\" + count + \" gcTime=\" + gcMs + \"ms\");\n    }\n}",
+          "title": "GcStats.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac GcStats.java\n$ java -Xms80m -Xmx80m GcStats\nmaxHeap=80MB wall=971ms collections=105 gcTime=406ms\n$ java -Xms128m -Xmx128m GcStats\nmaxHeap=128MB wall=923ms collections=55 gcTime=512ms\n$ java -Xms512m -Xmx512m GcStats\nmaxHeap=512MB wall=2502ms collections=20 gcTime=1562ms\n$ java -Xms2g -Xmx2g GcStats\nmaxHeap=2048MB wall=2695ms collections=7 gcTime=1256ms",
+          "title": "Typical output, G1, measured on the 2-CPU build machine (timings are noisy)"
+        },
+        {
+          "type": "markdown",
+          "text": "The number of collections falls steadily as the heap grows (105, 55, 20, 7), exactly as the allocation-rate argument predicts. The total time did not fall: with a larger young generation each collection touches fresh memory and the machine's two cores were shared with the test harness, so the wall time here is dominated by noise and page faults. This is a good reminder that \"bigger heap = faster\" is not a law. A bigger heap reduces **frequency**; the **duration** of each pause depends on the live data being copied. Always measure with your workload.\n\n### Turning the log on: -Xlog\n\nJava 9 replaced the old `-XX:+PrintGCDetails` family with **unified logging**: `-Xlog:<selectors>:<output>:<decorators>`. The pieces:\n\n- **Selectors** are `tag` combinations with a level, such as `gc` (the one-line summary per collection), `gc*` (everything starting with the tag `gc`), `gc+heap=debug`, `safepoint`. The default without any `-Xlog` is only warnings.\n- **Output** is `stdout`, `stderr` or `file=name`, optionally with rotation: `file=gc.log:time:filecount=5,filesize=20m`.\n- **Decorators** prefix each line: `uptime` (the default), `time` (wall-clock), `level`, `tags`, `pid`.\n\nCommon recipes:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xlog:gc -jar app.jar                     # one line per collection to stdout\n$ java -Xlog:gc*:file=gc.log:time,uptime,level,tags:filecount=5,filesize=20m -jar app.jar\n$ java -Xlog:gc+heap=debug,gc+phases=debug,safepoint:file=gc-detail.log -jar app.jar\n$ java -Xlog:disable -Xlog:gc:stderr -jar app.jar   # turn everything off, then only gc",
+          "title": "Useful GC logging flags"
+        },
+        {
+          "type": "markdown",
+          "text": "For production keep `-Xlog:gc*:file=...` with rotation on all the time; the overhead is negligible and the log is the first thing you will want after an incident.\n\n### Reading a collection line\n\nThe default `-Xlog:gc` line has a fixed shape. Take this G1 line from the earlier run:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "[0.696s][info][gc] GC(2) Pause Young (Normal) (G1 Evacuation Pause) 76M->3M(128M) 17.474ms\n │        │     │    │     │                  │                       │   │   │     │\n │        │     │    │     │                  │                       │   │   │     └ pause\n │        │     │    │     │                  │                       │   │   └ committed heap\n │        │     │    │     │                  │                       │   └ heap in use AFTER\n │        │     │    │     │                  │                       └ heap in use BEFORE\n │        │     │    │     │                  └ cause (G1 Evacuation Pause)\n │        │     │    │     └ type: Young (Normal), Concurrent Start, Mixed, Full\n │        │     │    └ GC number (collection counter)\n │        │     └ tag\n │        └ level\n └ uptime since JVM start"
+        },
+        {
+          "type": "markdown",
+          "text": "Three numbers answer most questions. **Before and after** show how much was freed, and a growing \"after\" across collections shows a leak or a fill-up. The **pause** is what your application felt. The **cause** says why it ran: `Allocation` `Failure` (eden/young was full), `G1 Evacuation Pause`, `G1 Humongous Allocation`, `Metadata GC Threshold` (Metaspace reached its threshold), `System.gc()`, `Ergonomics`.\n\nWith more detail (`gc*`, `gc+heap=debug`) you get per-phase times. This is the same G1 collection, trimmed:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xlog:gc*:stdout -Xmx128m Churn.java\n[0.679s][info ][gc,start    ] GC(2) Pause Young (Normal) (G1 Evacuation Pause)\n[0.679s][info ][gc,task     ] GC(2) Using 2 workers of 2 for evacuation\n[0.692s][info ][gc,phases   ] GC(2)   Pre Evacuate Collection Set: 0.10ms\n[0.696s][info ][gc,phases   ] GC(2)   Evacuate Collection Set: 13.04ms\n[0.696s][info ][gc,phases   ] GC(2)   Post Evacuate Collection Set: 0.15ms\n[0.696s][info ][gc,heap     ] GC(2) Eden regions: 75->0(73)\n[0.696s][info ][gc,heap     ] GC(2) Survivor regions: 1->3(10)\n[0.696s][info ][gc,heap     ] GC(2) Old regions: 2->2\n[0.696s][info ][gc,heap     ] GC(2) Humongous regions: 0->0\n[0.696s][info ][gc          ] GC(2) Pause Young (Normal) (G1 Evacuation Pause) 76M->3M(128M) 17ms\n[0.696s][info ][gc,cpu      ] GC(2) User=0.00s Sys=0.00s Real=0.02s",
+          "title": "G1 collection with phase detail"
+        },
+        {
+          "type": "markdown",
+          "text": "\"Evacuate Collection Set\" is almost all of the pause: copying the live objects. The region lines show eden emptied (75 regions to 0), survivors rising from 1 to 3 regions, and no humongous objects. If `User` time is much larger than `Real`, the GC threads were working in parallel; if `Real` is far larger than `User + Sys`, the JVM was waiting, often because the machine was swapping or CPU-throttled by a container limit.\n\n### Reading the patterns\n\nWhat to look for in a GC log of a running service:\n\n- **Healthy**: young pauses of a few to a few tens of milliseconds, \"after\" sizes flat over time, rare mixed collections.\n- **Leak or fill-up**: the \"after\" size of each collection (the live set) grows steadily, and old collections get closer together until a Full GC. More heap only delays it; see the leaks chapter.\n- **Heap too small**: collections every few hundred milliseconds with high \"after\" numbers; `Pause Full` lines; GC time above 10 percent of wall time.\n- **Allocation storm**: pauses are fine but the collection rate is huge. The fix is in the code (fewer temporary objects, a profiler's allocation view), not in flags.\n- **Humongous allocations in G1**: causes named `G1 Humongous Allocation`. Fix by raising region size (`-XX:G1HeapRegionSize=16m`) or avoiding giant arrays.\n- **Allocation stalls in ZGC**: the log shows `Allocation Stall`; give it a bigger heap or more CPU.\n\nTo analyse logs beyond reading them by eye, tools such as GCeasy or GCViewer parse them into charts; the flags above produce the input they need.\n\n### The flags that matter\n\nThere are hundreds of GC flags; a handful covers 95 percent of real tuning."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Default",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`'-Xms' / '-Xmx'`",
+              "`1.6% / 25% of RAM`",
+              "Initial and maximum heap. Set equal on servers."
+            ],
+            [
+              "`'-XX:MaxRAMPercentage'`",
+              "`25`",
+              "Max heap as a percentage of available (container) memory, when no `-Xmx` is given"
+            ],
+            [
+              "`'-XX:InitialRAMPercentage'`",
+              "`about 1.6`",
+              "Initial heap as a percentage"
+            ],
+            [
+              "`'-XX:MaxGCPauseMillis'`",
+              "`200 (G1)`",
+              "Pause-time goal for G1. A hint, not a guarantee"
+            ],
+            [
+              "`'-XX:InitiatingHeapOccupancyPer` `cent'`",
+              "`45 (G1)`",
+              "Heap occupancy at which a concurrent cycle starts"
+            ],
+            [
+              "`'-XX:G1HeapRegionSize'`",
+              "`by heap size`",
+              "Region size 1m to 32m"
+            ],
+            [
+              "`'-XX:NewRatio' / '-Xmn'`",
+              "`2 (old = 2 x young)`",
+              "Young generation sizing for Serial and Parallel"
+            ],
+            [
+              "`'-XX:MaxTenuringThreshold'`",
+              "`15`",
+              "Number of young collections before promotion"
+            ],
+            [
+              "`'-XX:+HeapDumpOnOutOfMemoryErro` `r'`",
+              "`off`",
+              "Write a heap dump when an OOM is thrown"
+            ],
+            [
+              "`'-XX:MaxMetaspaceSize'`",
+              "`unlimited`",
+              "Cap for class metadata"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Default",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`'-XX:MaxDirectMemorySize'`",
+              "`= max heap`",
+              "Cap for direct buffers"
+            ],
+            [
+              "`'-Xss'`",
+              "`1m`",
+              "Thread stack size"
+            ],
+            [
+              "`'-XX:+AlwaysPreTouch'`",
+              "`off`",
+              "Touch all heap pages at startup, trading start time for steady latency"
+            ],
+            [
+              "`'-XX:+UseStringDeduplication'`",
+              "`off`",
+              "G1, ZGC and others can merge duplicate `String` arrays"
+            ]
+          ],
+          "caption": "The important JVM memory and GC flags."
+        },
+        {
+          "type": "markdown",
+          "text": "Notes on the pause goal: `MaxGCPauseMillis` is a target that G1 tries to meet by sizing young and choosing how many old regions to include in mixed collections. Lowering it (say to 50) gives shorter, more frequent pauses and lower throughput; if the goal is unrealistic for your live set, G1 will miss it and pay for trying. Raise it for batch-like services."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not copy a page of tuning flags from a blog post or an old Java 8 service. Flags such as `-XX:+UseConcMarkSweepGC` (CMS, removed in Java 14), `-XX:+PrintGCDetails` (replaced by `-Xlog:gc*`), `-XX:PermSize` (PermGen is gone) or `-XX:+UseBiasedLocking` (removed) are either rejected or ignored today. The JVM warns on obsolete flags; treat those warnings as a to-do list. Start from defaults plus a heap size and add one flag at a time with a measurement."
+        },
+        {
+          "type": "markdown",
+          "text": "### Containers\n\nA Java process in a container must stay inside the cgroup memory limit, or the kernel's OOM killer ends it. The JVM is **container-aware**: since Java 10 (and backported to 8u191) it reads the cgroup limits and uses them for `availableProcessors()` and the default heap size. The default maximum heap is 25 percent of the container memory, which is often too small for a dedicated service container. Two ways to choose:\n\n- Fix it: `-Xms1g -Xmx1g` in a 2 GB container.\n- Scale with it: `-XX:MaxRAMPercentage=70` (and let the container limit change per environment).\n\nYou can simulate a smaller machine without Docker using `-XX:MaxRAM` and `-XX:ActiveProcessorCount`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -XX:MaxRAM=512m WhichGc\ncpus=2 maxHeapMB=128\n  collector: G1 Young Generation\n$ java -XX:MaxRAM=512m -XX:MaxRAMPercentage=75 WhichGc\ncpus=2 maxHeapMB=384\n$ java -XX:ActiveProcessorCount=1 WhichGc\ncpus=1 maxHeapMB=1446\n  collector: Copy\n  collector: MarkSweepCompact",
+          "title": "Default heap follows the memory the JVM sees (WhichGc from the previous chapter)"
+        },
+        {
+          "type": "markdown",
+          "text": "Look at the third run: a single visible CPU turned the default collector from G1 to Serial (the \"Copy / MarkSweepCompact\" pair), the container trap from the previous chapter.\n\nHow much of the container should be heap? The heap is only one part of process memory (previous chapters on heap structure): add Metaspace, code cache, thread stacks (1 MB reserved each; hundreds of threads add up), direct buffers and GC structures. A starting point of 60 to 75 percent of the limit for the heap is typical, lower when the application uses many threads or large direct buffers. Confirm with `jcmd <pid> VM.native_memory summary` after starting with `-XX:NativeMemoryTracking=summary`.\n\n### A tuning procedure\n\n1. **Define the goal.** \"p99 latency under 200 ms at 500 requests per second\" or \"nightly job finishes in 40 minutes\". Without a goal there is nothing to tune.\n2. **Turn the log on** (`-Xlog:gc*:file=...`) and run a realistic load, long enough to see steady state.\n3. **Read before changing.** Fix leaks and allocation hot spots first; they beat any flag.\n4. **Set the heap** to a size where the live set after a full collection is at most about 30 to 50 percent of the heap, then set `-Xms=-Xmx`.\n5. **Change one thing at a time**, then compare p99 latency, GC time percentage and CPU, not only GC pauses.\n6. **Only then** consider a different collector."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Your service has long GC pauses. What do you do? First get data: enable `-Xlog:gc*` and find which kind of pause is long (young, mixed, full) and why (cause). Check whether the live set after GC is growing (leak) or the allocation rate is high (churn), whether the heap is too small, and whether the container limits CPU. Fix the code if it is a leak or allocation storm; resize the heap if it is undersized; consider ZGC or Shenandoah if the pause is inherent to the live-set size and a latency target requires it."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Set the heap deliberately (`-Xms` = `-Xmx` on servers) and leave room outside the heap, especially in containers; the default max heap is 25 percent of memory.\n\n- Switch on `-Xlog:gc*:file=gc.log` with rotation; read before/after sizes, pause and cause on every line.\n- A growing \"after\" size means a leak or a too-small heap; a high collection rate means allocation churn; both are fixed in code or sizing, not by exotic flags.\n- `MaxGCPauseMillis` is a goal that trades throughput for shorter pauses; most other GC flags can stay at their defaults.\n- Fewer than 2 visible CPUs or too little memory selects Serial before Java 27, so check the collector actually in use."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-6",
+      "type": "concept",
+      "title": "Memory Leaks and OutOfMemoryError",
+      "subtopicId": "9-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Java has a garbage collector, so how can a Java program leak memory? Because the collector frees only what is **unreachable**. A *leak* in Java is an object your program will never use again but still reaches through some reference, usually from a long-lived place such as a static field, a cache or a thread. The collector is correct to keep it. The bug is yours.\n\n### What a leak looks like\n\nThe signature is in the GC log from the previous chapter: the heap size **after** each full collection climbs steadily, run after run, until a collection cannot free enough and the JVM throws `OutOfMemoryError` (OOM). A healthy program has a sawtooth that returns to roughly the same floor. A leaking program has a sawtooth on a rising ramp.\n\nHere is the simplest leak: a static list that only grows. We run it with a deliberately small heap so it fails quickly, and ask the JVM to write a heap dump when it dies."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Leak {\n    static final List<byte[]> CACHE = new ArrayList<>();\n\n    public static void main(String[] args) {\n        Runtime rt = Runtime.getRuntime();\n        try {\n            for (int i = 1; ; i++) {\n                CACHE.add(new byte[1024 * 1024]);          // 1 MB that is never removed\n                if (i % 20 == 0) {\n                    System.gc();\n                    long used = (rt.totalMemory() - rt.freeMemory()) >> 20;\n                    System.out.println(\"entries=\" + i + \" usedAfterGC=\" + used + \" MB\");\n                }\n            }\n        } catch (OutOfMemoryError e) {\n            int n = CACHE.size();\n            CACHE.clear();                                  // free memory so we can print\n            System.out.println(\"Caught after \" + n + \" entries: \" + e.getMessage());\n        }\n    }\n}",
+          "title": "Leak.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx64m -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=leak.hprof Leak.java\nentries=20 usedAfterGC=43 MB\njava.lang.OutOfMemoryError: Java heap space\nDumping heap to leak.hprof ...\nHeap dump file created [39424353 bytes in 0.205 secs]\nCaught after 30 entries: Java heap space",
+          "title": "Run with a 64 MB heap and a heap dump on OOM"
+        },
+        {
+          "type": "markdown",
+          "text": "The line after `entries=20` is the JVM announcing the OOM and writing the dump; our `catch` then runs. Even after an explicit `System.gc()`, 43 MB stayed in use at 20 entries: that floor is the leak. (Catching `OutOfMemoryError` is fine in a demo and in a few well-defined places such as a request boundary, but never a recovery strategy: after an OOM, other threads may have died half-way through updating shared state.)\n\n### The usual suspects\n\nReal leaks fall into a small number of patterns. Learn to recognise them in code review."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 126.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 108.0 L139.0 108.0 C140.7 108.0 142.0 106.7 142.0 105.0 L142.0 89.0 C142.0 87.3 140.7 86.0 139.0 86.0 L5.0 86.0 C3.3 86.0 2.0 87.3 2.0 89.0 L2.0 105.0 C2.0 106.7 3.3 108.0 5.0 108.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M142.0 69.0 L222.0 52.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M142.0 97.0 L222.0 52.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M5.0 80.0 L139.0 80.0 C140.7 80.0 142.0 78.7 142.0 77.0 L142.0 61.0 C142.0 59.3 140.7 58.0 139.0 58.0 L5.0 58.0 C3.3 58.0 2.0 59.3 2.0 61.0 L2.0 77.0 C2.0 78.7 3.3 80.0 5.0 80.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M225.0 74.0 L319.0 74.0 C320.7 74.0 322.0 72.7 322.0 71.0 L322.0 37.0 C322.0 35.3 320.7 34.0 319.0 34.0 L225.0 34.0 C223.3 34.0 222.0 35.3 222.0 37.0 L222.0 71.0 C222.0 72.7 223.3 74.0 225.0 74.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M365.0 69.0 L449.0 69.0 C450.7 69.0 452.0 67.7 452.0 66.0 L452.0 42.0 C452.0 40.3 450.7 39.0 449.0 39.0 L365.0 39.0 C363.3 39.0 362.0 40.3 362.0 42.0 L362.0 66.0 C362.0 67.7 363.3 69.0 365.0 69.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M142.0 13.0 L222.0 52.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M142.0 41.0 L222.0 52.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M322.0 54.0 L362.0 54.0\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 24.0 L139.0 24.0 C140.7 24.0 142.0 22.7 142.0 21.0 L142.0 5.0 C142.0 3.3 140.7 2.0 139.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 21.0 C2.0 22.7 3.3 24.0 5.0 24.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 52.0 L139.0 52.0 C140.7 52.0 142.0 50.7 142.0 49.0 L142.0 33.0 C142.0 31.3 140.7 30.0 139.0 30.0 L5.0 30.0 C3.3 30.0 2.0 31.3 2.0 33.0 L2.0 49.0 C2.0 50.7 3.3 52.0 5.0 52.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 52.0 L219.5 48.9 L218.0 52.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 52.0 L218.7 49.8 L218.2 53.2 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 52.0 L218.1 51.0 L218.8 54.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 52.0 L218.0 52.2 L219.7 55.3 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M362.0 54.0 L356.6 51.4 L356.6 56.6 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"45.4\" y=\"15.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"53.2\" lengthAdjust=\"spacingAndGlyphs\">static Map cache</text><text x=\"32.0\" y=\"43.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"80.0\" lengthAdjust=\"spacingAndGlyphs\">live Thread / ThreadLocal</text><text x=\"249.5\" y=\"52.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"45.0\" lengthAdjust=\"spacingAndGlyphs\">growing set of</text><text x=\"379.7\" y=\"56.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"54.7\" lengthAdjust=\"spacingAndGlyphs\">OutOfMemoryError</text><text x=\"244.0\" y=\"60.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"55.9\" lengthAdjust=\"spacingAndGlyphs\">reachable objects</text><text x=\"47.1\" y=\"71.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"49.9\" lengthAdjust=\"spacingAndGlyphs\">listener registry</text><text x=\"41.5\" y=\"99.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"61.0\" lengthAdjust=\"spacingAndGlyphs\">unclosed resources</text><text x=\"146.4\" y=\"116.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"161.2\" lengthAdjust=\"spacingAndGlyphs\">GC cannot free what a long-lived root still points to</text></svg>",
+          "width": 454,
+          "caption": "The common leak patterns: every one is a long-lived root (static field, live thread, listener registry, open resource) that keeps a growing set of objects reachable.",
+          "alt": "static Map cache | live Thread / ThreadLocal | growing set of | OutOfMemoryError | reachable objects | listener registry | unclosed resources | GC cannot free what a long-lived root still points to"
+        },
+        {
+          "type": "markdown",
+          "text": "#### 1. Static and long-lived collections\n\nA `static Map` used as a cache with no size limit or eviction, a registry that is added to on every request, a \"history\" list. Fix: bound the structure. Use a size-limited LRU (a `LinkedHashMap` with `removeEldestEntry`, or a library cache such as Caffeine with `maximumSize` and expiry), or key by a small set.\n\n#### 2. Listeners and callbacks never removed\n\nAn object registers itself with an event bus, a `static` listener list, a `Runtime` shutdown hook or a scheduler, and is never unregistered. The registry holds it forever, and it holds everything it references (often a whole screen, session or request context). Fix: pair every `register` with an `unregister` in a lifecycle method, or hold listeners through weak references so the registry does not keep them alive.\n\n#### 3. ThreadLocal values on pooled threads\n\nA `ThreadLocal` value lives as long as its thread. Application-server and `ExecutorService` threads live for the lifetime of the process, so a value you `set` and forget stays alive. The demo below makes the effect visible: eight pooled threads each store an 8 MB buffer."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.TimeUnit;\n\npublic class TlLeak {\n    static final ThreadLocal<byte[]> BUFFER = new ThreadLocal<>();\n\n    static long usedMb() {\n        System.gc();\n        Runtime rt = Runtime.getRuntime();\n        return (rt.totalMemory() - rt.freeMemory()) >> 20;\n    }\n\n    static void run(boolean remove) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(8);\n        for (int i = 0; i < 8; i++) {\n            pool.submit(() -> {\n                try {\n                    BUFFER.set(new byte[8 * 1024 * 1024]);\n                    // handle a request using BUFFER.get()\n                } finally {\n                    if (remove) BUFFER.remove();\n                }\n            });\n        }\n        Thread.sleep(300);                 // tasks finished, threads stay alive in the pool\n        System.out.println(\"remove=\" + remove + \"  used after GC: \" + usedMb() + \" MB\");\n        pool.shutdown();\n        pool.awaitTermination(5, TimeUnit.SECONDS);\n    }\n\n    public static void main(String[] args) throws Exception {\n        run(false);\n        System.out.println(\"after pool shutdown: \" + usedMb() + \" MB\");\n        run(true);\n    }\n}",
+          "title": "TlLeak.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx512m TlLeak.java\nremove=false  used after GC: 76 MB\nafter pool shutdown: 3 MB\nremove=true  used after GC: 3 MB",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "All eight tasks had finished, yet 64 MB of buffers (plus baseline) was still reachable through the idle worker threads. When the pool shut down, the threads died and the memory returned. The fix is the `finally { BUFFER.remove(); }` pattern, which you should treat as mandatory for any `ThreadLocal` used in a pooled thread. In frameworks this bites with request-scoped data, and with web applications that are redeployed: a `ThreadLocal` that references a class from the old application keeps the old class loader alive, which leaks Metaspace (see below). Virtual threads make per-thread caches in `ThreadLocal` costly for a different reason (there can be millions of them), which is one motivation for scoped values (see the concurrency Part).\n\n#### 4. Unclosed resources\n\nStreams, sockets, JDBC connections, `HttpClient` responses and file handles hold native memory or OS descriptors that the heap size does not show. An unclosed `Connection` also pins its statement and result-set buffers. Fix: `try`-with-resources everywhere. A `Cleaner` (previous chapter) is only a safety net.\n\n#### 5. Inner classes and lambdas capturing `this`\n\nA non-static inner class, an anonymous class or a lambda that touches an instance member holds a hidden reference to the enclosing object. Handing such an object to a long-lived scheduler or cache retains the whole enclosing instance. Prefer `static` nested classes or capture only the values you need.\n\n#### 6. Mutable keys and missing `equals` and `hashCode`\n\nPut objects with a broken `hashCode` (or a mutated key) into a `HashMap`: lookups miss, so code that does \"if absent, add\" adds again every time and the map grows without bound. `equals`/`hashCode` were covered in the Object chapter; here is the production consequence.\n\n#### 7. Class loader leaks\n\nMetaspace holds class metadata, and a class is unloaded only when its class loader becomes unreachable. Anything that keeps a loader alive (a static reference in a shared library to a class loaded by a web application, a `ThreadLocal`, a registered JDBC driver, a thread started by the application) keeps every class it loaded. Dynamic class generation (proxies, bytecode libraries, scripting engines) in a loop with fresh loaders does the same.\n\n### Each OutOfMemoryError message and what it means\n\n`OutOfMemoryError` is not one problem but several. **The message after the colon tells you which memory area is** **exhausted**, so always read it before touching a flag."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Message",
+            "Meaning",
+            "First action"
+          ],
+          "rows": [
+            [
+              "`Java heap space`",
+              "Heap is full and a collection could not free enough for an allocation.",
+              "Leak (growing floor in the GC log) or heap too small; take a heap dump."
+            ],
+            [
+              "`Metaspace`",
+              "Class metadata area hit its limit (`MaxMetaspaceSize`, if set, or native memory).",
+              "Class loader leak or runaway class generation; look at loaded class counts."
+            ],
+            [
+              "`GC overhead limit exceeded`",
+              "Parallel collector only: almost all time in GC, almost nothing freed (default limit about 98 percent time and under 2 percent freed).",
+              "Same as heap space: the heap is effectively full."
+            ],
+            [
+              "`Requested array size exceeds` `VM limit`",
+              "Array length near `Integer.MAX_VALUE`.",
+              "Bug in size computation, or use a different structure."
+            ],
+            [
+              "`Cannot reserve N bytes of` `direct buffer memory`",
+              "`ByteBuffer.allocateDirect` over `MaxDirectMemorySize`.",
+              "Missing release of direct buffers, or a limit too low for the network library."
+            ],
+            [
+              "`unable to create native` `thread`",
+              "The OS refused a new thread (process or memory limit).",
+              "Thread leak or unbounded pools; check `ulimit -u`, container limits, thread count."
+            ],
+            [
+              "`Out of swap space`",
+              "The OS has no memory left for a native allocation.",
+              "Check the container limit and native memory tracking (`-XX:NativeMemoryTracking=summary`)."
+            ]
+          ],
+          "caption": "Common OOM messages and the first thing to check."
+        },
+        {
+          "type": "markdown",
+          "text": "We can reproduce several of them on one machine. First the array-size cases and the direct-buffer one, with a 64 MB heap and a 32 MB direct limit (output from JDK 21):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class OomMessages {\n    public static void main(String[] args) {\n        try { Object[] a = new Object[Integer.MAX_VALUE]; }\n        catch (OutOfMemoryError e) { System.out.println(\"1: \" + e.getMessage()); }\n        try { long[] a = new long[Integer.MAX_VALUE - 8]; }\n        catch (OutOfMemoryError e) { System.out.println(\"2: \" + e.getMessage()); }\n        try { java.nio.ByteBuffer.allocateDirect(200 * 1024 * 1024); }\n        catch (OutOfMemoryError e) { System.out.println(\"3: \" + e.getMessage()); }\n        try { int[] a = new int[-1]; }\n        catch (Throwable e) { System.out.println(\"4: \" + e); }\n    }\n}",
+          "title": "OomMessages.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx64m -XX:MaxDirectMemorySize=32m OomMessages.java\n1: Requested array size exceeds VM limit\n2: Java heap space\n3: Cannot reserve 209715200 bytes of direct buffer memory (allocated: 8192, limit: 33554432)\n4: java.lang.NegativeArraySizeException: -1",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "Note case 2: a huge `long[]` is not \"too big for the VM\" but simply larger than the heap, so it reports `Java heap space`. Case 4 is a different exception altogether, a plain bug. Now Metaspace. We create a fresh class loader in a loop and define a proxy class in each; the loaders are kept in a list, so none can be unloaded:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.Proxy;\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class MetaLeak {\n    public static void main(String[] args) {\n        List<Object> keep = new ArrayList<>();\n        try {\n            for (int i = 0; ; i++) {\n                ClassLoader loader = new ClassLoader(null) { };   // a fresh loader each time\n                keep.add(Proxy.newProxyInstance(loader, new Class<?>[] {Runnable.class},\n                        (proxy, method, a) -> null));            // defines a new proxy class\n                if (i % 2000 == 0) System.out.println(\"loaders created: \" + i);\n            }\n        } catch (OutOfMemoryError e) {\n            int n = keep.size();\n            keep.clear();\n            System.out.println(\"Caught after \" + n + \" loaders: \" + e.getMessage());\n        }\n    }\n}",
+          "title": "MetaLeak.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -XX:MaxMetaspaceSize=16m MetaLeak.java\nloaders created: 0\nCaught after 884 loaders: Metaspace",
+          "title": "Run with Metaspace capped at 16 MB"
+        },
+        {
+          "type": "markdown",
+          "text": "The count (884) depends on JDK and platform; the point is the message. By default Metaspace is **not** limited (it grows into native memory), so in production a runaway loader leak shows up as a process growing until the container is killed. Setting `-XX:MaxMetaspaceSize` turns that into a clean, diagnosable `OutOfMemoryError: Metaspace`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "GC overhead limit exceeded This message comes from the Parallel collector's safety check, and only when the heap is nearly full and the collector keeps running without freeing anything. We could not trigger it with the default G1 or with Serial on the build machine, even with a 24 MB heap: those collectors report `Java heap space` instead. Treat it as \"heap space\" with a different label, and do not fix it with `-XX:-UseGCOverheadLimit`, which only makes the program slower before it fails the same way."
+        },
+        {
+          "type": "markdown",
+          "text": "### Heap dumps and finding the culprit\n\nA **heap dump** is a snapshot of every live object and the references between them. Three ways to get one:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "# automatically when an OOM happens (set this on every production JVM)\n$ java -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/dumps -jar app.jar\n# on demand from a running process\n$ jcmd <pid> GC.heap_dump /tmp/app.hprof\n# a quick class-by-class count without a full dump\n$ jcmd <pid> GC.class_histogram | head -20",
+          "title": "Taking a heap dump"
+        },
+        {
+          "type": "markdown",
+          "text": "Open the `.hprof` file in Eclipse MAT, VisualVM or IntelliJ's profiler. The question to ask is not \"what is the biggest object\" but \"**what is keeping the objects alive**\". The *dominator tree* groups memory by the object that, if it were freed, would free everything beneath it. The *path to GC roots* shows the chain from a root (a static field, a thread, a class loader) to a suspicious instance. A few thousand instances of the same class, all reachable from one `static` map, is the typical answer. Diagnostic tooling (`jcmd`, `jmap`, JFR) gets its own chapter in the next Part."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Take two class histograms several minutes apart under the same load. Subtract them: the class whose count only goes up is your suspect. This is faster than a full dump analysis and safe to run in production, although `GC.class_histogram` does force a full GC unless you add `-all`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A heap dump file is as large as the live heap and contains everything in memory: passwords, tokens, personal data. Store it on a disk with enough free space (a full disk makes the dump fail silently) and treat it as sensitive data."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How can a Java application have a memory leak when it has a garbage collector? The collector frees unreachable objects only. A leak is an object that is no longer needed but is still reachable from a GC root, for example through a static collection, a registered listener, a `ThreadLocal` on a pooled thread or an unclosed resource. I confirm it from the GC log (rising heap floor after full GCs), capture a heap dump, and inspect the path from a GC root to the retained instances in a tool such as MAT."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot services the classic leaks are an unbounded in-memory cache (use Caffeine or `@Cacheable` with a size and TTL), a `ThreadLocal` set in a filter and not cleared in `finally`, and metrics with unbounded label values (one new time series per user ID). Run with `-XX:+HeapDumpOnOutOfMemoryError` and `-XX:+ExitOnOutOfMemoryError` so the orchestrator restarts a broken instance instead of leaving it half-alive."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A Java leak is a reachable-but-unused object; find the GC root path, not just the big objects.\n\n- A rising heap floor after full GCs in the GC log is the signature; `HeapDumpOnOutOfMemoryError` captures the evidence.\n- Usual causes: unbounded static caches, forgotten listeners, `ThreadLocal` on pooled threads (use `remove()`), unclosed resources, class loader leaks.\n- Read the message: heap space, Metaspace, direct buffer memory, native thread and array-size errors point to different memory areas.\n- Set `MaxMetaspaceSize` and `MaxDirectMemorySize` deliberately and treat heap dumps as sensitive files."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Objects in Memory"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "How many bytes does `class P { int x; int y; }` occupy on a default 64-bit HotSpot (compressed oops)? What about `class Q { long a; }`?",
+              "answer": "`P` is 12 + 8 = 20, padded to 24. `Q` is 12 + 4 (gap, filled by padding because a `long` must be 8-aligned) + 8 = 24."
+            },
+            {
+              "question": "Why is a `new int[3]` 32 bytes and not 28?",
+              "answer": "Header 12 + length 4 = 16, plus 12 bytes of data = 28, rounded up to the next multiple of 8, which is 32."
+            },
+            {
+              "question": "You raise `-Xmx` from 31g to 33g to \"get more room\" and the service holds fewer objects. What happened?",
+              "answer": "Above about 32 GB compressed oops are disabled, so every reference grows from 4 to 8 bytes and object headers/arrays of references get larger."
+            },
+            {
+              "question": "What is wrong with the claim \"escape analysis puts objects on the stack\"?",
+              "answer": "HotSpot does not allocate on the stack. It proves the object does not escape and scalar-replaces it: fields become locals or registers and the allocation vanishes."
+            },
+            {
+              "question": "`List<Integer>` with 1,000,000 distinct values versus `int[1_000_000]`: roughly how many bytes each on a default JVM?",
+              "answer": "About 20 MB (16-byte `Integer` objects plus 4-byte array slots; values above 127 are not cached) versus about 4 MB (16 + 4,000,000 bytes)."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Heap Structure and Reference Types"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In which generation is a freshly allocated `new ArrayList<>()` placed, and what makes that allocation cheap?",
+              "answer": "In eden (unless it is a huge object that goes straight to old). The allocation is a pointer bump inside the thread's TLAB with no locking."
+            },
+            {
+              "question": "Name three kinds of JVM memory that are not limited by `-Xmx`.",
+              "answer": "Any of: Metaspace, code cache, direct buffers, thread stacks, GC bookkeeping, native library memory."
+            },
+            {
+              "question": "What does this print, and why? `var r = new WeakReference<>(new Object()); System.gc();` `System.out.println(r.get());`",
+              "answer": "Almost always `null`: the object is only weakly reachable, so the collector clears it. The snippet is not guaranteed because `System.gc()` is only a hint, but with default HotSpot settings it does run a full collection."
+            },
+            {
+              "question": "A `WeakHashMap<Key, Value>` never shrinks although you drop all other references to the keys. What is the likely cause?",
+              "answer": "A value (or something it reaches) holds a strong reference to its own key, so the key is never weakly reachable."
+            },
+            {
+              "question": "Why must a `Cleaner` action not be a lambda that uses `this`?",
+              "answer": "The lambda captures `this`, which keeps the object strongly reachable from the Cleaner's registry, so it never becomes unreachable and the action never runs by GC."
+            },
+            {
+              "question": "What guarantee do soft references give, and what do they not guarantee?",
+              "answer": "All soft references are cleared before the JVM throws `OutOfMemoryError`. There is no guarantee when, or in which order, they are cleared before that point, nor that they stay while memory is fine."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Garbage Collection Fundamentals"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which of these are GC roots: a local variable in `main`, a field of an object in the old generation, a `static` field, a running thread?",
+              "answer": "A local variable in `main`, a static field and a running thread are roots. A field of an old object is not a root itself; it is only reachable if the old object is."
+            },
+            {
+              "question": "What does this print, and what does it show? `Object a = new Object(); WeakReference<Object> w = new` `WeakReference<>(a); a = null; System.gc(); System.out.println(w.get());`",
+              "answer": "It prints `null` in the typical case: after `a = null` the object has only a weak path, so the full collection triggered by `System.gc()` clears it. It shows that reachability, not variable scope, decides."
+            },
+            {
+              "question": "Why is the cost of a copying collection proportional to live data, not to garbage?",
+              "answer": "The collector copies only what it reaches from the roots; dead objects are never visited, and the whole from-space is released at once."
+            },
+            {
+              "question": "What is the card table for, and what would a young collection need to do without it?",
+              "answer": "It records which old-generation regions had a reference written into them. Without it, each young collection would have to scan the entire old generation to find old-to-young pointers."
+            },
+            {
+              "question": "Explain \"Reaching safepoint\" versus \"At safepoint\" in a `-Xlog:safepoint` line.",
+              "answer": "\"Reaching safepoint\" is the time to bring all threads to a stop; \"At safepoint\" is the time the operation (such as the GC) took while they were stopped."
+            },
+            {
+              "question": "Which of throughput, latency and footprint does a bigger heap usually improve, and which does it cost?",
+              "answer": "It usually improves throughput and the frequency of pauses, at the cost of footprint (memory); a very large heap can also increase the length of a single full collection for non-concurrent collectors."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### The Collectors"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Your service runs fine on a 4-CPU VM but in a Kubernetes pod limited to 1 CPU its pauses behave differently. Why might this be (before Java 27)?",
+              "answer": "With fewer than 2 CPUs the JVM is not \"server-class\", so it selects Serial instead of G1: a different collector with different pause behaviour."
+            },
+            {
+              "question": "What does a `Pause Young (Mixed)` line in a G1 log tell you has happened earlier?",
+              "answer": "A concurrent marking cycle ran and finished (concurrent start, remark, cleanup), so G1 knows which old regions hold the most garbage."
+            },
+            {
+              "question": "Why does ZGC not use compressed oops, and what does the load barrier do?",
+              "answer": "ZGC stores metadata bits inside the 64-bit reference (colored pointers), so references cannot be compressed. The load barrier checks those bits on every reference load and, if the object has moved, fixes the pointer, so mutators never see stale addresses."
+            },
+            {
+              "question": "What happens if you run `java -XX:+UseEpsilonGC -Xmx16m` against a program that allocates 1 GB in total?",
+              "answer": "The program dies with `OutOfMemoryError: Java heap space` once 16 MB is used; Epsilon never reclaims."
+            },
+            {
+              "question": "A G1 log shows `Pause Full (G1 Compaction Pause)` repeatedly. Name two likely causes.",
+              "answer": "The heap is too small for the live set, or the allocation rate exceeds what marking and mixed collections can reclaim; humongous allocations fragmenting the heap and a late-starting marking cycle are also common causes."
+            },
+            {
+              "question": "In which direction does a larger `-XX:MaxGCPauseMillis` push throughput and pause length?",
+              "answer": "A larger goal lets G1 do more work per pause: fewer, longer pauses and usually higher throughput."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Reading GC Logs and Tuning"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the default maximum heap of a JVM on a machine with 16 GB of RAM and no flags?",
+              "answer": "25 percent of the memory, about 4 GB."
+            },
+            {
+              "question": "In this line, how much memory did the collection free and how long was the pause? `[2.5s][info][gc] GC(7)` `Pause Young (Normal) (G1 Evacuation Pause) 900M->150M(1024M) 31ms`",
+              "answer": "750 MB freed (900M to 150M); the pause was 31 ms."
+            },
+            {
+              "question": "What is wrong with `-Xmx4g` in a container with a 4 GB memory limit?",
+              "answer": "The heap is only part of the process: Metaspace, code cache, thread stacks, direct memory and GC structures push the total above 4 GB and the container is killed by the OOM killer. Leave headroom or use `MaxRAMPercentage`."
+            },
+            {
+              "question": "Why does `-XX:+PrintGCDetails` not work on Java 17?",
+              "answer": "It belongs to the pre-Java-9 logging system; since Java 9 you use unified logging, for example `-Xlog:gc*`."
+            },
+            {
+              "question": "After every collection the \"after\" figure is larger than the one before, and Full GCs begin. What do you conclude, and does raising `-Xmx` fix it?",
+              "answer": "The live set is growing: a leak or an unbounded cache. A bigger heap only delays the failure."
+            },
+            {
+              "question": "You set `-XX:MaxGCPauseMillis=20` and throughput drops. Why?",
+              "answer": "A tiny pause goal forces G1 to use small young generations and fewer old regions per mixed collection, so collections happen more often and GC overhead rises."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Memory Leaks and OutOfMemoryError"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the difference between a memory leak in Java and in C?",
+              "answer": "In C you leak by forgetting to free; in Java the object is still reachable (a forgotten reference), so the collector may not free it. The cause is a lingering reference, not a missing `free`."
+            },
+            {
+              "question": "The service log says `java.lang.OutOfMemoryError: Metaspace` after each redeploy of a web application without restarting the server. What is the likely cause?",
+              "answer": "A class loader leak: something (a `ThreadLocal`, driver, thread or static reference from a shared parent loader) keeps the old application's class loader reachable, so its classes are never unloaded."
+            },
+            {
+              "question": "Why does `BUFFER.remove()` in a `finally` block matter when `BUFFER` is a `ThreadLocal` and tasks run on a thread pool?",
+              "answer": "Pool threads outlive the task, so the value stays reachable through the thread's map; the memory is held until the thread dies, which in a server is the life of the process."
+            },
+            {
+              "question": "What is wrong with `catch (OutOfMemoryError e) { retry(); }` as a general strategy?",
+              "answer": "After an OOM, state may be half-updated and the retry will likely fail again; fix the cause, or fail fast and restart (`-XX:+ExitOnOutOfMemoryError`)."
+            },
+            {
+              "question": "What does this print, and why? `Object[] a = new Object[Integer.MAX_VALUE];` under `-Xmx64m`.",
+              "answer": "`OutOfMemoryError: Requested array size exceeds VM limit` (we ran it above on JDK 21): the length is above what the VM supports at all, regardless of heap."
+            },
+            {
+              "question": "You see `unable to create native thread`. Raising `-Xmx` makes it worse. Why?",
+              "answer": "Thread stacks are native memory outside the heap; a bigger heap leaves less room for the process under the OS or container limit."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

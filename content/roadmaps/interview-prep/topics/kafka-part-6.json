@@ -1,0 +1,777 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "89-105",
+    "planDays": "42"
+  },
+  "sections": [
+    {
+      "id": "ch-6-1",
+      "type": "concept",
+      "title": "Error Handling in Spring Kafka Listeners",
+      "subtopicId": "6-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A listener that works on your laptop will meet failure in production, probably within the first week. A database times out. A producer publishes a malformed JSON document. A deploy ships a bug that throws a `NullPointerException` for one customer. What the consumer does next decides whether you get a blip on a dashboard, a stuck partition, silently lost records, or a service that has stopped consuming while its health check still says UP.\n\nThis chapter explains the error-handling model of the Spring Kafka listener container, shows how to configure retries and dead-letter topics, and ends with a decision table for a choice every team faces sooner or later: block the partition and retry in place, or move the record aside and keep going.\n\n### What happens when a listener throws\n\nA `@KafkaListener` method is only a method. The code that calls it is the **listener container**: a loop on its own thread that polls the broker, calls your method for each record and commits offsets. When your method throws, the container must answer three questions:\n\n1. Should this record be tried again?\n2. If so, after how long and how many times?\n3. If we give up, what happens to the record and to its offset?\n\nSpring answers with one interface, `CommonErrorHandler` (\"common\" because the same interface serves record and batch listeners). Its default implementation, and the one you will almost always use, is `DefaultErrorHandler`. Spring Boot attaches any `CommonErrorHandler` bean to the auto-configured listener container factory, so declaring a bean is all the wiring you need."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "`DefaultErrorHandler`",
+              "Retries with a back-off, then recovers (log, dead-letter or custom). Preserves order. The subject of this chapter"
+            ],
+            [
+              "`CommonContainerStoppingErrorHandle` `r`",
+              "Stops the container when the listener throws. Fail fast: nothing is skipped, but someone must restart the consumer"
+            ],
+            [
+              "`CommonLoggingErrorHandler`",
+              "Logs the failure and moves on: no retry, the failed record is skipped"
+            ],
+            [
+              "`CommonDelegatingErrorHandler`",
+              "Chooses a delegate by exception type, for example the default handler for most failures and the stopping handler for a fatal one"
+            ],
+            [
+              "`CommonMixedErrorHandler`",
+              "Uses one handler for record listeners and another for batch listeners"
+            ]
+          ],
+          "caption": "The CommonErrorHandler implementations that ship with Spring Kafka."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Definition",
+          "text": "A **poison pill** (or poison message) is a record that can never be processed successfully, for example malformed JSON or an order that references a product that does not exist. If a consumer retries it forever, nothing behind it on that partition is ever processed."
+        },
+        {
+          "type": "markdown",
+          "text": "The failures you meet in practice fall into a few classes, and they deserve different treatment."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Failure",
+            "Example",
+            "Right reaction"
+          ],
+          "rows": [
+            [
+              "`Deserialization`",
+              "Bytes are not valid JSON; unknown Avro schema id",
+              "Never retry. Dead-letter the record, fix the producer"
+            ],
+            [
+              "`Conversion`",
+              "Payload cannot be converted to the method parameter",
+              "Never retry. Dead-letter it"
+            ],
+            [
+              "`Business validation`",
+              "Order with quantity 0, unknown SKU",
+              "Never retry. Dead-letter it, or handle it in code and return normally"
+            ],
+            [
+              "`Transient dependency`",
+              "Database timeout, HTTP 503 from a payment gateway",
+              "Retry after a delay; dead-letter only when retries run out"
+            ],
+            [
+              "`Bug in your code`",
+              "`NullPointerException` on a field nobody expected to be null",
+              "Retrying rarely helps. Dead-letter, fix, then replay"
+            ],
+            [
+              "`Error, not Exception`",
+              "`OutOfMemoryError`, `NoClassDefFoundError`",
+              "Bypasses the error handler entirely (see the gotcha below)"
+            ]
+          ],
+          "caption": "Typical failures and the right reaction."
+        },
+        {
+          "type": "markdown",
+          "text": "### How DefaultErrorHandler reacts\n\nSuppose `poll()` returns five records from partition `orders-0`, offsets 40 to 44, and the listener throws on offset 42. This is what the default handler does, in order:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "offsets returned by poll():   40   41   42   43   44\nlistener result:              ok   ok  FAIL   -    -\n\n1. commit the offsets of the records before the failure     → 40 and 41 are done\n2. wait for the next back-off interval (the thread sleeps)\n3. seek the partition back to the failed record             → next poll() returns 42, 43, 44\n4. call the listener with 42 again\n     if it succeeds: carry on with 43 and 44\n     if it fails again: repeat from step 2 until the back-off is exhausted\n5. back-off exhausted: hand record 42 to the recoverer\n     (default: log it at ERROR; better: publish it to a dead-letter topic)\n6. commit the offset of the recovered record and seek past it → 43 and 44 are processed"
+        },
+        {
+          "type": "markdown",
+          "text": "If the recoverer itself throws (for example the dead-letter topic does not exist and cannot be created), the handler seeks as if retries were not exhausted and, by default, resets the back-off, so the whole retry sequence starts again. The record is not lost, but the partition stays stuck until the recoverer works.\n\nThree consequences follow from this design.\n\n**Retries happen in the consumer thread.** While the handler sleeps, the thread does not call `poll()`, so every partition assigned to that thread waits. If the sleeping lasts longer than `max.poll.interval.ms` (5 minutes by default), the broker decides the consumer is dead and triggers a rebalance. Keep the sum of all back-off intervals well below that limit. Spring also ships a `ContainerPausingBackOffHandler`, which pauses the container instead of sleeping and is meant for delays longer than `max.poll.interval.ms`; for such long delays the better tool is usually non-blocking retry, covered in the next chapter.\n\n**Order is preserved.** Record 43 is not touched until 42 is processed or recovered. That is a feature when order matters (all events of one order share a partition) and a cost when one bad record holds up everything behind it.\n\n**The default is dangerous.** With no bean configured you get `FixedBackOff(0L, 9)`: ten delivery attempts in total with no delay between them, then one ERROR log line, and the record is skipped. A transient outage lasting more than a few milliseconds therefore loses data. Always configure a back-off and a recoverer.\n\n### Configuring back-off and recovery\n\nThe building blocks come from two places. The back-off classes (`FixedBackOff`, `ExponentialBackOff`) are plain Spring Framework classes in `org.springframework.util.backoff`; the error handler, recoverers and `ExponentialBackOffWithMaxRetries` are Spring Kafka."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "What the numbers mean",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`FixedBackOff(interval,` `maxAttempts)`",
+              "Wait `interval` ms between tries; `maxAttempts` is the number of retries after the first delivery",
+              "`new FixedBackOff(1000L, 2L)` = 3 deliveries, 1 s apart"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "What the numbers mean",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`ExponentialBackOff`",
+              "Initial interval, multiplier, maximum interval, maximum elapsed time (effectively unlimited unless you set it)",
+              "Use only if you also bound the elapsed time"
+            ],
+            [
+              "`ExponentialBackOffWithMaxRetrie` `s(maxRetries)`",
+              "Same, but bounded by a number of retries instead of elapsed time",
+              "`(6)`, 1 s, x2, max 10 s: waits of 1, 2, 4, 8, 10, 10 s"
+            ]
+          ],
+          "caption": "Back-off implementations you will use."
+        },
+        {
+          "type": "markdown",
+          "text": "The listing below is the configuration `inventory-service` uses for its `orders` listener. It retries transient failures with exponential back-off, sends records that still fail to `orders-dlt`, and skips retries entirely for validation errors. The validation exception is a small class of our own:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\n/** Thrown when an order can never be processed, however often we retry (bad SKU, quantity 0). */\npublic class InvalidOrderException extends RuntimeException {\n\n    public InvalidOrderException(String message) {\n        super(message);\n    }\n}",
+          "title": "InvalidOrderException.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.core.KafkaTemplate;\nimport org.springframework.kafka.listener.CommonErrorHandler;\nimport org.springframework.kafka.listener.DeadLetterPublishingRecoverer;\nimport org.springframework.kafka.listener.DefaultErrorHandler;\nimport org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;\n\n@Configuration\npublic class ErrorHandlingConfig {\n\n    @Bean\n    public CommonErrorHandler orderErrorHandler(KafkaTemplate<String, Object> template) {\n        // Where exhausted records go: <original topic>-dlt, same partition number\n        var recoverer = new DeadLetterPublishingRecoverer(template);\n\n        // When to try again: 1 s, 2 s, 4 s, 8 s, 10 s, 10 s (6 retries, 7 deliveries)\n        var backOff = new ExponentialBackOffWithMaxRetries(6);\n        backOff.setInitialInterval(1_000L);\n        backOff.setMultiplier(2.0);\n        backOff.setMaxInterval(10_000L);\n\n        var handler = new DefaultErrorHandler(recoverer, backOff);\n        // Retrying a validation failure cannot help: go to the DLT on the first failure\n        handler.addNotRetryableExceptions(InvalidOrderException.class);\n        return handler;\n    }\n}",
+          "title": "ErrorHandlingConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** `DeadLetterPublishingRecoverer` needs a `KafkaTemplate`; the one Spring Boot auto-configures is enough as long as its serializers can write the failed record's key and value (the section on deserialization failures below shows a case where they cannot). `addNotRetryableExceptions` adds to the default list of non-retryable types rather than replacing it. The container wraps whatever your method throws in a `ListenerExecutionFailedException`, and the handler's classification looks through the cause chain, so `InvalidOrderException` is recognised even though it is wrapped. Finally, the bean's type is `CommonErrorHandler`; that is all Boot needs to attach it to the container factory.\n\nTwo hooks help you see what the handler is doing. `setRetryListeners(...)` registers a `RetryListener`, whose `failedDelivery(record, exception, deliveryAttempt)` method is called after every failed attempt and whose `recovered(...)` method after a successful recovery; that is the natural place to count retries for metrics. And if you set the container property `deliveryAttemptHeader` to `true`, each record handed to a record listener carries a `kafka_deliveryAttempt` header, an integer that starts at 1.\n\nThe listener it protects is ordinary:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport com.shopstream.events.OrderCreated;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderCreatedListener {\n\n    private final InventoryService inventory;\n\n    public OrderCreatedListener(InventoryService inventory) {\n        this.inventory = inventory;\n    }\n\n    @KafkaListener(topics = \"orders\", groupId = \"inventory-service\")\n    public void onOrderCreated(OrderCreated event) {\n        // may throw InvalidOrderException (permanent) or a transient DataAccessException\n        inventory.reserve(event);\n    }\n}",
+          "title": "OrderCreatedListener.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Which exceptions are retried\n\n`DefaultErrorHandler` treats a short list of exception types as **fatal**: retrying cannot help, so the recoverer is called on the first failure.\n\n- `DeserializationException`\n- `MessageConversionException` and `ConversionException`\n- `MethodArgumentResolutionException`\n- `NoSuchMethodException`\n- `ClassCastException`\n\nEverything else is retried according to the back-off. You extend the fatal list with `addNotRetryableExceptions(...)`, as above, or replace the whole classification with `setClassifications(...)`. A useful default policy for a service is the reverse of what beginners expect: decide which exceptions are *transient* (timeouts, connection failures, optimistic-lock conflicts), and treat the validation and mapping exceptions of your own domain as not retryable.\n\nTwo smaller settings change what \"retry\" means. `setResetStateOnExceptionChange` (true by default) restarts the retry sequence, including the choice of back-off, if the failing record throws a different exception type from the previous attempt. `setCommitRecovered` matters only with `AckMode.MANUAL_IMMEDIATE`: it makes the handler commit the offset of a recovered record itself."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "The `DefaultErrorHandler` handles only exceptions that extend `RuntimeException`. An `Error` (`OutOfMemoryError`, `NoClassDefFoundError`, `StackOverflowError`, or a custom class that extends `Error` by mistake) bypasses the handler: the consumer thread terminates, the Kafka connection is closed and no retry or recovery happens. The Spring Kafka documentation warns that the application may keep reporting a healthy status even though its consumers are gone. Alert on consumer lag and on a drop in consumption rate, not only on health endpoints."
+        },
+        {
+          "type": "markdown",
+          "text": "There are in fact two layers of error handling. A `@KafkaListener(errorHandler = \"beanName\")` can name a `KafkaListenerErrorHandler` bean that runs right after your method fails; it can translate the exception, return a fallback value (which is sent to the `@SendTo` destination, if any), or rethrow. Whatever it rethrows reaches the container-level `CommonErrorHandler` described above. Use the listener-level handler for per-method translation, and the container-level handler for retry and recovery policy.\n\n### Dead-letter topics\n\nA **dead-letter topic** (DLT) is an ordinary topic that collects records the consumer gave up on, together with information about why. It turns \"log and lose\" into \"park and inspect\", and it lets the main flow continue. `DeadLetterPublishingRecoverer` is the standard recoverer that does the parking. By default it publishes to `<original topic>-dlt` (so `orders-dlt`) and uses the **same partition number** as the failed record. The DLT therefore needs at least as many partitions as the original topic, or the send fails. Declare it explicitly, with the same partition count:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport org.apache.kafka.clients.admin.NewTopic;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.config.TopicBuilder;\n\n@Configuration\npublic class DltTopicConfig {\n\n    @Bean\n    public NewTopic ordersDlt() {\n        // same number of partitions as \"orders\"; use replicas(3) on a real cluster\n        return TopicBuilder.name(\"orders-dlt\").partitions(3).replicas(1).build();\n    }\n}",
+          "title": "DltTopicConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If you prefer a different layout, pass a destination resolver as the second constructor argument: a `BiFunction<ConsumerRecord<?,?>, Exception, TopicPartition>`. Returning a `TopicPartition` with a negative partition number lets the producer choose the partition, which removes the \"at least as many partitions\" requirement. You can also route by exception type, for example validation failures to `orders-invalid` and everything else to `orders-dlt`.\n\nThe recoverer copies the key and value of the failed record and adds headers that describe the failure. The constants live in `KafkaHeaders`:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Constant",
+            "Content"
+          ],
+          "rows": [
+            [
+              "`DLT_ORIGINAL_TOPIC, DLT_ORIGINAL_PARTITION,` `DLT_ORIGINAL_OFFSET`",
+              "Where the record came from"
+            ],
+            [
+              "`DLT_ORIGINAL_TIMESTAMP,` `DLT_ORIGINAL_TIMESTAMP_TYPE`",
+              "The timestamp of the original record"
+            ],
+            [
+              "`DLT_ORIGINAL_CONSUMER_GROUP`",
+              "The group whose listener failed"
+            ],
+            [
+              "`DLT_EXCEPTION_FQCN, DLT_EXCEPTION_CAUSE_FQCN`",
+              "Class names of the exception and of its cause"
+            ],
+            [
+              "`DLT_EXCEPTION_MESSAGE, DLT_EXCEPTION_STACKTRACE`",
+              "Message and stack trace"
+            ],
+            [
+              "`DLT_KEY_EXCEPTION_*`",
+              "The same set for a key deserialization failure"
+            ]
+          ],
+          "caption": "Headers added by DeadLetterPublishingRecoverer."
+        },
+        {
+          "type": "markdown",
+          "text": "Header values are bytes: strings are UTF-8, and the numeric ones (partition, offset) are binary. A small listener that logs dead letters, which is usually the first thing a team builds, reads them from the record:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport java.nio.charset.StandardCharsets;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.common.header.Header;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.support.KafkaHeaders;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderDeadLetterListener {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderDeadLetterListener.class);\n\n    // Read the DLT as plain strings: a malformed payload must not fail here as well\n    @KafkaListener(\n            topics = \"orders-dlt\",\n            groupId = \"inventory-service-dlt\",\n            properties = {\n                \"key.deserializer=org.apache.kafka.common.serialization.StringDeserializer\",\n                \"value.deserializer=org.apache.kafka.common.serialization.StringDeserializer\"\n            })\n    public void onDeadLetter(ConsumerRecord<String, String> record) {\n        log.error(\"Dead letter: key={} cause={} message={} value={}\",\n                record.key(),\n                header(record, KafkaHeaders.DLT_EXCEPTION_FQCN),\n                header(record, KafkaHeaders.DLT_EXCEPTION_MESSAGE),\n                record.value());\n    }\n\n    private static String header(ConsumerRecord<?, ?> record, String name) {\n        Header h = record.headers().lastHeader(name);\n        return h == null ? \"n/a\" : new String(h.value(), StandardCharsets.UTF_8);\n    }\n}",
+          "title": "OrderDeadLetterListener.java"
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Put an alert on the *rate of records arriving in the DLT*, not on individual error log lines. A DLT that receives traffic is a bug report with a payload attached. Keep its retention long enough for people to react (days, not hours), and decide up front who owns the replay: a small tool or a one-off consumer that reads `orders-dlt` and republishes to `orders` once the bug is fixed."
+        },
+        {
+          "type": "markdown",
+          "text": "### Deserialization failures and ErrorHandlingDeserializer\n\nEverything above happens after the record has been turned into a Java object. Deserialization happens earlier, inside `poll()`. If the deserializer throws there, the container never receives a record it could hand to the error handler. The consumer's position does not advance, the next `poll()` fetches the same bytes, and the same exception is thrown again: a poison pill that stalls the partition for good.\n\n`ErrorHandlingDeserializer` fixes this by wrapping the real deserializer. It catches the exception, returns null for the value, and attaches the failure, together with the raw bytes, to a record header. The container sees the header, turns it into a `DeserializationException` and gives it to the error handler. That exception is on the fatal list, so the recoverer is called immediately and the offset moves on. With Spring Boot you configure it in `application.yml`:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  kafka:\n    bootstrap-servers: localhost:9092\n    consumer:\n      group-id: inventory-service\n      auto-offset-reset: earliest\n      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer\n      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer\n      properties:\n        # folded onto two lines only to fit the page\n        spring.deserializer.value.delegate.class: >-\n          org.springframework.kafka.support.serializer.JacksonJsonDeserializer\n        spring.json.value.default.type: com.shopstream.events.OrderCreated\n        spring.json.trusted.packages: com.shopstream.events",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "The wrapper is configured as the deserializer, and the real one is named in `spring.deserializer.value.delegate.class`. The remaining `spring.json.*` properties belong to the delegate. Keys here are plain strings and need no wrapper; a key deserializer can be wrapped in the same way with `spring.deserializer.key.delegate.class`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "When the failure is a deserialization error, the recoverer restores the original *bytes* that could not be deserialized as the value of the dead-letter record, so the exact payload is preserved for inspection and replay. That means the template used for dead-lettering must be able to serialize `byte[]` as well as your normal event objects. A template whose value serializer is only the JSON serializer cannot publish those bytes unchanged. The Spring Kafka documentation recommends a template whose value type is `Object` and whose serializer chooses by type."
+        },
+        {
+          "type": "markdown",
+          "text": "The listing below defines such a template for a consumer-only service. Spring Boot creates its own `KafkaTemplate` only when you have not defined one, so this bean replaces the auto-configured one and is used by the recoverer and, as the next chapter shows, by the retry topics."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport com.shopstream.events.OrderCreated;\nimport java.util.Map;\nimport org.apache.kafka.clients.producer.ProducerConfig;\nimport org.apache.kafka.common.serialization.ByteArraySerializer;\nimport org.apache.kafka.common.serialization.StringSerializer;\nimport org.springframework.beans.factory.annotation.Value;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.core.DefaultKafkaProducerFactory;\nimport org.springframework.kafka.core.KafkaTemplate;\nimport org.springframework.kafka.support.serializer.DelegatingByTypeSerializer;\nimport org.springframework.kafka.support.serializer.JacksonJsonSerializer;\n\n@Configuration\npublic class DeadLetterTemplateConfig {\n\n    @Bean\n    public KafkaTemplate<String, Object> kafkaTemplate(\n            @Value(\"${spring.kafka.bootstrap-servers}\") String bootstrapServers) {\n        // raw bytes (from a failed deserialization) are written as they are,\n        // OrderCreated objects are written as JSON\n        var valueSerializer = new DelegatingByTypeSerializer(Map.of(\n                byte[].class, new ByteArraySerializer(),\n                OrderCreated.class, new JacksonJsonSerializer<Object>()));\n        var producerFactory = new DefaultKafkaProducerFactory<String, Object>(\n                Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers),\n                new StringSerializer(), valueSerializer);\n        return new KafkaTemplate<>(producerFactory);\n    }\n}",
+          "title": "DeadLetterTemplateConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The alternative is to give `DeadLetterPublishingRecoverer` several templates in a `LinkedHashMap`, keyed by the type of value each one can write (for example `byte[].class` for a byte-array template). The recoverer examines the keys in order and uses the first template that fits the value, which is why a `LinkedHashMap` is recommended.\n\nTwo limits to remember. The wrapper only helps with exceptions thrown by the deserializer; a record that deserializes fine but fails validation is handled by the normal path. And batch listeners do not get automatic routing of deserialization failures, so with a batch listener you must inspect the records yourself (next section).\n\n### Batch listeners and BatchListenerFailedException\n\nA batch listener receives a `List` of records from one poll. If it throws an ordinary exception, the error handler cannot know which record was the culprit, so it retries the complete batch from memory with the same back-off (pausing the consumer and polling between attempts, so the group does not rebalance). When the retries run out, the recoverer is called for every record in the batch, so one bad record can send all of its neighbours to the DLT. Records that succeeded the first time are redelivered on every attempt, which means duplicates unless the listener is idempotent. To avoid all that, tell the container which record failed by throwing `BatchListenerFailedException`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.search;\n\nimport com.shopstream.events.OrderCreated;\nimport java.util.List;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.listener.BatchListenerFailedException;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderBatchListener {\n\n    private final SearchIndex index;\n\n    public OrderBatchListener(SearchIndex index) {\n        this.index = index;\n    }\n\n    @KafkaListener(topics = \"orders\", groupId = \"search-indexer\", batch = \"true\")\n    public void onOrders(List<ConsumerRecord<String, OrderCreated>> records) {\n        for (ConsumerRecord<String, OrderCreated> record : records) {\n            if (record.value() == null) {\n                // ErrorHandlingDeserializer hands over a failed record with a null value\n                throw new BatchListenerFailedException(\"Deserialization failed\", record);\n            }\n            try {\n                index.upsert(record.value());\n            }\n            catch (Exception e) {\n                // tells the container which record failed\n                throw new BatchListenerFailedException(\"Indexing failed\", e, record);\n            }\n        }\n    }\n}",
+          "title": "OrderBatchListener.java"
+        },
+        {
+          "type": "markdown",
+          "text": "With the exception in hand, the `DefaultErrorHandler` commits the offsets of all records before the failed one, retries the failed record and everything after it according to the back-off and, when retries run out, publishes only the failed record to the DLT. Its offset is committed and the remaining records are redelivered. If your listener receives plain objects (`List<OrderCreated>`) and has no `ConsumerRecord`, use the constructor that takes the index of the failed element instead of the record. In the batch case, `AckMode.BATCH` is the common choice; with `MANUAL_IMMEDIATE` you need `setCommitRecovered(true)` for the recovered offset to be committed.\n\nThe null check at the top of the loop is the manual handling of deserialization failures promised in the previous section. With `ErrorHandlingDeserializer`, a record that could not be deserialized still appears in the batch, but with a null value, and nobody routes it for you. Throwing `BatchListenerFailedException` for it sends it to the DLT with the original bytes restored. If null is a legitimate value on your topic (a tombstone on a compacted topic), look at the exception header instead of the value alone."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The `batch = \"true\"` attribute makes this single listener a batch listener. You can also switch every listener at once with `spring.kafka.listener.type=batch`. Batch listeners cannot use non-blocking retries (next chapter)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Blocking or non-blocking retries?\n\nEverything in this chapter so far is **blocking retry**: the partition waits while the record is retried. The alternative, **non-blocking retry**, publishes the failed record to a retry topic with a delay and moves on; the next chapter covers it in detail. Which one fits depends on how long the failure lasts and on whether order matters."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Blocking (DefaultErrorHandler back-off)",
+            "Non-blocking (retry topics)"
+          ],
+          "rows": [
+            [
+              "Order within a partition",
+              "Preserved",
+              "Lost: a failed record is processed later than its successors"
+            ],
+            [
+              "Effect on other records",
+              "Everything behind the failing record waits",
+              "Main flow continues at full speed"
+            ],
+            [
+              "Practical delay",
+              "Seconds; must stay below `max.poll.interval.ms`",
+              "Seconds to hours, one topic per delay"
+            ],
+            [
+              "Extra infrastructure",
+              "None, or a DLT",
+              "Retry topics plus a DLT, and more consumers"
+            ],
+            [
+              "Batch listeners",
+              "Supported (with `BatchListenerFailedException`)",
+              "Not supported"
+            ],
+            [
+              "Container transactions",
+              "Supported",
+              "Cannot be combined"
+            ],
+            [
+              "Good fit",
+              "Brief, transient failures where order matters (a locked row, a failover)",
+              "Slow-recovering dependencies (a payment gateway outage) and records that can be processed out of order"
+            ]
+          ],
+          "caption": "Blocking versus non-blocking retry."
+        },
+        {
+          "type": "markdown",
+          "text": "The two combine well. A common design is two or three quick blocking retries (a second or two each) to absorb blips, then non-blocking retry topics with growing delays for longer outages, then the DLT. Spring supports this combination directly; the next chapter shows how."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What happens in Spring Kafka when a `@KafkaListener` method throws, and how would you make that safe for production? By default the `DefaultErrorHandler` commits the offsets before the failed record, seeks back so the record is redelivered and retries up to ten deliveries in total with no delay; then it logs the record at ERROR and skips it, which silently loses data. For production I configure a back-off (for example exponential with a retry limit), a `DeadLetterPublishingRecoverer` so exhausted records land in `<topic>-dlt` with failure headers, a list of non-retryable exceptions for validation errors, and `ErrorHandlingDeserializer` so a malformed record cannot become a poison pill. I alert on DLT traffic and consumer lag."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why can retrying inside the listener container cause a rebalance? Retries run on the consumer thread, which sleeps during the back-off and does not call `poll()`. If the time between two polls exceeds `max.poll.interval.ms`, the consumer is removed from the group and its partitions are reassigned, so the same records can be processed twice. Keep back-offs short, use `ContainerPausingBackOffHandler`, or move long delays to retry topics."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The container catches listener exceptions and asks a `CommonErrorHandler`; the default `DefaultErrorHandler` tries a record ten times with no delay and then skips it with an ERROR log. Replace that default in every real service.\n- Blocking retries preserve order but stall the partition and must fit inside `max.poll.interval.ms`; the offsets before the failed record are committed, and the failed record is re-fetched by a seek.\n- `DeadLetterPublishingRecoverer` publishes to `<topic>-dlt` on the same partition number, with headers that describe the failure; create the DLT with enough partitions and monitor its traffic.\n- Mark validation and conversion errors as not retryable, and wrap deserializers in `ErrorHandlingDeserializer` so one bad record cannot stall a partition.\n- Only `RuntimeException`s reach the handler: an `Error` kills the consumer thread. Batch listeners should throw `BatchListenerFailedException` to name the failed record."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-2",
+      "type": "concept",
+      "title": "Non-Blocking Retries with @RetryableTopic",
+      "subtopicId": "6-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Blocking retries are simple and keep order, but they hold a partition hostage. Imagine that the payment gateway behind `payment-service` goes down for ten minutes. With blocking retry, every record behind the failing one waits, consumer lag climbs, and a back-off longer than `max.poll.interval.ms` gets the consumer thrown out of its group. With the default of ten immediate attempts you would instead skip the orders and lose them.\n\n**Non-blocking retry** gets the failed record out of the way. Instead of sleeping in the consumer thread, the framework publishes the record to a **retry topic**, commits the offset on the main topic and carries on with the next record. A second consumer reads the retry topic and processes the record again once its delay has elapsed. If that fails too, the record moves to the next retry topic, and after the last attempt to a dead-letter topic. In Spring Kafka the whole arrangement is switched on by one annotation, `@RetryableTopic`.\n\n### How the pattern works\n\nTake a record on `orders` that fails because a downstream service is briefly unavailable. This is what happens:\n\n1. The listener method throws. The framework publishes the record, with a header that carries the time at which it is due, to the first retry topic, and the offset on `orders` moves on. The main consumer is free again.\n2. A listener container on the retry topic reads the record. If it is not yet due, the container pauses that partition (the consumer keeps polling, so it stays in the group) and resumes it when the due time arrives.\n3. Your *same listener method* is called with the record again. If it succeeds, the story ends. If it fails, the record is published to the next retry topic, with a longer delay.\n4. After the last attempt the record is published to the dead-letter topic, where a method annotated with `@DltHandler` (or a default handler that only logs) receives it."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 62.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 48.0 L111.7 48.0 C113.4 48.0 114.7 46.7 114.7 45.0 L114.7 5.0 C114.7 3.3 113.4 2.0 111.7 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.7 25.0 L129.7 25.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M244.4 25.0 L258.4 25.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M373.2 25.0 L387.2 25.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M129.7 25.0 L124.3 22.4 L124.3 27.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M133.7 48.0 L240.4 48.0 C242.1 48.0 243.4 46.7 243.4 45.0 L243.4 5.0 C243.4 3.3 242.1 2.0 240.4 2.0 L133.7 2.0 C132.1 2.0 130.7 3.3 130.7 5.0 L130.7 45.0 C130.7 46.7 132.1 48.0 133.7 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M258.4 25.0 L253.0 22.4 L253.0 27.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.4 48.0 L369.2 48.0 C370.8 48.0 372.2 46.7 372.2 45.0 L372.2 5.0 C372.2 3.3 370.8 2.0 369.2 2.0 L262.4 2.0 C260.8 2.0 259.4 3.3 259.4 5.0 L259.4 45.0 C259.4 46.7 260.8 48.0 262.4 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M387.2 25.0 L381.8 22.4 L381.8 27.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M391.2 48.0 L497.9 48.0 C499.6 48.0 500.9 46.7 500.9 45.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L391.2 2.0 C389.5 2.0 388.2 3.3 388.2 5.0 L388.2 45.0 C388.2 46.7 389.5 48.0 391.2 48.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"166.6\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"40.9\" lengthAdjust=\"spacingAndGlyphs\">orders-retry</text><text x=\"295.3\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"40.9\" lengthAdjust=\"spacingAndGlyphs\">orders-retry</text><text x=\"427.9\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"33.3\" lengthAdjust=\"spacingAndGlyphs\">orders-dlt</text><text x=\"47.4\" y=\"27.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"21.9\" lengthAdjust=\"spacingAndGlyphs\">orders</text><text x=\"164.7\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"44.7\" lengthAdjust=\"spacingAndGlyphs\">(wait, pause)</text><text x=\"296.2\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"39.3\" lengthAdjust=\"spacingAndGlyphs\">(attempt n)</text><text x=\"429.2\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"30.7\" lengthAdjust=\"spacingAndGlyphs\">(give up)</text></svg>",
+          "width": 503,
+          "caption": "The main topic, the retry topics and the dead-letter topic. A failed record moves one step along the chain, each step with a longer delay, and the main topic never waits for it.",
+          "alt": "orders-retry orders-retry orders-dlt | orders | (wait, pause) (attempt n) (give up)"
+        },
+        {
+          "type": "markdown",
+          "text": "The framework creates the retry topics and the extra listener containers for you. Everything underneath is ordinary Kafka, which makes the behaviour predictable, and it also explains the price you pay. The record is no longer processed in its original position, so **ordering is lost**: successors on the same partition are handled while the failed record waits in a retry topic. The feature is not supported for batch listeners and cannot be combined with container transactions (if the listener throws, the container transaction commits and the record is forwarded to the retry topic). And you now operate several extra topics per listener.\n\n### A first example\n\nThe listing is the `orders` listener of `inventory-service` from the previous chapter, now with non-blocking retry. The only new code is the annotation and the `@DltHandler` method."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport com.shopstream.events.OrderCreated;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.annotation.BackOff;\nimport org.springframework.kafka.annotation.DltHandler;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.annotation.RetryableTopic;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderRetryListener {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderRetryListener.class);\n\n    private final InventoryService inventory;\n\n    public OrderRetryListener(InventoryService inventory) {\n        this.inventory = inventory;\n    }\n\n    @RetryableTopic(\n            kafkaTemplate = \"kafkaTemplate\",\n            attempts = \"4\",\n            backOff = @BackOff(delay = 1000, multiplier = 2.0, maxDelay = 16000),\n            exclude = InvalidOrderException.class,\n            numPartitions = \"3\")\n    @KafkaListener(topics = \"orders\", groupId = \"inventory-service\")\n    public void onOrderCreated(OrderCreated event) {\n        inventory.reserve(event);\n    }\n\n    @DltHandler\n    public void onDeadLetter(ConsumerRecord<String, OrderCreated> record) {\n        log.error(\"Order {} failed all retries (dead letter {}-{}@{})\",\n                record.key(), record.topic(), record.partition(), record.offset());\n    }\n}",
+          "title": "OrderRetryListener.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** `attempts` is a *string* attribute and counts the first delivery, so `\"4\"` means one attempt on `orders` plus three on retry topics. `@BackOff` is Spring Kafka's own annotation from `org.springframework.kafka.annotation`; older tutorials show `@Backoff` from Spring Retry, a dependency that Spring Kafka 4 no longer uses. `exclude` names exceptions that must not be retried: a record that fails with `InvalidOrderException` goes straight to the dead-letter topic. `numPartitions = \"3\"` gives the retry topics and the dead-letter topic as many partitions as `orders` (see the sizing warning below). `kafkaTemplate` names the bean that publishes to the retry topics. With exponential back-off of 1 s, factor 2 and four attempts, Spring Kafka creates three retry topics and a dead-letter topic. On a local broker the topic list looks like this (internal topics included):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --list --bootstrap-server localhost:9092\n__consumer_offsets\norders\norders-dlt\norders-retry-1000\norders-retry-2000\norders-retry-4000",
+          "title": "Topics created by the framework at startup"
+        },
+        {
+          "type": "markdown",
+          "text": "The life of one record that keeps failing looks like the table below. The delays are lower bounds: Spring guarantees that a record is never processed before it is due, not that it is processed exactly on time."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Time",
+            "Topic",
+            "Attempt",
+            "Outcome"
+          ],
+          "rows": [
+            [
+              "0 s",
+              "`orders`",
+              "1",
+              "Fails, published to `orders-retry-1000`"
+            ],
+            [
+              "about 1 s",
+              "`orders-retry-1000`",
+              "2",
+              "Fails, published to `orders-retry-2000`"
+            ],
+            [
+              "about 3 s",
+              "`orders-retry-2000`",
+              "3",
+              "Fails, published to `orders-retry-4000`"
+            ],
+            [
+              "about 7 s",
+              "`orders-retry-4000`",
+              "4",
+              "Fails, published to `orders-dlt`"
+            ],
+            [
+              "immediately",
+              "`orders-dlt`",
+              "-",
+              "The `@DltHandler` method runs"
+            ]
+          ],
+          "caption": "Timeline of one failing record (approximate)."
+        },
+        {
+          "type": "markdown",
+          "text": "### The attributes that matter\n\n`@RetryableTopic` has about twenty elements. These are the ones you will use, with their defaults:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Attribute",
+            "Default",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`attempts`",
+              "`\"3\"`",
+              "Total attempts before the record goes to the DLT, including the first one. A String"
+            ],
+            [
+              "`backOff`",
+              "`@BackOff (1000 ms` `fixed)`",
+              "Delay between attempts: `delay`, `multiplier`, `maxDelay`, `jitter`"
+            ],
+            [
+              "`kafkaTemplate`",
+              "`\"\"`",
+              "Bean name of the template that publishes to retry topics and DLT"
+            ],
+            [
+              "`numPartitions`",
+              "`\"1\"`",
+              "Partitions of the retry topics and the DLT"
+            ],
+            [
+              "`replicationFactor`",
+              "`\"-1\"`",
+              "Replication factor; -1 means the broker default"
+            ],
+            [
+              "`autoCreateTopics`",
+              "`\"true\"`",
+              "Let the framework create the topics through `KafkaAdmin`"
+            ],
+            [
+              "`include, exclude`",
+              "`none`",
+              "Exceptions to retry, or not to retry (straight to the DLT)"
+            ],
+            [
+              "`traversingCauses`",
+              "`\"\"`",
+              "Look through the cause chain; effectively true once `include` or `exclude` is set"
+            ],
+            [
+              "`timeout`",
+              "`\"\"`",
+              "Give up after this many milliseconds in total, whatever `attempts` says"
+            ],
+            [
+              "`dltStrategy`",
+              "`ALWAYS_RETRY_ON_ER` `ROR`",
+              "What happens if DLT processing fails (see below)"
+            ],
+            [
+              "`retryTopicSuffix,` `dltTopicSuffix`",
+              "`\"-retry\", \"-dlt\"`",
+              "Name suffixes"
+            ],
+            [
+              "`topicSuffixingStrategy`",
+              "`SUFFIX_WITH_DELAY_` `VALUE`",
+              "Suffix retry topics with the delay, or with an index"
+            ],
+            [
+              "`sameIntervalTopicReuseStrate` `gy`",
+              "`SINGLE_TOPIC`",
+              "One topic for attempts with the same delay, or one topic per attempt"
+            ],
+            [
+              "`concurrency`",
+              "`\"\"`",
+              "Concurrency of retry and DLT containers; defaults to the main container's"
+            ],
+            [
+              "`autoStartDltHandler`",
+              "`\"\"`",
+              "Set to \"false\" to keep the DLT container stopped until you start it"
+            ],
+            [
+              "`exceptionBasedDltRouting`",
+              "`none`",
+              "Send particular exceptions to a custom DLT"
+            ]
+          ],
+          "caption": "The most useful @RetryableTopic attributes."
+        },
+        {
+          "type": "markdown",
+          "text": "### Topic naming and sizing\n\nRetry topics are named after the main topic, a suffix, and the delay or an index. Since Spring Kafka 4.1, attempts that share the same delay reuse one topic by default."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Back-off configuration",
+            "Topics created"
+          ],
+          "rows": [
+            [
+              "Fixed delay, default (`SINGLE_TOPIC`)",
+              "`orders-retry, orders-dlt`"
+            ],
+            [
+              "Fixed delay with `MULTIPLE_TOPICS`",
+              "`orders-retry-0, orders-retry-1, and so on, then orders-dlt`"
+            ],
+            [
+              "Exponential 1000 ms, factor 2, 4 attempts",
+              "`orders-retry-1000, orders-retry-2000, orders-retry-4000,` `orders-dlt`"
+            ],
+            [
+              "Exponential, 1000 ms, factor 2, maxDelay 16000",
+              "`orders-retry-1000, -2000, -4000, -8000, -16000; the last` `one is reused for all further attempts`"
+            ],
+            [
+              "`SUFFIX_WITH_INDEX_VALUE`",
+              "`orders-retry-0, orders-retry-1, and so on`"
+            ],
+            [
+              "`retryTopicSuffix = \"-wait\"`",
+              "`orders-wait-1000, and so on`"
+            ]
+          ],
+          "caption": "Topic names for the main topic orders."
+        },
+        {
+          "type": "markdown",
+          "text": "The reuse rule keeps the topic count small. According to the reference documentation, an exponential policy from 1 s to a 16 s maximum that keeps trying for a whole hour needs only five retry topics, because attempts at the maximum delay all use the last one."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "By default the retry topics and the DLT are created with **one partition** and the broker's default replication factor. For a three-partition `orders` topic that squeezes every retried record through a single partition and a single consumer thread. Set `numPartitions` to the partition count of the main topic, as the example does, and make sure `replicationFactor` (or the broker default) gives you real redundancy in production."
+        },
+        {
+          "type": "markdown",
+          "text": "The framework creates the topics by registering `NewTopic` beans that `KafkaAdmin` applies at startup. That is convenient locally and often forbidden in production, where applications may not have permission to create topics. Set `autoCreateTopics = \"false\"` and provision the topics with your infrastructure tooling, using the names from the table above. Remember to grant the service permission to read and write all of them.\n\n### Which failures are retried, and what the DLT does\n\nBy default every exception is retried. `include` and `exclude` narrow that down; with either present, the cause chain is searched, because the listener container wraps your exception in a `ListenerExecutionFailedException`. In addition, the same list of fatal exceptions as in `DefaultErrorHandler` (deserialization, conversion and argument-resolution errors, `ClassCastException`, `NoSuchMethodException`) bypasses the retry topics and goes straight to the DLT. You can change that list globally, as shown in the configuration section below.\n\nThe method annotated with `@DltHandler` processes dead letters. It must live in the same class as the `@RetryableTopic` method, and one handler serves all retryable methods of that class. If you write none, a default handler logs the record. What if the DLT handler itself fails? That is decided by `dltStrategy`:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "dltStrategy",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "`ALWAYS_RETRY_ON_ERROR`",
+              "Default. A record whose DLT processing fails is published back to the DLT so that it does not block other dead letters. Not done for fatal exceptions such as `DeserializationException`, which would only fail again"
+            ],
+            [
+              "`FAIL_ON_ERROR`",
+              "The DLT consumer gives up without forwarding the record"
+            ],
+            [
+              "`NO_DLT`",
+              "No DLT is created; after the last attempt the record is dropped"
+            ]
+          ],
+          "caption": "DLT strategies."
+        },
+        {
+          "type": "markdown",
+          "text": "Two further options are worth knowing. `autoStartDltHandler = \"false\"` keeps the DLT container stopped, for example until an operator is ready to look at dead letters; you start it later through the `KafkaListenerEndpointRegistry`. And `exceptionBasedDltRouting` sends chosen exception types to a custom DLT whose suffix goes before the normal one, so deserialization failures can land in `orders-deserialization-dlt` instead of `orders-dlt`.\n\nBy default only the first set of \"original\" headers and the last set of exception headers are kept on a record as it travels through the retry topics. That prevents the record from growing with every attempt (the stack trace header alone can be large).\n\n### Configuring the template and global behaviour\n\nThe retry machinery republishes records, so it needs a `KafkaTemplate`. If you do not name one in `kafkaTemplate`, Spring looks for a bean called `defaultRetryTopicKafkaTemplate` and throws an exception if there is none. Spring Boot's auto-configured template is called `kafkaTemplate`, which is why the example names it explicitly. If your consumer uses `ErrorHandlingDeserializer`, the template must also be able to write raw `byte[]` values, because deserialization failures arrive as bytes; the `KafkaTemplate<String, Object>` with a `DelegatingByTypeSerializer` from the previous chapter is exactly that.\n\nFor settings that apply to every retryable listener in the application, extend `RetryTopicConfigurationSupport` in one `@Configuration` class and override the hooks you need. The listing below does two things. It adds **blocking retries in** **front of the retry topics**: a failure with a transient database exception is first retried in place, twice, 200 ms apart, which absorbs a lock timeout or failover blip without any topic hop; only if it still fails does the record travel to the first retry topic. And it declares `InvalidOrderException` fatal, so that it skips all retries."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport java.util.List;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.dao.TransientDataAccessException;\nimport org.springframework.kafka.annotation.EnableKafka;\nimport org.springframework.kafka.retrytopic.RetryTopicConfigurationSupport;\nimport org.springframework.util.backoff.FixedBackOff;\n\n@EnableKafka\n@Configuration\npublic class RetryConfig extends RetryTopicConfigurationSupport {\n\n    @Override\n    protected void configureBlockingRetries(BlockingRetriesConfigurer blockingRetries) {\n        blockingRetries\n                .retryOn(TransientDataAccessException.class)\n                .backOff(new FixedBackOff(200L, 2L));\n    }\n\n    @Override\n    protected void manageNonBlockingFatalExceptions(\n            List<Class<? extends Throwable>> nonBlockingFatalExceptions) {\n        nonBlockingFatalExceptions.add(InvalidOrderException.class);\n    }\n}",
+          "title": "RetryConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The two lists behave differently, and mixing them up is a common mistake. Blocking retries are an **allow-list**: only the exceptions you name are retried in place. The non-blocking fatal list is a **deny-list**: exceptions you name skip the retry topics, everything else is retried. Combining them gives every behaviour you might want: retried only in place, retried in place and then via topics, or never retried.\n\nUse only one global mechanism: either extend `RetryTopicConfigurationSupport` (once in the application) or annotate a configuration class with `@EnableKafkaRetryTopic`, which imports the infrastructure and exposes its components as beans. For simple cases you need neither, because `@RetryableTopic` alone bootstraps everything with defaults.\n\n### Configuring retries without annotations\n\nInstead of annotating every method, you can declare a `RetryTopicConfiguration` bean that applies to all listeners of the topics it includes. This keeps the policy in one place and works for listeners you cannot annotate."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport java.util.List;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.core.KafkaTemplate;\nimport org.springframework.kafka.retrytopic.RetryTopicConfiguration;\nimport org.springframework.kafka.retrytopic.RetryTopicConfigurationBuilder;\n\n@Configuration\npublic class OrdersRetryConfiguration {\n    @Bean\n    public RetryTopicConfiguration ordersRetry(KafkaTemplate<String, Object> template) {\n        return RetryTopicConfigurationBuilder\n                .newInstance()\n                .exponentialBackoff(1_000, 2, 16_000)\n                .maxAttempts(4)\n                .autoCreateTopicsWith(3, (short) 1)\n                .includeTopics(List.of(\"orders\"))\n                .notRetryOn(InvalidOrderException.class)\n                .create(template);\n    }\n}",
+          "title": "OrdersRetryConfiguration.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The builder mirrors the annotation: `fixedBackOff(...)`, `retryTopicSuffix(...)`, `dltHandlerMethod(\"beanName\",` `\"methodName\")`, `doNotRetryOnDltFailure()`, `doNotConfigureDlt()`, `timeoutAfter(...)` and `autoStartDltHandler(false)` are the builder spellings of the attributes above. A configuration that includes no topics applies to every listener, and the `autoCreateTopicsWith(3, (short) 1)` call sets partitions and replication factor (here one replica, for a local broker).\n\n### Consequences you must design for\n\n**Ordering is gone.** Suppose `OrderCreated` for `o-1001` fails and is parked in `orders-retry-1000`. The next event with the same key, `OrderCancelled` for `o-1001`, is processed immediately from `orders`. One second later the retry delivers `OrderCreated`, and a naive handler reserves stock for an order that is already cancelled. Handlers behind retry topics must therefore check state before they act (is the order still open? is this event older than the stored version?) or be written as idempotent upserts. When per-key order is essential, stay with blocking retries.\n\n**Delivery stays at-least-once.** The framework publishes to the next topic and then commits, so a crash in between can produce a duplicate. The idempotency techniques of the next chapter apply to retry topics as much as to the main topic.\n\n**Delays are best effort.** All waiting is done by the consumer thread. A retry consumer that handles several partitions, or a slow listener, delays later records. For very short delays (around a second or less), offset commits and other housekeeping can add noticeable jitter. Use `ackMode RECORD` (`spring.kafka.listener.ack-mode=record`), which the documentation suggests for retry topics.\n\n**Topics multiply.** Every listener with its own policy adds retry topics and containers. Keep policies uniform, prefer the global `RetryTopicConfiguration` style, and put the DLT of each service on a dashboard."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do non-blocking retries work in Spring Kafka, and what do you give up compared with blocking retries? `@RetryableTopic` makes the framework publish a failed record to a retry topic with a due time and commit the offset on the main topic. A container on the retry topic pauses the partition until the record is due and then calls the same listener again; after the last attempt the record goes to a dead-letter topic. The main flow never waits, and delays can be long without causing rebalances. The price is lost ordering, extra topics and consumers, no support for batch listeners or container transactions, and best-effort delay precision."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `@RetryableTopic` turns a failure into a hop to a retry topic with a delay; the main partition keeps flowing, and after the last attempt the record lands in `<topic>-dlt`.\n- `attempts` is a String that includes the first delivery; set `numPartitions` to match the main topic and decide whether the framework may create topics at all (`autoCreateTopics`).\n- Retry topics are named by delay (`orders-retry-1000`) or index; since Spring Kafka 4.1 attempts with the same delay share a topic.\n- Use `@DltHandler`, `dltStrategy` and `exceptionBasedDltRouting` to decide what happens to dead letters; combine quick blocking retries with retry topics through `RetryTopicConfigurationSupport`.\n- Ordering is lost and delivery is at-least-once: write handlers that check state and tolerate duplicates."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-3",
+      "type": "concept",
+      "title": "Idempotent Consumers and the Inbox Pattern",
+      "subtopicId": "6-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "In practice a Kafka consumer gets every record **at least once**. Offsets are committed after the work is done, so if the process dies in between, the next owner of the partition reads the record again. That is the correct trade-off, since the alternative is losing data, but it means duplicates are a normal event rather than an exception. They come from several places:\n\n- A consumer processes a record and crashes, or is removed by a rebalance, before its offset is committed.\n- Blocking retries redeliver a record, and retry topics forward it at least once.\n- An upstream service publishes the same business event twice, for example an outbox relay that resends after a timeout. The idempotent producer protects against duplicates caused by its *own* retries within one session, not against your application producing the same event again.\n- People replay a dead-letter topic or reset offsets to repair a bug.\n\nCorrectness therefore has to come from the consumer. Processing the same event twice must leave the system in the same state as processing it once."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Definition",
+          "text": "An operation is **idempotent** if applying it several times has the same effect as applying it once. \"Set the order status to CONFIRMED\" is idempotent. \"Add 2 to the reserved stock\" is not."
+        },
+        {
+          "type": "markdown",
+          "text": "### Three ways to get there"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Technique",
+            "Example",
+            "Weakness"
+          ],
+          "rows": [
+            [
+              "Naturally idempotent write",
+              "`UPDATE orders SET status = 'CONFIRMED'` `WHERE id = ?`, or an upsert by key",
+              "Does not help with \"add 1\", \"send an email\", \"charge a card\""
+            ],
+            [
+              "State or version check",
+              "Apply `PaymentAuthorized` only if the order is still `PENDING`; ignore an event whose version is not newer than the stored one",
+              "Needs a state machine or a version in every event and table"
+            ],
+            [
+              "Event-id deduplication",
+              "A processed-event table with a unique key, written in the same transaction as the effect",
+              "Extra table that needs cleanup; covers only effects inside that one database"
+            ]
+          ],
+          "caption": "Techniques for idempotent processing, cheapest first."
+        },
+        {
+          "type": "markdown",
+          "text": "Prefer the first two when they fit, since they need no extra storage. The third is the general-purpose tool, and the rest of this chapter builds it.\n\n### Deduplicating with a processed-event table\n\nThe idea is to record \"I have handled event X\" in the same database transaction that applies the effect. Either both happen or neither does, so after a crash the table tells you the truth. The table needs one thing above all: a unique key."
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "CREATE TABLE processed_event (\n    consumer      VARCHAR(100) NOT NULL,\n    event_id      VARCHAR(64)  NOT NULL,\n    processed_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),\n    PRIMARY KEY (consumer, event_id)\n);\n\nCREATE INDEX idx_processed_event_processed_at ON processed_event (processed_at);",
+          "title": "V2__processed_event.sql"
+        },
+        {
+          "type": "markdown",
+          "text": "The `consumer` column names the logical handler (say `inventory-reserve`), so several handlers in one database can process the same event without colliding. The index serves the cleanup job later. The service below uses Spring's `JdbcClient` and PostgreSQL's `INSERT ... ON CONFLICT DO NOTHING`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport com.shopstream.events.OrderCreated;\nimport com.shopstream.events.OrderLine;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.jdbc.core.simple.JdbcClient;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Service\npublic class InventoryService {\n\n    private static final Logger log = LoggerFactory.getLogger(InventoryService.class);\n    private static final String CONSUMER = \"inventory-reserve\";\n\n    private final JdbcClient jdbc;\n\n    public InventoryService(JdbcClient jdbc) {\n        this.jdbc = jdbc;\n    }\n\n    @Transactional\n    public void reserve(OrderCreated event) {\n        int inserted = jdbc.sql(\"\"\"\n                INSERT INTO processed_event (consumer, event_id)\n                VALUES (:consumer, :eventId)\n                ON CONFLICT (consumer, event_id) DO NOTHING\n                \"\"\")\n                .param(\"consumer\", CONSUMER)\n                .param(\"eventId\", event.eventId())\n                .update();\n        if (inserted == 0) {\n            log.info(\"Event {} already processed, skipping\", event.eventId());\n            return;\n        }\n        for (OrderLine line : event.lines()) {\n            int updated = jdbc.sql(\"\"\"\n                    UPDATE stock SET reserved = reserved + :qty\n                    WHERE sku = :sku AND on_hand - reserved >= :qty\n                    \"\"\")\n                    .param(\"qty\", line.qty())\n                    .param(\"sku\", line.sku())\n                    .update();\n            if (updated == 0) {\n                // rolls back the transaction, including the processed_event row\n                throw new InvalidOrderException(\"Unknown SKU or not enough stock: \" + line.sku());\n            }\n        }\n    }\n}",
+          "title": "InventoryService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The dedupe row is inserted *first*, and the number of affected rows is the answer: 1 means \"first time, go ahead\", 0 means \"seen before\". A \"select, then insert if absent\" sequence has a race window in which two consumer instances both see nothing; the primary key closes it, because the second insert waits for the first transaction to finish and then finds the row. The insert and the stock update share one `@Transactional` method, so an exception rolls back both and the event can be retried later as if it had never been seen. And the key is `eventId`, the UUID in the event envelope, not the Kafka offset: an offset identifies a position in one topic, whereas a copy of the same event that travels through a retry topic, a mirror or a replay gets a different offset."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "poll → record r (eventId e1)\nBEGIN\n  INSERT processed_event e1      → 1 row     first delivery\n  UPDATE stock ...\nCOMMIT\n── crash before the offset is committed ──\npoll → record r again (eventId e1)\nBEGIN\n  INSERT processed_event e1      → 0 rows    conflict: skip the business logic\nCOMMIT\noffset committed, consumer moves on"
+        },
+        {
+          "type": "markdown",
+          "text": "What should the code do on a duplicate? Return normally. The offset then commits and the consumer moves on. Do not throw (a retry would see the same duplicate) and do not dead-letter it (nothing is wrong). Log at info level, and count duplicates in a metric: a sudden rise means rebalances or an upstream replay and is worth a look."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Deduplication protects only effects inside the same database transaction. If handling the event also publishes a new event, say `StockReserved`, a plain `KafkaTemplate#send` after the commit can be lost in a crash, and the redelivery will then skip the duplicate and never publish it. Write the outgoing event to an outbox table in the same transaction and let a relay publish it (see the chapter on the outbox pattern in the design-patterns Part)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Keeping the table small\n\nThe table grows with every event, so it needs a cleanup job. The rule for the horizon: keep rows at least as long as a duplicate can still arrive. That is the longest of the topic's retention (7 days by default), the longest retry delay, and the window in which you might replay a DLT or rewind offsets. A horizon of 24 hours is fatal if you can reset offsets to last week. A simple job deletes in one statement; for high volumes, delete in batches or partition the table by date and drop old partitions."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.inventory;\n\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.jdbc.core.simple.JdbcClient;\nimport org.springframework.scheduling.annotation.Scheduled;\nimport org.springframework.stereotype.Component;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Component\npublic class ProcessedEventCleanup {\n\n    private static final Logger log = LoggerFactory.getLogger(ProcessedEventCleanup.class);\n\n    private final JdbcClient jdbc;\n\n    public ProcessedEventCleanup(JdbcClient jdbc) {\n        this.jdbc = jdbc;\n    }\n\n    // needs @EnableScheduling on a configuration class\n    @Scheduled(cron = \"0 15 3 * * *\")\n    @Transactional\n    public void purge() {\n        int deleted = jdbc\n                .sql(\"DELETE FROM processed_event WHERE processed_at < now() - interval '14 days'\")\n                .update();\n        log.info(\"Purged {} processed_event rows older than 14 days\", deleted);\n    }\n}",
+          "title": "ProcessedEventCleanup.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### The full inbox pattern\n\nThe table above is the lightweight form, sometimes called an *idempotent receiver*. The full **inbox pattern** goes one step further: the listener only stores the incoming message (payload and event id) in an `inbox` table, protected by the same unique key, commits the Kafka offset at once, and a separate worker processes the rows. This decouples consumption speed from processing speed, gives you an audit trail and lets you retry or inspect messages with SQL. The price is another moving part and delayed processing. Start with the lightweight form; move to a full inbox when processing is slow, needs its own retry policy, or must be queryable."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you make a Kafka consumer idempotent, and why is it necessary? Delivery to a consumer is at least once, so duplicates arrive after crashes, rebalances, retries and replays. The consumer must make repeated processing harmless: use naturally idempotent writes or state checks where possible, otherwise store the event id in a processed-event table with a unique key in the same database transaction as the business change, treat a unique-key conflict as \"already done\", and purge old rows after a horizon that covers topic retention and replay windows."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Consumers see records at least once; duplicates come from crashes, rebalances, retries, upstream republishing and replays, so idempotence is the consumer's job.\n- Prefer naturally idempotent writes and state or version checks; use a processed-event table with a unique key when they are not enough.\n- Insert the event id first and write it in the same transaction as the effect; use the event id from the envelope, never the offset.\n- On a duplicate, return normally and count it. Deduplication does not cover events you publish: use an outbox for those.\n- Purge rows older than a horizon that exceeds retention and replay windows."
+        }
+      ]
+    }
+  ]
+}

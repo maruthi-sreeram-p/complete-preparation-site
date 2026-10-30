@@ -1,0 +1,100 @@
+# Content
+
+Everything the site teaches lives here, separate from the UI code in `src/`.
+Adding a roadmap or a topic is just adding files; no code changes needed.
+
+```
+content/roadmaps/<roadmap-id>/
+  roadmap.json            structure: categories, topics, subtopics, dependencies
+  topics/<topic-id>.json  one learning page per topic
+```
+
+The folder name is the roadmap id. A topic's page is `topics/<topic id>.json`
+(or `topics/<contentId>.json` if the topic sets `contentId`). Topics without a file
+show a "no content yet" page and a dashed node on the roadmap.
+
+## roadmap.json
+
+```jsonc
+{
+  "title": "…",
+  "description": "…",
+  "placeholder": true,                 // optional: shows a "placeholder data" banner
+  "categories": [
+    { "id": "cat", "title": "…", "description": "…", "color": "violet" }
+    // color: violet | blue | cyan | teal | fuchsia | amber | any #hex; omitted = auto
+  ],
+  "topics": [
+    {
+      "id": "unique-id",
+      "title": "…",
+      "category": "cat",
+      "summary": "…",
+      "requires": ["other-topic-id"],   // dependencies → connected nodes
+      "subtopics": [{ "id": "local-id", "title": "…" }],
+      "contentId": "…",                 // optional, defaults to id
+      "estimatedMinutes": 45,           // optional
+      "position": { "x": 0, "y": 0 },   // optional: overrides automatic layout
+      "source": { "document": "x.pdf", "pages": "10-24" }   // optional
+    }
+  ]
+}
+```
+
+- **Learning sequence** = dependency order; topics that are ready at the same time follow file order.
+- Bad data never crashes the app: unknown/self dependencies, cycles, duplicate ids and unknown
+  categories are dropped and listed in a warning box on the dashboard and roadmap.
+
+## topics/<id>.json
+
+```jsonc
+{
+  "source": { "document": "x.pdf", "pages": "10-24" },
+  "sections": [
+    {
+      "id": "intro",                     // optional anchor id
+      "type": "introduction",            // hint for icon/title: introduction | concept | theory | visual |
+                                         // architecture | code | example | notes | related | practice | other
+      "title": "Introduction",           // optional, defaults from type
+      "subtopicId": "local-id",          // optional: links the subtopic checklist to this section
+      "blocks": [ /* see below */ ]
+    }
+  ]
+}
+```
+
+Only include the sections the source material actually has.
+
+### Blocks
+
+A bare string is a Markdown block.
+
+| type | fields |
+| --- | --- |
+| `markdown` | `text` (GitHub-flavoured Markdown; fenced code is highlighted) |
+| `code` | `language`, `code`, `title?`, `highlight?` ("2-4"), `walkthrough?` `[{ lines, title?, text }]` |
+| `diagram` | `format: "mermaid"`, `code`, `title?`, `caption?`, `components?` `[{ name, description }]` |
+| `table` | `headers`, `rows`, `caption?` (cells accept inline Markdown) |
+| `callout` | `variant` (note / tip / warning / important), `title?`, `text` |
+| `steps` | `title?`, `steps` `[{ title?, text }]` |
+| `questions` | `items` `[{ question, hint?, answer, difficulty? }]` |
+| `related` | `topics` `[topicId]` |
+
+New block types: add a component and register it in `src/features/content/blockRegistry.jsx`.
+
+See `_examples/placeholder/` for a working example of every block (it is not loaded by the app;
+copy it into `roadmaps/` to see it).
+
+### Generated content
+
+`roadmaps/interview-prep/` was generated from your PDFs and `Day_By_Day_Plan.xlsx` with the scripts in `tools/`:
+
+```bash
+python -I tools/build_roadmap.py "<folder with the PDFs and xlsx>"          # roadmap.json
+python -I tools/extract_topic.py <pdf> <roadmap.json> <topic-id> <out.json>  # one topic page
+```
+
+`extract_topic.py` reads the PDF's real structure (fonts, boxes) and produces code, callouts, tables, questions
+and markdown automatically. Figures come out as `figure` blocks (caption plus the labels found in the PDF) and are
+then turned into Mermaid `diagram` blocks by hand. Re-running the extractor overwrites a topic file, including
+those hand-made diagrams and code walkthroughs.

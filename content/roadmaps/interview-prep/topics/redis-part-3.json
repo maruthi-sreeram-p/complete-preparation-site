@@ -1,0 +1,831 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "69-91",
+    "planDays": "26"
+  },
+  "sections": [
+    {
+      "id": "ch-3-1",
+      "type": "concept",
+      "title": "Strings",
+      "subtopicId": "3-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The string is the simplest Redis type and the one you will use most. A string value is a sequence of bytes, nothing more: it can hold text, a number, a serialized Java object, a JSON document, a JPEG. Redis does not care. Almost every other feature in this book (caching, counters, locks, sessions, rate limits) is built on strings, so it pays to know every corner of them.\n\nStrings solve three everyday problems. They let you store a value under a name and read it back in one round trip (a cache entry). They let you change a number atomically on the server without a read-modify-write cycle (a counter). And, with the right `SET` options, they let you make a decision atomically (\"create this key only if nobody else has\", which is the heart of a lock).\n\n### Reading and writing: SET and GET\n\nThe basic pair is `SET key value` and `GET key`. `SET` always overwrites whatever was there, even a value of a different type, and it also discards any TTL (time to live) the key had. `GET` returns the value or `(nil)` when the key does not exist."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET user:1:name \"Asha\"\nOK\n127.0.0.1:6379> GET user:1:name\n\"Asha\"\n127.0.0.1:6379> GET user:2:name\n(nil)\n127.0.0.1:6379> SET user:1:name \"Asha K\"\nOK\n127.0.0.1:6379> STRLEN user:1:name\n(integer) 6",
+          "title": "Store and read a key"
+        },
+        {
+          "type": "markdown",
+          "text": "`SET` takes options that turn it into a small toolbox. They are the reason the older commands `SETNX`, `SETEX`, `PSETEX` and `GETSET` are considered legacy: a single `SET` can express all of them."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Meaning",
+            "Replaces legacy"
+          ],
+          "rows": [
+            [
+              "`NX`",
+              "Set only if the key does not exist",
+              "SETNX"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Meaning",
+            "Replaces legacy"
+          ],
+          "rows": [
+            [
+              "`XX`",
+              "Set only if the key already exists",
+              "-"
+            ],
+            [
+              "`GET`",
+              "Return the old value (nil if there was none) instead of OK",
+              "GETSET"
+            ],
+            [
+              "`EX seconds`",
+              "Expire after this many seconds",
+              "SETEX"
+            ],
+            [
+              "`PX milliseconds`",
+              "Expire after this many milliseconds",
+              "PSETEX"
+            ],
+            [
+              "`EXAT / PXAT`",
+              "Expire at an absolute Unix time (seconds / milliseconds)",
+              "-"
+            ],
+            [
+              "`KEEPTTL`",
+              "Keep the key's current TTL instead of clearing it",
+              "-"
+            ]
+          ],
+          "caption": "Options of SET (conditions and expiry are two independent groups)."
+        },
+        {
+          "type": "markdown",
+          "text": "You may combine one condition with one expiry option. Two conditions together (`NX` with `XX`), or two expiry options together, are syntax errors."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:abc \"u42\" EX 1800\nOK\n127.0.0.1:6379> TTL session:abc\n(integer) 1800\n127.0.0.1:6379> SET session:abc \"u42-v2\" KEEPTTL\nOK\n127.0.0.1:6379> TTL session:abc\n(integer) 1800\n127.0.0.1:6379> SET session:abc \"u42-v3\"\nOK\n127.0.0.1:6379> TTL session:abc\n(integer) -1\n127.0.0.1:6379> SET lock:order:7 \"worker-1\" NX PX 30000\nOK\n127.0.0.1:6379> SET lock:order:7 \"worker-2\" NX PX 30000\n(nil)\n127.0.0.1:6379> SET missing \"x\" XX\n(nil)\n127.0.0.1:6379> SET user:1:name \"Asha\"\nOK\n127.0.0.1:6379> SET user:1:name \"Asha K\" GET\n\"Asha\"",
+          "title": "SET with NX, XX, expiry and KEEPTTL"
+        },
+        {
+          "type": "markdown",
+          "text": "Look at the last three commands. A `NX` that loses the race returns `(nil)`, which is how a lock attempt reports \"someone else has it\". `XX` on a missing key also returns `(nil)`. And `SET ... GET` returns the previous value while writing the new one, in one atomic step. The third `SET` of `session:abc` shows the trap that `KEEPTTL` exists for: a plain `SET` wipes the TTL (`-1` means \"no expiry\"), so a session you merely \"touch\" would live forever."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A plain `SET` on an existing key removes its TTL. This is the classic way to create an immortal key by accident: you cache something with `EX 600`, later refresh it with a bare `SET`, and it never expires again. Always pass the expiry again, or use `KEEPTTL` when you want to preserve it."
+        },
+        {
+          "type": "markdown",
+          "text": "### Reading with side effects: GETEX and GETDEL\n\nTwo read commands change the key as they read it, both atomically.\n\n- `GETEX key [EX seconds | PX ms | EXAT ts | PXAT ts | PERSIST]` returns the value and sets or clears its TTL. It is the right tool for a sliding session: read the session and extend its life in one command.\n- `GETDEL key` returns the value and deletes the key. It is perfect for one-time tokens such as an e-mail verification code or a \"consume once\" download link, because two concurrent callers can never both receive the value."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:abc \"u42\" EX 60\nOK\n127.0.0.1:6379> GETEX session:abc EX 1800\n\"u42\"\n127.0.0.1:6379> TTL session:abc\n(integer) 1800\n127.0.0.1:6379> SET otp:asha \"493021\" EX 300\nOK\n127.0.0.1:6379> GETDEL otp:asha\n\"493021\"\n127.0.0.1:6379> GETDEL otp:asha\n(nil)",
+          "title": "GETEX and GETDEL"
+        },
+        {
+          "type": "markdown",
+          "text": "### Many keys at once: MSET and MGET\n\n`MSET k1 v1 k2 v2 ...` writes many keys and `MGET k1 k2 ...` reads many. Each is one round trip instead of N, which matters because network latency usually dominates the cost of a Redis command (see the chapter on pipelining later in the book). `MSET` is atomic: other clients see all of the writes or none. `MGET` returns `(nil)` in the slot of any missing or non-string key."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> MSET product:1:price 1999 product:2:price 2499 product:3:price 899\nOK\n127.0.0.1:6379> MGET product:1:price product:3:price product:9:price\n1) \"1999\"\n2) \"899\"\n3) (nil)",
+          "title": "MSET and MGET"
+        },
+        {
+          "type": "markdown",
+          "text": "In a Redis Cluster all keys of one `MSET` or `MGET` must live in the same hash slot, otherwise the command fails with a `CROSSSLOT` error. The cluster chapter explains how hash tags (`{...}` in a key name) solve this.\n\n### Counters: the INCR family\n\nStrings that look like integers can be incremented in place. `INCR` and `DECR` add or subtract one, `INCRBY` and `DECRBY` take an amount, and `INCRBYFLOAT` works with decimals. A key that does not exist is treated as `0`, so the first `INCR` creates it with value `1`. The result is the new value."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR page:home:views\n(integer) 1\n127.0.0.1:6379> INCR page:home:views\n(integer) 2\n127.0.0.1:6379> INCRBY page:home:views 10\n(integer) 12\n127.0.0.1:6379> DECR stock:sku-42\n(integer) -1\n127.0.0.1:6379> INCRBYFLOAT wallet:asha 12.5\n\"12.5\"\n127.0.0.1:6379> INCRBYFLOAT wallet:asha -2.25\n\"10.25\"\n127.0.0.1:6379> SET greeting \"hello\"\nOK\n127.0.0.1:6379> INCR greeting\n(error) ERR value is not an integer or out of range",
+          "title": "Atomic counters"
+        },
+        {
+          "type": "markdown",
+          "text": "The value must be a base-10 signed 64-bit integer. Anything else gives the error you see in the last line. `INCR` past the 64-bit limit also fails instead of wrapping around.\n\nWhy is this valuable? Consider the alternative: the application does `GET`, adds one, then `SET`. Two servers doing that at the same moment both read `41` and both write `42`; one increment is lost. `INCR` runs inside the single-threaded command loop, so it is a single indivisible step and no update is ever lost. This is the idea behind page counters, rate limiters, ID generators and stock counters."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Use one `INCR` on a key as a cheap unique ID generator. `INCR seq:order` returns a number nobody else will ever receive from that key. Reserve a block with `INCRBY seq:order 100` if you want to hand out IDs locally without a round trip each time."
+        },
+        {
+          "type": "markdown",
+          "text": "### Working with parts of a string\n\nBecause strings are byte arrays you can treat them as buffers."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> APPEND log:today \"login;\"\n(integer) 6\n127.0.0.1:6379> APPEND log:today \"view:42;\"\n(integer) 14\n127.0.0.1:6379> GET log:today\n\"login;view:42;\"\n127.0.0.1:6379> GETRANGE log:today 0 4\n\"login\"\n127.0.0.1:6379> GETRANGE log:today -3 -1\n\"42;\"\n127.0.0.1:6379> SETRANGE log:today 0 \"LOGIN\"\n(integer) 14\n127.0.0.1:6379> GET log:today\n\"LOGIN;view:42;\"",
+          "title": "APPEND, GETRANGE and SETRANGE"
+        },
+        {
+          "type": "markdown",
+          "text": "`GETRANGE key start end` takes inclusive offsets, and negative offsets count from the end (`-1` is the last byte). `SETRANGE` overwrites bytes in place and pads with zero bytes if you write beyond the current end. `APPEND` returns the new length. Appending in a loop is cheap in Redis (amortized), but a key that grows without bound is a memory leak; see the section on big values below.\n\nRedis 7.0 added `LCS`, which computes the longest common subsequence of two string values on the server. It is occasionally useful for diffing two stored versions of a text without downloading them."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> MSET k1 ohmytext k2 mynewtext\nOK\n127.0.0.1:6379> LCS k1 k2\n\"mytext\"\n127.0.0.1:6379> LCS k1 k2 LEN\n(integer) 6",
+          "title": "LCS: longest common subsequence"
+        },
+        {
+          "type": "markdown",
+          "text": "### Compare-and-set and DELEX in Redis 8.4\n\nLocks and optimistic updates need \"do this only if the value is still what I think it is\". Until recently that required a Lua script or a transaction with `WATCH`. Redis 8.4 added conditions for this directly to `SET` and a new command `DELEX`. The syntax below is quoted from the command reference for 8.4:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SET key value [NX | XX | IFEQ ifeq-value | IFNE ifne-value |\n               IFDEQ ifdeq-digest | IFDNE ifdne-digest]\n    [GET] [EX seconds | PX ms | EXAT ts | PXAT ts | KEEPTTL]\n\nDELEX key [IFEQ ifeq-value | IFNE ifne-value |\n           IFDEQ ifdeq-digest | IFDNE ifdne-digest]"
+        },
+        {
+          "type": "markdown",
+          "text": "- `IFEQ value`: apply only if the current value equals `value`. If the key does not exist, `SET` does not create it.\n- `IFNE value`: apply only if the current value differs. If the key does not exist, `SET` creates it.\n- `IFDEQ` and `IFDNE` do the same with a digest: a fixed-size XXH3 hash of the value, as a hexadecimal string, which you can obtain with the new `DIGEST` command. Use these when the value is large and you do not want to send it twice.\n\n`DELEX` returns `1` if it deleted the key and `0` if the key was missing or the condition was false. With a condition, the key must hold a string, otherwise it returns an error. The classic use is releasing a lock safely: delete the lock only if it still holds my token."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# acquire (works on every Redis version)\nSET lock:order:7 \"worker-1-token\" NX PX 30000\n# release, Redis 8.4 and later: delete only if I still own it\nDELEX lock:order:7 IFEQ \"worker-1-token\"\n# refresh the value only while it is still mine\nSET lock:order:7 \"worker-1-token\" IFEQ \"worker-1-token\" PX 30000"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "These options exist only in Redis 8.4 and later. On older servers, or on a managed service that has not upgraded, the same release step needs a small Lua script (compare, then `DEL`). The scripting chapter shows it, and the patterns Part uses it for distributed locks. If your code must run on several versions, keep the Lua version."
+        },
+        {
+          "type": "markdown",
+          "text": "### What a string really is inside\n\nA string in Redis is stored by an SDS (\"simple dynamic string\"), a length-prefixed byte buffer. Two consequences follow. It is **binary safe**: it may contain zero bytes and any encoding, because the length is stored explicitly instead of relying on a terminator. And `STRLEN` is O(1). The maximum size of a string value is **512 MB**, but you should never come near that. Large values block the single command thread while they are read, written and sent, and they hurt replication and memory fragmentation. Values of a few kilobytes are comfortable; values over about 100 KB deserve a second look.\n\nRedis picks one of three internal encodings per value, and you can see it with `OBJECT ENCODING`:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Encoding",
+            "When",
+            "Why it matters"
+          ],
+          "rows": [
+            [
+              "`int`",
+              "Value is an integer that fits in a 64-bit signed long",
+              "No separate buffer; the number is stored in the object itself"
+            ],
+            [
+              "`embstr`",
+              "Short string, up to 44 bytes",
+              "Object header and buffer live in one allocation: fewer cache misses"
+            ],
+            [
+              "`raw`",
+              "Everything longer, or any string that has been modified in place",
+              "Header and buffer are separate allocations"
+            ]
+          ],
+          "caption": "String encodings."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET counter 100\nOK\n127.0.0.1:6379> OBJECT ENCODING counter\n\"int\"\n127.0.0.1:6379> SET name \"hello\"\nOK\n127.0.0.1:6379> OBJECT ENCODING name\n\"embstr\"\n127.0.0.1:6379> APPEND name \" world\"\n(integer) 11\n127.0.0.1:6379> OBJECT ENCODING name\n\"raw\"\n127.0.0.1:6379> SET page:html \"<html>...a long document of more than forty-four bytes...</html>\"\nOK\n127.0.0.1:6379> OBJECT ENCODING page:html\n\"raw\"",
+          "title": "Observing encodings"
+        },
+        {
+          "type": "markdown",
+          "text": "An `embstr` value is read-only: any in-place modification (`APPEND`, `SETRANGE`) converts it to `raw`, as the third line of the session shows. You will rarely tune this, but the sizes explain why millions of tiny string keys cost more memory than you expect: every key has per-entry overhead (the dictionary entry, the key string, the value object) on top of the bytes you store. When you have very many small related values, a hash often costs less; the chapter on hashes explains why.\n\n### A worked example: a fixed-window rate limiter\n\nCounters plus expiry already give you a usable rate limiter. Allow each client IP 5 requests per 60 seconds on the login route. The key encodes the client, the route and the current minute; the first request in a window creates it, and the TTL cleans it up."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 1\n127.0.0.1:6379> EXPIRE rl:1.2.3.4:/login:29333 60\n(integer) 1\n127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 2\n127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 3\n127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 4\n127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 5\n127.0.0.1:6379> INCR rl:1.2.3.4:/login:29333\n(integer) 6\n127.0.0.1:6379> TTL rl:1.2.3.4:/login:29333\n(integer) 60",
+          "title": "Five requests per minute, per IP"
+        },
+        {
+          "type": "markdown",
+          "text": "The sixth `INCR` returns `6`, which is above the limit of 5, so the application rejects the request (HTTP 429) until the window key expires. The number `29333` is the current Unix time divided by 60, so every minute uses a fresh key. Here is the same idea in Spring code, with `StringRedisTemplate` (the Spring Data Redis Part explains the template in depth):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.gateway;\n\nimport java.time.Duration;\nimport java.time.Instant;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class FixedWindowLimiter {\n\n    private static final long WINDOW_SECONDS = 60;\n    private final StringRedisTemplate redis;\n\n    public FixedWindowLimiter(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    public boolean allow(String ip, String route, long limit) {\n        long window = Instant.now().getEpochSecond() / WINDOW_SECONDS;\n        String key = \"rl:\" + ip + \":\" + route + \":\" + window;\n        Long count = redis.opsForValue().increment(key);\n        if (count != null && count == 1L) {\n            redis.expire(key, Duration.ofSeconds(WINDOW_SECONDS));\n        }\n        return count != null && count <= limit;\n    }\n}",
+          "title": "FixedWindowLimiter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `increment` maps to `INCR`, so concurrent requests from many gateway instances all see distinct counts. The `expire` call runs only when the count is `1`. There is still the small gap mentioned above: a crash between the two calls would leave a key without TTL. For production, use the Lua version from the rate-limiting chapter. This simple form also allows a burst of up to twice the limit across a window boundary (5 at the end of one minute and 5 at the start of the next), a weakness that the sliding window and token bucket variants remove.\n\n### Strings in practice\n\n#### What to store\n\nA string can hold a plain scalar or a serialized object. For a product cache entry you can store JSON text under `product:42`. This is simple, fast to read in one command, and works with any language. The price is that you replace the whole value to change one field. If you need to read or update single fields, use a hash or the JSON type instead. The Spring Data Redis Part shows how serializers turn a Java object into bytes and back.\n\n#### Typical uses in ShopStream\n\n- **Catalogue cache:** `SET product:42 \"{...json...}\" EX 600` is written by the cache-aside code.\n- **Counters:** `INCR page:home:views` for analytics, `DECR stock:sku-42` for inventory (with the safety checks shown in the Lua chapter).\n- **Idempotency keys and locks:** `SET idem:req-9f3 \"done\" NX EX 86400`. A `(nil)` reply tells the second caller that the request was already seen.\n- **Feature flags:** `GET ff:new-checkout` returns `\"on\"` or `\"off\"`.\n- **Rate limit windows:** `INCR rl:1.2.3.4:/login` followed by `EXPIRE` on the first hit.\n\n#### Pitfalls\n\n- Forgetting the TTL. Every cache or session key should expire; set it in the same command as the value (`SET ...` `EX`) so there is no moment when the key exists without one.\n- Doing `INCR` and `EXPIRE` as two separate commands. If the client dies between them, the counter never expires. Wrap both in a transaction or a Lua script, as the rate-limiting chapter shows.\n- Treating `INCRBYFLOAT` as exact money arithmetic. It uses floating point. Store money as integer minor units (cents) with `INCRBY`.\n- Storing huge blobs. Keep values small; store large files in object storage and keep the URL in Redis."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you implement a safe distributed lock with plain Redis strings? Acquire with a single command, `SET lock:key` `<random-token> NX PX <ttl>`. `NX` makes the creation atomic and `PX` guarantees the lock expires even if the holder crashes. Release only if the stored token is still yours, because otherwise you could delete a lock that expired and was re-acquired by someone else. That compare-and-delete must be atomic: a Lua script, or `DELEX key IFEQ token` on Redis 8.4 and later. Mention that a TTL-based lock can still be lost if the holder pauses longer than the TTL, which is why critical work needs fencing tokens."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A string is a binary-safe byte buffer up to 512 MB; keep real values small.\n- `SET` with `NX`, `XX`, `GET`, `EX`, `PX`, `KEEPTTL` replaces `SETNX`, `SETEX`, `GETSET`; a bare `SET` clears the TTL.\n- `INCR`, `INCRBY`, `DECR` and `INCRBYFLOAT` are atomic, which makes them safe counters under concurrency.\n- `GETEX` and `GETDEL` read and change a key in one step; `MSET` and `MGET` save round trips.\n- Redis 8.4 adds `IFEQ`, `IFNE`, `IFDEQ`, `IFDNE` to `SET` and the `DELEX` command for compare-and-set and compare-and-delete.\n- Encodings are `int`, `embstr` and `raw`; check with `OBJECT ENCODING`."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-3",
+      "type": "concept",
+      "title": "Hashes",
+      "subtopicId": "3-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A hash maps field names to values inside a single key, like a small dictionary or a row of a table. Where a string holds one value, a hash holds a record: `product:42` can carry `name`, `price` and `stock` as separate fields, and you can read or change one field without touching the others.\n\nHashes solve the \"object\" problem. Storing a product as one JSON string forces you to download, parse, change and re-upload the entire document to adjust one number, and two clients doing that at once overwrite each other. With a hash, `HINCRBY product:42 stock -1` changes exactly one field, atomically, on the server.\n\n### The core commands\n\n`HSET key field value [field value ...]` creates or updates fields and returns how many fields were newly created. (The old `HMSET` does the same job and only differs in returning `OK`; it is deprecated, use `HSET`.) `HGET` reads one field, `HMGET` reads several, `HGETALL` reads everything as a flat list of alternating field and value."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:42 name \"USB-C Cable\" price 799 stock 120\n(integer) 3\n127.0.0.1:6379> HGET product:42 name\n\"USB-C Cable\"\n127.0.0.1:6379> HMGET product:42 name price color\n1) \"USB-C Cable\"\n2) \"799\"\n3) (nil)\n127.0.0.1:6379> HGETALL product:42\n1) \"name\"\n2) \"USB-C Cable\"\n3) \"price\"\n4) \"799\"\n5) \"stock\"\n6) \"120\"\n127.0.0.1:6379> HINCRBY product:42 stock -1\n(integer) 119\n127.0.0.1:6379> HINCRBYFLOAT product:42 price 0.5\n\"799.5\"\n127.0.0.1:6379> HSETNX product:42 name \"other\"\n(integer) 0\n127.0.0.1:6379> HEXISTS product:42 color\n(integer) 0\n127.0.0.1:6379> HLEN product:42\n(integer) 3\n127.0.0.1:6379> HDEL product:42 price color\n(integer) 1\n127.0.0.1:6379> HKEYS product:42\n1) \"name\"\n2) \"stock\"",
+          "title": "A product as a hash"
+        },
+        {
+          "type": "markdown",
+          "text": "A few details worth remembering. Field values are strings (like everything in Redis), so `price 799` is stored as the text `799`; `HINCRBY` parses it as an integer when you ask. `HSETNX` sets a field only if it does not exist, a handy \"initialize once\". `HSTRLEN` gives the length of a field's value. `HRANDFIELD` (6.2) returns random fields, optionally with values. Prices in cents as integers keep arithmetic exact."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`HSET / HGET`",
+              "Write or read one or more fields",
+              "O(1) per field"
+            ],
+            [
+              "`HMGET`",
+              "Read several fields",
+              "O(N) in fields asked"
+            ],
+            [
+              "`HGETALL, HKEYS, HVALS`",
+              "Read the whole hash",
+              "O(N) in all fields"
+            ],
+            [
+              "`HINCRBY, HINCRBYFLOAT`",
+              "Atomic numeric update of a field",
+              "O(1)"
+            ],
+            [
+              "`HDEL`",
+              "Delete fields; the key disappears when the last field goes",
+              "O(N) in fields given"
+            ],
+            [
+              "`HSCAN`",
+              "Iterate fields in small batches with a cursor",
+              "O(1) per call"
+            ]
+          ],
+          "caption": "Hash commands and their cost."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`HGETALL` on a hash with hundreds of thousands of fields blocks the server. It builds one huge reply on the single command thread. For big hashes read the fields you need with `HMGET`, or walk the hash incrementally with `HSCAN key` `cursor [MATCH pattern] [COUNT n]`. The scan commands are covered in their own chapter."
+        },
+        {
+          "type": "markdown",
+          "text": "### Field expiration (Redis 7.4 and later)\n\nA key can expire, but historically a field could not. If you wanted per-field lifetimes (the items of a shopping cart, the temporary flags of a session) you had to split data across many keys. Redis 7.4 added **hash field expiration**, and Redis 8.0 added commands that combine reading or writing with an expiry."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`HEXPIRE key seconds [NX|XX|GT|LT]` `FIELDS n f1 ...`",
+              "Set a relative TTL (seconds) on fields. HPEXPIRE is the millisecond form; HEXPIREAT and HPEXPIREAT take an absolute Unix time"
+            ],
+            [
+              "`HTTL / HPTTL key FIELDS n f1 ...`",
+              "Remaining TTL per field, in seconds / milliseconds. -1 means the field has no TTL, -2 means the field (or key) does not exist"
+            ],
+            [
+              "`HPERSIST key FIELDS n f1 ...`",
+              "Remove the TTL from fields"
+            ],
+            [
+              "`HEXPIRETIME / HPEXPIRETIME`",
+              "The absolute expiry time per field"
+            ],
+            [
+              "`HGETEX key` `[EX|PX|EXAT|PXAT|PERSIST] FIELDS n` `f1 ...`",
+              "Read fields and set or clear their TTL in one step (8.0)"
+            ],
+            [
+              "`HSETEX key [FNX|FXX]` `[EX|PX|EXAT|PXAT|KEEPTTL] FIELDS n` `f v ...`",
+              "Write fields with a TTL; FNX only if none exist, FXX only if all exist (8.0)"
+            ],
+            [
+              "`HGETDEL key FIELDS n f1 ...`",
+              "Read fields and delete them (8.0)"
+            ]
+          ],
+          "caption": "Hash field expiration commands."
+        },
+        {
+          "type": "markdown",
+          "text": "All of these take the form `FIELDS numfields field [field ...]`: you state how many fields follow, then list them. Commands that set a TTL return one integer per field: `1` the TTL was set, `0` a condition (`NX`, `XX`, `GT`, `LT`) was not met, `-2` no such field, `2` the field was deleted because the TTL was zero or already in the past."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET cart:u42 sku-1 2 sku-2 1 sku-3 5\n(integer) 3\n127.0.0.1:6379> HEXPIRE cart:u42 3600 FIELDS 2 sku-1 sku-9\n1) (integer) 1\n2) (integer) -2\n127.0.0.1:6379> HTTL cart:u42 FIELDS 3 sku-1 sku-2 sku-9\n1) (integer) 3600\n2) (integer) -1\n3) (integer) -2\n127.0.0.1:6379> HGETEX cart:u42 EX 7200 FIELDS 1 sku-1\n1) \"2\"\n127.0.0.1:6379> HSETEX cart:u42 FXX EX 600 FIELDS 1 sku-2 3\n(integer) 1\n127.0.0.1:6379> HGETDEL cart:u42 FIELDS 1 sku-3\n1) \"5\"",
+          "title": "Field TTLs on a cart (Redis 7.4 or later)"
+        },
+        {
+          "type": "markdown",
+          "text": "When the last field of a hash expires or is deleted, the key itself disappears. Expired fields are removed lazily when touched and by a background process, exactly as keys are (see the chapter on expiration); they are never returned by reads once their time has passed. Expiry of fields is also replicated and persisted like key expiry."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Field expiry does not exist before Redis 7.4. Many managed services lag behind the open source release. If your code must run against an older server, keep the per-field time in the hash as a normal field (an expiry timestamp) and filter on read, or use one key per item."
+        },
+        {
+          "type": "markdown",
+          "text": "### A worked example: a session store\n\nA web session is a bundle of small attributes (user ID, locale, CSRF token, last seen) that is read on every request and must disappear after inactivity. A hash with a key TTL fits exactly: one key per session, fields for attributes, the whole thing expiring together."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET session:9f2c userId 42 locale en-IN csrf a81f\n(integer) 3\n127.0.0.1:6379> EXPIRE session:9f2c 1800\n(integer) 1\n127.0.0.1:6379> HGET session:9f2c userId\n\"42\"\n127.0.0.1:6379> HSET session:9f2c lastSeen 1760000100\n(integer) 1\n127.0.0.1:6379> EXPIRE session:9f2c 1800\n(integer) 1\n127.0.0.1:6379> TTL session:9f2c\n(integer) 1800\n127.0.0.1:6379> HGETALL session:9f2c\n1) \"userId\"\n2) \"42\"\n3) \"locale\"\n4) \"en-IN\"\n5) \"csrf\"\n6) \"a81f\"\n7) \"lastSeen\"\n8) \"1760000100\"",
+          "title": "Session hash with a sliding TTL"
+        },
+        {
+          "type": "markdown",
+          "text": "Each request reads the fields it needs and pushes the expiry forward with `EXPIRE` (a pipeline sends the two commands in one round trip). Only the changed field is written, so concurrent requests from the same browser do not overwrite each other's attributes. When the user is inactive for 30 minutes the key vanishes by itself. Spring Session uses a hash per session in exactly this way, as described in the Spring Part.\n\n### Objects: hash or JSON string?\n\nBoth work; they have different strengths."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Hash",
+            "JSON in a string"
+          ],
+          "rows": [
+            [
+              "Read one field",
+              "HGET, O(1), tiny reply",
+              "Fetch and parse whole value"
+            ],
+            [
+              "Update one field",
+              "HSET or HINCRBY, atomic",
+              "Read, modify, write; races"
+            ],
+            [
+              "Nested data, arrays",
+              "Not supported; flatten to field names",
+              "Natural"
+            ],
+            [
+              "Field-level TTL",
+              "Yes (7.4+)",
+              "No"
+            ],
+            [
+              "Memory, small objects",
+              "Very compact (listpack)",
+              "Compact string, plus serialization cost"
+            ],
+            [
+              "Cross-language reading",
+              "Easy, plain strings",
+              "Easy"
+            ]
+          ],
+          "caption": "Storing an object as a hash or as one serialized string."
+        },
+        {
+          "type": "markdown",
+          "text": "Rule of thumb: use a hash for flat records that you update by field (product stock, user profile, cart lines, session attributes). Use a string holding JSON for a read-mostly document that you always load whole (a cached API response). If you need nested documents with partial updates and indexing, the JSON data type of Redis 8 (covered later in this Part) is designed for that.\n\n### Memory: listpack to hashtable\n\nA small hash is stored as a **listpack**, a single compact array of field and value bytes, with no pointers or per-entry allocations. Lookup in a listpack is a linear scan, which is fast for a handful of entries because they sit together in cache. When the hash exceeds `hash-max-listpack-entries` (default 512 in Redis 7.0 and later) or any field or value is longer than `hash-max-listpack-value` bytes (default 64), Redis converts it to a real **hashtable**, which has O(1) lookup but more memory per field. The conversion happens automatically and is one-way for a given hash (a hash does not shrink back when it loses fields in the usual case)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:42 name \"USB-C Cable\" price 799\n(integer) 2\n127.0.0.1:6379> OBJECT ENCODING product:42\n\"listpack\"\n127.0.0.1:6379> HSET product:42 desc \\\n  \"Braided nylon cable, 2 m, 100 W power delivery, data up to 480 Mbps\"\n(integer) 1\n127.0.0.1:6379> OBJECT ENCODING product:42\n\"hashtable\"",
+          "title": "Seeing the encoding"
+        },
+        {
+          "type": "markdown",
+          "text": "This is why Redis documentation recommends hashes for many small objects: a million users as a million `user:ID` hashes of five fields costs far less than five million separate string keys, because each Redis key carries fixed bookkeeping overhead. A hash that sits just above the thresholds loses that advantage, so keep fields short where you can, and measure with `MEMORY USAGE key`. Release 8.6 further reduces the memory of hashtable-encoded hashes, but the guidance stays the same: small flat hashes are the cheapest representation."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Do not put a million fields in one hash just to save memory. A single huge hash is one key on one shard, it can only expire as a whole key (unless you use field TTLs), and commands like `HGETALL` and `DEL` become latency spikes. Shard by a natural boundary (per user, per product) and keep each hash small to medium."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why store a user profile as a hash instead of JSON in a string? A hash lets you read and update individual fields with O(1) commands and atomic numeric updates (`HINCRBY`) without a read-modify-write cycle, avoids lost updates between concurrent writers, and a small hash uses a compact listpack encoding. JSON in a string is better when the object is nested and always read whole. Add that since 7.4 individual fields can even have their own TTL."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A hash is a record under one key: fields are read and written individually, `HINCRBY` is atomic.\n- Use `HSET` (not `HMSET`); avoid `HGETALL` on big hashes and use `HSCAN` or `HMGET`.\n- Redis 7.4 added field TTLs (`HEXPIRE`, `HTTL`, `HPERSIST`); 8.0 added `HGETEX`, `HSETEX` and `HGETDEL`.\n- Small hashes are listpacks; beyond 512 entries or 64-byte values they convert to hashtables.\n- Choose hash for flat, field-updated records; JSON string or the JSON type for nested documents."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-4",
+      "type": "concept",
+      "title": "Sets",
+      "subtopicId": "3-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A set is an unordered collection of unique strings. Adding the same member twice has no effect, checking membership is O(1), and Redis can combine sets on the server with intersection, union and difference. Where a list answers \"what is in order\", a set answers \"is X in this group, and what do these groups have in common\".\n\nSets solve problems of uniqueness and relationships: the tags on a product, the users who liked a post, the IDs of items already shown to a visitor, the set of users currently online.\n\n### Adding, testing, removing\n\n`SADD key member [member ...]` returns how many members were new. `SISMEMBER` tests one member and `SMISMEMBER` (6.2) tests several in one call. `SREM` removes, `SCARD` returns the size, `SMEMBERS` returns everything. Sets have no defined order, so never depend on the order of the replies shown."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD tags:p1 red cotton sale\n(integer) 3\n127.0.0.1:6379> SADD tags:p1 red\n(integer) 0\n127.0.0.1:6379> SISMEMBER tags:p1 sale\n(integer) 1\n127.0.0.1:6379> SMISMEMBER tags:p1 sale blue\n1) (integer) 1\n2) (integer) 0\n127.0.0.1:6379> SCARD tags:p1\n(integer) 3\n127.0.0.1:6379> SREM tags:p1 cotton\n(integer) 1\n127.0.0.1:6379> SCARD tags:p1\n(integer) 2",
+          "title": "Tags as sets"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`SMEMBERS` on a large set is like `HGETALL` on a large hash. It returns every member in a single reply and blocks the server while doing so. For big sets use `SSCAN key cursor [MATCH pattern] [COUNT n]`, which returns a few members per call."
+        },
+        {
+          "type": "markdown",
+          "text": "### Combining sets\n\nThe set algebra commands are the reason to choose a set. Take two products and their tags:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD tags:p1 red cotton sale\n(integer) 3\n127.0.0.1:6379> SADD tags:p2 sale new cotton\n(integer) 3\n127.0.0.1:6379> SINTER tags:p1 tags:p2\n1) \"cotton\"\n2) \"sale\"\n127.0.0.1:6379> SUNION tags:p1 tags:p2\n1) \"new\"\n2) \"cotton\"\n3) \"sale\"\n4) \"red\"\n127.0.0.1:6379> SDIFF tags:p1 tags:p2\n1) \"red\"\n127.0.0.1:6379> SINTERCARD 2 tags:p1 tags:p2\n(integer) 2\n127.0.0.1:6379> SINTERCARD 2 tags:p1 tags:p2 LIMIT 1\n(integer) 1\n127.0.0.1:6379> SINTERSTORE tags:common tags:p1 tags:p2\n(integer) 2\n127.0.0.1:6379> SCARD tags:common\n(integer) 2",
+          "title": "Intersection, union, difference"
+        },
+        {
+          "type": "markdown",
+          "text": "- `SINTER` returns members present in all the sets; `SUNION` in any; `SDIFF` returns members of the first set that are in none of the others (the order of the arguments matters).\n- Each has a `...STORE` form (`SINTERSTORE`, `SUNIONSTORE`, `SDIFFSTORE`) that saves the result into a destination key instead of returning it. Use these for large results and then page through them.\n- `SINTERCARD numkeys key [key ...] [LIMIT n]` (7.0) returns only the size of the intersection, and with `LIMIT` it stops counting early. It answers \"how many common tags\" without building the result.\n- `SMOVE source destination member` moves a member atomically.\n\nThe cost of an intersection is bounded by the smallest set times the number of sets, which is why intersections of a small set with large ones are cheap. A union or difference is proportional to the total number of elements. In a Redis Cluster all the keys of one of these commands must hash to the same slot.\n\n### Random members\n\n`SRANDMEMBER key [count]` returns random members without removing them. A negative count allows repeats. `SPOP` `key [count]` removes and returns random members. Together they cover lotteries, random sampling and \"pick any available worker\"."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD raffle:2026 u1 u2 u3 u4 u5\n(integer) 5\n127.0.0.1:6379> SCARD raffle:2026\n(integer) 5\n127.0.0.1:6379> SPOP raffle:2026\n\"u3\"\n127.0.0.1:6379> SCARD raffle:2026\n(integer) 4",
+          "title": "SRANDMEMBER and SPOP"
+        },
+        {
+          "type": "markdown",
+          "text": "The replies of `SPOP` and `SRANDMEMBER` are random, so your session will show different members.\n\n### Storage\n\nSets have three encodings. A set that contains only integers, and not more than `set-max-intset-entries` (default 512), is an **intset**: a sorted array of integers that uses 2, 4 or 8 bytes per number depending on the largest value. In Redis 7.2 and later, a small set of non-integer members (up to `set-max-listpack-entries`, default 128, each at most `set-max-listpack-value` bytes, default 64) is a **listpack**. Everything else is a **hashtable** with the members as keys. Conversion is automatic, and `OBJECT ENCODING` shows the current one."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD nums 1 2 3\n(integer) 3\n127.0.0.1:6379> OBJECT ENCODING nums\n\"intset\"\n127.0.0.1:6379> SADD nums apple\n(integer) 1\n127.0.0.1:6379> OBJECT ENCODING nums\n\"listpack\"",
+          "title": "Set encodings (Redis 7.2 and later)"
+        },
+        {
+          "type": "markdown",
+          "text": "Add enough members (or one member longer than 64 bytes) and the encoding becomes `hashtable`. Before Redis 7.2 the second answer would already be `hashtable`.\n\n### Patterns for ShopStream\n\n- **Product tags and filters:** keep `tag:cotton` as a set of product IDs, then `SINTER tag:cotton tag:sale` is the list of cotton products on sale. This inverted index is the basis of many small catalogues.\n- **Unique counting for small groups:** `SADD viewers:product:42 u1` and `SCARD`. When the group has millions of members and an estimate is fine, use HyperLogLog instead (its chapter follows in this Part).\n- **Recommendations:** \"customers who bought this also bought\" via `SINTER` of buyers of two products, or `SINTERCARD` to count the overlap.\n- **Online users and presence:** `SADD online:users u42` on connect, `SREM` on disconnect. Remember a crash leaves stale members, so pair it with a heartbeat sorted set when accuracy matters.\n- **Already seen:** `SADD seen:u42 article-9` returns 0 if the user has seen it before, giving a one-command \"is this new\" test.\n- **Allow and deny lists:** a set of IDs that may (or may not) use a feature."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Sets do not expire per member. A member lives until you `SREM` it or the whole key expires. If you need \"members that disappear after N minutes\" (online presence, recent activity), use a sorted set with the expiry time as the score and delete the old range with `ZREMRANGEBYSCORE`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A set holds unique, unordered strings with O(1) add, remove and membership test.\n- `SINTER`, `SUNION`, `SDIFF`, `SINTERCARD` and the `STORE` forms combine sets on the server; keep the keys in one slot on a cluster.\n- Use `SSCAN`, not `SMEMBERS`, on big sets; `SPOP` and `SRANDMEMBER` give random picks.\n- Encodings: intset for small integer sets, listpack for small mixed sets (7.2+), hashtable otherwise.\n- Great for tags, uniqueness, relationships and seen-lists; use a sorted set when you need order or per-member expiry."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-5",
+      "type": "concept",
+      "title": "Sorted sets",
+      "subtopicId": "3-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A sorted set (often written \"zset\" after the command prefix `Z`) is a set of unique members in which every member carries a numeric **score**, and Redis keeps the members ordered by score at all times. You can add a member, change its score, ask for its rank, and fetch the top ten or the range between two scores, each in O(log N) time. No other structure in Redis, and few in any database, gives you a live ranking this cheaply.\n\nThat makes sorted sets the answer to a long list of problems: leaderboards, \"most popular\", time-ordered feeds, delayed job queues, sliding-window rate limiters, priority queues, and any index where you need \"everything between A and B\".\n\n### Adding members: ZADD and its flags\n\n`ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]`. A new member is inserted; an existing member has its score updated. By default the reply is the number of **new** members, which is why updating a score returns `0`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`NX`",
+              "Only add new members; never update existing ones"
+            ],
+            [
+              "`XX`",
+              "Only update existing members; never add"
+            ],
+            [
+              "`GT`",
+              "Update an existing member only if the new score is greater (still adds new members)"
+            ],
+            [
+              "`LT`",
+              "Update an existing member only if the new score is less (still adds new members)"
+            ],
+            [
+              "`CH`",
+              "Reply with the number of members changed (added plus updated) instead of added"
+            ],
+            [
+              "`INCR`",
+              "Add the score to the existing one, like ZINCRBY; one pair only, reply is the new score"
+            ]
+          ],
+          "caption": "ZADD flags."
+        },
+        {
+          "type": "markdown",
+          "text": "`NX` and `XX` exclude each other, and `GT`, `LT` and `NX` cannot be combined with each other. `GT` is the right flag for \"keep the best score\": a player submits many results and only a higher one counts."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:bestsellers 100 asha 250 ravi 175 mei\n(integer) 3\n127.0.0.1:6379> ZADD lb:bestsellers 90 asha\n(integer) 0\n127.0.0.1:6379> ZADD lb:bestsellers GT CH 120 asha\n(integer) 1\n127.0.0.1:6379> ZADD lb:bestsellers GT CH 80 asha\n(integer) 0\n127.0.0.1:6379> ZADD lb:bestsellers NX 500 asha\n(integer) 0\n127.0.0.1:6379> ZADD lb:bestsellers INCR 25 mei\n\"200\"\n127.0.0.1:6379> ZSCORE lb:bestsellers mei\n\"200\"\n127.0.0.1:6379> ZMSCORE lb:bestsellers mei nobody\n1) \"200\"\n2) (nil)\n127.0.0.1:6379> ZCARD lb:bestsellers\n(integer) 3",
+          "title": "Scores, flags and the best-score rule"
+        },
+        {
+          "type": "markdown",
+          "text": "Read the sequence carefully. `ZADD ... 90 asha` changed the score from 100 to 90 and still replied `0`, because no new member was created. The two `GT CH` calls show the flag at work: 120 is greater than 90 so it changed (`1`), 80 is not so nothing changed (`0`). Scores are 64-bit floating point numbers. Integers are exact up to 2^53; beyond that, or with fractions, rounding applies. `+inf` and `-inf` are valid scores.\n\n### Reading ranges: ZRANGE\n\nSince Redis 6.2 one command, `ZRANGE`, does all range queries; the older `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGEBYLEX` are deprecated spellings of it."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "ZRANGE key start stop [BYSCORE | BYLEX] [REV] [LIMIT offset count] [WITHSCORES]"
+        },
+        {
+          "type": "markdown",
+          "text": "- Plain `ZRANGE key 0 9` selects by **rank** (position): index 0 is the lowest score. Negative indexes count from the end.\n- `REV` reverses the order, so `ZRANGE key 0 9 REV` is the top ten. This is the leaderboard query.\n- `BYSCORE` interprets start and stop as scores. A leading `(` makes a bound exclusive, and `-inf`/`+inf` mean unbounded. With `REV` the arguments swap: you give the high bound first.\n- `BYLEX` selects by member name when all scores are equal, using `[` for inclusive and `(` for exclusive bounds, and `-`/`+` for the extremes. This gives you prefix search and autocomplete over a lexicographic index.\n- `LIMIT offset count` pages the result, and is only allowed with `BYSCORE` or `BYLEX`.\n- `WITHSCORES` adds each member's score to the reply."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:bestsellers 120 asha 300 ravi 200 mei\n(integer) 3\n127.0.0.1:6379> ZRANGE lb:bestsellers 0 -1\n1) \"asha\"\n2) \"mei\"\n3) \"ravi\"\n127.0.0.1:6379> ZRANGE lb:bestsellers 0 -1 WITHSCORES\n1) \"asha\"\n2) \"120\"\n3) \"mei\"\n4) \"200\"\n5) \"ravi\"\n6) \"300\"\n127.0.0.1:6379> ZRANGE lb:bestsellers 0 1 REV WITHSCORES\n1) \"ravi\"\n2) \"300\"\n3) \"mei\"\n4) \"200\"\n127.0.0.1:6379> ZRANGE lb:bestsellers 150 +inf BYSCORE\n1) \"mei\"\n2) \"ravi\"\n127.0.0.1:6379> ZRANGE lb:bestsellers (150 +inf BYSCORE LIMIT 0 1\n1) \"mei\"\n127.0.0.1:6379> ZRANGE lb:bestsellers +inf -inf BYSCORE REV LIMIT 0 2 WITHSCORES\n1) \"ravi\"\n2) \"300\"\n3) \"mei\"\n4) \"200\"\n127.0.0.1:6379> ZCOUNT lb:bestsellers 100 250\n(integer) 2\n127.0.0.1:6379> ZADD names 0 alice 0 bob 0 carol 0 dave\n(integer) 4\n127.0.0.1:6379> ZRANGE names [b (d BYLEX\n1) \"bob\"\n2) \"carol\"",
+          "title": "Rank, score and lexicographic ranges"
+        },
+        {
+          "type": "markdown",
+          "text": "### Rank, increments and popping\n\n`ZRANK key member` is the 0-based position from the lowest score and `ZREVRANK` from the highest; both are O(log N). Since 7.2 either accepts `WITHSCORE` to also return the score in one call. A missing member gives `(nil)`. `ZINCRBY key` `amount member` is the atomic counter of sorted sets: it creates the member if needed and returns the new score.\n\n`ZPOPMIN` and `ZPOPMAX` remove and return the lowest or highest members (with an optional count), and their blocking forms `BZPOPMIN` and `BZPOPMAX` wait for data, which makes a sorted set a priority queue. `ZMPOP` and `BZMPOP` (7.0) do the same across several keys. `ZREM` removes by member, and `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK` remove whole ranges."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:bestsellers 120 asha 300 ravi 200 mei\n(integer) 3\n127.0.0.1:6379> ZRANK lb:bestsellers mei\n(integer) 1\n127.0.0.1:6379> ZREVRANK lb:bestsellers mei\n(integer) 1\n127.0.0.1:6379> ZINCRBY lb:bestsellers 10 asha\n\"130\"\n127.0.0.1:6379> ZPOPMIN lb:bestsellers\n1) \"asha\"\n2) \"130\"\n127.0.0.1:6379> ZPOPMAX lb:bestsellers\n1) \"ravi\"\n2) \"300\"\n127.0.0.1:6379> ZRANK lb:bestsellers nobody\n(nil)",
+          "title": "Rank, increment, pop"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZRANK lb:bestsellers mei WITHSCORE\n1) (integer) 0\n2) \"200\"",
+          "title": "ZRANK with WITHSCORE (Redis 7.2 or later)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Ties and ordering\n\nWhen two members have the same score, Redis orders them lexicographically by member (byte comparison). That is deterministic, which is what you want. It is also why the `BYLEX` index works: give every member score 0 and the order is purely alphabetical.\n\nFor a leaderboard where ties should be broken by who reached the score first, encode the time into the score itself. One way: keep the real score as a whole number and add a small fraction that shrinks as time passes, for example `score + (1 - timestampMillis / 10^14)`. An earlier timestamp gives a larger fraction, so the earlier player ranks higher among equals. Check that the combined number stays exactly representable as a double (about 15 to 16 significant digits) before adopting any such scheme, or keep the tie-break data in a separate hash.\n\n### Set algebra on sorted sets\n\nSorted sets can be combined like sets, with a rule for merging the scores of members that appear in several inputs.\n\n- `ZUNIONSTORE dest numkeys key [key ...] [WEIGHTS w ...] [AGGREGATE SUM|MIN|MAX]` and `ZINTERSTORE` write the result into `dest`.\n- `ZUNION`, `ZINTER`, `ZDIFF` (6.2) return the result directly, and `ZINTERCARD` (7.0) returns only the size of the intersection.\n- `ZRANGESTORE dest src min max [BYSCORE|BYLEX] [REV] [LIMIT ...]` (6.2) saves a slice of a sorted set into another key."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:day:mon 10 asha 20 ravi\n(integer) 2\n127.0.0.1:6379> ZADD lb:day:tue 15 asha 5 mei\n(integer) 2\n127.0.0.1:6379> ZUNIONSTORE lb:week 2 lb:day:mon lb:day:tue\n(integer) 3\n127.0.0.1:6379> ZRANGE lb:week 0 -1 WITHSCORES\n1) \"mei\"\n2) \"5\"\n3) \"ravi\"\n4) \"20\"\n5) \"asha\"\n6) \"25\"\n127.0.0.1:6379> ZINTERSTORE lb:both 2 lb:day:mon lb:day:tue WEIGHTS 1 2 AGGREGATE MAX\n(integer) 1\n127.0.0.1:6379> ZRANGE lb:both 0 -1 WITHSCORES\n1) \"asha\"\n2) \"30\"\n127.0.0.1:6379> ZRANGESTORE lb:top1 lb:week 0 0 REV\n(integer) 1\n127.0.0.1:6379> ZRANGE lb:top1 0 -1\n1) \"asha\"",
+          "title": "Merging daily leaderboards into a weekly one"
+        },
+        {
+          "type": "markdown",
+          "text": "The default aggregate is `SUM`, so `asha` has 25 in the weekly set. In the intersection `WEIGHTS 1 2` multiplies the second set's scores by 2 and `MAX` keeps the larger value. These commands cost roughly the sum of the input sizes times log, so they are for periodic jobs, not for every request.\n\n### Pattern: a leaderboard"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 123.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M22.0 106.5 L52.0 106.5 L52.0 93.5 L22.0 93.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 78.5 L52.0 78.5 L52.0 65.5 L22.0 65.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 78.5 L112.0 78.5 L112.0 65.5 L52.0 65.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 78.5 L152.0 78.5 L152.0 65.5 L112.0 65.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 92.5 L52.0 92.5 L52.0 79.5 L22.0 79.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 92.5 L112.0 92.5 L112.0 79.5 L52.0 79.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 92.5 L152.0 92.5 L152.0 79.5 L112.0 79.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 106.5 L112.0 106.5 L112.0 93.5 L52.0 93.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 106.5 L152.0 106.5 L152.0 93.5 L112.0 93.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 75.5 L222.0 70.5\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M225.0 82.5 L439.0 82.5 C440.7 82.5 442.0 81.1 442.0 79.5 L442.0 55.5 C442.0 53.8 440.7 52.5 439.0 52.5 L225.0 52.5 C223.3 52.5 222.0 53.8 222.0 55.5 L222.0 79.5 C222.0 81.1 223.3 82.5 225.0 82.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 64.5 L52.0 64.5 L52.0 51.5 L22.0 51.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 64.5 L112.0 64.5 L112.0 51.5 L52.0 51.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 64.5 L152.0 64.5 L152.0 51.5 L112.0 51.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 50.5 L222.0 30.5\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 42.5 L74.6 37.1 L69.4 37.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M225.0 42.5 L439.0 42.5 C440.7 42.5 442.0 41.1 442.0 39.5 L442.0 15.5 C442.0 13.8 440.7 12.5 439.0 12.5 L225.0 12.5 C223.3 12.5 222.0 13.8 222.0 15.5 L222.0 39.5 C222.0 41.1 223.3 42.5 225.0 42.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 30.5 L216.1 29.4 L217.5 34.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 70.5 L216.4 68.3 L216.8 73.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 30.5 L139.0 30.5 C140.7 30.5 142.0 29.1 142.0 27.5 L142.0 15.5 C142.0 13.8 140.7 12.5 139.0 12.5 L5.0 12.5 C3.3 12.5 2.0 13.8 2.0 15.5 L2.0 27.5 C2.0 29.1 3.3 30.5 5.0 30.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"27.2\" y=\"6.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"89.6\" lengthAdjust=\"spacingAndGlyphs\">ZADD lb:daily 1520 asha</text><text x=\"50.3\" y=\"24.0\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"43.4\" lengthAdjust=\"spacingAndGlyphs\">game events</text><text x=\"271.7\" y=\"25.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"120.6\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANGE lb:daily 0 2 WITHSCORES</text><text x=\"299.2\" y=\"34.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"65.5\" lengthAdjust=\"spacingAndGlyphs\">top 3 in O(log N + 3)</text><text x=\"42.4\" y=\"50.5\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"89.2\" lengthAdjust=\"spacingAndGlyphs\">sorted set, ordered by score</text><text x=\"34.9\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"73.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">ravi</text><text x=\"123.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1830</text><text x=\"293.8\" y=\"65.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"76.4\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANK lb:daily asha</text><text x=\"34.9\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"73.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">asha</text><text x=\"123.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1520</text><text x=\"297.7\" y=\"74.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"68.5\" lengthAdjust=\"spacingAndGlyphs\">position of one player</text><text x=\"34.9\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"71.5\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"21.1\" lengthAdjust=\"spacingAndGlyphs\">meera</text><text x=\"123.6\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1490</text><text x=\"34.9\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"75.7\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"12.6\" lengthAdjust=\"spacingAndGlyphs\">joe</text><text x=\"123.6\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1100</text></svg>",
+          "width": 444,
+          "caption": "The sorted set keeps members ordered by score; rank and range queries touch only the part you ask for.",
+          "alt": "ZADD lb:daily 1520 asha | game events ZREVRANGE lb:daily 0 2 WITHSCORES | top 3 in O(log N + 3) | sorted set, ordered by score | 1 ravi 1830 | ZREVRANK lb:daily asha | 2 asha 1520 position of one player | 3 meera 1490 | 4 joe 1100"
+        },
+        {
+          "type": "markdown",
+          "text": "A game or a \"bestsellers today\" page needs three operations: record a result, show the top N, and show where one entry stands. They map to one command each."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# a purchase of sku-42 happened: add one to its sales count\nZINCRBY lb:bestsellers:daily 1 sku-42\n# top 10 products with their counts\nZRANGE lb:bestsellers:daily 0 9 REV WITHSCORES\n# position of one product (0 = best)\nZREVRANK lb:bestsellers:daily sku-42\n# a window \"around me\": 2 above and 2 below rank 14\nZRANGE lb:bestsellers:daily 12 16 REV WITHSCORES\n# end of day: keep a copy, start fresh\nRENAME lb:bestsellers:daily lb:bestsellers:2026-10-09"
+        },
+        {
+          "type": "markdown",
+          "text": "All of these are O(log N) plus the size of the result. Hundreds of thousands of members are not a problem; tens of millions in one key are, because one key lives on one node and a huge `ZUNIONSTORE` will stall it. The later chapter on leaderboards in the Patterns Part covers sharding and pagination for that scale.\n\n### Pattern: a time-ordered index\n\nUse a Unix timestamp as the score and an ID as the member, and you have an index of \"things by time\" that supports range queries, which a list cannot do. `ZADD events:u42 1760000000 evt-9` adds, `ZRANGE events:u42 (1759990000` `+inf BYSCORE LIMIT 0 50` reads everything newer than a moment, and `ZREMRANGEBYSCORE events:u42 -inf` `1759000000` trims the old entries. The payloads live elsewhere, in hashes or strings keyed by the member ID; the sorted set is the ordered index.\n\n### Pattern: a sliding-window rate limiter\n\nKeep one sorted set per client. Each request is a member (made unique with a request ID) whose score is the timestamp in milliseconds. To check the limit, delete members older than the window, count what is left, and add the new request if there is room. Doing all this in one transaction or script keeps it atomic."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# limit: 100 requests per 60 seconds, now = 1760000100000 ms\nZREMRANGEBYSCORE rl:1.2.3.4:/login 0 1760000040000\nZCARD rl:1.2.3.4:/login\n# if the count is below 100:\nZADD rl:1.2.3.4:/login 1760000100000 req-7f3a\nPEXPIRE rl:1.2.3.4:/login 60000"
+        },
+        {
+          "type": "markdown",
+          "text": "This \"sliding window log\" is exact but stores one member per request, so memory grows with the limit. The rate-limiting chapter in the Patterns Part compares it with cheaper counters and token buckets and gives the Lua version that makes the steps atomic.\n\n### Pattern: a delay queue\n\nA job that must run at a future time goes into a sorted set with its due time as the score. Workers poll for jobs whose score is at or below the current time."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# schedule: send reminder in 10 minutes (due = now + 600000 ms)\nZADD delayed:jobs 1760000700000 job:remind:1001\n# worker: fetch one due job\nZRANGE delayed:jobs -inf 1760000100000 BYSCORE LIMIT 0 1\n# claim it; only the worker whose ZREM returns 1 owns the job\nZREM delayed:jobs job:remind:1001"
+        },
+        {
+          "type": "markdown",
+          "text": "The claim step matters: two workers may read the same member, but `ZREM` returns `1` for exactly one of them. The chapter on delayed and scheduled tasks turns this into a robust loop with a Lua script and a retry path.\n\n### How sorted sets are stored\n\nA small sorted set (up to `zset-max-listpack-entries`, default 128, with members no longer than `zset-max-listpack-value`, default 64 bytes) is a **listpack** of member and score pairs kept in order. Larger ones use a **skiplist** together with a **hashtable**. The skiplist is a layered linked list that gives O(log N) insertion, deletion and range access with simpler code than a balanced tree; the hashtable maps member to score so `ZSCORE` is O(1). Each member is stored once and referenced from both structures. The cost is a pointer-rich entry per member on top of the member itself, so a large sorted set is one of the heavier structures (measure with `MEMORY USAGE`); Redis 8.6 brought a memory reduction for skiplist-encoded sorted sets."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A sorted set key grows forever unless you trim it. The time-ordered index, the log-style rate limiter and the leaderboard history all need an explicit `ZREMRANGEBYSCORE` or `ZREMRANGEBYRANK`, or a TTL on the whole key, as part of the same code path that adds members. Otherwise the key becomes a slow memory leak and, eventually, a very big key."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you build a real-time leaderboard for ten million players, and what are the limits? One sorted set with the player ID as the member and the score as the score. `ZINCRBY` or `ZADD GT` to record, `ZRANGE key 0 99 REV WITHSCORES` for the top 100, `ZREVRANK` for a player's position, and a window with `ZRANGE ... REV` around that rank. Every operation is O(log N). At ten million members the set holds a few GB and sits on one node, so a hot key concentrates load; split by region or season, or keep the top N only. Mention tie-breaking and that rank queries stay cheap while bulk `ZUNIONSTORE` does not."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A sorted set is unique members ordered by a floating-point score; ties break lexicographically by member.\n- Updating a score replies `0` for `ZADD` unless you use `CH`; use `GT` for \"best score wins\" and `ZINCRBY` for counters.\n- `ZRANGE` with `REV`, `BYSCORE`, `BYLEX` and `LIMIT` is the single read command; `ZRANK`, `ZREVRANK`, `ZPOPMIN` are O(log N).\n- Typical uses: leaderboards, time-ordered indexes, sliding-window limiters, delay queues, priority queues.\n- Storage is a listpack when small, otherwise a skiplist plus a hashtable; trim every sorted set that can grow."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-6",
+      "type": "concept",
+      "title": "Choosing the right structure",
+      "subtopicId": "3-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The most useful skill when designing with Redis is picking the structure whose operations match your questions. Start from what you need to do, not from the data. Ask: do I read the whole value or part of it? Do I need order, uniqueness, ranges, counting, expiry per item? How big can it grow, and who writes concurrently?\n\n### From need to structure"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "I need to ...",
+            "Use",
+            "Key commands",
+            "Typical cost"
+          ],
+          "rows": [
+            [
+              "Cache a value or a serialized object under a key",
+              "`String`",
+              "SET EX, GET",
+              "O(1)"
+            ],
+            [
+              "Count atomically (views, stock, IDs)",
+              "`String`",
+              "INCR, DECR, INCRBY",
+              "O(1)"
+            ],
+            [
+              "Lock or \"do this once\" marker",
+              "`String`",
+              "SET NX PX, DELEX",
+              "O(1)"
+            ],
+            [
+              "Store a record and update single fields",
+              "`Hash`",
+              "HSET, HGET, HINCRBY",
+              "O(1) per field"
+            ],
+            [
+              "Give fields their own lifetime",
+              "`Hash (7.4+)`",
+              "HEXPIRE, HGETEX",
+              "O(N) fields given"
+            ],
+            [
+              "Queue jobs, newest-N list, stack",
+              "`List`",
+              "LPUSH, BLMOVE, LTRIM",
+              "O(1) at ends"
+            ],
+            [
+              "Test membership, keep uniques, tag/relate",
+              "`Set`",
+              "SADD, SISMEMBER, SINTER",
+              "O(1) per member"
+            ],
+            [
+              "Rank by score, top-N, range by score or time",
+              "`Sorted set`",
+              "ZADD, ZRANGE, ZRANK",
+              "O(log N)"
+            ],
+            [
+              "Delay queue, sliding window, priority queue",
+              "`Sorted set`",
+              "ZADD, ZRANGE BYSCORE, ZPOPMIN",
+              "O(log N)"
+            ],
+            [
+              "Durable log with consumer groups",
+              "`Stream`",
+              "XADD, XREADGROUP, XACK",
+              "O(1) append"
+            ],
+            [
+              "Count unique items approximately, in tiny memory",
+              "`HyperLogLog`",
+              "PFADD, PFCOUNT",
+              "O(1)"
+            ],
+            [
+              "Yes/no flag per integer ID, huge ranges",
+              "`Bitmap`",
+              "SETBIT, BITCOUNT",
+              "O(1) / O(N)"
+            ],
+            [
+              "Nearby places",
+              "`Geo (sorted` `set)`",
+              "GEOADD, GEOSEARCH",
+              "O(log N + M)"
+            ],
+            [
+              "Nested documents with partial updates, indexing",
+              "`JSON, Query` `Engine`",
+              "JSON.SET, FT.SEARCH",
+              "varies"
+            ]
+          ],
+          "caption": "Decision table: need to structure to key commands to cost."
+        },
+        {
+          "type": "markdown",
+          "text": "Streams, HyperLogLog, bitmaps, geo, JSON and the search structures are covered in the next chapters of this Part.\n\n### Worked examples\n\n#### Shopping cart\n\nPer-user carts with line quantities: a hash `cart:u42` with the SKU as field and the quantity as value. `HINCRBY cart:u42` `sku-1 1` adds one, `HDEL` removes a line, `HGETALL` renders it (carts are small). Set a key TTL (`EXPIRE cart:u42 604800`) so abandoned carts disappear. A list would make \"change the quantity of sku-1\" an O(N) search; a JSON string would force a read-modify-write.\n\n#### Online users\n\nA set `online` is simplest, but a crash leaves ghosts. A sorted set `online:zset` with the last-seen timestamp as the score fixes that: `ZADD online:zset <now> u42` on every heartbeat, `ZREMRANGEBYSCORE online:zset -inf <now - 60000>` to evict the silent, `ZCARD` to count.\n\n#### \"Customers also viewed\"\n\nFor each product keep a sorted set `also:product:42` where the member is another product and the score the number of co-views: `ZINCRBY`. The top five is `ZRANGE also:product:42 0 4 REV`. A set would only say that two products were viewed together, not how often.\n\n#### Unique visitors\n\nA set gives exact counts and costs memory in proportion to the number of visitors. When millions of visitors per day only need an approximate number, a HyperLogLog is about 12 KB regardless of size. Decide whether you need the members back (set) or only the count (HyperLogLog).\n\n### Mistakes to avoid\n\n- Using a **list** as a database table and searching it with `LPOS`. Use a hash or sorted set.\n- Packing a whole object into one **string** and then updating one field from many clients.\n- Using a **set** where you need order or expiry per member; use a sorted set.\n- Using a **sorted set** where a list is enough (a plain FIFO queue): you pay O(log N) and extra memory for ordering you do not need.\n- One enormous key (a hash with ten million fields, a list that never drains). Split by a natural boundary.\n- Forgetting that every key and structure needs a lifetime plan: a TTL, a trim, or a scheduled cleanup."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Choose by the question you must answer: lookup by key, order, uniqueness, range, counting, or hand-off.\n- Strings for values and counters, hashes for records, lists for queues at the ends, sets for membership, sorted sets for anything ranked or time-ordered.\n- Prefer many medium keys over a few giant ones; give each key a TTL or a trim rule.\n- If two structures can do the job, pick the one with the cheaper operations for your hottest query."
+        }
+      ]
+    }
+  ]
+}

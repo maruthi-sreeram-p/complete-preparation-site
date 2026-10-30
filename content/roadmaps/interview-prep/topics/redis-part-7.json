@@ -1,0 +1,108 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "236-240",
+    "planDays": "27"
+  },
+  "sections": [
+    {
+      "id": "ch-7-4",
+      "type": "concept",
+      "title": "Spring Cache with Redis",
+      "subtopicId": "7-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Almost every Spring application eventually asks the same question: \"I already computed this, why am I computing it again?\" The Spring Cache abstraction answers it with annotations. You mark a method with `@Cacheable`, Spring wraps the bean in a proxy, and the proxy checks a cache before calling the method. Redis is one of the stores that can sit behind that cache. This chapter shows how the pieces fit, how to configure them for a production service such as ShopStream's catalog-service, and which mistakes cost the most time.\n\nThe caching patterns themselves (cache-aside, stampede protection, consistency with the database) are covered in the Patterns part. Here we focus on the Spring machinery: what is stored under which key, how long it lives, how it is serialized, and what the annotations do and do not guarantee.\n\n### The abstraction in one picture\n\nSpring Cache has two layers. The **annotations** (`@Cacheable`, `@CachePut`, `@CacheEvict`) describe intent on your methods. The **CacheManager** is a registry that hands out named `Cache` objects. When Redis is the backing store, the manager is a `RedisCacheManager` and each named cache is a `RedisCache` whose entries are plain Redis string keys."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "caller ─► proxy ─► CacheInterceptor ─► RedisCache ─► RedisCacheWriter ─► Lettuce ─► Redis\n               │                                   │\n               └── miss: call the real method ◄────┘   key = prefix + cacheName + \"::\" + key"
+        },
+        {
+          "type": "markdown",
+          "text": "Because the mechanism is a proxy, the annotation only works when the call comes from another bean through the Spring-managed reference. We will return to that limitation in the pitfalls section.\n\n### Minimal setup\n\nAdd `spring-boot-starter-cache` next to `spring-boot-starter-data-redis`, enable caching, and tell Boot to use Redis. With these three steps Boot builds a `RedisCacheManager` for you."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<dependencies>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-cache</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-data-redis</artifactId>\n  </dependency>\n</dependencies>",
+          "title": "pom.xml (dependencies only)"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  cache:\n    type: redis\n    redis:\n      time-to-live: 10m\n      cache-null-values: false\n      key-prefix: \"shopstream:\"\n      use-key-prefix: true\n      enable-statistics: true\n  data:\n    redis:\n      host: localhost\n      port: 6379",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "The `spring.cache.redis.*` properties set defaults for every cache that Boot creates: `time-to-live` is the entry TTL, `cache-null-values` decides whether a `null` result is stored, `key-prefix` and `use-key-prefix` control the prefix, and `enable-statistics` switches on hit and miss counting (used by the metrics section later). These properties are enough for a first version. When you need a different TTL per cache, a different serializer, or jitter, you define the `RedisCacheManager` yourself, which we do below."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.cache.annotation.EnableCaching;\nimport org.springframework.context.annotation.Configuration;\n\n@Configuration\n@EnableCaching\npublic class CatalogCacheConfig {\n}",
+          "title": "CatalogCacheConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### The three annotations\n\nHere is a catalog service that uses all three. The record `ProductDto` is the cached value."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.math.BigDecimal;\nimport org.springframework.cache.annotation.CacheEvict;\nimport org.springframework.cache.annotation.CachePut;\nimport org.springframework.cache.annotation.Cacheable;\nimport org.springframework.stereotype.Service;\n\nrecord ProductDto(long id, String name, BigDecimal price) {}\n\n@Service\npublic class ProductService {\n\n    private final ProductRepository repository;\n\n    public ProductService(ProductRepository repository) {\n        this.repository = repository;\n    }\n\n    @Cacheable(cacheNames = \"products\", key = \"#id\", unless = \"#result == null\")\n    public ProductDto findById(long id) {\n        return repository.load(id);\n    }\n\n    @CachePut(cacheNames = \"products\", key = \"#result.id()\")\n    public ProductDto update(ProductDto changed) {\n        return repository.save(changed);\n    }\n\n    @CacheEvict(cacheNames = \"products\", key = \"#id\")\n    public void delete(long id) {\n        repository.delete(id);\n    }\n\n    @CacheEvict(cacheNames = \"products\", allEntries = true)\n    public void clearAll() {\n    }\n}\n\ninterface ProductRepository {\n    ProductDto load(long id);\n    ProductDto save(ProductDto dto);\n    void delete(long id);\n}",
+          "title": "ProductService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `@Cacheable` looks first. On a hit it returns the cached value and the method body never runs. On a miss it runs the body and stores the result. The Redis key is `products::42` (cache name, two colons, the key).\n- `@CachePut` always runs the method and always writes the result. Use it when the method already has the fresh value and you want the cache to hold it.\n- `@CacheEvict` removes one entry, or every entry of the cache with `allEntries = true`. Eviction is usually safer than put after a write, because a stale put can overwrite a newer value in a race; the Patterns part discusses this trade-off.\n- `unless` is evaluated after the method ran and can see `#result`. `condition` is evaluated before and decides whether caching applies at all.\n\n### Keys and key generation\n\nIf you give no `key`, Spring uses its default key generator: no arguments gives a fixed internal key, one argument uses that argument, several arguments are combined into a `SimpleKey`. Redis then needs a string, so `RedisCache` converts the key with a conversion service. Simple types such as `Long` and `String` convert naturally. A custom object converts only if it has a useful `toString()`, otherwise you get an exception complaining that the key cannot be converted to a string.\n\nThe robust habit is to write the key explicitly with SpEL (`key = \"#id\"`, `key = \"#userId + ':' + #locale\"`). It also documents the Redis key you will see in `redis-cli`.\n\nThe default prefix is the cache name followed by `::`. You can change it in the configuration with `prefixCacheNameWith(\"shopstream:\")` (a fixed prefix in front of the name) or `computePrefixWith(cacheName -> ...)` (a function). Prefixing matters when several services share one Redis: without a prefix, two services that both define a cache named `products` overwrite each other's entries.\n\n### Your own RedisCacheManager: TTLs, serializers, jitter\n\nThe following configuration gives the `products` cache a 30 minute TTL with jitter, a short-lived `stock-view` cache of one minute, and JSON values instead of Java serialization."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.Map;\nimport java.util.concurrent.ThreadLocalRandom;\nimport org.springframework.cache.annotation.EnableCaching;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.data.redis.cache.BatchStrategies;\nimport org.springframework.data.redis.cache.RedisCacheConfiguration;\nimport org.springframework.data.redis.cache.RedisCacheManager;\nimport org.springframework.data.redis.cache.RedisCacheWriter;\nimport org.springframework.data.redis.connection.RedisConnectionFactory;\nimport org.springframework.data.redis.serializer.JacksonJsonRedisSerializer;\nimport org.springframework.data.redis.serializer.RedisSerializationContext.SerializationPair;\nimport org.springframework.data.redis.serializer.StringRedisSerializer;\n\n@Configuration\n@EnableCaching\npublic class RedisCacheConfig {\n\n    @Bean\n    RedisCacheManager cacheManager(RedisConnectionFactory factory) {\n        RedisCacheWriter writer =\n            RedisCacheWriter.nonLockingRedisCacheWriter(factory, BatchStrategies.scan(1000));\n\n        RedisCacheConfiguration defaults = RedisCacheConfiguration.defaultCacheConfig()\n            .entryTtl(Duration.ofMinutes(10))\n            .disableCachingNullValues()\n            .prefixCacheNameWith(\"shopstream:\")\n            .serializeKeysWith(SerializationPair.fromSerializer(StringRedisSerializer.UTF_8));\n\n        RedisCacheConfiguration products = defaults\n            .entryTtl((key, value) -> Duration.ofMinutes(30)\n                .plusSeconds(ThreadLocalRandom.current().nextLong(0, 300)))\n            .serializeValuesWith(SerializationPair.fromSerializer(\n                new JacksonJsonRedisSerializer<>(ProductDto.class)));\n\n        RedisCacheConfiguration stockView = defaults\n            .entryTtl(Duration.ofMinutes(1));\n\n        return RedisCacheManager.builder(writer)\n            .cacheDefaults(defaults)\n            .withInitialCacheConfigurations(Map.of(\n                \"products\", products,\n                \"stock-view\", stockView))\n            .enableStatistics()\n            .build();\n    }\n}",
+          "title": "RedisCacheConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `entryTtl(Duration)` sets a fixed TTL. The overload that accepts a function (a `RedisCacheWriter.TtlFunction`) is called per entry with the key and value, and that is how the jitter is produced: every entry gets 30 minutes plus a random 0 to 299 seconds, so a batch of products cached together does not all expire in the same second (the avalanche problem described in the Patterns part).\n- `disableCachingNullValues()` means a `null` result is not cached. If a `@Cacheable` method returns `null` and you did not add `unless = \"#result == null\"`, the put fails with an `IllegalArgumentException` that names the cache. Either choice is valid, but you must pick one on purpose.\n- `BatchStrategies.scan(1000)` makes `allEntries = true` use `SCAN` instead of `KEYS`. The default batch strategy uses `KEYS`, which blocks a large keyspace; this is the one-line fix. With Jedis, `SCAN` is only supported for non-clustered setups.\n- `serializeValuesWith` replaces the default value serializer. Out of the box `RedisCache` uses Java native serialization (`JdkSerializationRedisSerializer`), which needs `Serializable` classes, is opaque in `redis-cli`, and breaks when the class changes. JSON is readable and survives refactoring better.\n- `enableStatistics()` on the builder turns on local hit and miss counters. It is the same switch as the `spring.cache.redis.enable-statistics` property."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "One serializer per cache, not one for all types. `JacksonJsonRedisSerializer<ProductDto>` knows exactly one target type. If you put it on the defaults, a cache holding a `List<String>` fails on read. Give typed serializers to individual caches as above, or use `GenericJacksonJsonRedisSerializer` for mixed content; remember that it does not write type information unless you enable default typing in its builder, and that default typing has security implications for untrusted data. The template chapter earlier in this Part explains the serializers in detail."
+        },
+        {
+          "type": "markdown",
+          "text": "### sync = true, locking and the stampede\n\nWhen a popular entry expires, many threads may miss at once and all call the database. `@Cacheable(sync = true)` tells Spring that only one thread per key may compute the value while others wait for it. The important detail is the scope: this is a lock **inside one JVM**. If catalog-service runs on ten instances, each instance may still compute the value once, so up to ten database calls can happen for one expiry. That is usually acceptable, and far better than hundreds. For cross-instance protection you need a Redis-based lock or single-flight, covered in the Patterns part.\n\nTwo further points. With `sync = true` you can use only one cache name, and the `unless` attribute is not supported together with it, so a `null` result must be handled another way. Separately, `RedisCacheWriter.lockingRedisCacheWriter(...)` is a different thing: it locks at the **cache** level (not the entry) with a lock key in Redis to make `putIfAbsent` and `clean` non-overlapping. It costs extra round trips and the reference documentation describes it as an opt-in; most applications leave the default lock-free writer in place.\n\n### Pitfalls that bite in practice\n\n#### Self-invocation\n\nCalling a cached method from another method of the same class bypasses the proxy, so the annotation does nothing."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.cache.annotation.Cacheable;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class PriceService {\n\n    public String describe(long id) {\n        // BUG: this is a plain Java call, the proxy is never involved\n        return \"Price: \" + priceOf(id);\n    }\n\n    @Cacheable(cacheNames = \"prices\", key = \"#id\")\n    public String priceOf(long id) {\n        return \"9.99\";\n    }\n}",
+          "title": "SelfInvocation.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The fix is to move the cached method into another bean and inject it, which is also the cleaner design.\n\n#### Large and dynamic keys\n\nA key such as `#filters` where `filters` is a big object produces a long string key per call, and almost every call is a miss. Keep keys short and deterministic, hash large inputs yourself, and avoid caching results of queries whose parameters are nearly unique (free text search).\n\n#### Caching mutable or huge objects\n\nA cache entry is serialized on put and deserialized on get, so mutating the returned object does not change the cache (unlike an in-memory map). The flip side: caching a 5 MB list of products makes each hit move 5 MB across the network. Cache the pieces you actually reuse and keep values small.\n\n#### Transactions\n\nBy default a `@CachePut` writes to Redis immediately, even if the surrounding database transaction later rolls back. `RedisCacheManager.builder(...).transactionAware()` makes cache puts and evictions wait until the transaction commits. Even then, cache and database can disagree for a short time; see the consistency chapter in the Patterns part.\n\n#### Failures of Redis\n\nWhen Redis is down, a cached method throws, and the user sees an error although the database is healthy. Implement `CachingConfigurer` (or define a `CacheErrorHandler`) that logs and returns, so that a Redis outage degrades to \"slower\" rather than \"broken\". Test this path on purpose.\n\n#### Reactive methods\n\nSpring's cache abstraction can cache methods that return `Mono` or `Flux`; it needs a cache that supports asynchronous retrieval, which `RedisCache` does. We come back to this in the reactive chapter."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why did my @Cacheable method not cache anything? Most likely one of four causes: caching is not enabled (`@EnableCaching` is missing); the method is called from inside the same class so the proxy is bypassed; the method is not public or the class is final in a way that prevents proxying; or the result is `null` and null caching is disabled. A fifth cause is a key that is different on every call. Check with `redis-cli --scan --pattern 'shopstream:*'` to see what really gets stored."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `@Cacheable`, `@CachePut` and `@CacheEvict` work through a proxy; calls from inside the same class are not cached.\n- Redis keys look like `cacheName::key`; set the key explicitly with SpEL and use a prefix when services share a Redis.\n- Define `RedisCacheManager` yourself for per-cache TTLs, jitter (a TTL function), JSON serializers and a `SCAN` batch strategy for `allEntries`.\n- The default value serializer is Java serialization; prefer typed JSON serializers per cache.\n- `sync = true` is a per-JVM lock, not a distributed one.\n- Add a `CacheErrorHandler` so that a Redis outage does not turn into application errors."
+        }
+      ]
+    }
+  ]
+}

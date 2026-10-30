@@ -1,0 +1,306 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "7-15",
+    "planDays": "41"
+  },
+  "sections": [
+    {
+      "id": "ch-1-2",
+      "type": "concept",
+      "title": "What Kafka Is (and What It Is Not)",
+      "subtopicId": "1-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Apache Kafka is an open-source, distributed **event streaming platform**. That phrase is dense, so this chapter unpacks it: what an event is, what \"streaming\" adds, and what you get when you run a Kafka cluster. The official introduction calls event streaming \"the digital equivalent of the human body's central nervous system\". Things happen at the edges of your business (a click, a payment, a sensor reading), signals travel along the nerves, and the right parts of the organisation react immediately.\n\n### Events\n\nAn **event** records the fact that something happened: a customer placed order `o-1001`, a payment was authorised, a visitor viewed a page. An event usually carries a description of what happened (the *value*), often something that says what it is about (the *key*, such as the order id), and a *timestamp*. Kafka's documentation uses the words event, record and message interchangeably. This book says **event** when it talks about the business meaning, and **record** when it talks about what Kafka stores and about the Java API (`ProducerRecord`, `ConsumerRecord`).\n\nTwo properties of events matter. First, they are *facts about the past*, so they are not edited. If an order is cancelled, you append an `OrderCancelled` event; you do not rewrite `OrderCreated`. Second, their *order* is information: it matters that the payment was authorised after the order was created. A structure that keeps events in order and never changes them is a log, and the log is the data structure Kafka is built around.\n\n### The three capabilities\n\nKafka's documentation names three key capabilities of an event streaming platform. They also make a handy map of this book.\n\n1. **Publish and subscribe.** Write streams of events into Kafka and read them out again, including the continuous import and export of data from and to other systems.\n2. **Store.** Keep streams of events durably and reliably for as long as you want. Records are written to disk and copied to several servers. \"As long as you want\" is a policy that you set per topic: a number of days, a size, or forever.\n3. **Process.** Work on streams of events as they occur, or retrospectively by reading history again."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Capability",
+            "Main building blocks",
+            "Where this book covers it"
+          ],
+          "rows": [
+            [
+              "Publish and subscribe",
+              "Producer API, Consumer API, Kafka Connect",
+              "the parts on the Java producer, the Java consumer and Kafka Connect"
+            ],
+            [
+              "Store",
+              "Brokers, partitions, replication, retention",
+              "the part on architecture and internals"
+            ],
+            [
+              "Process",
+              "Kafka Streams, ksqlDB, plain consumers",
+              "the part on Kafka Streams and ksqlDB"
+            ]
+          ],
+          "caption": "The three capabilities and the parts of Kafka that deliver them."
+        },
+        {
+          "type": "markdown",
+          "text": "### Servers and clients\n\nKafka is a distributed system made of **servers** and **clients** that talk to each other over a binary protocol on top of TCP. The servers run as a cluster of one or more machines, and the documentation notes that a cluster can span several data centres or cloud regions. Some servers form the storage layer and are called **brokers**. Others run Kafka Connect to move data in and out of external systems. Your own applications are the clients: they use a client library to write events to the brokers (producers), read them (consumers), or process them.\n\nThe Apache Kafka project ships these Java APIs: the Producer API, the Consumer API, the Admin API (to manage and inspect topics, brokers and other objects), the Kafka Streams API for stream processing, and the Kafka Connect API for reusable import and export connectors. Client libraries for many other languages exist as well, and because the wire protocol is documented, anybody can write one.\n\n### A durable, replicated log\n\nThis is the mental model to carry through the book. A topic is a named stream of records. Inside Kafka, the records of a topic are written to **append-only logs** on disk, and every log is replicated to other servers. Four rules follow.\n\n- Records are only ever *appended* at the end, and an existing record is never modified.\n- Every record gets a position in its log, the **offset**, which only grows.\n- **Reading does not delete.** A consumer remembers a position and moves it forward. Many consumers can read the same record independently, and a new one can start from the beginning.\n- Records leave the log only by policy: **retention** removes records that are older than a configured age (seven days by default) or when the log gets too large, and **compaction** can keep just the latest record per key.\n\nEverything else in this book, from consumer groups to transactions, is built on these four rules.\n\n### What Kafka is not\n\nBeing clear about the limits saves projects. Kafka is not the right tool for the following jobs, although you can find people who have tried all of them.\n\n- **Not a replacement for your database.** Kafka stores history, but you cannot ask it \"give me all customers in Pune with tier GOLD\". There are no ad hoc queries and no secondary indexes. Kafka tells you what *happened*; a database tells you what is *true now* and lets you query it. Compacted topics and Kafka Streams state stores give you key lookups on the latest value, which is useful, but it is not a general query engine.\n- **Not an RPC layer.** When a caller needs an answer right now (is this card valid?), use HTTP or gRPC. Request and reply over Kafka is possible (a pattern covered later) but adds latency and complexity.\n- **Not a task scheduler.** Classic Kafka consumer groups have no delayed delivery, no priorities, no per-message timeouts. The newer share groups add queue-like per-record acknowledgement and redelivery, but not priorities or scheduled delivery.\n- **Not a file or blob store.** The default maximum record size is about 1 MiB. Put large files in object storage and send a reference through Kafka (the claim-check pattern, covered in the design patterns part).\n- **Not magic.** Kafka does not give you exactly-once effects in external systems, schema discipline, or free operations. It gives you a very good log; the rest is engineering."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Database engineers know this structure as a *commit log* or write-ahead log: every change is written to the end of a log first, and tables are just a convenient view of the log. Kafka makes that internal database structure a shared, replicated service for the whole organisation. That is why the Kafka documentation lists \"Commit Log\" among its use cases."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is Apache Kafka? A distributed, fault-tolerant event streaming platform. Producers append records to topics, which are split into partitions stored as replicated, append-only logs on a cluster of brokers; consumers read the records independently at their own pace. Records are retained by policy rather than deleted on read, so data can be replayed and processed as it arrives or later."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- An event is an immutable fact about something that happened; Kafka stores events as records in ordered, replicated, append-only logs.\n- The three capabilities are publish and subscribe, durable storage, and stream processing.\n- Reading never deletes. Consumers keep their own position, and retention or compaction decides what leaves the log.\n- Kafka complements databases, RPC and job schedulers. It does not replace them."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-3",
+      "type": "concept",
+      "title": "The Building Blocks at a Glance",
+      "subtopicId": "1-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Kafka has a small vocabulary, and every later chapter leans on it. Instead of defining ten terms in a row, we first follow one order through the system and then collect the vocabulary in a table you can come back to.\n\n### One order, end to end\n\nA customer, `c-77`, buys two pairs of shoes on ShopStream. Each Kafka term appears in bold the first time it is used."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 179.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M158.0 152.0 L344.9 152.0 C348.2 152.0 350.9 149.3 350.9 146.0 L350.9 8.0 C350.9 4.7 348.2 2.0 344.9 2.0 L158.0 2.0 C154.7 2.0 152.0 4.7 152.0 8.0 L152.0 146.0 C152.0 149.3 154.7 152.0 158.0 152.0 Z\" fill=\"#1f2932\" stroke=\"#6591cd\" stroke-width=\"1.20\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 21.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 69.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 117.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 21.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 69.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 117.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 37.0 L99.0 37.0 C100.7 37.0 102.0 35.7 102.0 34.0 L102.0 8.0 C102.0 6.3 100.7 5.0 99.0 5.0 L5.0 5.0 C3.3 5.0 2.0 6.3 2.0 8.0 L2.0 34.0 C2.0 35.7 3.3 37.0 5.0 37.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L150.1 66.3 L146.4 70.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 85.0 L99.0 85.0 C100.7 85.0 102.0 83.7 102.0 82.0 L102.0 56.0 C102.0 54.3 100.7 53.0 99.0 53.0 L5.0 53.0 C3.3 53.0 2.0 54.3 2.0 56.0 L2.0 82.0 C2.0 83.7 3.3 85.0 5.0 85.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.8 69.1 L146.5 74.3 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 133.0 L99.0 133.0 C100.7 133.0 102.0 131.7 102.0 130.0 L102.0 104.0 C102.0 102.3 100.7 101.0 99.0 101.0 L5.0 101.0 C3.3 101.0 2.0 102.3 2.0 104.0 L2.0 130.0 C2.0 131.7 3.3 133.0 5.0 133.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.2 73.7 L149.7 77.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 137.0 L212.0 137.0 C213.6 137.0 215.0 135.7 215.0 134.0 L215.0 35.0 C215.0 33.3 213.6 32.0 212.0 32.0 L165.0 32.0 C163.3 32.0 162.0 33.3 162.0 35.0 L162.0 134.0 C162.0 135.7 163.3 137.0 165.0 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 115.0 L204.0 115.0 C205.6 115.0 207.0 113.7 207.0 112.0 L207.0 100.0 C207.0 98.3 205.6 97.0 204.0 97.0 L173.0 97.0 C171.3 97.0 170.0 98.3 170.0 100.0 L170.0 112.0 C170.0 113.7 171.3 115.0 173.0 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 93.0 L204.0 93.0 C205.6 93.0 207.0 91.7 207.0 90.0 L207.0 78.0 C207.0 76.3 205.6 75.0 204.0 75.0 L173.0 75.0 C171.3 75.0 170.0 76.3 170.0 78.0 L170.0 90.0 C170.0 91.7 171.3 93.0 173.0 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 71.0 L204.0 71.0 C205.6 71.0 207.0 69.7 207.0 68.0 L207.0 56.0 C207.0 54.3 205.6 53.0 204.0 53.0 L173.0 53.0 C171.3 53.0 170.0 54.3 170.0 56.0 L170.0 68.0 C170.0 69.7 171.3 71.0 173.0 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M228.0 137.0 L274.9 137.0 C276.6 137.0 277.9 135.7 277.9 134.0 L277.9 35.0 C277.9 33.3 276.6 32.0 274.9 32.0 L228.0 32.0 C226.3 32.0 225.0 33.3 225.0 35.0 L225.0 134.0 C225.0 135.7 226.3 137.0 228.0 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 115.0 L266.9 115.0 C268.6 115.0 269.9 113.7 269.9 112.0 L269.9 100.0 C269.9 98.3 268.6 97.0 266.9 97.0 L236.0 97.0 C234.3 97.0 233.0 98.3 233.0 100.0 L233.0 112.0 C233.0 113.7 234.3 115.0 236.0 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 93.0 L266.9 93.0 C268.6 93.0 269.9 91.7 269.9 90.0 L269.9 78.0 C269.9 76.3 268.6 75.0 266.9 75.0 L236.0 75.0 C234.3 75.0 233.0 76.3 233.0 78.0 L233.0 90.0 C233.0 91.7 234.3 93.0 236.0 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 71.0 L266.9 71.0 C268.6 71.0 269.9 69.7 269.9 68.0 L269.9 56.0 C269.9 54.3 268.6 53.0 266.9 53.0 L236.0 53.0 C234.3 53.0 233.0 54.3 233.0 56.0 L233.0 68.0 C233.0 69.7 234.3 71.0 236.0 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M290.9 137.0 L337.9 137.0 C339.6 137.0 340.9 135.7 340.9 134.0 L340.9 35.0 C340.9 33.3 339.6 32.0 337.9 32.0 L290.9 32.0 C289.3 32.0 287.9 33.3 287.9 35.0 L287.9 134.0 C287.9 135.7 289.3 137.0 290.9 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 115.0 L329.9 115.0 C331.6 115.0 332.9 113.7 332.9 112.0 L332.9 100.0 C332.9 98.3 331.6 97.0 329.9 97.0 L298.9 97.0 C297.3 97.0 295.9 98.3 295.9 100.0 L295.9 112.0 C295.9 113.7 297.3 115.0 298.9 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 93.0 L329.9 93.0 C331.6 93.0 332.9 91.7 332.9 90.0 L332.9 78.0 C332.9 76.3 331.6 75.0 329.9 75.0 L298.9 75.0 C297.3 75.0 295.9 76.3 295.9 78.0 L295.9 90.0 C295.9 91.7 297.3 93.0 298.9 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 71.0 L329.9 71.0 C331.6 71.0 332.9 69.7 332.9 68.0 L332.9 56.0 C332.9 54.3 331.6 53.0 329.9 53.0 L298.9 53.0 C297.3 53.0 295.9 54.3 295.9 56.0 L295.9 68.0 C295.9 69.7 297.3 71.0 298.9 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 37.0 L497.9 37.0 C499.6 37.0 500.9 35.7 500.9 34.0 L500.9 8.0 C500.9 6.3 499.6 5.0 497.9 5.0 L383.9 5.0 C382.2 5.0 380.9 6.3 380.9 8.0 L380.9 34.0 C380.9 35.7 382.2 37.0 383.9 37.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 21.0 L375.9 24.3 L380.4 27.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 85.0 L497.9 85.0 C499.6 85.0 500.9 83.7 500.9 82.0 L500.9 56.0 C500.9 54.3 499.6 53.0 497.9 53.0 L383.9 53.0 C382.2 53.0 380.9 54.3 380.9 56.0 L380.9 82.0 C380.9 83.7 382.2 85.0 383.9 85.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 69.0 L375.3 66.9 L375.8 72.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 133.0 L497.9 133.0 C499.6 133.0 500.9 131.7 500.9 130.0 L500.9 104.0 C500.9 102.3 499.6 101.0 497.9 101.0 L383.9 101.0 C382.2 101.0 380.9 102.3 380.9 104.0 L380.9 130.0 C380.9 131.7 382.2 133.0 383.9 133.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 117.0 L380.1 111.1 L375.7 114.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"218.5\" y=\"17.0\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"66.0\" lengthAdjust=\"spacingAndGlyphs\">KAFKA CLUSTER</text><text x=\"28.9\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"46.2\" lengthAdjust=\"spacingAndGlyphs\">Order service</text><text x=\"412.2\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"57.4\" lengthAdjust=\"spacingAndGlyphs\">payment-service</text><text x=\"172.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 1</text><text x=\"235.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 2</text><text x=\"297.9\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 3</text><text x=\"170.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"233.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"296.1\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"21.9\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"60.2\" lengthAdjust=\"spacingAndGlyphs\">Web / mobile app</text><text x=\"407.6\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"66.5\" lengthAdjust=\"spacingAndGlyphs\">analytics (Streams)</text><text x=\"175.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"238.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"301.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"175.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"238.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"301.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"32.7\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"38.6\" lengthAdjust=\"spacingAndGlyphs\">IoT devices</text><text x=\"403.6\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"74.6\" lengthAdjust=\"spacingAndGlyphs\">search sink (Connect)</text><text x=\"56.5\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"41.0\" lengthAdjust=\"spacingAndGlyphs\">Producers</text><text x=\"405.2\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"71.4\" lengthAdjust=\"spacingAndGlyphs\">Consumer groups</text></svg>",
+          "width": 503,
+          "caption": "The big picture. Producers write to topics stored on a cluster of brokers, consumer groups read them independently, and Kafka Connect and Kafka Streams are simply more clients of the same cluster.",
+          "alt": "KAFKA CLUSTER | Order service payment-service | Broker 1 Broker 2 Broker 3 | payments-0 payments-0 payments-0 | Web / mobile app analytics (Streams) | orders-1 orders-1 orders-1 | orders-0 orders-0 orders-0 | IoT devices search sink (Connect) | Producers Consumer groups"
+        },
+        {
+          "type": "markdown",
+          "text": "1. `order-service` saves the order in its own database and builds an `OrderCreated` event. It hands the event to a **producer**, the Kafka client library running inside the service.\n2. The event is addressed to a **topic** named `orders`. The producer sets the order id `o-1001` as the record's **key**.\n3. The producer knows the addresses of a few **brokers** (the `bootstrap.servers` setting). It asks one of them for the cluster's metadata: which **partitions** does `orders` have, and which broker is the **leader** of each? It hashes the key to choose a partition, say partition 2, and sends the **record** to the broker that leads it.\n4. The leader appends the record to the end of that partition's log. The record receives the next **offset**, say 41. Two **follower** replicas on other brokers copy it. With `acks=all` the leader reports success to the producer only after every in-sync replica has the record.\n5. `payment-service` runs several instances that all use the group id `payment-service`. Together they form one **consumer group**, and Kafka gives each partition of `orders` to exactly one instance of the group. The instance that owns partition 2 **polls**, receives offset 41, charges the card, and **commits** offset 42 (\"the next record I want\"). The commit is stored in Kafka itself.\n6. `inventory-service`, `notification-service` and `analytics-app` each have their own group. They read the same record independently, each at its own pace and with its own committed offsets. Nobody removes the record; it stays for the retention period (seven days by default).\n\nWhat to notice: the producer talks directly to the broker that leads the partition, the key keeps all events of one order in one partition and therefore in order, and the services that read `orders` know nothing about each other.\n\n### Topics and partitions\n\nA **topic** is a named stream of records: the thing you publish to and subscribe to. ShopStream uses topics such as `orders`, `payments` and `page-views`. Kafka's documentation compares a topic to a folder in a filesystem, with the events as the files in that folder. A topic is a logical name, not one file. Kafka splits every topic into one or more **partitions**, and each partition is an ordered, append-only log that is stored on one broker and copied to others.\n\nWhy split? One log on one machine would limit a topic to what that machine can store and serve, and only one consumer could read it at a time. Spreading partitions over many brokers lets a topic grow beyond a single machine, and lets many consumers read different partitions in parallel.\n\nWhich partition does a record go to? If the record has a key, the producer hashes the key, so records with the same key always land in the same partition. If there is no key, the producer spreads records across partitions. Kafka guarantees order only **within a partition**, which is why `orders` uses `orderId` as its key: every event of order `o-1001` stays in the order in which it was written."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 532.3 132.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M292.0 114.3 L318.0 114.3 L318.0 94.3 L292.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 74.3 L318.0 74.3 L318.0 54.3 L292.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 74.3 L344.0 74.3 L344.0 54.3 L318.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 74.3 L370.0 74.3 L370.0 54.3 L344.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 74.3 L396.0 74.3 L396.0 54.3 L370.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 74.3 L422.0 74.3 L422.0 54.3 L396.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 74.3 L448.0 74.3 L448.0 54.3 L422.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 74.3 L474.0 74.3 L474.0 54.3 L448.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 114.3 L344.0 114.3 L344.0 94.3 L318.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 114.3 L370.0 114.3 L370.0 94.3 L344.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 114.3 L396.0 114.3 L396.0 94.3 L370.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 114.3 L422.0 114.3 L422.0 94.3 L396.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 114.3 L448.0 114.3 L448.0 94.3 L422.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 114.3 L474.0 114.3 L474.0 94.3 L448.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M242.0 59.3 L292.0 102.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 79.3 L109.0 79.3 C110.7 79.3 112.0 78.0 112.0 76.3 L112.0 42.3 C112.0 40.7 110.7 39.3 109.0 39.3 L5.0 39.3 C3.3 39.3 2.0 40.7 2.0 42.3 L2.0 76.3 C2.0 78.0 3.3 79.3 5.0 79.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 79.3 L239.0 79.3 C240.7 79.3 242.0 78.0 242.0 76.3 L242.0 42.3 C242.0 40.7 240.7 39.3 239.0 39.3 L155.0 39.3 C153.3 39.3 152.0 40.7 152.0 42.3 L152.0 76.3 C152.0 78.0 153.3 79.3 155.0 79.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 102.3 L289.6 96.8 L286.2 100.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 34.3 L318.0 34.3 L318.0 14.3 L292.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 34.3 L344.0 34.3 L344.0 14.3 L318.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 34.3 L370.0 34.3 L370.0 14.3 L344.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 34.3 L396.0 34.3 L396.0 14.3 L370.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 34.3 L422.0 34.3 L422.0 14.3 L396.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 34.3 L448.0 34.3 L448.0 14.3 L422.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 34.3 L474.0 34.3 L474.0 14.3 L448.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 59.3 L152.0 59.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 22.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 62.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M152.0 59.3 L146.6 56.7 L146.6 61.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 22.3 L286.1 23.4 L289.2 27.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 62.3 L286.8 59.4 L286.5 64.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"298.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">p</text><text x=\"302.0\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">t</text><text x=\"302.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">a</text><text x=\"305.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"306.8\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.1\" lengthAdjust=\"spacingAndGlyphs\">rt</text><text x=\"310.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">p</text><text x=\"312.9\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"5.2\" lengthAdjust=\"spacingAndGlyphs\">it</text><text x=\"315.5\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"6.7\" lengthAdjust=\"spacingAndGlyphs\">ic</text><text x=\"318.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.5\" lengthAdjust=\"spacingAndGlyphs\">io</text><text x=\"322.3\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">:</text><text x=\"324.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">n</text><text x=\"327.7\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"331.2\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">0</text><text x=\"332.6\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"21.4\" lengthAdjust=\"spacingAndGlyphs\">rders</text><text x=\"302.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"27.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1001, o-1004</text><text x=\"298.0\" y=\"46.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 1</text><text x=\"40.9\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"32.2\" lengthAdjust=\"spacingAndGlyphs\">Producer</text><text x=\"179.1\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"35.8\" lengthAdjust=\"spacingAndGlyphs\">hash(key)</text><text x=\"32.3\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"49.5\" lengthAdjust=\"spacingAndGlyphs\">key = orderId</text><text x=\"185.6\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"22.8\" lengthAdjust=\"spacingAndGlyphs\">mod 3</text><text x=\"302.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"67.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"22.1\" lengthAdjust=\"spacingAndGlyphs\">o-1002</text><text x=\"298.0\" y=\"86.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 2</text><text x=\"302.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"107.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1003, o-1005</text></svg>",
+          "width": 532,
+          "caption": "The topic orders with three partitions. The producer hashes the key, so every event of the same order lands in the same partition and keeps its order, while different orders spread across the partitions.",
+          "alt": "ptaortpiticio:no0rders | 0 1 2 3 4 5 6 o-1001, o-1004 | partition 1 | Producer hash(key) | key = orderId mod 3 0 1 2 3 4 5 6 o-1002 | partition 2 | 0 1 2 3 4 5 6 o-1003, o-1005"
+        },
+        {
+          "type": "markdown",
+          "text": "### Offsets: a bookmark in the log\n\nInside a partition every record receives an **offset**, a sequential number that starts at 0 and only grows. The offset is the record's address and the consumer's bookmark. A consumer that has processed up to offset 41 will ask for offset 42 next; a new consumer may start at offset 0 and read the whole history; a consumer that crashed can resume where it left off."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 469.7 93.6\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M41.3 86.7 L115.3 86.7 C116.9 86.7 118.3 85.4 118.3 83.7 L118.3 65.7 C118.3 64.0 116.9 62.7 115.3 62.7 L41.3 62.7 C39.6 62.7 38.3 64.0 38.3 65.7 L38.3 83.7 C38.3 85.4 39.6 86.7 41.3 86.7 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M95.3 40.7 L92.7 46.1 L97.9 46.1 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M218.3 86.7 L292.3 86.7 C293.9 86.7 295.3 85.4 295.3 83.7 L295.3 65.7 C295.3 64.0 293.9 62.7 292.3 62.7 L218.3 62.7 C216.6 62.7 215.3 64.0 215.3 65.7 L215.3 83.7 C215.3 85.4 216.6 86.7 218.3 86.7 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M275.3 40.7 L272.7 46.1 L277.9 46.1 Z\" fill=\"#7a4bc1\" stroke=\"#8f67cb\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M20.3 40.7 L50.3 40.7 L50.3 18.7 L20.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M50.3 40.7 L80.3 40.7 L80.3 18.7 L50.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M80.3 40.7 L110.3 40.7 L110.3 18.7 L80.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M110.3 40.7 L140.3 40.7 L140.3 18.7 L110.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M140.3 40.7 L170.3 40.7 L170.3 18.7 L140.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M170.3 40.7 L200.3 40.7 L200.3 18.7 L170.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M200.3 40.7 L230.3 40.7 L230.3 18.7 L200.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M230.3 40.7 L260.3 40.7 L260.3 18.7 L230.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M260.3 40.7 L290.3 40.7 L290.3 18.7 L260.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M290.3 40.7 L320.3 40.7 L320.3 18.7 L290.3 18.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M320.3 29.7 L365.3 29.7\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M365.3 29.7 L359.9 27.1 L359.9 32.3 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"81.4\" y=\"6.7\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"177.8\" lengthAdjust=\"spacingAndGlyphs\">offsets grow to the right; records are never modified</text><text x=\"2.0\" y=\"34.7\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"10.3\" lengthAdjust=\"spacingAndGlyphs\">P0</text><text x=\"33.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"63.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"93.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"123.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"153.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"183.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"213.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"243.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">7</text><text x=\"273.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">8</text><text x=\"303.0\" y=\"32.3\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">9</text><text x=\"372.8\" y=\"34.7\" font-size=\"7.5\" fill=\"#eec7a0\" textLength=\"94.9\" lengthAdjust=\"spacingAndGlyphs\">new records appended here</text><text x=\"59.1\" y=\"72.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.4\" lengthAdjust=\"spacingAndGlyphs\">Consumer A</text><text x=\"236.1\" y=\"72.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.4\" lengthAdjust=\"spacingAndGlyphs\">Consumer B</text><text x=\"62.8\" y=\"81.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"30.9\" lengthAdjust=\"spacingAndGlyphs\">position 2</text><text x=\"239.8\" y=\"81.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"30.9\" lengthAdjust=\"spacingAndGlyphs\">position 7</text></svg>",
+          "width": 470,
+          "caption": "One partition as an append-only log. The producer adds records at the end; two consumers read the same partition at different offsets without affecting each other.",
+          "alt": "offsets grow to the right; records are never modified | P0 0 1 2 3 4 5 6 7 8 9 new records appended here | Consumer A Consumer B | position 2 position 7"
+        },
+        {
+          "type": "markdown",
+          "text": "The triple (topic, partition, offset) identifies one record uniquely. Offsets belong to a partition, and they are never reused, so \"offset 41\" means nothing until you say in which partition. A consumer keeps two related numbers for each partition: its **position**, the offset of the next record it will receive, and its **committed offset**, the last position it saved in Kafka so that it can resume after a restart. The chapters on the Java consumer explain the difference in detail.\n\n### Consumer groups\n\nA **consumer group** is a set of consumers that share one `group.id` and cooperate to read a topic. Kafka assigns each partition to exactly one consumer in the group at a time. If `orders` has three partitions and `payment-service` runs three instances, each instance reads one partition. If one instance crashes, Kafka moves its partition to a survivor, which is called a **rebalance**.\n\nTwo consequences are worth remembering now. A group can use at most as many consumers as the topic has partitions; extra consumers sit idle as standbys. And different groups are completely independent: each group gets every record and keeps its own offsets. This single design gives Kafka both classic messaging models, as the next chapter shows.\n\n### Brokers, clusters and replication\n\nA **broker** is a Kafka server process that stores partitions on disk and serves producers and consumers. Several brokers form a **cluster**. Every partition has a configurable number of copies, the **replication factor**. One copy is the **leader**, which handles the writes, and the others are **followers** that continuously fetch from the leader and append the same records in the same order. Followers that keep up form the **in-sync replica set** (ISR). If the broker holding a leader fails, the cluster promotes an in-sync follower to be the new leader and clients carry on. A replication factor of 3, meaning three copies of your data, is the usual production choice.\n\nSomeone also has to keep track of cluster metadata: which topics exist, where the leaders are, what the settings are. Since Kafka 4.0 Kafka does this itself with a protocol called **KRaft**. A small group of **controller** nodes, often three, keeps the metadata in a replicated log, and brokers read from it. Older Kafka versions needed a separate ZooKeeper cluster for this. The architecture part of this book explains KRaft and replication in depth.\n\n### The vocabulary at a glance"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Term",
+            "Meaning",
+            "ShopStream example"
+          ],
+          "rows": [
+            [
+              "Record (event, message)",
+              "One entry in a log: an optional key, a value, a timestamp and optional headers",
+              "`OrderCreated` for order `o-1001`"
+            ],
+            [
+              "Topic",
+              "A named stream of records; what you publish to and subscribe to",
+              "`orders`, `payments`, `page-views`"
+            ],
+            [
+              "Partition",
+              "One ordered, append-only log holding a slice of a topic; the unit of ordering and parallelism",
+              "`orders` has partitions 0, 1 and 2"
+            ],
+            [
+              "Offset",
+              "The position of a record inside one partition, starting at 0",
+              "partition 2, offset 41"
+            ],
+            [
+              "Key",
+              "Optional record field; records with the same key go to the same partition",
+              "the order id `o-1001`"
+            ],
+            [
+              "Broker",
+              "A Kafka server that stores partitions and serves clients",
+              "brokers 1, 2 and 3"
+            ],
+            [
+              "Cluster",
+              "The brokers (and controllers) that work together",
+              "the three-node lab cluster"
+            ],
+            [
+              "Controller",
+              "A node that manages cluster metadata through KRaft",
+              "three controllers in production"
+            ],
+            [
+              "Producer",
+              "A client that appends records to topics",
+              "`order-service`"
+            ],
+            [
+              "Consumer",
+              "A client that reads records from topics",
+              "one instance of `payment-service`"
+            ],
+            [
+              "Consumer group",
+              "Consumers sharing a `group.id`; each partition is read by one member at a time",
+              "`payment-service`"
+            ],
+            [
+              "Committed offset",
+              "A group's saved bookmark for a partition: the next record to read",
+              "group `payment-service`, partition 2: 42"
+            ],
+            [
+              "Replication factor",
+              "The number of copies of each partition",
+              "3"
+            ],
+            [
+              "Leader and follower",
+              "The copy that takes the writes, and the copies that fetch from it",
+              "broker 2 leads partition 2"
+            ],
+            [
+              "ISR",
+              "The replicas that are fully caught up with the leader",
+              "brokers 2, 1 and 3"
+            ],
+            [
+              "Retention",
+              "The policy that deletes old records by age or size",
+              "7 days (the default)"
+            ],
+            [
+              "Bootstrap servers",
+              "Starting addresses a client uses to discover the whole cluster",
+              "`localhost:9092`"
+            ]
+          ],
+          "caption": "The core vocabulary of Kafka, with ShopStream examples."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Offsets are per partition, not per topic. There is no global sequence number across the partitions of a topic. Offset 41 exists once in every partition. This is also why Kafka cannot tell you which of two records in different partitions was \"first\" except by comparing timestamps, and why ordering requirements must be translated into key choices."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do consumer groups give Kafka both queue and publish-subscribe behaviour? Within one group each partition is read by exactly one consumer, so the group's members share the work like competing consumers on a queue. Each group, however, receives every record independently, like a separate subscriber in publish-subscribe. One topic can therefore feed a scalable worker pool and several unrelated applications at once."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- A producer appends records to a topic. The topic is split into partitions, and each partition is an ordered log in which every record has an offset.\n- The key decides the partition, so records with the same key stay together and in order. Order exists only within a partition.\n- A consumer group shares a topic's partitions between its members; different groups read independently and keep their own committed offsets.\n- Each partition is replicated on several brokers: one leader takes the writes, followers copy it, and a follower takes over if the leader fails."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-5",
+      "type": "concept",
+      "title": "What Kafka Guarantees (and What It Does Not)",
+      "subtopicId": "1-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Before you trust a system with orders and payments, you need to know what it promises and under which conditions. This chapter states Kafka's guarantees in plain words. Each one comes with fine print, and later parts of the book explain the mechanics behind it.\n\n### The guarantees"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Property",
+            "What Kafka promises",
+            "The fine print"
+          ],
+          "rows": [
+            [
+              "Ordering",
+              "Records in one partition are stored and read in the order in which they were appended",
+              "Only within a partition. The default idempotent producer keeps the order even when it retries"
+            ],
+            [
+              "Durability",
+              "A record is *committed* once every in-sync replica has it, and a committed record is not lost while at least one of those replicas survives",
+              "Needs `acks=all`. With replication factor 3 and `min.insync.replicas=2`, an acknowledged write sits on at least two brokers"
+            ],
+            [
+              "Availability",
+              "If a leader fails, an in-sync follower is elected automatically and clients continue",
+              "Needs enough healthy brokers, and a controller quorum with a majority alive"
+            ],
+            [
+              "Delivery",
+              "At least once when the consumer commits after processing: a crash can cause duplicates, but not a silent loss",
+              "At-most-once and exactly-once need different (explicit) designs"
+            ],
+            [
+              "Replay",
+              "Records stay readable until retention deletes them, however often they were read",
+              "Seven days by default. A compacted topic keeps only the latest record per key"
+            ],
+            [
+              "Scale",
+              "More partitions allow more parallel producers and consumers; more brokers hold more partitions",
+              "A group cannot use more consumers than partitions, and changing the partition count changes where keys go"
+            ]
+          ],
+          "caption": "What you can rely on, and the fine print that goes with it."
+        },
+        {
+          "type": "markdown",
+          "text": "Two of these deserve a closer look because they are easy to misread.\n\n**Durability is about replication, not about forcing every write to disk.** By default Kafka does not flush each write to disk before it acknowledges it. It acknowledges once the in-sync replicas have the record (in the operating system's page cache) and relies on the other replicas surviving the failure of a single machine. The architecture part of the book discusses this choice. For you it means that the replication factor and `min.insync.replicas` are your durability settings, not an afterthought.\n\n**Delivery is at least once unless you design otherwise.** Suppose `payment-service` reads `OrderCreated` at offset 41 of partition 2, charges the customer's card, and crashes before it commits offset 42. After the restart the same record is delivered again, and without protection the customer is charged twice. Kafka did nothing wrong: it preferred duplicates to loss. The fix is to make the consumer **idempotent**, for example by storing the payment id or event id and skipping events that were already handled. Kafka can also give exactly-once results for a read-process-write cycle that stays inside Kafka (transactions, covered later), but never for side effects in the outside world, such as a card charge or an email.\n\n### What is not guaranteed\n\n- **Global order.** There is no order between records in different partitions. If the order of two kinds of events matters, give them the same key so they share a partition.\n- **Delivery to every consumer of a group.** Inside a group each record goes to one member. Use separate groups for separate applications that each need every record.\n- **Exactly-once side effects.** See above: idempotent consumers are your responsibility.\n- **Unlimited memory of the past.** Data older than the retention setting is deleted, whether or not anybody read it.\n- **Safety with weak settings.** With `acks=0` or `acks=1`, or with a replication factor of 1, a broker failure can lose acknowledged data. The guarantees above describe a sensibly configured cluster.\n- **Valid data.** Kafka stores bytes. It does not check that a value is valid JSON or that a field exists; schemas are enforced by clients and a schema registry, covered in the serialization part.\n- **Hard real-time latency.** Latency is typically low, but there is no upper bound that you can promise to a customer."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not read \"at least once\" as \"exactly once in practice\". Duplicates are rare in a healthy system, which makes them dangerous: the code path that handles them is the least tested one. Design every consumer so that processing the same event twice produces the same result as processing it once, and test that path on purpose."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Does Kafka guarantee exactly-once delivery? Not by default. The default end-to-end behaviour is at least once. Kafka offers exactly-once semantics for the consume-transform-produce cycle inside Kafka by combining the idempotent producer, transactions and consumers that read only committed records (`isolation.level=read_committed`). Side effects outside Kafka still need idempotent consumers or a deduplication key."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Order is guaranteed inside a partition only, so keys express your ordering requirements.\n- Durability comes from replication: use `acks=all`, a replication factor of 3 and `min.insync.replicas=2`.\n- Delivery is at least once by default, so consumers must tolerate duplicates.\n- Retention, not consumption, decides how long data stays. Kafka stores bytes and does not validate them."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,584 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "263-283",
+    "planDays": "6"
+  },
+  "sections": [
+    {
+      "id": "ch-7-1",
+      "type": "concept",
+      "title": "Lambdas and Functional Interfaces",
+      "subtopicId": "7-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Before Java 8, passing behaviour to a method meant writing an anonymous class: five lines of ceremony to say \"compare by length\". Lambda expressions (Java 8, 2014) give you a short syntax for exactly that case: a piece of code you hand to another method to run later. The whole Stream API, `CompletableFuture`, `Optional.map`, `Comparator.comparing` and most of modern Spring code are built on this one idea. If you understand lambdas well enough to predict what they capture, what `this` means inside them and how they compile, the rest of this Part becomes easy.\n\n### Functional interfaces: the type of a lambda\n\nA lambda has no type of its own. It is always converted to an instance of a **functional interface**: an interface with exactly one abstract method (default, static and private methods do not count, and neither do abstract methods that merely re-declare `Object` methods such as `equals`). The compiler decides which interface from the context. This is called **target typing**: the type the surrounding code expects is the type of the lambda."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "interface Validator<T> { boolean test(T t); }\n\nValidator<String> notBlank = s -> !s.isBlank();     // target type: Validator<String>\nFunction<Integer, Integer> inc  = x -> x + 1;      // same text, different target type\nUnaryOperator<Integer>     inc2 = x -> x + 1;      // ... also fine",
+          "title": "Lam1.java (excerpt)"
+        },
+        {
+          "type": "markdown",
+          "text": "The lambda `x -> x + 1` is not \"a function\"; it is whatever the left-hand side says it is. The parameter types are inferred from the target type, so you normally write `s -> ...` and not `(String s) -> ...`. You may write the types, or use `var`, but you must not mix styles in one parameter list."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Form",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`() -> 42`",
+              "`no parameters, expression body`"
+            ],
+            [
+              "`x -> x * 2`",
+              "`one parameter, parentheses optional`"
+            ],
+            [
+              "`(a, b) -> a + b`",
+              "`several parameters, inferred types`"
+            ],
+            [
+              "`(int a, int b) -> a + b`",
+              "`explicit types (all or none)`"
+            ],
+            [
+              "`x -> { log(x); return x; }`",
+              "`block body: needs braces, 'return' and semicolons`"
+            ]
+          ],
+          "caption": "Lambda syntax forms."
+        },
+        {
+          "type": "markdown",
+          "text": "An expression body returns its value (or nothing, for a `void` target). A block body behaves like a method body. A lambda whose body is a single method call such as `s -> System.out.println(s)` is compatible with both value-returning and `void` targets; the compiler picks whichever fits.\n\n### The java.util.function toolbox\n\nYou rarely need to declare your own functional interface, because `java.util.function` has 43 of them. They look intimidating but follow a naming scheme. Learn the five core shapes and the rest are variations."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Interface",
+            "Abstract method",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "`Function<T,R>`",
+              "`R apply(T t)`",
+              "transform a value (map)"
+            ],
+            [
+              "`Predicate<T>`",
+              "`boolean test(T t)`",
+              "yes/no question (filter)"
+            ],
+            [
+              "`Consumer<T>`",
+              "`void accept(T t)`",
+              "do something with a value (forEach)"
+            ],
+            [
+              "`Supplier<T>`",
+              "`T get()`",
+              "produce a value, often lazily"
+            ],
+            [
+              "`UnaryOperator<T> /` `BinaryOperator<T>`",
+              "`T apply(T) / T apply(T,T)`",
+              "Function where all types are the same"
+            ]
+          ],
+          "caption": "The five core functional interfaces."
+        },
+        {
+          "type": "markdown",
+          "text": "The variations are mechanical: a `Bi` prefix means two arguments (`BiFunction<T,U,R>`, `BiConsumer`, `BiPredicate`); `Int`, `Long`, `Double` prefixes are primitive specialisations that avoid boxing (`IntPredicate`, `ToIntFunction<T>`, `IntBinaryOperator`, `IntSupplier`). `Runnable` and `Callable<V>` are the older no-argument shapes from `java.lang` and `java.util.concurrent`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.function.*;\n\npublic class Lam1 {\n    record Book(String title, int pages) {}\n\n    interface Validator<T> { boolean test(T t); }\n\n    public static void main(String[] args) {\n        // 1. a lambda is an instance of a functional interface\n        Validator<String> notBlank = s -> !s.isBlank();\n        System.out.println(notBlank.test(\"Java\") + \" \" + notBlank.test(\"  \"));\n\n        // 2. same lambda text, different target types\n        Function<Integer, Integer> inc = x -> x + 1;\n        UnaryOperator<Integer> inc2 = x -> x + 1;\n        System.out.println(inc.apply(1) + \" \" + inc2.apply(1));\n\n        // 3. java.util.function family\n        Predicate<Book> longBook = b -> b.pages() > 300;\n        Function<Book, String> title = Book::title;\n        Supplier<List<Book>> fresh = ArrayList::new;\n        Consumer<Book> printer = b -> System.out.println(\"Book: \" + b.title());\n        BiFunction<String, Integer, Book> make = Book::new;\n        BinaryOperator<Integer> add = Integer::sum;\n        IntBinaryOperator mul = (a, b) -> a * b;\n\n        List<Book> shelf = fresh.get();\n        shelf.add(make.apply(\"Effective Java\", 412));\n        shelf.add(make.apply(\"Java Puzzlers\", 312));\n        shelf.add(make.apply(\"Tiny Book\", 90));\n        shelf.stream().filter(longBook).map(title).forEach(System.out::println);\n        printer.accept(shelf.get(2));\n        System.out.println(add.apply(2, 3) + \" \" + mul.applyAsInt(4, 5));\n\n        // 4. composition\n        Predicate<Book> shortBook = longBook.negate();\n        Function<Integer, Integer> dbl = x -> x * 2;\n        System.out.println(shortBook.test(shelf.get(2)));\n        System.out.println(inc.andThen(dbl).apply(5) + \" \" + inc.compose(dbl).apply(5));\n\n        // 5. capture\n        int base = 100;                         // effectively final\n        Function<Integer, Integer> addBase = x -> x + base;\n        System.out.println(addBase.apply(5));\n        int[] counter = {0};                    // the box is final, contents mutable\n        Runnable r = () -> counter[0]++;\n        r.run(); r.run();\n        System.out.println(counter[0]);\n    }\n}",
+          "title": "Lam1.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Lam1.java\ntrue false\n2 2\nEffective Java\nJava Puzzlers\nBook: Tiny Book\n5 20\ntrue\n12 11\n105\n2",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `inc.andThen(dbl)` runs `inc` first then `dbl`: (5+1) times 2 = 12. `inc.compose(dbl)` runs `dbl` first: 5 times 2 plus 1 =\n\n1. Mixing these two up is a classic mistake.\n\n- `Predicate` gives you `and`, `or`, `negate` as default methods; `Function` gives `andThen`, `compose`, `identity()`. Small combinators like these are how you build behaviour from parts.\n- `Book::new` works as a `BiFunction<String,Integer,Book>` because the record's canonical constructor takes `(String, int)`; the compiler matches shapes, boxing as needed.\n\n### Declaring your own: @FunctionalInterface\n\nWhen none of the standard shapes carries meaning, declare your own, and annotate it with `@FunctionalInterface`. The annotation changes nothing at run time; it tells the compiler \"fail the build if someone adds a second abstract method\", which would silently break every lambda that targets the interface. Use it for any interface you intend lambdas to implement."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@FunctionalInterface\npublic interface Retry<T> {\n    T attempt() throws Exception;          // checked exceptions are allowed here\n\n    default T withRetries(int times) throws Exception {\n        Exception last = null;\n        for (int i = 0; i < times; i++) {\n            try { return attempt(); } catch (Exception e) { last = e; }\n        }\n        throw last;\n    }\n}",
+          "title": "Retry.java"
+        },
+        {
+          "type": "markdown",
+          "text": "A custom interface is also the standard answer to a limit of the built-in ones: `Function.apply` cannot throw checked exceptions, but your own `attempt()` can. Section \"Functional style in practice\" in the last chapter of this Part returns to this.\n\n### Capturing variables: effectively final\n\nA lambda body may use local variables from the enclosing method, but only if they are **effectively final**: never reassigned after initialisation (you do not need to write `final`). The lambda captures the variable's *value*, copies it, and carries the copy with it, possibly to another thread, long after the method returned."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "int total = 0;\n// ERROR: local variables referenced from a lambda expression\n//        must be final or effectively final\nlist.forEach(x -> total += x.length());",
+          "title": "Capture.java (fragment)"
+        },
+        {
+          "type": "markdown",
+          "text": "Why the rule? A local variable lives in a stack frame that disappears when the method returns, and may be read by a different thread. Allowing the lambda to write a stack variable would make \"shared mutable local\" a thing, with all the races that implies. Instance fields and static fields are different: they live on the heap and a lambda can read and write them freely (and then you own the thread-safety problem).\n\nThe common workarounds, in order of preference: do not mutate at all (use `mapToInt(...).sum()` or a collector, which is the point of the next chapters); use an `AtomicInteger` or `LongAdder` when several threads are involved; or, for single-threaded throwaway code, a one-element array as in the listing above (`counter[0]++`). The array reference is final; its contents are not. This works but is a smell: if you need it often, you are probably writing a loop in disguise.\n\n### What does this mean inside a lambda?\n\nIn an anonymous class, `this` refers to the anonymous object itself. In a lambda, `this` refers to the **enclosing** **instance**: a lambda is not a new scope for `this`, it is just code that lives in the enclosing method. A lambda also cannot declare a local variable with the same name as one in the enclosing scope (an anonymous class can shadow it)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.function.*;\n\npublic class Lam2 {\n    private final String name = \"outer\";\n\n    Runnable lambda() {\n        return () -> System.out.println(\"lambda this = \" + this.name + \" \"\n            + getClass().getSimpleName());\n    }\n\n    Runnable anon() {\n        return new Runnable() {\n            public void run() { System.out.println(\"anon this = \" + this.getClass().getName()); }\n        };\n    }\n\n    static String up(String s) { return s.toUpperCase(); }\n    String hello(String who) { return \"hello \" + who; }\n\n    public static void main(String[] args) {\n        new Lam2().lambda().run();\n        new Lam2().anon().run();\n\n        // four kinds of method reference\n        Function<String, String> a = Lam2::up;                 // static\n        Lam2 inst = new Lam2();\n        Function<String, String> b = inst::hello;              // bound instance\n        Function<String, Integer> c = String::length;          // unbound instance\n        Supplier<ArrayList<String>> d = ArrayList::new;        // constructor\n        Function<Integer, int[]> e = int[]::new;               // array constructor\n        System.out.println(a.apply(\"x\") + \" \" + b.apply(\"bob\") + \" \" + c.apply(\"four\")\n            + \" \" + d.get() + \" \" + e.apply(3).length);\n\n        // class names of lambdas\n        Runnable r1 = () -> {};\n        Runnable r2 = () -> {};\n        System.out.println(r1.getClass().isSynthetic() + \" \"\n            + r1.getClass().getName().contains(\"$$Lambda\"));\n        System.out.println(r1.getClass() == r2.getClass());\n        System.out.println(r1.getClass().getInterfaces()[0].getSimpleName());\n\n        // non-capturing lambda evaluated twice yields the same instance\n        System.out.println(sup() == sup());\n        int k = 1;\n        System.out.println(cap(k) == cap(k));\n    }\n    static Supplier<String> sup() { return () -> \"x\"; }\n    static Supplier<Integer> cap(int k) { return () -> k; }\n}",
+          "title": "Lam2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Lam2.java\nlambda this = outer Lam2\nanon this = Lam2$1\nX hello bob 4 [] 3\ntrue true\nfalse\nRunnable\ntrue\nfalse",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Inside the lambda, `this.name` compiled and `getClass()` reported `Lam2`: `this` is the enclosing `Lam2`. In the anonymous class it is a different object of class `Lam2$1`.\n- The last two lines show a detail that is **not** a guarantee: a lambda that captures nothing may be a single cached instance (`sup() == sup()` was `true` here), while a capturing one is a fresh object per evaluation. Never depend on identity of lambdas. The Language Specification explicitly leaves it open.\n\n### Method references: four kinds\n\nWhen a lambda does nothing but call one existing method, a **method reference** says it more briefly. There are four kinds and the one everybody gets wrong is the third."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Kind",
+            "Example",
+            "Equivalent lambda"
+          ],
+          "rows": [
+            [
+              "`Static method`",
+              "`Lam2::up`",
+              "s -\\> Lam2.up(s)"
+            ],
+            [
+              "`Bound instance (a specific` `object)`",
+              "`inst::hello`",
+              "s -\\> inst.hello(s)"
+            ],
+            [
+              "`Unbound instance (any object` `of a type)`",
+              "`String::length`",
+              "s -\\> s.length()"
+            ],
+            [
+              "`Constructor`",
+              "`ArrayList::new, int[]::new`",
+              "() -\\> new ArrayList\\<\\>(), n -\\> new int\\[n\\]"
+            ]
+          ],
+          "caption": "The four kinds of method reference."
+        },
+        {
+          "type": "markdown",
+          "text": "In the unbound form the *first* parameter of the functional interface becomes the receiver: `Function<String,Integer>` `f = String::length` means `s -> s.length()`. That is also why `Comparator.comparing(Book::title)` works. A bound reference such as `System.out::println` evaluates `System.out` once, when the reference is created; the lambda `x ->` `System.out.println(x)` would read the field every time. Prefer a method reference when it is shorter *and* clearer; if you have to think about which kind it is, write the lambda."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A method reference is ambiguous if the method is overloaded in a way that fits several shapes. `Integer::toString` fails as a `Function<Integer,String>` because both the static `Integer.toString(int)` and the instance `toString()` fit. Use a lambda, `i -> i.toString()`, or `String::valueOf`."
+        },
+        {
+          "type": "markdown",
+          "text": "### How lambdas compile: invokedynamic, not inner classes\n\nA natural guess is that the compiler turns each lambda into an anonymous inner class. It does not, and the difference matters for startup time, memory and even stack traces. Compile this tiny program and look at the bytecode."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Lam3 {\n    interface Op { int apply(int a, int b); }\n    public static void main(String[] args) {\n        Op add = (a, b) -> a + b;\n        Runnable r = () -> System.out.println(\"hi \" + add.apply(2, 3));\n        r.run();\n    }\n}",
+          "title": "Lam3.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d out Lam3.java && ls out\nLam3$Op.class\nLam3.class\n$ javap -c -p -cp out Lam3\n  public static void main(java.lang.String[]);\n    Code:\n       0: invokedynamic #7,  0     // InvokeDynamic #0:apply:()LLam3$Op;\n       5: astore_1\n       6: aload_1\n       7: invokedynamic #11,  0    // InvokeDynamic #1:run:(LLam3$Op;)Ljava/lang/Runnable;\n      12: astore_2\n      13: aload_2\n      14: invokeinterface #15,  1  // InterfaceMethod java/lang/Runnable.run:()V\n      19: return\n\n  private static void lambda$main$1(Lam3$Op);\n    Code:\n       ...\n       6: invokeinterface #25,  3  // InterfaceMethod Lam3$Op.apply:(II)I\n\n  private static int lambda$main$0(int, int);\n    Code:\n       0: iload_0\n       1: iload_1\n       2: iadd\n       3: ireturn",
+          "title": "javap output, trimmed"
+        },
+        {
+          "type": "markdown",
+          "text": "There are only two class files: no `Lam3$1.class`. The lambda *bodies* became ordinary private static methods named `lambda$main$0` and `lambda$main$1` in the same class. The place where each lambda is \"created\" became an `invokedynamic` instruction. Note that `lambda$main$1` takes the captured `Op` as its first parameter: captured values become extra leading arguments."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 102.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M135.0 86.0 L349.0 86.0 C350.7 86.0 352.0 84.7 352.0 83.0 L352.0 61.0 C352.0 59.3 350.7 58.0 349.0 58.0 L135.0 58.0 C133.3 58.0 132.0 59.3 132.0 61.0 L132.0 83.0 C132.0 84.7 133.3 86.0 135.0 86.0 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M412.0 34.0 L352.0 64.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M352.0 64.0 L356.0 63.9 L354.4 60.8 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 18.0 L132.0 18.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M232.0 18.0 L262.0 18.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M352.0 18.0 L372.0 18.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 34.0 L99.0 34.0 C100.7 34.0 102.0 32.7 102.0 31.0 L102.0 5.0 C102.0 3.3 100.7 2.0 99.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 31.0 C2.0 32.7 3.3 34.0 5.0 34.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M135.0 34.0 L229.0 34.0 C230.7 34.0 232.0 32.7 232.0 31.0 L232.0 5.0 C232.0 3.3 230.7 2.0 229.0 2.0 L135.0 2.0 C133.3 2.0 132.0 3.3 132.0 5.0 L132.0 31.0 C132.0 32.7 133.3 34.0 135.0 34.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M265.0 34.0 L349.0 34.0 C350.7 34.0 352.0 32.7 352.0 31.0 L352.0 5.0 C352.0 3.3 350.7 2.0 349.0 2.0 L265.0 2.0 C263.3 2.0 262.0 3.3 262.0 5.0 L262.0 31.0 C262.0 32.7 263.3 34.0 265.0 34.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M375.0 34.0 L449.0 34.0 C450.7 34.0 452.0 32.7 452.0 31.0 L452.0 5.0 C452.0 3.3 450.7 2.0 449.0 2.0 L375.0 2.0 C373.3 2.0 372.0 3.3 372.0 5.0 L372.0 31.0 C372.0 32.7 373.3 34.0 375.0 34.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M132.0 18.0 L126.6 15.4 L126.6 20.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.0 18.0 L256.6 15.4 L256.6 20.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M372.0 18.0 L366.6 15.4 L366.6 20.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"33.2\" y=\"16.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"37.5\" lengthAdjust=\"spacingAndGlyphs\">compile time</text><text x=\"162.5\" y=\"16.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"39.1\" lengthAdjust=\"spacingAndGlyphs\">1st execution</text><text x=\"278.1\" y=\"16.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"57.8\" lengthAdjust=\"spacingAndGlyphs\">LambdaMetafactory</text><text x=\"390.0\" y=\"20.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"43.9\" lengthAdjust=\"spacingAndGlyphs\">call site linked</text><text x=\"5.7\" y=\"24.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"92.6\" lengthAdjust=\"spacingAndGlyphs\">lambda body -&gt; private method</text><text x=\"143.9\" y=\"24.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"76.3\" lengthAdjust=\"spacingAndGlyphs\">invokedynamic bootstraps</text><text x=\"284.4\" y=\"24.2\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"45.2\" lengthAdjust=\"spacingAndGlyphs\">generates class</text><text x=\"169.8\" y=\"74.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"144.5\" lengthAdjust=\"spacingAndGlyphs\">later executions reuse the linked call site (fast)</text></svg>",
+          "width": 454,
+          "caption": "First execution links the call site; later executions reuse the linked result. The body is a plain private method; the object that implements the interface is generated at run time.",
+          "alt": "compile time 1st execution LambdaMetafactory | call site linked | lambda body -> private method invokedynamic bootstraps generates class | later executions reuse the linked call site (fast)"
+        },
+        {
+          "type": "markdown",
+          "text": "How it works at run time:\n\n1. The first time the JVM executes an `invokedynamic` instruction, it calls its **bootstrap method**, listed in the class file's `BootstrapMethods` attribute. For lambdas this is `LambdaMetafactory.metafactory`.\n2. The metafactory receives the target interface (`Op`), the method handle for the synthetic body (`REF_invokeStatic` `Lam3.lambda$main$0`) and the captured arguments' types. It spins up a small hidden class at run time that implements the interface and delegates to the body.\n3. It returns a `CallSite`. The JVM permanently links that instruction to it, so later executions skip the bootstrap and, with no captured variables, can hand back one shared instance.\n\nWhy not inner classes? An anonymous class is fixed at compile time: one `.class` file per lambda to load, verify and keep in Metaspace, even if never run. With `invokedynamic` the compiler emits a *recipe* and the strategy is chosen by the runtime. The translation can improve across JDK releases without recompiling your code; this is the same trick used for string concatenation (`makeConcatWithConstants`, visible in the `javap` output above). The cost is some startup work on the first use of each lambda, which is one reason a Java program that uses many lambdas starts a little slower on a cold JVM and why AOT caching features target it."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Lambda classes are *hidden classes*: you cannot find them by name, they do not show up in `Class.forName`, and in a stack trace they appear as frames like `Lam2$$Lambda/0x000...run`, usually filtered out. The synthetic body method `lambda$main$0` does appear in stack traces; that is the frame you will read when a lambda throws."
+        },
+        {
+          "type": "markdown",
+          "text": "### Pitfalls and good practice\n\n- **Keep lambdas short.** More than three or four lines: extract a named method and use a method reference. A name documents intent and gives you a clean stack frame.\n- **Do not capture what you do not need.** A lambda that uses an instance field or method captures `this`. If you store it in a long-lived registry (a listener list, a cache), you keep the whole enclosing object alive: the same leak pattern as an inner class.\n- **Checked exceptions** cannot cross a standard functional interface. Wrap in an unchecked exception or use your own interface (see `Retry` above).\n- **Avoid overloads that differ only in functional interface type** (`submit(Runnable)` vs `submit(Callable)`): lambdas are often ambiguous between them. `ExecutorService.submit` gets away with it only because a lambda with a return value cannot be a `Runnable`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How are lambdas different from anonymous inner classes? (1) `this` refers to the enclosing instance, not the lambda. (2) A lambda is compiled to a private synthetic method plus an `invokedynamic` call site bootstrapped by `LambdaMetafactory`; an anonymous class is a separate `.class` file loaded at class-load time. (3) A lambda can only implement a functional interface (one abstract method); an anonymous class can extend a class or implement any interface and can hold state. (4) A lambda's identity is unspecified (it may be cached); an anonymous class creates a new object each time."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why must captured local variables be effectively final? The lambda gets a copy of the value, and it may run later or on another thread after the frame is gone. If the variable could change, the copy and the original would silently disagree, or threads would race on a stack slot. The rule turns the problem into a compile-time error. Fields are not restricted because they live on the heap, not in the frame."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A lambda is an instance of a functional interface, whose type comes from the context (target typing).\n\n- Memorise the five core shapes: `Function`, `Predicate`, `Consumer`, `Supplier`, and the operator variants; the rest are `Bi`/primitive variations.\n- Captured locals must be effectively final; `this` in a lambda is the enclosing instance.\n- There are four method reference kinds; the unbound one (`String::length`) takes the receiver as the first argument.\n- Lambdas compile to a private synthetic method plus `invokedynamic` and `LambdaMetafactory`, not to inner class files."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-3",
+      "type": "concept",
+      "title": "Streams: Fundamentals",
+      "subtopicId": "7-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A loop tells the computer *how* to process data: create an accumulator, iterate, test, add. A stream pipeline states *what* you want: \"the titles of the long books, upper-cased\". Streams (Java 8, package `java.util.stream`) are a way to describe a computation over a sequence of elements as a pipeline of steps, and then let the library run it. They are not a data structure: a stream stores nothing, it is a view over a source that carries a recipe.\n\n### Anatomy of a pipeline\n\nEvery pipeline has three parts:\n\n1. A **source** that produces elements: a collection (`list.stream()`), an array (`Arrays.stream(a)`), a generator (`Stream.iterate`), a range (`IntStream.range`), a file (`Files.lines`), and so on.\n2. Zero or more **intermediate operations** (`filter`, `map`, `sorted`, `distinct`, `limit`, `flatMap`, `peek` ...). Each returns a new stream. They are lazy: calling them does no work.\n3. Exactly one **terminal operation** (`collect`, `toList`, `forEach`, `count`, `reduce`, `findFirst`, `anyMatch`, `sum` ...). It triggers the whole pipeline and produces a result or a side effect."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 110.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 38.0 L73.0 38.0 C74.7 38.0 76.0 36.7 76.0 35.0 L76.0 5.0 C76.0 3.3 74.7 2.0 73.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M76.0 20.0 L96.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M170.0 20.0 L190.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M264.0 20.0 L284.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M358.0 20.0 L378.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M96.0 20.0 L90.6 17.4 L90.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M99.0 38.0 L167.0 38.0 C168.7 38.0 170.0 36.7 170.0 35.0 L170.0 5.0 C170.0 3.3 168.7 2.0 167.0 2.0 L99.0 2.0 C97.3 2.0 96.0 3.3 96.0 5.0 L96.0 35.0 C96.0 36.7 97.3 38.0 99.0 38.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M190.0 20.0 L184.6 17.4 L184.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M193.0 38.0 L261.0 38.0 C262.7 38.0 264.0 36.7 264.0 35.0 L264.0 5.0 C264.0 3.3 262.7 2.0 261.0 2.0 L193.0 2.0 C191.3 2.0 190.0 3.3 190.0 5.0 L190.0 35.0 C190.0 36.7 191.3 38.0 193.0 38.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M284.0 20.0 L278.6 17.4 L278.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M287.0 38.0 L355.0 38.0 C356.7 38.0 358.0 36.7 358.0 35.0 L358.0 5.0 C358.0 3.3 356.7 2.0 355.0 2.0 L287.0 2.0 C285.3 2.0 284.0 3.3 284.0 5.0 L284.0 35.0 C284.0 36.7 285.3 38.0 287.0 38.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M378.0 20.0 L372.6 17.4 L372.6 22.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M381.0 38.0 L449.0 38.0 C450.7 38.0 452.0 36.7 452.0 35.0 L452.0 5.0 C452.0 3.3 450.7 2.0 449.0 2.0 L381.0 2.0 C379.3 2.0 378.0 3.3 378.0 5.0 L378.0 35.0 C378.0 36.7 379.3 38.0 381.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"28.5\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.1\" lengthAdjust=\"spacingAndGlyphs\">source</text><text x=\"311.0\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"20.1\" lengthAdjust=\"spacingAndGlyphs\">sorted</text><text x=\"404.7\" y=\"18.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"20.6\" lengthAdjust=\"spacingAndGlyphs\">collect</text><text x=\"125.7\" y=\"22.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.6\" lengthAdjust=\"spacingAndGlyphs\">filter</text><text x=\"220.0\" y=\"22.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.0\" lengthAdjust=\"spacingAndGlyphs\">map</text><text x=\"19.8\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.4\" lengthAdjust=\"spacingAndGlyphs\">list.stream()</text><text x=\"310.4\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.2\" lengthAdjust=\"spacingAndGlyphs\">barrier</text><text x=\"401.8\" y=\"26.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"26.4\" lengthAdjust=\"spacingAndGlyphs\">terminal</text><text x=\"62.5\" y=\"54.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"178.9\" lengthAdjust=\"spacingAndGlyphs\">each element flows through filter and map one at a time</text><text x=\"297.3\" y=\"54.0\" font-size=\"6.8\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"47.3\" lengthAdjust=\"spacingAndGlyphs\">must see every</text><text x=\"301.4\" y=\"64.0\" font-size=\"6.8\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"39.1\" lengthAdjust=\"spacingAndGlyphs\">element first</text><text x=\"145.6\" y=\"94.0\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"211.7\" lengthAdjust=\"spacingAndGlyphs\">nothing runs until the terminal operation is called (lazy)</text></svg>",
+          "width": 454,
+          "caption": "Elements flow one at a time through the whole chain (vertical processing); stateful operations such as sorted are barriers that must see every element first.",
+          "alt": "source sorted collect | filter map | list.stream() barrier terminal | each element flows through filter and map one at a time must see every | element first | nothing runs until the terminal operation is called (lazy)"
+        },
+        {
+          "type": "markdown",
+          "text": "Because of laziness, the library can fuse all the steps into a single pass over the data and stop early. The following program proves it with `peek`, which calls a consumer on each element as it flows by (intended for debugging; do not put real logic in it)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.stream.*;\n\npublic class Str1 {\n    public static void main(String[] args) {\n        List<String> names = List.of(\"kiwi\", \"apple\", \"fig\", \"banana\", \"cherry\", \"date\");\n\n        // 1. nothing runs until the terminal operation\n        Stream<String> pipeline = names.stream()\n            .peek(s -> System.out.println(\"  peek1 \" + s))\n            .filter(s -> s.length() > 3)\n            .peek(s -> System.out.println(\"  peek2 \" + s))\n            .map(String::toUpperCase);\n        System.out.println(\"pipeline built, nothing printed yet\");\n        List<String> out = pipeline.limit(2).toList();\n        System.out.println(out);\n\n        // 2. one-shot\n        Stream<String> s = names.stream();\n        s.count();\n        try { s.count(); } catch (IllegalStateException e) { System.out.println(e.getMessage()); }\n\n        // 3. sources\n        System.out.println(IntStream.rangeClosed(1, 5).boxed().toList());\n        System.out.println(Stream.iterate(1, x -> x * 2).limit(8).toList());\n        System.out.println(Stream.iterate(1, x -> x < 100, x -> x * 3).toList());\n        System.out.println(Arrays.stream(new int[]{4, 5, 6}).sum());\n        System.out.println(\"a-b-c\".chars().filter(Character::isLetter).count());\n        System.out.println(Stream.of(\"x\", \"y\").collect(Collectors.joining(\"+\")));\n\n        // 4. flatMap and mapMulti\n        List<List<Integer>> nested = List.of(List.of(1, 2), List.of(), List.of(3));\n        System.out.println(nested.stream().flatMap(List::stream).toList());\n        System.out.println(Stream.of(1, 2, 3).<Integer>mapMulti((x, sink) -> {\n            if (x != 2) { sink.accept(x); sink.accept(x * 10); }\n        }).toList());\n\n        // 5. takeWhile / dropWhile (ordered)\n        System.out.println(Stream.of(1, 2, 3, 10, 1, 2).takeWhile(x -> x < 5).toList());\n        System.out.println(Stream.of(1, 2, 3, 10, 1, 2).dropWhile(x -> x < 5).toList());\n\n        // 6. stateful: sorted, distinct\n        System.out.println(names.stream().sorted(Comparator.comparing(String::length)\n            .thenComparing(Comparator.naturalOrder())).toList());\n        System.out.println(Stream.of(3, 1, 3, 2, 1).distinct().toList());\n\n        // 7. reduce and terminal ops\n        System.out.println(Stream.of(1, 2, 3, 4).reduce(0, Integer::sum));\n        System.out.println(Stream.of(1, 2, 3, 4).reduce(Integer::max));\n        System.out.println(names.stream().anyMatch(x -> x.startsWith(\"f\")));\n        System.out.println(names.stream().allMatch(x -> x.length() > 3));\n        System.out.println(names.stream().noneMatch(String::isEmpty));\n        System.out.println(names.stream().filter(x -> x.length() == 6).findFirst());\n        System.out.println(IntStream.of(4, 8, 15).summaryStatistics());\n        System.out.println(IntStream.range(0, 5).mapToObj(i -> \"i\" + i)\n            .collect(Collectors.joining(\",\", \"[\", \"]\")));\n        System.out.println(names.stream().mapToInt(String::length).average().getAsDouble());\n\n        // 8. toList() is unmodifiable; collect(toList()) is not guaranteed either way\n        List<String> t = names.stream().toList();\n        try { t.add(\"x\"); }\n        catch (UnsupportedOperationException e) { System.out.println(\"toList: unmodifiable\"); }\n    }\n}",
+          "title": "Str1.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Str1.java\npipeline built, nothing printed yet\n  peek1 kiwi\n  peek2 kiwi\n  peek1 apple\n  peek2 apple\n[KIWI, APPLE]\nstream has already been operated upon or closed\n[1, 2, 3, 4, 5]\n[1, 2, 4, 8, 16, 32, 64, 128]\n[1, 3, 9, 27, 81]\n15\n3\nx+y\n[1, 2, 3]\n[1, 10, 3, 30]\n[1, 2, 3]\n[10, 1, 2]\n[fig, date, kiwi, apple, banana, cherry]\n[3, 1, 2]\n10\nOptional[4]\ntrue\nfalse\ntrue\nOptional[banana]\nIntSummaryStatistics{count=3, sum=27, min=4, average=9.000000, max=15}\n[i0,i1,i2,i3,i4]\n4.666666666666667\ntoList: unmodifiable",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- \"pipeline built, nothing printed yet\": creating the pipeline ran no `peek`. Work started only at `toList()`.\n- The order is `peek1 kiwi, peek2 kiwi, peek1 apple, peek2 apple`: each element travels through the *entire* chain before the next one starts. It is not \"filter everything, then map everything\".\n- After `limit(2)` was satisfied, the source stopped being consumed: `fig`, `banana`, `cherry` and `date` never appeared. This is **short-circuiting**.\n- The elements that were filtered out never reach `peek2` (in this run only `kiwi` and `apple` got that far, because `limit(2)` ended the traversal).\n- Reusing a stream throws `IllegalStateException: stream has already been operated upon or closed`. A stream is **one-shot**. If you need to traverse twice, create a new stream from the source, or keep a `Supplier<Stream<T>>`.\n\n### Creating streams"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Source",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`collection.stream()`",
+              "`any Collection; also parallelStream()`"
+            ],
+            [
+              "`Arrays.stream(array) / Stream.of(a, b, c)`",
+              "`arrays and literals; int[] gives an IntStream`"
+            ],
+            [
+              "`IntStream.range(0, n) / rangeClosed(1, n)`",
+              "`half-open vs closed; the loop replacement`"
+            ],
+            [
+              "`Stream.iterate(seed, f)`",
+              "`infinite; use limit or the 3-argument form with a` `stop predicate`"
+            ],
+            [
+              "`Stream.iterate(seed, hasNext, next)`",
+              "`Java 9, like a for loop`"
+            ],
+            [
+              "`Stream.generate(supplier)`",
+              "`infinite stream of supplied values`"
+            ],
+            [
+              "`string.chars() / string.lines()`",
+              "`IntStream of chars / Stream of lines`"
+            ],
+            [
+              "`Files.lines(path)`",
+              "`lazily reads a file; close it with try-with-resources`"
+            ],
+            [
+              "`Stream.concat(a, b), Stream.empty(),` `Stream.ofNullable(x)`",
+              "`small helpers`"
+            ]
+          ],
+          "caption": "Common stream sources."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Prefer the primitive streams `IntStream`, `LongStream` and `DoubleStream` for numbers. They avoid boxing and have `sum()`, `average()`, `max()` and `summaryStatistics()`. Convert with `mapToInt`, `mapToObj`, `boxed()`, `asLongStream()`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Intermediate operations\n\nThe ones you use daily: `filter(Predicate)` keeps matching elements; `map(Function)` transforms each element; `flatMap(Function<T, Stream<R>>)` maps each element to a stream and concatenates them; `distinct()`, `sorted()`, `limit(n)`, `skip(n)`, `peek`, `takeWhile`, `dropWhile`, `mapMulti`.\n\n`flatMap` is where people stall. `map` is one-to-one; `flatMap` is one-to-many (or one-to-none): each element becomes a stream, and the streams are joined into one. With `List<List<Integer>>`, `flatMap(List::stream)` gives a flat stream of integers, and an inner empty list simply contributes nothing. It is the stream counterpart of `Optional.flatMap` from the previous chapter.\n\n`mapMulti` (Java 16) is the imperative cousin. Instead of returning a stream, your function receives each element plus a sink and may push zero, one or many outputs. It avoids allocating a small stream per element and is handy when the \"expansion\" is conditional. Because of type inference, you often have to give the output type explicitly (`<Integer>mapMulti`).\n\n`takeWhile` **and** `dropWhile` (Java 9) work on the encounter order: `takeWhile` returns the longest prefix satisfying the predicate and stops; `dropWhile` discards that prefix and returns the rest. Unlike `filter`, they stop evaluating the predicate at the first failure, so on `1, 2, 3, 10, 1, 2` with `x < 5`, `takeWhile` gives `[1, 2, 3]` and `dropWhile` gives `[10, 1, 2]` (see the output above). Use them only on ordered streams.\n\n### Terminal operations and short-circuiting\n\nA **short-circuiting** operation can finish without consuming the whole stream: `findFirst`, `findAny`, `anyMatch`, `allMatch`, `noneMatch`, and the intermediate `limit`/`takeWhile`. This is what makes infinite streams usable: `Stream.iterate(1, x -> x * 2).limit(8)` is fine; `Stream.iterate(...).count()` never returns.\n\n`reduce` folds elements into one value. `reduce(0, Integer::sum)` takes an *identity* and an associative function and returns the value itself; `reduce(Integer::max)` has no identity, so it returns an `Optional` (the stream might be empty). The three-argument form `reduce(identity, accumulator, combiner)` exists for parallel streams and for when the result type differs from the element type (see `Str2` below, where it sums lengths). For most real tasks a collector (next chapter) or a primitive `sum()` is clearer.\n\n### Statefulness, ordering and what \"behavioural parameters\" must obey\n\nIntermediate operations are either **stateless** (`filter`, `map`, `flatMap`, `peek`: each element is handled on its own) or **stateful** (`sorted`, `distinct`, `limit`, `skip`: need to remember or see other elements). `sorted` is a full barrier: it cannot emit anything until the upstream is exhausted. The second program shows that, and the other rules the Javadoc imposes on lambdas passed to stream operations."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.stream.*;\n\npublic class Str2 {\n    public static void main(String[] args) {\n        // short-circuit visits\n        Stream.of(\"a\", \"b\", \"c\", \"d\").peek(x -> System.out.println(\"visit \" + x))\n              .filter(x -> x.compareTo(\"b\") >= 0).findFirst().ifPresent(System.out::println);\n\n        // sorted is a barrier\n        Stream.of(3, 1, 2).peek(x -> System.out.println(\"before sort \" + x)).sorted()\n              .peek(x -> System.out.println(\"after sort \" + x)).limit(1).forEach(x -> {});\n\n        // vertical processing\n        Stream.of(\"a\", \"b\").peek(x -> System.out.println(\"p1 \" + x)).map(String::toUpperCase)\n              .forEach(x -> System.out.println(\"p2 \" + x));\n\n        // interference: modifying the source during the pipeline\n        List<Integer> src = new ArrayList<>(List.of(1, 2, 3));\n        try { src.stream().forEach(x -> { if (x == 2) src.add(99); }); }\n        catch (ConcurrentModificationException e) { System.out.println(\"CME\"); }\n\n        // stateful lambda: wrong\n        List<Integer> sink = new ArrayList<>();\n        IntStream.range(0, 5).forEach(sink::add);\n        System.out.println(sink);\n        // unordered source: HashSet\n        TreeSet<Integer> sorted = Stream.of(5, 3, 8)\n            .collect(Collectors.toCollection(TreeSet::new));\n        System.out.println(sorted);\n        // infinite stream with limit\n        System.out.println(Stream.generate(() -> \"z\").limit(3).collect(Collectors.joining()));\n        // reduce with identity and combiner\n        System.out.println(Stream.of(\"a\", \"bb\", \"ccc\")\n            .reduce(0, (acc, s) -> acc + s.length(), Integer::sum));\n        // primitive boxed\n        System.out.println(IntStream.rangeClosed(1, 5).mapToObj(Integer::toString)\n            .collect(Collectors.joining(\"*\")));\n        System.out.println(LongStream.rangeClosed(1, 20).reduce(1L, (a, b) -> a * b));\n    }\n}",
+          "title": "Str2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Str2.java\nvisit a\nvisit b\nb\nbefore sort 3\nbefore sort 1\nbefore sort 2\nafter sort 1\np1 a\np2 A\np1 b\np2 B\nCME\n[0, 1, 2, 3, 4]\n[3, 5, 8]\nzzz\n6\n1*2*3*4*5\n2432902008176640000",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `findFirst` stopped as soon as the first element that matched (`b`) arrived: `visit c` and `visit d` never printed.\n- With `sorted()`, all three \"before sort\" lines print before any \"after sort\" line, and `limit(1)` then needed only one element downstream. Every element had to be pulled upstream first. This is why `sorted()` on a huge or infinite stream is a trap.\n- Vertical processing is visible in the third block: `p1 a, p2 A, p1 b, p2 B`.\n- Modifying the source collection while the pipeline runs is **interference** and breaks the contract. For an `ArrayList` source the stream throws `ConcurrentModificationException` (the message is \"CME\" in our output, printed by the catch block). Do not rely on this detection; just do not do it.\n- `forEach(sink::add)` into an `ArrayList` works sequentially but is a side effect on shared state; on a parallel stream it would corrupt the list. Use `collect` or `toList()`.\n\nThe rules for behavioural parameters (lambdas you pass in) are short and worth memorising:\n\n- They should be **non-interfering**: do not modify the stream's source during the pipeline.\n- They should be **stateless**: the result must not depend on anything that may change during execution, such as a counter or a `HashSet` you are filling. Otherwise results differ between sequential and parallel runs and between runs.\n- Side effects are best confined to `forEach` at the end; `peek` is for debugging.\n\n### Encounter order\n\nA stream has an **encounter order** if its source does (a `List`, an array, `Stream.of`; not a `HashSet`). `sorted` imposes one; `unordered()` removes the requirement. Most operations preserve it. This matters in two places: `findFirst`, `limit` and `takeWhile` are defined in terms of order (so they are costlier on parallel streams), and `forEach` on a parallel stream does not respect it (`forEachOrdered` does, at a price).\n\n### toList() versus collect(Collectors.toList())\n\n`Stream.toList()` (Java 16) returns an **unmodifiable** list and permits `null` elements; the last line of the first program showed `UnsupportedOperationException` on `add`. `collect(Collectors.toList())` returns \"a `List`\" with no guarantees about mutability or type (in practice an `ArrayList`). Use `toList()` by default; use `collect(Collectors.toCollection(ArrayList::new))` when you really need a mutable list. Both are covered in the next chapter.\n\n### Streams versus loops\n\nStreams shine for filter-transform-collect pipelines, grouping and aggregation. A plain loop is better when you need to mutate local state, early-`return` from a method, handle checked exceptions, or when the pipeline would have more than five or six steps with nested lambdas. Streams are not faster: for small collections an equivalent loop is typically the same speed or quicker; the benefit is readability. The final chapter of this Part returns to this trade-off."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not use a stream when you only need `forEach`. `list.stream().forEach(...)` is just `list.forEach(...)` with extra steps. And never write `stream.map(x -> { sideEffect(x); return x; })` expecting it to run: with a terminal operation like `count()` the JVM may legitimately skip the whole pipeline when it can compute the answer directly from the source size (since Java 9 `list.stream().map(...).count()` does not run `map` on a sized source)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between intermediate and terminal operations, and why are streams lazy? Intermediate operations return a new stream and only describe the work; the terminal operation triggers execution. Laziness lets the library fuse the stages into one pass with no intermediate collections, and short-circuit (`limit`, `findFirst`, `anyMatch`) so only as many elements are processed as needed. It also makes infinite streams usable."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Can you reuse a stream? What is the difference between `map` and `flatMap`? No: a stream can be consumed only once; a second terminal operation throws `IllegalStateException`. `map` transforms each element one-to-one; `flatMap` maps each element to a stream and flattens the results into one, so it is one-to-many."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A stream is a lazy, one-shot pipeline: source, intermediate operations, one terminal operation.\n\n- Nothing runs until the terminal operation; elements flow through the chain one at a time and short-circuit operations stop early.\n- `map` is one-to-one, `flatMap` is one-to-many, `mapMulti` is the push-style alternative; `takeWhile`/`dropWhile` act on prefixes.\n- Stateful operations (`sorted`, `distinct`) are barriers; lambdas must be non-interfering and stateless.\n- Prefer `toList()`, primitive streams and collectors over manual mutation; use a loop when a loop is clearer."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-4",
+      "type": "concept",
+      "title": "Collectors",
+      "subtopicId": "7-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "`collect` is the terminal operation that turns a stream back into something concrete: a list, a map, a string, a summary. It takes a **Collector**, a recipe for mutable reduction: create a container, add elements to it, merge containers (for parallel runs), and optionally transform the container into the final result. The `Collectors` utility class provides about forty ready-made recipes. Knowing five of them well covers most of what a backend developer writes: `toList`/`toSet`, `toMap`, `groupingBy`, `partitioningBy` and `joining`.\n\nThe examples use a small bookshop."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.stream.*;\n\npublic class Col1 {\n    enum Category { FICTION, SCIENCE, HISTORY }\n    record Book(String title, String author, Category cat, int pages, double price) {}\n\n    static void show(Object o) { System.out.println(o); }\n\n    public static void main(String[] args) {\n        List<Book> books = List.of(\n            new Book(\"Dune\", \"Herbert\", Category.FICTION, 612, 12.5),\n            new Book(\"Emma\", \"Austen\", Category.FICTION, 474, 8.0),\n            new Book(\"Cosmos\", \"Sagan\", Category.SCIENCE, 396, 15.0),\n            new Book(\"Origin\", \"Darwin\", Category.SCIENCE, 502, 11.0),\n            new Book(\"SPQR\", \"Beard\", Category.HISTORY, 608, 18.0),\n            new Book(\"Persuasion\", \"Austen\", Category.FICTION, 249, 7.5));\n\n        // groupingBy: classifier only -> Map<K, List<T>>\n        Map<Category, List<String>> titlesByCat = books.stream().collect(\n            Collectors.groupingBy(Book::cat, TreeMap::new,\n                Collectors.mapping(Book::title, Collectors.toList())));\n        show(titlesByCat);\n        // downstream collectors\n        show(books.stream().collect(\n            Collectors.groupingBy(Book::cat, TreeMap::new, Collectors.counting())));\n        show(books.stream().collect(\n            Collectors.groupingBy(Book::cat, TreeMap::new, Collectors.averagingInt(Book::pages))));\n        Map<Category, Optional<Book>> priciest = books.stream().collect(\n            Collectors.groupingBy(Book::cat, TreeMap::new,\n                Collectors.maxBy(Comparator.comparingDouble(Book::price))));\n        show(priciest.get(Category.FICTION).map(Book::title).orElse(\"?\"));\n\n        // partitioningBy: always two keys\n        Map<Boolean, Long> longVsShort = books.stream()\n            .collect(Collectors.partitioningBy(b -> b.pages() > 450, Collectors.counting()));\n        show(longVsShort);\n\n        // joining\n        show(books.stream().map(Book::title).sorted()\n            .collect(Collectors.joining(\", \", \"{\", \"}\")));\n\n        // summarizing\n        DoubleSummaryStatistics st = books.stream()\n            .collect(Collectors.summarizingDouble(Book::price));\n        System.out.printf(\"min=%.1f max=%.1f avg=%.2f sum=%.1f n=%d%n\",\n            st.getMin(), st.getMax(), st.getAverage(), st.getSum(), st.getCount());\n\n        // toMap and its duplicate-key pitfall\n        try {\n            books.stream().collect(Collectors.toMap(Book::author, Book::title));\n        } catch (IllegalStateException e) { show(e.getMessage()); }\n        Map<String, String> merged = books.stream().collect(\n            Collectors.toMap(Book::author, Book::title, (a, b) -> a + \"|\" + b, TreeMap::new));\n        show(merged);\n\n        // teeing: two collectors, one pass\n        var minMax = books.stream().collect(Collectors.teeing(\n            Collectors.minBy(Comparator.comparingInt(Book::pages)),\n            Collectors.maxBy(Comparator.comparingInt(Book::pages)),\n            (mn, mx) -> mn.get().title() + \"..\" + mx.get().title()));\n        show(minMax);\n\n        // collectingAndThen, toUnmodifiableList, filtering, flatMapping\n        List<String> frozen = books.stream().map(Book::author).distinct()\n            .collect(Collectors.collectingAndThen(Collectors.toList(),\n                                                  Collections::unmodifiableList));\n        show(frozen);\n        show(books.stream().collect(\n            Collectors.groupingBy(Book::cat, TreeMap::new,\n                Collectors.filtering(b -> b.price() > 10, Collectors.counting()))));\n\n        // groupingBy produces HashMap (order unspecified) unless you pass a factory\n        Map<String, Integer> pagesByAuthor = books.stream().collect(\n            Collectors.groupingBy(Book::author, TreeMap::new, Collectors.summingInt(Book::pages)));\n        show(pagesByAuthor);\n    }\n}",
+          "title": "Col1.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Col1.java\n{FICTION=[Dune, Emma, Persuasion], SCIENCE=[Cosmos, Origin], HISTORY=[SPQR]}\n{FICTION=3, SCIENCE=2, HISTORY=1}\n{FICTION=445.0, SCIENCE=449.0, HISTORY=608.0}\nDune\n{false=2, true=4}\n{Cosmos, Dune, Emma, Origin, Persuasion, SPQR}\nmin=7.5 max=18.0 avg=12.00 sum=72.0 n=6\nDuplicate key Austen (attempted merging values Emma and Persuasion)\n{Austen=Emma|Persuasion, Beard=SPQR, Darwin=Origin, Herbert=Dune, Sagan=Cosmos}\nPersuasion..Dune\n[Herbert, Austen, Sagan, Darwin, Beard]\n{FICTION=1, SCIENCE=2, HISTORY=1}\n{Austen=723, Beard=608, Darwin=502, Herbert=612, Sagan=396}",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "### groupingBy: the workhorse\n\n`groupingBy(classifier)` builds a `Map<K, List<T>>`: the classifier function computes the key for each element, equal keys share a bucket. The real power is the second argument, a **downstream collector** applied to each bucket. The elements of a group are not just collected into a list; they flow into whatever collector you give:\n\n- `counting()` gives `Map<K, Long>` (group sizes).\n- `summingInt(f)`, `averagingInt(f)`, `summarizingDouble(f)` give per-group statistics.\n- `mapping(f, downstream)` transforms elements before collecting them (titles instead of books).\n- `filtering(p, downstream)` and `flatMapping(f, downstream)` (Java 9) filter or flatten inside the group. Note the difference from a `filter` before the grouping: `filtering` keeps a group with a count of 0, a pre-`filter` drops the group entirely. In the output above, `HISTORY=1` stays even though only one book matched; with a pre-filter on a category that had no match the key would be missing.\n- `maxBy(comparator)` / `minBy` give `Optional<T>` per group.\n- Another `groupingBy` gives multi-level grouping, `Map<K1, Map<K2, V>>`.\n\nThe three-argument form `groupingBy(classifier, mapFactory, downstream)` lets you choose the map type. The default is a `HashMap`, with no ordering guarantee; the listing used `TreeMap::new` to keep the output stable. An `EnumMap` factory (`() -> new EnumMap<>(Category.class)`) is the right choice for an enum key."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "If you pass `collect(groupingBy(f, TreeMap::new, ...))` directly as the argument of `System.out.println(...)`, the compiler reports \"inference variable R has incompatible bounds\", because `println` is overloaded and inference gets confused. That is why `Col1` prints through a tiny `show(Object)` helper. In your own code, assign the result to a typed variable first."
+        },
+        {
+          "type": "markdown",
+          "text": "### partitioningBy\n\n`partitioningBy(predicate)` is a `groupingBy` with a boolean classifier, with two differences: the map always contains both keys `false` and `true` (even when a side is empty, with an empty list or count 0), and it accepts a downstream collector in the same way. Use it when you want \"the ones that match and the ones that do not\".\n\n### joining, summarizing, collectingAndThen\n\n`joining(delimiter, prefix, suffix)` concatenates `CharSequence` elements using a `StringBuilder`, so map to strings first. `summarizingInt/Long/Double` return a statistics object with count, sum, min, max and average in one pass. `collectingAndThen(downstream, finisher)` applies a function to the final result: the classic use is wrapping a list in an unmodifiable view. Since Java 10 there are also `toUnmodifiableList/Set/Map` and, since 16, `Stream.toList()`.\n\n### toMap and its pitfalls\n\n`toMap(keyFn, valueFn)` is convenient and has three well-known traps, two of which the listing triggers:\n\n1. **Duplicate keys** throw `IllegalStateException: Duplicate key Austen (attempted merging values Emma and` `Persuasion)`. If duplicates are possible, provide a *merge function* as the third argument: `(a, b) -> a + \"|\" + b`, or `(a, b) -> a` to keep the first.\n2. **Null values** throw `NullPointerException` (the implementation uses `HashMap.merge`). Wrap with `Optional` or filter them out first. (`Col2` below demonstrates this.)\n3. **The result map is a** `HashMap` with unspecified order. Use the four-argument form with `TreeMap::new` or `LinkedHashMap::new` when order matters.\n\nIf you also need to group and the values are lists, prefer `groupingBy`, which handles duplicate keys by design.\n\n### teeing: two collectors, one pass\n\n`Collectors.teeing(c1, c2, merger)` (Java 12) feeds every element to two collectors and combines their results. It removes the need to traverse a stream twice, which is impossible anyway since a stream is one-shot. The listing used it to get the shortest and longest book in one pass; common uses are \"count and sum\", \"min and max\", or `(sum, count)` to compute an average by hand.\n\n### Writing your own Collector\n\nA `Collector<T, A, R>` has four functions: **supplier** (create the mutable container `A`), **accumulator** (add one element `T`), **combiner** (merge two containers, used by parallel streams) and **finisher** (convert `A` to the result `R`). `Collector.of(...)` builds one from lambdas. If the container is already the result, use the overload without a finisher; it marks the collector `IDENTITY_FINISH`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\nimport java.util.function.*;\nimport java.util.stream.*;\n\npublic class Col2 {\n    /** Collects strings into a \"a;b;c\" string, built by hand to show the four parts. */\n    static Collector<String, StringJoiner, String> semicolon() {\n        return Collector.of(\n            () -> new StringJoiner(\";\"),          // supplier: new mutable container\n            StringJoiner::add,                    // accumulator: fold one element in\n            StringJoiner::merge,                  // combiner: merge two containers (parallel)\n            StringJoiner::toString);              // finisher: container -> result\n    }\n\n    /** Keeps the N largest values. */\n    static Collector<Integer, ?, List<Integer>> topN(int n) {\n        return Collector.of(\n            () -> new PriorityQueue<Integer>(),\n            (pq, x) -> { pq.add(x); if (pq.size() > n) pq.poll(); },\n            (a, b) -> { a.addAll(b); while (a.size() > n) a.poll(); return a; },\n            pq -> pq.stream().sorted(Comparator.reverseOrder()).toList());\n    }\n\n    public static void main(String[] args) {\n        System.out.println(Stream.of(\"a\", \"b\", \"c\").collect(semicolon()));\n        System.out.println(Stream.of(5, 1, 9, 3, 7, 8).collect(topN(3)));\n        System.out.println(IntStream.rangeClosed(1, 1000).parallel().boxed().collect(topN(3)));\n        System.out.println(semicolon().characteristics());\n        // toMap with null value\n        try { Stream.of(\"a\").collect(Collectors.toMap(s -> s, s -> null)); }\n        catch (NullPointerException e) { System.out.println(\"toMap: null value -> NPE\"); }\n        // groupingBy ignores null? no: null key is rejected\n        try { Stream.of(\"a\").collect(Collectors.groupingBy(s -> (String) null)); }\n        catch (NullPointerException e) { System.out.println(\"groupingBy: \" + e.getMessage()); }\n        // unmodifiable\n        List<Integer> u = Stream.of(1, 2).collect(Collectors.toUnmodifiableList());\n        try { u.add(3); }\n        catch (UnsupportedOperationException e) { System.out.println(\"unmodifiable\"); }\n    }\n}",
+          "title": "Col2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Col2.java\na;b;c\n[9, 8, 7]\n[1000, 999, 998]\n[]\ntoMap: null value -> NPE\ngroupingBy: element cannot be mapped to a null key\nunmodifiable",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `topN` keeps a bounded min-heap: every time the heap grows past `n`, the smallest element is removed. The combiner merges two heaps and trims, which is why the parallel run over 1000 numbers returns the same `[1000, 999, 998]`.\n- A correct combiner is not optional. If it were wrong (say, it returned the first container), the sequential run would still look fine and only the parallel one would give wrong answers. Test collectors with `.parallel()`.\n- `groupingBy` rejects a `null` key with `element cannot be mapped to a null key`.\n- The empty characteristics set `[]` means: not concurrent, not unordered, and the finisher is needed."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Before writing a custom collector, check whether `teeing`, `mapping`, `reducing`, `collectingAndThen` or a chain of existing ones already does the job. Custom collectors are mainly for a library or for a hot path where a purpose-built accumulator matters. Java 24's gatherers (see the last chapter of this Part) cover the \"intermediate operation\" side that collectors cannot."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Reports and API responses are mostly `groupingBy` pipelines: \"orders per customer\", \"revenue per day\", \"top 5 products per category\". In a Spring service you typically convert entities to DTO records in a `map`, group, and return the `Map<String, List<Dto>>` as JSON. If the data lives in a database, do the aggregation in SQL: a stream pipeline over one million rows loaded into memory is a code smell."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you group a list of employees by department and get the average salary per department? `employees.stream().collect(Collectors.groupingBy(Employee::dept,` `Collectors.averagingDouble(Employee::salary)))` gives `Map<Dept, Double>`. The first argument classifies, the second is a downstream collector applied per group. Pass `TreeMap::new` as the middle argument if you need sorted keys."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What can go wrong with `Collectors.toMap`? Duplicate keys throw `IllegalStateException` unless a merge function is given; a `null` value throws `NullPointerException`; the map type is an unspecified `HashMap` unless you pass a supplier."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A `Collector` is a four-part recipe (supplier, accumulator, combiner, finisher) for mutable reduction.\n\n- `groupingBy` with a downstream collector (`counting`, `summingInt`, `mapping`, `filtering`...) covers most aggregation; pass a map factory for ordering.\n- `partitioningBy` always yields both `true` and `false`; `joining` builds strings; `teeing` computes two things in one pass.\n- `toMap` fails on duplicate keys and null values unless you handle them; `toList()` on a stream gives an unmodifiable list.\n- Custom collectors need a correct combiner; test them with `.parallel()`."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Lambdas and Functional Interfaces"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the type of the expression `x -> x + 1`?",
+              "answer": "It has no standalone type; it takes the type of its target, which must be a functional interface (for example `Function<Integer,Integer>` or `UnaryOperator<Integer>`)."
+            },
+            {
+              "question": "What does this print? `Function<Integer,Integer> f = x -> x + 1; Function<Integer,Integer> g = x -> x *` `2; System.out.println(f.compose(g).apply(3));`",
+              "answer": "`7`. `compose` runs `g` first (3 times 2 = 6) and then `f` (6+1 = 7)."
+            },
+            {
+              "question": "Why does this not compile, and what is a good fix? `int n = 0; list.forEach(s -> n++);`",
+              "answer": "`n` is modified so it is not effectively final. Fix: avoid mutation, e.g. `int n = list.size()` or `list.stream().mapToInt(String::length).sum()`; for threads use `AtomicInteger`."
+            },
+            {
+              "question": "Name the four kinds of method reference and give a one-line example of each.",
+              "answer": "Static `Integer::parseInt`; bound `System.out::println`; unbound `String::length`; constructor `ArrayList::new` (also `int[]::new`)."
+            },
+            {
+              "question": "In a class `Box` with a field `int size`, does `this.size` inside a lambda in one of its methods refer to the lambda or to the `Box`? What about inside an anonymous class?",
+              "answer": "In a lambda `this` is the enclosing `Box`, so `this.size` works. In an anonymous class `this` is the anonymous object, and you must write `Box.this.size`."
+            },
+            {
+              "question": "How many extra `.class` files does the compiler produce for a class containing three lambdas, and where does the lambda code go?",
+              "answer": "None. The bodies become private synthetic methods (`lambda$main$0` and so on) inside the same class; the interface implementations are hidden classes generated at run time via `invokedynamic`."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Streams: Fundamentals"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `Stream.of(1, 2, 3).peek(x -> System.out.print(x)).map(x -> x * 2);`",
+              "answer": "Nothing. There is no terminal operation, so no element is ever processed."
+            },
+            {
+              "question": "What does this print? `Stream.of(5, 6, 7, 1, 8).takeWhile(x -> x > 4).toList()` and what would `filter(x ->` `x > 4)` give instead?",
+              "answer": "`[5, 6, 7]`; `filter` would give `[5, 6, 7, 8]` because it keeps testing after the first failure."
+            },
+            {
+              "question": "A colleague writes `Stream<String> s = list.stream(); s.forEach(...); s.forEach(...);`. What happens?",
+              "answer": "The second `forEach` throws `IllegalStateException: stream has already been operated upon or closed`."
+            },
+            {
+              "question": "Why is `Stream.iterate(1, x -> x + 1).sorted().limit(3).toList()` a bug?",
+              "answer": "`sorted()` is a barrier needing all elements, and the source is infinite, so it never finishes (it eventually runs out of memory)."
+            },
+            {
+              "question": "Choose `map` or `flatMap`: turning `List<Order>` into all `OrderLine`s when `Order.lines()` returns a `List<OrderLine>`.",
+              "answer": "`flatMap(o -> o.lines().stream())`, because each order maps to many lines."
+            },
+            {
+              "question": "Why is `IntStream.rangeClosed(1, 5).sum()` preferable to `Stream.of(1,2,3,4,5).reduce(0, Integer::sum)`?",
+              "answer": "It uses primitive `int` all the way (no boxing), states the intent directly and is shorter."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Collectors"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does `Stream.of(\"a\", \"bb\", \"cc\").collect(Collectors.groupingBy(String::length,` `Collectors.counting()))` return?",
+              "answer": "A `Map<Integer, Long>` equal to `{1=1, 2=2}`."
+            },
+            {
+              "question": "What is the difference between `groupingBy(f)` and `partitioningBy(p)` regarding keys in the result when no element satisfies `p`?",
+              "answer": "`partitioningBy` always has both `true` and `false` keys (the empty side maps to an empty list / zero); `groupingBy` only has keys for which at least one element exists."
+            },
+            {
+              "question": "What goes wrong here, and how do you fix it? `Stream.of(\"x\", \"x\").collect(Collectors.toMap(s -> s, s ->` `1))`",
+              "answer": "`IllegalStateException: Duplicate key x`. Pass a merge function: `Collectors.toMap(s -> s, s -> 1,` `Integer::sum)`."
+            },
+            {
+              "question": "Name the four functions of a `Collector`. Which one only matters for parallel streams?",
+              "answer": "Supplier, accumulator, combiner, finisher. The combiner is used to merge partial results of parallel streams."
+            },
+            {
+              "question": "What does `r` hold? `String r = Stream.of(1, 2, 3, 4).collect(Collectors.teeing(Collectors.counting(),` `Collectors.summingInt(i -> i), (n, s) -> s + \"/\" + n));`",
+              "answer": "`10/4`."
+            },
+            {
+              "question": "Why is `groupingBy(Employee::dept)` a bad choice if `dept` may be `null`?",
+              "answer": "A `null` classifier result throws `NullPointerException: element cannot be mapped to a null key`. Map nulls to a sentinel such as `\"UNKNOWN\"` first."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

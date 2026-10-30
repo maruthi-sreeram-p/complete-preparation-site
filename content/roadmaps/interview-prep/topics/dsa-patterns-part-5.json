@@ -1,0 +1,1322 @@
+{
+  "source": {
+    "document": "DSA_Patterns.pdf",
+    "pages": "146-176",
+    "planDays": "26–27, 29–31"
+  },
+  "sections": [
+    {
+      "id": "ch-5-1",
+      "type": "concept",
+      "title": "Heaps and Top-K",
+      "subtopicId": "5-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A recurring class of problems requires repeated access to the extremal element of a changing collection: the k largest values, the next task to execute, the running median. In a sorted array each insertion costs O(n) because later elements must be shifted; in an unsorted array each extraction of the extremum costs O(n) because a scan is required. A **heap** (priority queue) supports insertion and extraction in O(log n) and inspection of the extremum in O(1).\n\nThe brute-force solution to \"k largest of n values\" sorts the entire input in O(n log n) time. This performs more work than the specification requires: only k candidates need to be retained. A heap of size k solves the problem in O(n log k) time, which is asymptotically better for small k, and it is the only feasible approach when the values arrive as an unbounded stream.\n\n### The idea\n\nA binary heap is a complete binary tree stored in a plain array. In a **min-heap** every parent is less than or equal to its children, so the smallest element is always at index 0. For the node at index `i`, the parent is at `(i - 1) / 2` and the children are at `2 * i + 1` and `2 * i + 2`. There are no node objects and no pointers, which is why a heap is fast and compact.\n\nTwo operations keep the shape valid. **Sift up** (used by `offer`) puts the new element at the end and swaps it with its parent while it is smaller. **Sift down** (used by `poll`) moves the last element to the root and swaps it with its smaller child while it is larger. Both walk one root-to-leaf path, so both are O(log n)."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 290.3 102.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 56.0 L39.0 56.0 C40.7 56.0 42.0 54.7 42.0 53.0 L42.0 39.0 C42.0 37.3 40.7 36.0 39.0 36.0 L5.0 36.0 C3.3 36.0 2.0 37.3 2.0 39.0 L2.0 53.0 C2.0 54.7 3.3 56.0 5.0 56.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M57.0 22.0 L27.0 36.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M67.0 22.0 L97.0 36.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M45.0 22.0 L79.0 22.0 C80.7 22.0 82.0 20.7 82.0 19.0 L82.0 5.0 C82.0 3.3 80.7 2.0 79.0 2.0 L45.0 2.0 C43.3 2.0 42.0 3.3 42.0 5.0 L42.0 19.0 C42.0 20.7 43.3 22.0 45.0 22.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M85.0 56.0 L119.0 56.0 C120.7 56.0 122.0 54.7 122.0 53.0 L122.0 39.0 C122.0 37.3 120.7 36.0 119.0 36.0 L85.0 36.0 C83.3 36.0 82.0 37.3 82.0 39.0 L82.0 53.0 C82.0 54.7 83.3 56.0 85.0 56.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"59.5\" y=\"14.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">5</text><text x=\"202.0\" y=\"14.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"73.3\" lengthAdjust=\"spacingAndGlyphs\">new value 7 &gt; root 5:</text><text x=\"202.0\" y=\"26.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"46.2\" lengthAdjust=\"spacingAndGlyphs\">pop 5, push 7</text><text x=\"202.0\" y=\"42.0\" font-size=\"7.5\" fill=\"#abe3c4\" font-weight=\"700\" textLength=\"86.3\" lengthAdjust=\"spacingAndGlyphs\">root is the k-th largest</text><text x=\"19.7\" y=\"48.8\" font-size=\"8.0\" fill=\"#e7e9f3\">8</text><text x=\"99.7\" y=\"48.8\" font-size=\"8.0\" fill=\"#e7e9f3\">9</text><text x=\"23.9\" y=\"72.0\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"76.2\" lengthAdjust=\"spacingAndGlyphs\">min-heap of size k = 3</text></svg>",
+          "width": 290,
+          "caption": "A min-heap of size k keeps the k largest values seen so far; the root is the weakest of them, so it is the one to throw out when a better value arrives.",
+          "alt": "5 new value 7 > root 5: | pop 5, push 7 | root is the k-th largest | 8 9 | min-heap of size k = 3"
+        },
+        {
+          "type": "markdown",
+          "text": "Java's `PriorityQueue` is a **min-heap** by default. A max-heap requires a comparator: `new` `PriorityQueue<>(Collections.reverseOrder())` or `(a, b) -> Integer.compare(b, a)`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Cost",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`offer(x) / add(x)`",
+              "O(log n)",
+              "sift up. Null is not allowed."
+            ],
+            [
+              "`peek()`",
+              "O(1)",
+              "the smallest element, or null if empty."
+            ],
+            [
+              "`poll()`",
+              "O(log n)",
+              "removes and returns the smallest, or null if empty."
+            ],
+            [
+              "`remove(Object o)`",
+              "O(n)",
+              "linear search, then a repair. Avoid it in loops."
+            ],
+            [
+              "`new PriorityQueue<>(collection)`",
+              "O(n)",
+              "builds the heap in linear time (heapify)."
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Cost",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`size(), isEmpty()`",
+              "O(1)",
+              "constant time."
+            ],
+            [
+              "`contains(o)`",
+              "O(n)",
+              "there is no index by value."
+            ]
+          ],
+          "caption": "PriorityQueue operations in Java."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Printing a `PriorityQueue` or iterating over it does NOT give sorted order. It shows the internal array, which only guarantees that each parent is not larger than its children. The only way to get sorted order is to call `poll()` repeatedly. The program below prints this difference."
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- \"the k largest / smallest / most frequent / closest ...\"\n- \"kth largest element in a stream\", where data keeps arriving.\n- \"repeatedly take the smallest/largest and then update\", for example merging sorted lists or scheduling tasks.\n- \"median of a running collection\".\n- The best item is required, but a full sort is not.\n\n#### Template: top-K with a bounded heap\n\nTo retain the K LARGEST values, a MIN-heap of size K is used. Its root is the smallest of the K candidates, and a new value that exceeds the root replaces it. To retain the K SMALLEST values, a MAX-heap of size K is used. The heap direction is the opposite of the intuitive one because the heap must expose the element that is to be discarded."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// keep the k largest values seen so far\nPriorityQueue<Integer> heap = new PriorityQueue<>();   // min-heap\nfor (int x : nums) {\n    heap.offer(x);\n    if (heap.size() > k) heap.poll();                  // drop the smallest candidate\n}\n// heap.peek() is now the kth largest; the heap holds the k largest",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nProblem: determine the 2nd largest element of `[3, 2, 1, 5, 6, 4]` (LeetCode 215) with a min-heap of size k = 2. The \"heap\" column shows the internal array printed by the program in the next section."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "x",
+            "Action",
+            "Heap after"
+          ],
+          "rows": [
+            [
+              "1",
+              "`3`",
+              "size 0 \\< 2, push",
+              "`[3]`"
+            ],
+            [
+              "2",
+              "`2`",
+              "size 1 \\< 2, push",
+              "`[2, 3]`"
+            ],
+            [
+              "3",
+              "`1`",
+              "heap full; 1 is not bigger than root 2, skip",
+              "`[2, 3]`"
+            ],
+            [
+              "4",
+              "`5`",
+              "5 \\> root 2: poll 2, push 5",
+              "`[3, 5]`"
+            ],
+            [
+              "5",
+              "`6`",
+              "6 \\> root 3: poll 3, push 6",
+              "`[5, 6]`"
+            ],
+            [
+              "6",
+              "`4`",
+              "4 is not bigger than root 5, skip",
+              "`[5, 6]`"
+            ]
+          ],
+          "caption": "Kth largest with a min-heap, k = 2."
+        },
+        {
+          "type": "markdown",
+          "text": "The heap ends as `[5, 6]`: the two largest values. The root, 5, is the second largest, which is the answer. The heap never holds more than two numbers, so memory is O(k), and each step costs at most one `poll` and one `offer`.\n\nThe second dry run is the harder idea of this chapter: the running median. Keep two heaps. `low` is a max-heap holding the smaller half, `high` is a min-heap holding the larger half. The invariant is: every value in `low` is at most every value in `high`, and `low` has the same size as `high` or one more. Then the median is the root of `low` (odd count) or the average of the two roots (even count). To add `x`: push it into `low`, move the largest of `low` over to `high` (so ordering stays correct), and if `high` became bigger than `low`, move its smallest back."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "add",
+            "low (max-heap)",
+            "high (min-heap)",
+            "median"
+          ],
+          "rows": [
+            [
+              "1",
+              "5",
+              "`[5]`",
+              "`[]`",
+              "5.0"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "add",
+            "low (max-heap)",
+            "high (min-heap)",
+            "median"
+          ],
+          "rows": [
+            [
+              "2",
+              "15",
+              "`[5]`",
+              "`[15]`",
+              "10.0"
+            ],
+            [
+              "3",
+              "1",
+              "`[5, 1]`",
+              "`[15]`",
+              "5.0"
+            ],
+            [
+              "4",
+              "3",
+              "`[3, 1]`",
+              "`[5, 15]`",
+              "4.0"
+            ]
+          ],
+          "caption": "Median of a stream: add 5, 15, 1, 3."
+        },
+        {
+          "type": "markdown",
+          "text": "Verification of step 4: after adding 3, the sorted data is 1, 3, 5, 15. The two middle values are 3 and 5, and their mean is 4.0. The printed heaps show exactly that: root of `low` is 3 and root of `high` is 5.\n\n### Java code\n\nOne program with every solution of the chapter: kth largest, top-k frequent (heap of map entries), k closest points (max-heap on squared distance), merge k sorted lists, task scheduler (the counting formula), the two-heap median, and a small demonstration of the `PriorityQueue` gotchas."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    // Kth largest with a min-heap of size k, tracing heap state\n    static int kthLargest(int[] nums, int k, boolean trace) {\n        PriorityQueue<Integer> heap = new PriorityQueue<>();\n        for (int x : nums) {\n            String action;\n            if (heap.size() < k) {\n                heap.offer(x);\n                action = \"push\";\n            } else if (x > heap.peek()) {\n                int out = heap.poll();\n                heap.offer(x);\n                action = \"replace \" + out;\n            } else {\n                action = \"skip\";\n            }\n            if (trace) System.out.println(\"x=\" + x + \" \" + action + \" heap=\" + heap);\n        }\n        return heap.peek();\n    }\n\n    static int[] topKFrequent(int[] nums, int k) {\n        Map<Integer, Integer> freq = new HashMap<>();\n        for (int x : nums) freq.merge(x, 1, Integer::sum);\n        PriorityQueue<Map.Entry<Integer, Integer>> heap =\n            new PriorityQueue<>(Comparator.comparingInt(Map.Entry::getValue));\n        for (var e : freq.entrySet()) {\n            heap.offer(e);\n            if (heap.size() > k) heap.poll();\n        }\n        int[] res = new int[k];\n        for (int i = k - 1; i >= 0; i--) res[i] = heap.poll().getKey();\n        return res;\n    }\n\n    static int[][] kClosest(int[][] pts, int k) {\n        // max-heap on squared distance, keep k smallest\n        PriorityQueue<int[]> heap = new PriorityQueue<>(\n            (a, b) -> Integer.compare(b[0] * b[0] + b[1] * b[1], a[0] * a[0] + a[1] * a[1]));\n        for (int[] p : pts) {\n            heap.offer(p);\n            if (heap.size() > k) heap.poll();\n        }\n        return heap.toArray(new int[0][]);\n    }\n\n    static class ListNode {\n        int val; ListNode next;\n        ListNode(int v) { val = v; }\n    }\n\n    static ListNode build(int... vals) {\n        ListNode dummy = new ListNode(0), cur = dummy;\n        for (int v : vals) { cur.next = new ListNode(v); cur = cur.next; }\n        return dummy.next;\n    }\n\n    static String show(ListNode n) {\n        StringBuilder sb = new StringBuilder();\n        for (; n != null; n = n.next) sb.append(n.val).append(n.next != null ? \"->\" : \"\");\n        return sb.toString();\n    }\n\n    static ListNode mergeK(ListNode[] lists) {\n        PriorityQueue<ListNode> heap = new PriorityQueue<>(Comparator.comparingInt(n -> n.val));\n        for (ListNode l : lists) if (l != null) heap.offer(l);\n        ListNode dummy = new ListNode(0), tail = dummy;\n        while (!heap.isEmpty()) {\n            ListNode n = heap.poll();\n            tail.next = n; tail = n;\n            if (n.next != null) heap.offer(n.next);\n        }\n        return dummy.next;\n    }\n\n    static int leastInterval(char[] tasks, int n) {\n        int[] cnt = new int[26];\n        for (char c : tasks) cnt[c - 'A']++;\n        int max = 0;\n        for (int c : cnt) max = Math.max(max, c);\n        int numMax = 0;\n        for (int c : cnt) if (c == max) numMax++;\n        return Math.max(tasks.length, (max - 1) * (n + 1) + numMax);\n    }\n\n    static class MedianFinder {\n        private final PriorityQueue<Integer> low = new PriorityQueue<>(Collections.reverseOrder());\n        private final PriorityQueue<Integer> high = new PriorityQueue<>();\n        void addNum(int x) {\n            low.offer(x);\n            high.offer(low.poll());\n            if (high.size() > low.size()) low.offer(high.poll());\n        }\n        double findMedian() {\n            return low.size() > high.size() ? low.peek() : (low.peek() + high.peek()) / 2.0;\n        }\n        String state() { return \"low=\" + low + \" high=\" + high; }\n    }\n\n    public static void main(String[] args) {\n        int[] a = {3, 2, 1, 5, 6, 4};\n        System.out.println(\"kth largest (k=2): \" + kthLargest(a, 2, true));\n        int[] top = topKFrequent(new int[]{1, 1, 1, 2, 2, 3}, 2);\n        System.out.println(\"top 2 frequent: \" + Arrays.toString(top));\n        int[][] pts = {{1, 3}, {-2, 2}, {5, 8}, {0, 1}};\n        System.out.println(\"2 closest: \" + Arrays.deepToString(kClosest(pts, 2)));\n        ListNode merged = mergeK(new ListNode[]{build(1, 4, 5), build(1, 3, 4), build(2, 6)});\n        System.out.println(\"merged: \" + show(merged));\n        System.out.println(\"task scheduler: \"\n            + leastInterval(\"AAABBB\".toCharArray(), 2) + \" \"\n            + leastInterval(\"AAAAAABCDEFG\".toCharArray(), 2));\n        MedianFinder mf = new MedianFinder();\n        for (int x : new int[]{5, 15, 1, 3}) {\n            mf.addNum(x);\n            System.out.println(\"add \" + x + \" \" + mf.state() + \" median=\" + mf.findMedian());\n        }\n        // mechanics\n        PriorityQueue<Integer> pq = new PriorityQueue<>(List.of(9, 4, 7, 1, 8, 2));\n        System.out.println(\"array order: \" + pq + \" peek=\" + pq.peek());\n        StringBuilder sb = new StringBuilder();\n        while (!pq.isEmpty()) sb.append(pq.poll()).append(' ');\n        System.out.println(\"poll order: \" + sb.toString().trim());\n        int x = Integer.MIN_VALUE, y = 5;\n        System.out.println(\"x - y > 0 ? \" + (x - y > 0));\n        System.out.println(\"compare says x < y ? \" + (Integer.compare(x, y) < 0));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nx=3 push heap=[3]\nx=2 push heap=[2, 3]\nx=1 skip heap=[2, 3]\nx=5 replace 2 heap=[3, 5]\nx=6 replace 3 heap=[5, 6]\nx=4 skip heap=[5, 6]\nkth largest (k=2): 5\ntop 2 frequent: [1, 2]\n2 closest: [[-2, 2], [0, 1]]\nmerged: 1->1->2->3->4->4->5->6\ntask scheduler: 8 16\nadd 5 low=[5] high=[] median=5.0\nadd 15 low=[5] high=[15] median=10.0\nadd 1 low=[5, 1] high=[15] median=5.0\nadd 3 low=[3, 1] high=[5, 15] median=4.0\narray order: [1, 4, 2, 9, 8, 7] peek=1\npoll order: 1 2 4 7 8 9\nx - y > 0 ? true\ncompare says x < y ? true",
+          "title": "Compile and run"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `kthLargest` is the template unchanged. The trace line is the only extra.\n- `topKFrequent` first counts with `freq.merge(x, 1, Integer::sum)`, then runs the same bounded min-heap, but ordered by count. The loop `for (int i = k - 1; ...)` fills the result from the back, so the most frequent value ends first.\n- `kClosest` uses a MAX-heap on distance (the comparator flips `a` and `b`) so that the farthest of the k candidates is on top and gets evicted. It compares squared distances, so no `Math.sqrt` and no floating-point error.\n- `mergeK` puts only the head of each list into the heap, so the heap never has more than k nodes. After polling a node, push its successor. This is the same trick as \"merge k sorted arrays\" and as the k-way merge in external sorting.\n- `leastInterval` does not need a heap. The task with the highest count creates `max - 1` full gaps of length `n + 1`; the last row has `numMax` tasks. If there are enough other tasks to fill the gaps, no idle time is needed and the answer is just `tasks.length`. A heap version exists (always run the most frequent remaining task, park it in a cooldown queue), and interviewers sometimes ask for it, but the formula is the one to remember.\n- `MedianFinder.addNum` always goes through `low` first. That one rule keeps both ordering and size invariants without any `if` about which side the number belongs to."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Why the last line prints `true` for `x - y > 0`. With `x = Integer.MIN_VALUE` and `y = 5`, `x - y` overflows and wraps around to a large positive number. A comparator written as `(a, b) -> a - b` would then say that MIN\\_VALUE is bigger than 5. `Integer.compare(a, b)` never overflows. Use it."
+        },
+        {
+          "type": "markdown",
+          "text": "### Complexity and mistakes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Problem",
+            "Time",
+            "Space",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Kth largest in an array",
+              "O(n log k)",
+              "O(k)",
+              "n offers, each at most log k"
+            ],
+            [
+              "Top k frequent",
+              "O(n log k)",
+              "O(n)",
+              "counting is O(n); the map holds up to n keys"
+            ],
+            [
+              "K closest points",
+              "O(n log k)",
+              "O(k)",
+              "same bounded heap"
+            ],
+            [
+              "Merge k sorted lists",
+              "O(N log k)",
+              "O(k)",
+              "N = total nodes, heap holds one per list"
+            ],
+            [
+              "Median of a stream",
+              "O(log n) per add, O(1) median",
+              "O(n)",
+              "two heaps hold everything"
+            ],
+            [
+              "Build a heap from n items",
+              "O(n)",
+              "O(n)",
+              "heapify, not n separate offers"
+            ]
+          ],
+          "caption": "Complexity of the heap solutions."
+        },
+        {
+          "type": "markdown",
+          "text": "Building a heap by n `offer` calls is O(n log n), but `new PriorityQueue<>(collection)` runs heapify and takes O(n). It is a classic surprise: most nodes are near the bottom and sink only a short way.\n\nCommon mistakes:\n\n- Using the wrong heap direction. The k LARGEST values require a MIN-heap. A max-heap containing all n items is also correct, but it needs O(n) memory and O(n log n) time and discards the advantage of the pattern.\n- Writing a comparator as `a - b`. It overflows for large or negative values. Use `Integer.compare`, `Long.compare` or `Comparator.comparingInt`.\n- Expecting iteration or `toString` to be sorted. Poll until empty, or copy and sort.\n- Calling `remove(Object)` inside a loop. Each call costs O(n). When arbitrary deletion or update is required, lazy deletion (leaving the stale entry and discarding it when polled) or a `TreeMap`/`TreeSet` is appropriate.\n- Changing an object after it is in the heap. The heap does not re-sort. If a priority changes, remove and re-insert, or push a new entry and ignore the stale one.\n- Forgetting that `PriorityQueue` is not thread-safe and does not allow `null`.\n- Ties. `PriorityQueue` is not stable: two equal elements may come out in any order. Add a sequence number to the comparator if order of arrival matters.\n\n### Questions to expect\n\n1. Find the kth largest element in an unsorted array. (clue: \"kth largest\", approach: min-heap of size k, O(n log k); follow-up: quickselect gives O(n) average but changes the array.)\n2. Design a class that returns the kth largest score after every new score. (clue: \"stream\"; approach: the same size-k min-heap kept as a field, `add` returns `peek()`.)\n3. Return the k most frequent elements. (clue: \"most frequent\"; approach: count with a hash map, then a size-k min-heap on count. Follow-up: is O(n) attainable? Yes, by bucket sort on frequency, since a count is at most n.)\n4. Return the k points closest to the origin. (approach: max-heap of size k on squared distance. Follow-up: what if k is close to n? Then sort, or keep a heap of the n-k farthest.)\n5. Merge k sorted linked lists. (approach: heap of list heads, O(N log k). Alternative: divide and conquer pairwise merging, same time, O(1) extra heap memory.)\n6. Schedule tasks with a cooldown n between equal tasks. (approach: formula from the maximum count, or heap plus a cooldown queue.)\n7. Maintain the median of a stream. (approach: two heaps. Follow-up: what if all numbers are in 0 to 100? Use a count array. What if 99 percent are in 0 to 100? Count array plus two outlier counters.)\n8. Simulation with a max-heap: \"repeatedly smash the two heaviest stones\" (Last Stone Weight). (approach: max-heap, poll twice, push the difference.)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is a min-heap used to find the k largest elements? \"The heap must expose the element that is eligible for eviction. Among the k retained candidates that element is the smallest, so a min-heap places it at the root: each new value is compared against the root in O(1) and replaces it in O(log k). A max-heap would place the best candidate at the root, which is never to be evicted. The total cost is O(n log k) time and O(k) space, and the method applies to streams because the complete data set is never required.\" Follow-up: \"Why not sort?\" Sorting costs O(n log n) and requires all data in memory. For n = 10^7 and k = 10 the heap performs roughly 7 times fewer comparisons per element (log2 of 10 is about 3, log2 of 10^7 is about 23) and occupies 10 slots instead of 10^7."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`703`",
+              "Kth Largest Element in a Stream",
+              "Easy",
+              "size-k min-heap kept as a field; add returns the root"
+            ],
+            [
+              "`1046`",
+              "Last Stone Weight",
+              "Easy",
+              "max-heap; poll two, push the difference if non-zero"
+            ],
+            [
+              "`215`",
+              "Kth Largest Element in an Array",
+              "Medium",
+              "size-k min-heap, or quickselect for O(n) average"
+            ],
+            [
+              "`347`",
+              "Top K Frequent Elements",
+              "Medium",
+              "count, then size-k heap on frequency (or bucket sort)"
+            ],
+            [
+              "`973`",
+              "K Closest Points to Origin",
+              "Medium",
+              "max-heap of size k on squared distance"
+            ],
+            [
+              "`378`",
+              "Kth Smallest Element in a Sorted Matrix",
+              "Medium",
+              "heap of row heads, pop k times (or binary search on the value)"
+            ],
+            [
+              "`621`",
+              "Task Scheduler",
+              "Medium",
+              "max count decides the frame: (max-1)\\*(n+1)+numMax, at least n tasks"
+            ],
+            [
+              "`23`",
+              "Merge k Sorted Lists",
+              "Hard",
+              "heap holds one node per list; push the successor after each poll"
+            ],
+            [
+              "`295`",
+              "Find Median from Data Stream",
+              "Hard",
+              "max-heap for the lower half, min-heap for the upper half, keep sizes within 1"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A heap provides O(1) peek and O(log n) insertion and removal; it applies when the current best element is needed repeatedly.\n- For the k LARGEST keep a MIN-heap of size k (and the reverse for k smallest); time O(n log k), space O(k).\n- Java's `PriorityQueue` is a min-heap; reversal is done with a comparator, never with `a - b`. Its iteration order is not sorted.\n- Merging k sorted sources puts one head per source in the heap; a running median uses a max-heap and a min-heap whose sizes differ by at most one.\n- Updating or removing arbitrary items is O(n); prefer lazy deletion."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-2",
+      "type": "concept",
+      "title": "Graph Representation, DFS and BFS",
+      "subtopicId": "5-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A **graph** is a set of **vertices** (nodes) together with a set of **edges** connecting pairs of vertices. Road maps, social networks, course prerequisites, grids of cells and word-transformation puzzles are all instances. The typical questions are: which vertices are connected, how many disjoint connected groups exist, and what is the shortest route between two vertices.\n\nEnumerating every path is infeasible because the number of paths grows exponentially. The standard remedy is to **visit each vertex at most once** and record the visited set, which bounds the work by the number of vertices plus edges, O(V + E). Two traversals realise this bound: depth-first search (DFS) descends as far as possible before backtracking, and breadth-first search (BFS) explores vertices in order of non-decreasing distance from the source.\n\n### The idea\n\n#### Three ways to store a graph\n\nThe adjacency list is the default representation: for each vertex it stores the list of its neighbours. The matrix and the edge list serve specific purposes."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Representation",
+            "Memory",
+            "Is there an edge u-v?",
+            "All neighbours of u"
+          ],
+          "rows": [
+            [
+              "Adjacency list",
+              "O(V + E)",
+              "O(degree of u)",
+              "O(degree of u)"
+            ],
+            [
+              "Adjacency matrix",
+              "O(V squared)",
+              "O(1)",
+              "O(V)"
+            ],
+            [
+              "Edge list",
+              "O(E)",
+              "O(E)",
+              "O(E)"
+            ]
+          ],
+          "caption": "Graph representations (V vertices, E edges)."
+        },
+        {
+          "type": "markdown",
+          "text": "The list is preferred for sparse graphs (E much smaller than V squared), which covers nearly all cases. A matrix is appropriate when V is small (a few hundred) and constant-time edge queries are needed, or when the input is already a matrix (LeetCode \"Number of Provinces\" supplies `isConnected[i][j]`). An edge list is the natural input format and the natural form for sorting edges (Kruskal; see the chapter on Union-Find). In an **undirected** graph each edge is stored in both directions; in a **directed** graph it is stored once.\n\nIn Java build the list with `List<List<Integer>>` filled in a loop, as shown in the program. Do not write `new` `ArrayList[n]` for generics reasons; it compiles with warnings and surprises people.\n\n#### Grids are implicit graphs\n\nIn a grid every cell is a vertex, and its up to four neighbours (or eight with diagonals) are its edges. No list is built; neighbours are enumerated with a direction array: `int[][] DIRS = {{1,0},{-1,0},{0,1},{0,-1}}`. The bounds must be checked before `grid[nr][nc]` is accessed."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 304.6 100.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M2.0 90.0 L24.0 90.0 L24.0 68.0 L2.0 68.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 68.0 L24.0 68.0 L24.0 46.0 L2.0 46.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M24.0 68.0 L46.0 68.0 L46.0 46.0 L24.0 46.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.0 68.0 L68.0 68.0 L68.0 46.0 L46.0 46.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M68.0 68.0 L90.0 68.0 L90.0 46.0 L68.0 46.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 68.0 L112.0 68.0 L112.0 46.0 L90.0 46.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M24.0 90.0 L46.0 90.0 L46.0 68.0 L24.0 68.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.0 90.0 L68.0 90.0 L68.0 68.0 L46.0 68.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M68.0 90.0 L90.0 90.0 L90.0 68.0 L68.0 68.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 90.0 L112.0 90.0 L112.0 68.0 L90.0 68.0 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 46.0 L24.0 46.0 L24.0 24.0 L2.0 24.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M24.0 46.0 L46.0 46.0 L46.0 24.0 L24.0 24.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.0 46.0 L68.0 46.0 L68.0 24.0 L46.0 24.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M68.0 46.0 L90.0 46.0 L90.0 24.0 L68.0 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 46.0 L112.0 46.0 L112.0 24.0 L90.0 24.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 24.0 L24.0 24.0 L24.0 2.0 L2.0 2.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M24.0 24.0 L46.0 24.0 L46.0 2.0 L24.0 2.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.0 24.0 L68.0 24.0 L68.0 2.0 L46.0 2.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M68.0 24.0 L90.0 24.0 L90.0 2.0 L68.0 2.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 24.0 L112.0 24.0 L112.0 2.0 L90.0 2.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"10.7\" y=\"15.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"32.7\" y=\"15.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"54.7\" y=\"15.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"76.7\" y=\"15.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"98.7\" y=\"15.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"162.0\" y=\"28.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"140.6\" lengthAdjust=\"spacingAndGlyphs\">numbers: BFS distance from the start cell</text><text x=\"10.7\" y=\"37.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"32.7\" y=\"37.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"54.7\" y=\"37.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"76.7\" y=\"37.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"98.7\" y=\"37.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"162.0\" y=\"42.0\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"111.1\" lengthAdjust=\"spacingAndGlyphs\">ring 0, then ring 1, then ring 2 ...</text><text x=\"162.0\" y=\"56.0\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"108.5\" lengthAdjust=\"spacingAndGlyphs\">queue holds the current frontier</text><text x=\"10.7\" y=\"59.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"32.7\" y=\"59.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"54.7\" y=\"59.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"76.7\" y=\"59.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"98.7\" y=\"59.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"10.7\" y=\"81.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"32.7\" y=\"81.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"54.7\" y=\"81.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"76.7\" y=\"81.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"98.7\" y=\"81.6\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text></svg>",
+          "width": 305,
+          "caption": "BFS spreads from the start in rings: all cells at distance 1, then all at distance 2, and so on. The first time a cell is reached is its shortest distance.",
+          "alt": "2 1 2 3 4 | numbers: BFS distance from the start cell | 1 0 1 2 3 | ring 0, then ring 1, then ring 2 ... | queue holds the current frontier | 2 1 2 3 4 | 3 2 3 4 5"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- \"number of islands / connected components / provinces / regions\".\n- \"is there a path from A to B\", \"is it reachable\", \"is it connected\".\n- \"minimum number of steps / moves / minutes\" on an unweighted grid or graph (BFS).\n- \"spreads simultaneously from several sources\" (multi-source BFS: rotting oranges, walls and gates).\n- \"change one letter / one move at a time\" (word ladder, puzzle states): the states are vertices.\n- \"split into two groups with no edge inside a group\" (bipartite check), \"copy the structure\" (clone).\n\n#### DFS versus BFS\n\nBoth traversals establish reachability. **DFS** suits exhaustive exploration (components, flood fill, cycle checks, recursive formulations). **BFS** is required for the SHORTEST path in an unweighted graph: the first visit to a vertex occurs along a path with the fewest edges. DFS provides no such guarantee.\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// BFS skeleton: shortest distance from src in an unweighted graph\nint[] dist = new int[n];\nArrays.fill(dist, -1);                      // -1 means \"not visited yet\"\nDeque<Integer> q = new ArrayDeque<>();\ndist[src] = 0;\nq.offer(src);\nwhile (!q.isEmpty()) {\n    int u = q.poll();\n    for (int v : g.get(u)) {\n        if (dist[v] == -1) {                // mark when you ADD to the queue, not when you poll\n            dist[v] = dist[u] + 1;\n            q.offer(v);\n        }\n    }\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// DFS skeleton (a method; seen and g are fields)\nvoid dfs(int u) {\n    seen[u] = true;\n    for (int v : g.get(u)) if (!seen[v]) dfs(v);\n}",
+          "title": "DfsTemplate.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A vertex must be marked as visited when it is enqueued, not when it is dequeued. Deferring the mark until `poll` allows the same vertex to be enqueued repeatedly by different neighbours, so the queue can grow far beyond V. On a dense grid this converts an O(V) algorithm into one that exceeds the time limit."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nGraph with 7 vertices and the undirected edges `0-1, 0-2, 1-3, 2-3, 3-4, 5-6`. Find the shortest distance from vertex 0 to every vertex. The adjacency list is `[[1, 2], [0, 3], [0, 3], [1, 2, 4], [3], [6], [5]]`. Vertices 5 and 6 are in a separate component, so they are never reached."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Pop",
+            "Added to queue",
+            "Queue after",
+            "dist array"
+          ],
+          "rows": [
+            [
+              "0",
+              "`start`",
+              "`0 (dist 0)`",
+              "`[0]`",
+              "`[0, -1, -1, -1, -1, -1, -1]`"
+            ],
+            [
+              "1",
+              "`0`",
+              "`1, 2`",
+              "`[1, 2]`",
+              "`[0, 1, 1, -1, -1, -1, -1]`"
+            ],
+            [
+              "2",
+              "`1`",
+              "`3`",
+              "`[2, 3]`",
+              "`[0, 1, 1, 2, -1, -1, -1]`"
+            ],
+            [
+              "3",
+              "`2`",
+              "`none (3 is already` `marked)`",
+              "`[3]`",
+              "`[0, 1, 1, 2, -1, -1, -1]`"
+            ],
+            [
+              "4",
+              "`3`",
+              "`4`",
+              "`[4]`",
+              "`[0, 1, 1, 2, 3, -1, -1]`"
+            ],
+            [
+              "5",
+              "`4`",
+              "`none`",
+              "`[]`",
+              "`[0, 1, 1, 2, 3, -1, -1]`"
+            ]
+          ],
+          "caption": "BFS from vertex 0. Distances start as -1 (not visited)."
+        },
+        {
+          "type": "markdown",
+          "text": "In step 3, vertex 2 looks at neighbour 3 and sees `dist[3]` is already 2, so it does not add it again. That is the visited check doing its job: without it, 3 would enter the queue twice and the work would double on larger graphs. The queue is empty after step 5, and the vertices still showing -1 (5 and 6) are unreachable from 0. The DFS from 0 visits `[0, 1, 3,` `2, 4]`: it goes deep along 0, 1, 3 before coming back for 2, which is why DFS order differs from BFS order.\n\nA second, grid-based dry run, rotting oranges (multi-source BFS). Grid `[[2,1,1],[1,1,0],[0,1,1]]`, where 2 is rotten, 1 is fresh, 0 is empty. Put ALL rotten oranges into the queue at the start, then process the queue one whole level (one minute) at a time."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Minute",
+            "Cells that turn rotten",
+            "Fresh left",
+            "Frontier size"
+          ],
+          "rows": [
+            [
+              "0",
+              "start: (0,0) is rotten",
+              "6",
+              "1"
+            ],
+            [
+              "1",
+              "(0,1) and (1,0)",
+              "4",
+              "2"
+            ],
+            [
+              "2",
+              "(0,2) and (1,1)",
+              "2",
+              "2"
+            ],
+            [
+              "3",
+              "(2,1)",
+              "1",
+              "1"
+            ],
+            [
+              "4",
+              "(2,2)",
+              "0",
+              "1"
+            ]
+          ],
+          "caption": "Rotting oranges: one row per minute."
+        },
+        {
+          "type": "markdown",
+          "text": "All fresh oranges are gone after minute 4, so the answer is 4. If `fresh` were still above zero when the queue ran empty, some orange is unreachable and the answer is -1.\n\n### Java code\n\nThe program covers adjacency-list building, DFS, counting components, BFS distances (with the trace above), number of islands by flood fill, rotting oranges, a bipartite check by two-colouring, word ladder, and clone graph."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static List<List<Integer>> buildGraph(int n, int[][] edges, boolean directed) {\n        List<List<Integer>> g = new ArrayList<>();\n        for (int i = 0; i < n; i++) g.add(new ArrayList<>());\n        for (int[] e : edges) {\n            g.get(e[0]).add(e[1]);\n            if (!directed) g.get(e[1]).add(e[0]);\n        }\n        return g;\n    }\n\n    static void dfs(List<List<Integer>> g, int u, boolean[] seen, List<Integer> order) {\n        seen[u] = true;\n        order.add(u);\n        for (int v : g.get(u)) if (!seen[v]) dfs(g, v, seen, order);\n    }\n\n    static int components(List<List<Integer>> g) {\n        boolean[] seen = new boolean[g.size()];\n        int count = 0;\n        for (int s = 0; s < g.size(); s++) {\n            if (!seen[s]) { count++; dfs(g, s, seen, new ArrayList<>()); }\n        }\n        return count;\n    }\n\n    static int[] bfsDist(List<List<Integer>> g, int src, boolean trace) {\n        int[] dist = new int[g.size()];\n        Arrays.fill(dist, -1);\n        Deque<Integer> q = new ArrayDeque<>();\n        dist[src] = 0;\n        q.offer(src);\n        int step = 0;\n        while (!q.isEmpty()) {\n            int u = q.poll();\n            List<Integer> added = new ArrayList<>();\n            for (int v : g.get(u)) {\n                if (dist[v] == -1) { dist[v] = dist[u] + 1; q.offer(v); added.add(v); }\n            }\n            if (trace) System.out.println(++step + \": pop \" + u + \" add \" + added + \" queue=\" + q\n                + \" dist=\" + Arrays.toString(dist));\n        }\n        return dist;\n    }\n\n    static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};\n\n    static int numIslands(char[][] grid) {\n        int rows = grid.length, cols = grid[0].length, count = 0;\n        for (int r = 0; r < rows; r++)\n            for (int c = 0; c < cols; c++)\n                if (grid[r][c] == '1') { count++; sink(grid, r, c); }\n        return count;\n    }\n\n    static void sink(char[][] grid, int r, int c) {\n        if (r < 0 || c < 0 || r >= grid.length || c >= grid[0].length || grid[r][c] != '1') return;\n        grid[r][c] = '0';\n        for (int[] d : DIRS) sink(grid, r + d[0], c + d[1]);\n    }\n\n    static int orangesRotting(int[][] grid, boolean trace) {\n        int rows = grid.length, cols = grid[0].length, fresh = 0;\n        Deque<int[]> q = new ArrayDeque<>();\n        for (int r = 0; r < rows; r++)\n            for (int c = 0; c < cols; c++) {\n                if (grid[r][c] == 2) q.offer(new int[]{r, c});\n                else if (grid[r][c] == 1) fresh++;\n            }\n        int minutes = 0;\n        while (!q.isEmpty() && fresh > 0) {\n            int size = q.size();\n            for (int i = 0; i < size; i++) {\n            int[] cur = q.poll();\n            for (int[] d : DIRS) {\n                int nr = cur[0] + d[0], nc = cur[1] + d[1];\n                if (nr < 0 || nc < 0 || nr >= rows || nc >= cols || grid[nr][nc] != 1) continue;\n                grid[nr][nc] = 2;\n                fresh--;\n                q.offer(new int[]{nr, nc});\n            }\n        }\n        minutes++;\n        if (trace) System.out.println(\"minute \" + minutes + \": fresh left=\" + fresh\n            + \" frontier=\" + q.size());\n    }\n    return fresh == 0 ? minutes : -1;\n}\n\nstatic boolean isBipartite(int[][] graph) {\n    int n = graph.length;\n    int[] color = new int[n]; // 0 = unvisited, 1 and -1 are the two sides\n    for (int s = 0; s < n; s++) {\n        if (color[s] != 0) continue;\n        Deque<Integer> q = new ArrayDeque<>();\n        q.offer(s);\n        color[s] = 1;\n        while (!q.isEmpty()) {\n            int u = q.poll();\n            for (int v : graph[u]) {\n                if (color[v] == 0) { color[v] = -color[u]; q.offer(v); }\n                else if (color[v] == color[u]) return false;\n            }\n        }\n    }\n    return true;\n}\n\nstatic int ladderLength(String begin, String end, List<String> words) {\n    Set<String> dict = new HashSet<>(words);\n    if (!dict.contains(end)) return 0;\n    Deque<String> q = new ArrayDeque<>();\n    q.offer(begin);\n    Set<String> seen = new HashSet<>(List.of(begin));\n    int steps = 1;\n    while (!q.isEmpty()) {\n        for (int i = q.size(); i > 0; i--) {\n            String w = q.poll();\n            if (w.equals(end)) return steps;\n            char[] cs = w.toCharArray();\n            for (int p = 0; p < cs.length; p++) {\n                char orig = cs[p];\n                for (char ch = 'a'; ch <= 'z'; ch++) {\n                    cs[p] = ch;\n                    String next = new String(cs);\n                    if (dict.contains(next) && seen.add(next)) q.offer(next);\n                }\n                cs[p] = orig;\n            }\n        }\n        steps++;\n    }\n    return 0;\n}\n\nstatic class Node {\n    int val; List<Node> neighbors = new ArrayList<>();\n    Node(int v) { val = v; }\n}\n\nstatic Node cloneGraph(Node start) {\n    if (start == null) return null;\n    Map<Node, Node> copy = new HashMap<>();\n    Deque<Node> q = new ArrayDeque<>();\n    copy.put(start, new Node(start.val));\n    q.offer(start);\n    while (!q.isEmpty()) {\n        Node u = q.poll();\n            for (Node v : u.neighbors) {\n                if (!copy.containsKey(v)) { copy.put(v, new Node(v.val)); q.offer(v); }\n                copy.get(u).neighbors.add(copy.get(v));\n            }\n        }\n        return copy.get(start);\n    }\n\n    public static void main(String[] args) {\n        int[][] edges = {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}, {5, 6}};\n        var g = buildGraph(7, edges, false);\n        System.out.println(\"adjacency list: \" + g);\n        List<Integer> order = new ArrayList<>();\n        dfs(g, 0, new boolean[7], order);\n        System.out.println(\"dfs order from 0: \" + order);\n        System.out.println(\"components: \" + components(g));\n        System.out.println(\"--- BFS from 0 ---\");\n        int[] dist = bfsDist(g, 0, true);\n        System.out.println(\"final dist: \" + Arrays.toString(dist));\n\n        char[][] grid = {\n            \"11000\".toCharArray(),\n            \"11000\".toCharArray(),\n            \"00100\".toCharArray(),\n            \"00011\".toCharArray()};\n        System.out.println(\"islands: \" + numIslands(grid));\n\n        int[][] oranges = {{2, 1, 1}, {1, 1, 0}, {0, 1, 1}};\n        System.out.println(\"rotting minutes: \" + orangesRotting(oranges, true));\n        int[][] stuck = {{2, 1, 1}, {0, 1, 1}, {1, 0, 1}};\n        System.out.println(\"blocked: \" + orangesRotting(stuck, false));\n\n        System.out.println(\"bipartite square: \"\n            + isBipartite(new int[][]{{1, 3}, {0, 2}, {1, 3}, {0, 2}}));\n        System.out.println(\"bipartite triangle: \"\n            + isBipartite(new int[][]{{1, 2}, {0, 2}, {0, 1}}));\n        System.out.println(\"ladder: \" + ladderLength(\"hit\", \"cog\",\n            List.of(\"hot\", \"dot\", \"dog\", \"lot\", \"log\", \"cog\")));\n\n        Node a = new Node(1), b = new Node(2), c = new Node(3);\n        a.neighbors.addAll(List.of(b, c));\n        b.neighbors.addAll(List.of(a, c));\n        c.neighbors.addAll(List.of(a, b));\n        Node ca = cloneGraph(a);\n        System.out.println(\"clone: \" + (ca != a) + \" val=\" + ca.val + \" nbrs=\"\n            + ca.neighbors.stream().map(n -> n.val).toList());\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nadjacency list: [[1, 2], [0, 3], [0, 3], [1, 2, 4], [3], [6], [5]]\ndfs order from 0: [0, 1, 3, 2, 4]\ncomponents: 2\n--- BFS from 0 ---\n1: pop 0 add [1, 2] queue=[1, 2] dist=[0, 1, 1, -1, -1, -1, -1]\n2: pop 1 add [3] queue=[2, 3] dist=[0, 1, 1, 2, -1, -1, -1]\n3: pop 2 add [] queue=[3] dist=[0, 1, 1, 2, -1, -1, -1]\n4: pop 3 add [4] queue=[4] dist=[0, 1, 1, 2, 3, -1, -1]\n5: pop 4 add [] queue=[] dist=[0, 1, 1, 2, 3, -1, -1]\nfinal dist: [0, 1, 1, 2, 3, -1, -1]\nislands: 3\nminute 1: fresh left=4 frontier=2\nminute 2: fresh left=2 frontier=2\nminute 3: fresh left=1 frontier=1\nminute 4: fresh left=0 frontier=1\nrotting minutes: 4\nblocked: -1\nbipartite square: true\nbipartite triangle: false\nladder: 5\nclone: true val=1 nbrs=[2, 3]",
+          "title": "Compile and run"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `numIslands` modifies the grid (sets visited land to `'0'`) instead of keeping a `boolean[][]`. That is fine when the caller allows it; say so in an interview and offer a `visited` array if the input must stay intact.\n- `orangesRotting` records `q.size()` at the start of each level; this snapshot separates \"minute k\" from \"minute k + 1\" and is the precondition for counting minutes correctly.\n- `isBipartite` colours with `1` and `-1`, so the opposite colour is just `-color[u]`. It loops over every start vertex, because the graph may be disconnected. Forgetting that loop is the classic bug.\n- `ladderLength` generates neighbours by trying all 26 letters at each position. That costs O(26L) per word, better than comparing every pair of words (O(N squared L)). The `seen.add(next)` call both tests and marks in one step.\n- `cloneGraph` keeps a map from original node to copy. The map serves simultaneously as the visited set and the lookup table. A copy is created when a node is first encountered, and edges are added afterwards.\n- Recursion in `sink` goes as deep as the island is large. A 1000 by 1000 grid of land can cause `StackOverflowError`; convert to an explicit stack or BFS when the grid is big.\n\n### Complexity and mistakes\n\nEvery vertex is entered once and every edge is looked at once (twice if undirected), so BFS and DFS take **O(V + E)** time with an adjacency list and O(V) extra space for the visited set and the queue or recursion stack. On an R by C grid that is O(RC) time and space. On an adjacency matrix the neighbour scan is O(V) per vertex, so the traversal is O(V squared). Word ladder is O(26NL) for N words of length L. Clone graph is O(V + E).\n\nCommon mistakes:\n\n- Marking visited on `poll` instead of on `offer` (duplicates in the queue, wasted time).\n- Not checking the grid bounds before reading a neighbour, or checking them in the wrong order (`grid[r][c]` before `r >= 0`).\n- Counting levels incorrectly in level-order BFS: omitting the `q.size()` snapshot, or adding an extra step after the last level. Rotting oranges additionally requires the loop condition `fresh > 0`; without it the result exceeds the correct value by one minute.\n- Running a single traversal from vertex 0 on a graph that may be disconnected. Wrap it in a loop over all start vertices.\n- Using DFS to find shortest paths. DFS finds A path, not the shortest.\n- Treating a directed edge as undirected, or the reverse. Read the statement: `edges[i] = [a, b]` is sometimes one direction only.\n- Using `==` on `Integer` objects from a list when comparing vertex ids. Use `int` loops or `.equals`.\n- Cycle detection in an undirected graph requires the parent: a visited neighbour other than the immediate predecessor indicates a cycle. (For directed graphs see the chapter on topological sort.)\n\n### Questions to expect\n\n1. Count the islands in a 2D grid of land and water. (clue: \"connected groups of 1s\"; approach: loop over cells, run DFS or BFS flood fill from each unvisited land cell, count the starts. Follow-up: cells arrive one at a time and the count is reported after each: Union-Find.)\n2. Return the largest island's area. (same flood fill, return the size of each fill and keep the maximum.)\n3. Rotting oranges / \"walls and gates\" / \"01 Matrix\". (clue: \"spreads from every source at once\", \"minimum minutes\"; approach: multi-source BFS, put all sources in the queue first.)\n4. Shortest path in a binary matrix with 8 directions. (approach: BFS with 8 direction pairs; return the distance at which the target is first reached. Follow-up: weighted cells need Dijkstra.)\n5. Clone a graph. (approach: map original to copy, BFS or DFS, create on first sight.)\n6. Is the graph bipartite? Can the people be split into two groups that do not know each other? (approach: 2-colour with BFS or DFS; an edge between equal colours means an odd cycle, answer no. Run from every unvisited vertex.)\n7. Word ladder: shortest sequence from one word to another, changing one letter at a time. (approach: BFS over words. Follow-up: bidirectional BFS searches from both ends and cuts the search a lot.)\n8. Pacific Atlantic water flow. (approach: reverse the problem. Start a flood fill from each ocean's border going uphill, then intersect the two sets. Starting from every cell is O((RC) squared).)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When is BFS preferred over DFS, and conversely? \"For distance or the minimum number of steps in an unweighted graph, BFS is used because it reaches every vertex by a path with the fewest edges. For reachability, component counting or backtracking, DFS is used because the recursive formulation is shorter and its memory is proportional to the depth. Both run in O(V + E). On very large or deep graphs recursive DFS is avoided in Java, since the default stack permits only some thousands of frames, and an explicit `Deque` serves as the stack.\" Follow-up: \"How is the path itself reconstructed?\" A `parent[]` array records `parent[v] = u` when `v` is first reached; the path is recovered by following parents back from the target."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`733`",
+              "Flood Fill",
+              "Easy",
+              "DFS or BFS from the start cell; stop if the new colour equals the old one"
+            ],
+            [
+              "`1971`",
+              "Find if Path Exists in Graph",
+              "Easy",
+              "build the adjacency list, traverse from source, check destination"
+            ],
+            [
+              "`200`",
+              "Number of Islands",
+              "Medium",
+              "start a flood fill at every unvisited land cell, count the starts"
+            ],
+            [
+              "`695`",
+              "Max Area of Island",
+              "Medium",
+              "flood fill returns the size; keep the maximum"
+            ],
+            [
+              "`133`",
+              "Clone Graph",
+              "Medium",
+              "map original to copy; create on first sight"
+            ],
+            [
+              "`994`",
+              "Rotting Oranges",
+              "Medium",
+              "multi-source BFS, process the queue level by level"
+            ],
+            [
+              "`542`",
+              "01 Matrix",
+              "Medium",
+              "multi-source BFS from all zeros, distance fills outward"
+            ],
+            [
+              "`1091`",
+              "Shortest Path in Binary Matrix",
+              "Medium",
+              "BFS with 8 directions, count cells on the path"
+            ],
+            [
+              "`785`",
+              "Is Graph Bipartite?",
+              "Medium",
+              "2-colour with BFS or DFS from every unvisited vertex"
+            ],
+            [
+              "`417`",
+              "Pacific Atlantic Water Flow",
+              "Medium",
+              "flood uphill from each ocean border, intersect the two results"
+            ],
+            [
+              "`127`",
+              "Word Ladder",
+              "Hard",
+              "BFS over words, generate neighbours by changing one letter"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Build an adjacency list (O(V + E) memory); treat grids as implicit graphs with a direction array.\n- BFS gives shortest paths in unweighted graphs and handles \"spreads from many sources\" with a multi-source start; DFS is for reachability, components and recursion.\n- Mark visited at enqueue time; take a `q.size()` snapshot to count levels; iterate over all start vertices for disconnected graphs.\n- Cost is O(V + E), or O(RC) on a grid; deep recursion can overflow the stack on big grids.\n- If an unusual state space appears (words, puzzle boards), the states are the vertices and one move is an edge."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-3",
+      "type": "concept",
+      "title": "Topological Sort",
+      "subtopicId": "5-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Many tasks have precedence constraints: a course may require another as a prerequisite, a source file may require its imports to be compiled first. Representing each constraint as an arrow from the prerequisite to the dependent item yields a **directed graph**. A **topological order** is a linear arrangement of all vertices in which every arrow points forward. Such an order exists if and only if the graph contains no directed cycle (a **DAG**, directed acyclic graph).\n\nEnumerating all n! permutations is infeasible. Two O(V + E) algorithms solve the problem, and both also decide whether a cycle exists.\n\n### The idea\n\n**Kahn's algorithm (BFS).** The **in-degree** of a vertex is the number of arrows directed into it. A vertex with in-degree 0 has no unmet prerequisite and may be placed first. All such vertices are enqueued; the algorithm repeatedly removes one, appends it to the output and decrements the in-degree of each of its successors, enqueueing any successor whose in-degree reaches 0. If fewer than V vertices are output, the remaining vertices lie on or behind a cycle.\n\n**DFS version.** A vertex is appended to a list when it is FINISHED, that is, after every vertex reachable from it has finished. The reverse of this list is a topological order, because a vertex always finishes after all of its successors. Cycle detection uses three states: 0 = unvisited, 1 = on the current DFS path, 2 = finished. Reaching a vertex in state 1 means that an ancestor on the current path has been reached again, which constitutes a cycle."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 350.0 99.6\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M105.0 78.7 L135.0 78.7 C136.7 78.7 138.0 77.4 138.0 75.7 L138.0 57.7 C138.0 56.0 136.7 54.7 135.0 54.7 L105.0 54.7 C103.3 54.7 102.0 56.0 102.0 57.7 L102.0 75.7 C102.0 77.4 103.3 78.7 105.0 78.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M38.0 44.7 L102.0 22.7\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M38.0 44.7 L102.0 66.7\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M138.0 22.7 L212.0 44.7\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M138.0 66.7 L212.0 44.7\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M248.0 44.7 L312.0 44.7\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M5.0 56.7 L35.0 56.7 C36.7 56.7 38.0 55.4 38.0 53.7 L38.0 35.7 C38.0 34.0 36.7 32.7 35.0 32.7 L5.0 32.7 C3.3 32.7 2.0 34.0 2.0 35.7 L2.0 53.7 C2.0 55.4 3.3 56.7 5.0 56.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M105.0 34.7 L135.0 34.7 C136.7 34.7 138.0 33.4 138.0 31.7 L138.0 13.7 C138.0 12.0 136.7 10.7 135.0 10.7 L105.0 10.7 C103.3 10.7 102.0 12.0 102.0 13.7 L102.0 31.7 C102.0 33.4 103.3 34.7 105.0 34.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M215.0 56.7 L245.0 56.7 C246.7 56.7 248.0 55.4 248.0 53.7 L248.0 35.7 C248.0 34.0 246.7 32.7 245.0 32.7 L215.0 32.7 C213.3 32.7 212.0 34.0 212.0 35.7 L212.0 53.7 C212.0 55.4 213.3 56.7 215.0 56.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 56.7 L345.0 56.7 C346.7 56.7 348.0 55.4 348.0 53.7 L348.0 35.7 C348.0 34.0 346.7 32.7 345.0 32.7 L315.0 32.7 C313.3 32.7 312.0 34.0 312.0 35.7 L312.0 53.7 C312.0 55.4 313.3 56.7 315.0 56.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 66.7 L98.4 63.2 L97.0 67.3 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M212.0 44.7 L208.3 41.3 L207.1 45.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M212.0 44.7 L207.1 43.9 L208.3 48.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.0 44.7 L307.5 42.5 L307.5 46.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 22.7 L97.0 22.1 L98.4 26.2 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"89.9\" y=\"6.7\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"164.3\" lengthAdjust=\"spacingAndGlyphs\">in-degree 0 first: A, then B and C, then D, then E</text><text x=\"117.3\" y=\"25.5\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">B</text><text x=\"17.2\" y=\"47.5\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">A</text><text x=\"227.0\" y=\"47.5\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">D</text><text x=\"327.5\" y=\"47.5\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">E</text><text x=\"117.4\" y=\"69.5\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">C</text></svg>",
+          "width": 350,
+          "caption": "Kahn's algorithm peels off vertices with no remaining prerequisites, layer by layer; a cycle never reaches in-degree 0, so it is left over.",
+          "alt": "in-degree 0 first: A, then B and C, then D, then E | B | A D E | C"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- \"prerequisites\", \"dependencies\", \"must come before\", \"build order\", \"can all tasks be finished\".\n- \"return any valid order\" or \"is there a valid order\" (cycle check).\n- \"derive the order from a sorted list\" (alien dictionary: letters are vertices, the first differing letter of adjacent words is an edge).\n- \"longest chain / minimum semesters\" over a DAG: topological layers.\n- \"which nodes are safe / eventually end in a terminal\", computed from the end backwards.\n\n#### Template (Kahn)"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "int[] indeg = new int[n];\nfor (int[] e : edges) { g.get(e[0]).add(e[1]); indeg[e[1]]++; }   // e[0] must precede e[1]\nDeque<Integer> q = new ArrayDeque<>();\nfor (int i = 0; i < n; i++) if (indeg[i] == 0) q.offer(i);\nint done = 0;\nwhile (!q.isEmpty()) {\n    int u = q.poll();\n    done++;                                  // append u to the order here\n    for (int v : g.get(u)) if (--indeg[v] == 0) q.offer(v);\n}\nboolean hasCycle = done < n;",
+          "title": "Template.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Read the direction of the edge in the statement. In LeetCode's Course Schedule, `prerequisites[i] = [a, b]` means that course b must precede course a, so the arrow is directed from b to a. Constructing the arrow in the opposite direction is a frequent error. The reversed graph still admits a valid order, but that order is the reverse of the required one."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nA build-order graph with 6 vertices. An edge `u -> v` means \"u comes before v\": `5->2, 5->0, 4->0, 4->1, 2->3,` `3->1`. In-degrees are `[2, 2, 1, 1, 0, 0]`: vertex 0 has two incoming arrows (from 5 and 4), vertex 1 two (from 4 and 3), and so on. Vertices 4 and 5 start with in-degree 0, so the queue is `[4, 5]`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Pop",
+            "In-degrees after (index 0 to 5)",
+            "Queue after"
+          ],
+          "rows": [
+            [
+              "0",
+              "start",
+              "`[2, 2, 1, 1, 0, 0]`",
+              "`[4, 5]`"
+            ],
+            [
+              "1",
+              "4",
+              "`[1, 1, 1, 1, 0, 0]`",
+              "`[5]`"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Pop",
+            "In-degrees after (index 0 to 5)",
+            "Queue after"
+          ],
+          "rows": [
+            [
+              "2",
+              "5",
+              "`[0, 1, 0, 1, 0, 0]`",
+              "`[2, 0]`"
+            ],
+            [
+              "3",
+              "2",
+              "`[0, 1, 0, 0, 0, 0]`",
+              "`[0, 3]`"
+            ],
+            [
+              "4",
+              "0",
+              "`[0, 1, 0, 0, 0, 0]`",
+              "`[3]`"
+            ],
+            [
+              "5",
+              "3",
+              "`[0, 0, 0, 0, 0, 0]`",
+              "`[1]`"
+            ],
+            [
+              "6",
+              "1",
+              "`[0, 0, 0, 0, 0, 0]`",
+              "`[]`"
+            ]
+          ],
+          "caption": "Kahn's algorithm on the 6-vertex graph."
+        },
+        {
+          "type": "markdown",
+          "text": "The order is `[4, 5, 2, 0, 3, 1]`. Check it: 5 is before 2 and 0, 4 is before 0 and 1, 2 is before 3, and 3 is before 1. Every arrow points forward, so the order is valid. The answer is not unique: the DFS version produces `[5, 4, 2, 3, 1,` `0]` for the same graph, which is also valid. Interviewers accept any valid order unless the problem demands the smallest one (then use a `PriorityQueue` instead of the plain queue).\n\nIn step 4, vertex 0 leaves, but its list of neighbours is empty, so nothing changes in the in-degrees. For the cyclic graph `0->1, 1->2, 2->0` every in-degree is 1, the queue starts empty, `done` stays 0, and `done < n` reports the cycle immediately.\n\n### Java code\n\nThe program has Kahn's algorithm with a trace, the DFS version with three states, Course Schedule I and II built on the same helper (note the swap of the edge direction in `findOrder`), and Alien Dictionary."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    // Kahn's algorithm. Edge {a, b} means a must come before b.\n    static int[] kahn(int n, int[][] edges, boolean trace) {\n        List<List<Integer>> g = new ArrayList<>();\n        for (int i = 0; i < n; i++) g.add(new ArrayList<>());\n        int[] indeg = new int[n];\n        for (int[] e : edges) { g.get(e[0]).add(e[1]); indeg[e[1]]++; }\n        Deque<Integer> q = new ArrayDeque<>();\n        for (int i = 0; i < n; i++) if (indeg[i] == 0) q.offer(i);\n        if (trace) System.out.println(\"start indeg=\" + Arrays.toString(indeg) + \" queue=\" + q);\n        int[] order = new int[n];\n        int k = 0;\n        while (!q.isEmpty()) {\n            int u = q.poll();\n            order[k++] = u;\n            for (int v : g.get(u)) if (--indeg[v] == 0) q.offer(v);\n            if (trace) System.out.println(\"pop \" + u + \" indeg=\" + Arrays.toString(indeg)\n                + \" queue=\" + q);\n        }\n        return k == n ? order : new int[0];   // empty array = cycle\n    }\n\n    // DFS version: 0 = new, 1 = on current path, 2 = finished\n    static int[] state;\n    static Deque<Integer> post;\n\n    static boolean dfs(List<List<Integer>> g, int u) {\n        state[u] = 1;\n        for (int v : g.get(u)) {\n            if (state[v] == 1) return false;                  // back edge: cycle\n            if (state[v] == 0 && !dfs(g, v)) return false;\n        }\n        state[u] = 2;\n        post.push(u);                                         // push after all descendants\n        return true;\n    }\n\n    static int[] dfsOrder(int n, int[][] edges) {\n        List<List<Integer>> g = new ArrayList<>();\n        for (int i = 0; i < n; i++) g.add(new ArrayList<>());\n        for (int[] e : edges) g.get(e[0]).add(e[1]);\n        state = new int[n];\n        post = new ArrayDeque<>();\n        for (int i = 0; i < n; i++) if (state[i] == 0 && !dfs(g, i)) return new int[0];\n        return post.stream().mapToInt(Integer::intValue).toArray();\n    }\n\n    // LeetCode 210 wants prerequisites[i] = {course, prereq}\n    static int[] findOrder(int numCourses, int[][] prerequisites) {\n        int[][] edges = new int[prerequisites.length][];\n        for (int i = 0; i < edges.length; i++)\n            edges[i] = new int[]{prerequisites[i][1], prerequisites[i][0]};\n        return kahn(numCourses, edges, false);\n    }\n\n    static String alienOrder(String[] words) {\n        Map<Character, Set<Character>> g = new LinkedHashMap<>();\n        Map<Character, Integer> indeg = new LinkedHashMap<>();\n        for (String w : words) for (char c : w.toCharArray()) {\n            g.putIfAbsent(c, new LinkedHashSet<>());\n            indeg.putIfAbsent(c, 0);\n        }\n        for (int i = 0; i + 1 < words.length; i++) {\n            String a = words[i], b = words[i + 1];\n            if (a.length() > b.length() && a.startsWith(b)) return \"\";   // \"abc\" before \"ab\"\n            for (int j = 0; j < Math.min(a.length(), b.length()); j++) {\n                char x = a.charAt(j), y = b.charAt(j);\n                if (x != y) {\n                    if (g.get(x).add(y)) indeg.merge(y, 1, Integer::sum);\n                    break;\n                }\n            }\n        }\n        Deque<Character> q = new ArrayDeque<>();\n        indeg.forEach((c, d) -> { if (d == 0) q.offer(c); });\n        StringBuilder sb = new StringBuilder();\n        while (!q.isEmpty()) {\n            char c = q.poll();\n            sb.append(c);\n            for (char nxt : g.get(c)) if (indeg.merge(nxt, -1, Integer::sum) == 0) q.offer(nxt);\n        }\n        return sb.length() == indeg.size() ? sb.toString() : \"\";\n    }\n\n    static boolean canFinish(int n, int[][] prereq) {\n        return findOrder(n, prereq).length == n;\n    }\n\n    public static void main(String[] args) {\n        // build-order style graph: 6 nodes\n        int[][] edges = {{5, 2}, {5, 0}, {4, 0}, {4, 1}, {2, 3}, {3, 1}};\n        System.out.println(\"--- Kahn ---\");\n        int[] order = kahn(6, edges, true);\n        System.out.println(\"order: \" + Arrays.toString(order));\n        System.out.println(\"dfs order: \" + Arrays.toString(dfsOrder(6, edges)));\n        int[][] ring = {{0, 1}, {1, 2}, {2, 0}};\n        System.out.println(\"cycle (kahn): \" + Arrays.toString(kahn(3, ring, false)));\n        System.out.println(\"cycle (dfs): \" + Arrays.toString(dfsOrder(3, ring)));\n        System.out.println(\"canFinish 2, [[1,0]]: \" + canFinish(2, new int[][]{{1, 0}}));\n        int[][] loop2 = {{1, 0}, {0, 1}};\n        System.out.println(\"canFinish 2, [[1,0],[0,1]]: \" + canFinish(2, loop2));\n        System.out.println(\"findOrder 4: \" + Arrays.toString(\n            findOrder(4, new int[][]{{1, 0}, {2, 0}, {3, 1}, {3, 2}})));\n        System.out.println(\"alien: \" + alienOrder(new String[]{\"wrt\", \"wrf\", \"er\", \"ett\", \"rftt\"}));\n        System.out.println(\"alien invalid: '\" + alienOrder(new String[]{\"abc\", \"ab\"}) + \"'\");\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n--- Kahn ---\nstart indeg=[2, 2, 1, 1, 0, 0] queue=[4, 5]\npop 4 indeg=[1, 1, 1, 1, 0, 0] queue=[5]\npop 5 indeg=[0, 1, 0, 1, 0, 0] queue=[2, 0]\npop 2 indeg=[0, 1, 0, 0, 0, 0] queue=[0, 3]\npop 0 indeg=[0, 1, 0, 0, 0, 0] queue=[3]\npop 3 indeg=[0, 0, 0, 0, 0, 0] queue=[1]\npop 1 indeg=[0, 0, 0, 0, 0, 0] queue=[]\norder: [4, 5, 2, 0, 3, 1]\ndfs order: [5, 4, 2, 3, 1, 0]\ncycle (kahn): []\ncycle (dfs): []\ncanFinish 2, [[1,0]]: true\ncanFinish 2, [[1,0],[0,1]]: false\nfindOrder 4: [0, 1, 2, 3]\nalien: wertf\nalien invalid: ''",
+          "title": "Compile and run"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `kahn` returns an empty array on a cycle, so the caller tests `order.length == n`. Returning `null` or a flag also works; just be consistent.\n- `dfs` pushes the vertex AFTER the loop over neighbours. Pushing before the loop gives a wrong order. Using `Deque.push` puts the newest finished vertex at the front, which performs the reversal for free.\n- `findOrder` converts LeetCode's `{course, prereq}` into the arrow `prereq -> course`. `canFinish` is just \"does an order of length n exist\".\n- `alienOrder` has two traps: a prefix such as `\"abc\"` before `\"ab\"` is invalid input (return empty), and vertices must be created for ALL letters, including those that appear in no comparison, or they vanish from the answer. Also, add each edge only once (the `g.get(x).add(y)` check) so in-degrees are not counted twice. This problem is Premium on LeetCode, so it is not in the practice table, but it is a favourite in interviews.\n- Recursive DFS can overflow the stack on a path graph with 100,000 vertices; Kahn's algorithm is not recursive and is therefore the safer default.\n\n### Complexity and mistakes\n\nBoth algorithms touch each vertex once and each edge once: **O(V + E)** time. Space is O(V + E) for the graph plus O(V) for the in-degree array and queue (or the recursion stack and state array in DFS). For Alien Dictionary, V is at most 26 and E is bounded by the number of adjacent word pairs, so the dominant cost is reading the words: O(total characters).\n\nCommon mistakes:\n\n- Reversing the edge direction (see the warning above).\n- Not creating vertices that have no edges. A course with no prerequisites and no dependents still belongs in the output.\n- Checking for a cycle only from vertex 0 in DFS. Start from every unvisited vertex.\n- Using a single `visited` array in DFS cycle detection. A finished vertex that is reached again from another branch is legitimate; only a vertex on the CURRENT path signals a cycle. The third state encodes this distinction.\n- Counting a duplicate edge twice in the in-degree array but only once in the adjacency set (or the reverse). Count each edge exactly once on both sides, as `alienOrder` does with `g.get(x).add(y)`.\n- Assuming that the topological order is unique and comparing the output with the expected one literally. The correct check validates every edge.\n\n### Questions to expect\n\n1. Can all courses be finished given the prerequisite pairs? (clue: \"can all be finished\"; approach: Kahn, finished count equals n, or DFS with three states.)\n2. Return an order in which to take the courses. (same, return the order or an empty array.)\n3. Given a sorted list of words in an alien language, recover the alphabet. (approach: compare adjacent words, first differing letters give an edge, topological sort; watch the prefix case. Follow-up: when is the answer not unique? When the queue holds more than one vertex at some step.)\n4. Given projects and dependencies, find a build order. (the classic \"Build Order\" question; same algorithm, report an error on a cycle.)\n5. Find eventual safe states: nodes from which every path ends in a terminal node. (approach: reverse the graph and run Kahn from the terminals, or DFS with three states where \"finished\" means safe.)\n6. Find minimum height trees. (approach: peel leaves layer by layer, Kahn on an undirected tree, until one or two nodes remain.)\n7. How many semesters are needed if any number of courses may be taken per semester? (approach: Kahn level by level; the number of levels is the answer. This is the level-counting technique used for minutes in BFS.)\n8. Give the lexicographically smallest valid order. (approach: replace the queue with a min-heap.)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How is a cycle in a directed graph detected? \"Two methods apply. With Kahn's algorithm, vertices of in-degree zero are removed repeatedly; if fewer than V vertices are removed, the remaining ones lie on or behind a cycle. With DFS, three states are kept per vertex and a cycle is reported when a vertex still on the current recursion path is reached. Both run in O(V + E). Kahn's algorithm is preferable for deep graphs because it is not recursive; DFS is preferable when a value must also be computed bottom-up.\" Follow-up: \"Why does a single visited array fail for DFS?\" Because in a DAG two paths may legally reach the same vertex (a diamond shape); only reaching an ancestor on the current path is a cycle."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`207`",
+              "Course Schedule",
+              "Medium",
+              "cycle detection: Kahn finishes all n vertices or DFS finds no back edge"
+            ],
+            [
+              "`210`",
+              "Course Schedule II",
+              "Medium",
+              "Kahn's order, empty array if a cycle remains"
+            ],
+            [
+              "`802`",
+              "Find Eventual Safe States",
+              "Medium",
+              "reverse graph and Kahn from terminals, or DFS with three states"
+            ],
+            [
+              "`310`",
+              "Minimum Height Trees",
+              "Medium",
+              "peel leaves layer by layer; the last one or two nodes are the roots"
+            ],
+            [
+              "`2115`",
+              "Find All Possible Recipes from Given Supplies",
+              "Medium",
+              "recipes are vertices, ingredients are in-edges; Kahn from supplies"
+            ],
+            [
+              "`1462`",
+              "Course Schedule IV",
+              "Medium",
+              "topological order, propagate reachability sets (or Floyd-Warshall)"
+            ],
+            [
+              "`329`",
+              "Longest Increasing Path in a Matrix",
+              "Hard",
+              "cells form a DAG by value; DFS with memo or Kahn layers"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A topological order exists only for a DAG; Kahn (in-degree queue) and reverse-DFS-finish-order both take O(V + E).\n- If Kahn's output has fewer than V vertices, there is a cycle; in DFS use three states (new, on path, done).\n- Check the edge direction in the statement, include isolated vertices, and run DFS from every unvisited vertex.\n- The order is rarely unique; use a heap instead of a queue for the smallest order, and count BFS levels for \"number of rounds\".\n- Alien Dictionary: edges come from the first differing letters of adjacent words, and a longer word before its own prefix is invalid."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-4",
+      "type": "concept",
+      "title": "Union-Find (Disjoint Set Union)",
+      "subtopicId": "5-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Consider a sequence of edges inserted one at a time, interleaved with queries of the form \"are x and y in the same group?\" or \"how many groups exist?\". Rebuilding the graph and running BFS after each insertion costs O(V + E) per query, which is prohibitive over many queries. **Union-Find**, also called **disjoint set union (DSU)**, maintains the groups as a forest and answers each query in nearly constant amortised time.\n\nThe structure supports two operations. `find(x)` returns the representative (the root) of the group containing `x`. `union(a, b)` merges the groups of `a` and `b`. Two items are in the same group if and only if their roots are equal. The structure only merges groups and cannot split them; this limitation determines when another approach is required.\n\n### The idea\n\nEach element stores a parent reference; a root refers to itself. The operation `find` follows parent references to the root, and `union` makes one root the parent of the other. Without further measures the trees can degenerate into long chains, so two optimisations bound the height:\n\n- **Path compression**: during `find`, redirect nodes closer to the root, so the next `find` on them is short.\n- **Union by rank (or size)**: attach the shorter tree under the taller one, so trees stay shallow.\n\nWith both, the amortised cost per operation is O(alpha(n)), where alpha is the inverse Ackermann function, below 5 for any input that fits in a computer. Call it constant. With only one of the two tricks it is O(log n) amortised, which is still fine for interviews."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 426.2 90.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 70.0 L29.0 70.0 C30.7 70.0 32.0 68.7 32.0 67.0 L32.0 53.0 C32.0 51.3 30.7 50.0 29.0 50.0 L5.0 50.0 C3.3 50.0 2.0 51.3 2.0 53.0 L2.0 67.0 C2.0 68.7 3.3 70.0 5.0 70.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M32.0 50.0 L57.0 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M112.0 50.0 L57.0 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M232.0 50.0 L257.0 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M85.0 70.0 L109.0 70.0 C110.7 70.0 112.0 68.7 112.0 67.0 L112.0 53.0 C112.0 51.3 110.7 50.0 109.0 50.0 L85.0 50.0 C83.3 50.0 82.0 51.3 82.0 53.0 L82.0 67.0 C82.0 68.7 83.3 70.0 85.0 70.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.0 70.0 L229.0 70.0 C230.7 70.0 232.0 68.7 232.0 67.0 L232.0 53.0 C232.0 51.3 230.7 50.0 229.0 50.0 L205.0 50.0 C203.3 50.0 202.0 51.3 202.0 53.0 L202.0 67.0 C202.0 68.7 203.3 70.0 205.0 70.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M45.0 22.0 L69.0 22.0 C70.7 22.0 72.0 20.7 72.0 19.0 L72.0 5.0 C72.0 3.3 70.7 2.0 69.0 2.0 L45.0 2.0 C43.3 2.0 42.0 3.3 42.0 5.0 L42.0 19.0 C42.0 20.7 43.3 22.0 45.0 22.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M57.0 22.0 L52.4 23.9 L55.6 26.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M57.0 22.0 L60.0 26.0 L62.0 22.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M245.0 22.0 L269.0 22.0 C270.7 22.0 272.0 20.7 272.0 19.0 L272.0 5.0 C272.0 3.3 270.7 2.0 269.0 2.0 L245.0 2.0 C243.3 2.0 242.0 3.3 242.0 5.0 L242.0 19.0 C242.0 20.7 243.3 22.0 245.0 22.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M257.0 22.0 L252.4 23.9 L255.6 26.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"54.5\" y=\"14.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">1</text><text x=\"254.5\" y=\"14.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">4</text><text x=\"342.0\" y=\"22.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"74.3\" lengthAdjust=\"spacingAndGlyphs\">find(x): follow parents</text><text x=\"342.0\" y=\"34.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"82.2\" lengthAdjust=\"spacingAndGlyphs\">union: link the two roots</text><text x=\"14.7\" y=\"62.8\" font-size=\"8.0\" fill=\"#e7e9f3\">2</text><text x=\"94.7\" y=\"62.8\" font-size=\"8.0\" fill=\"#e7e9f3\">3</text><text x=\"214.7\" y=\"62.8\" font-size=\"8.0\" fill=\"#e7e9f3\">5</text><text x=\"77.9\" y=\"82.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"68.3\" lengthAdjust=\"spacingAndGlyphs\">root = representative</text></svg>",
+          "width": 426,
+          "caption": "Union-Find as a forest: union attaches one root under the other, and find follows parent links to the root, flattening the path on the way.",
+          "alt": "1 4 | find(x): follow parents | union: link the two roots | 2 3 5 | root = representative"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- \"connected components\" in a graph where edges arrive over time, or where only the COUNT or the same-group test.\n- \"are these two in the same group\", \"merge groups\", \"number of groups after each operation\".\n- \"find the edge that creates a cycle\" (an edge whose endpoints already share a root).\n- \"merge accounts / sets that share an element\" (accounts merge, equality equations, similar strings).\n- \"minimum spanning tree\" or \"cheapest way to connect everything\" (Kruskal).\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "class DSU {\n    final int[] parent, rank;\n    int sets;                                    // number of groups\n    DSU(int n) {\n        parent = new int[n]; rank = new int[n]; sets = n;\n        for (int i = 0; i < n; i++) parent[i] = i;\n    }\n    int find(int x) {\n        while (parent[x] != x) {\n            parent[x] = parent[parent[x]];       // path halving\n            x = parent[x];\n        }\n        return x;\n    }\n    boolean union(int a, int b) {                // false if already in the same group\n        int ra = find(a), rb = find(b);\n        if (ra == rb) return false;\n        if (rank[ra] < rank[rb]) { int t = ra; ra = rb; rb = t; }\n        parent[rb] = ra;\n        if (rank[ra] == rank[rb]) rank[ra]++;\n        sets--;\n        return true;\n    }\n}",
+          "title": "DsuTemplate.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The loop in `find` is **path halving**, an iterative form of path compression: every visited node is pointed at its grandparent. It needs no recursion, so it cannot overflow the stack on a long chain. The Boolean returned by `union` is the key to most interview problems: `false` means \"these two were already connected\", which is exactly a cycle in an undirected graph.\n\n### Dry run\n\nProblem (Redundant Connection): a tree with nodes 1 to 3 had one extra edge added. The edges are `[1,2], [1,3],` `[2,3]`. Return the edge that closes a cycle. The DSU has `n + 1 = 4` slots (index 0 is unused because nodes start at 1). Initially `parent = [0, 1, 2, 3]` and `rank = [0, 0, 0, 0]`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Edge",
+            "find results",
+            "parent array and rank after",
+            "Merged?"
+          ],
+          "rows": [
+            [
+              "1",
+              "`1-2`",
+              "find(1)=1, find(2)=2",
+              "`parent [0,1,1,3] rank [0,1,0,0]`",
+              "`yes: 2 hangs under 1`"
+            ],
+            [
+              "2",
+              "`1-3`",
+              "find(1)=1, find(3)=3",
+              "`parent [0,1,1,1] rank [0,1,0,0]`",
+              "`yes: 3 hangs under 1`"
+            ],
+            [
+              "3",
+              "`2-3`",
+              "find(2)=1, find(3)=1",
+              "`parent [0,1,1,1] rank [0,1,0,0]`",
+              "`no: same root, cycle`"
+            ]
+          ],
+          "caption": "Redundant connection, edges processed in order."
+        },
+        {
+          "type": "markdown",
+          "text": "At step 1 both ranks are 0, so the rule `rank[ra] < rank[rb]` is false, node 1 (the first argument) becomes the root, and its rank grows to 1. At step 2 the root 1 has rank 1 and node 3 has rank 0, so 3 goes under 1 and the rank stays 1. At step 3 both `find` calls return 1. Everything is already connected, so `[2, 3]` is the redundant edge. If several edges could be removed, the problem wants the one that appears last in the input, which is why the first edge that fails to merge during an in-order scan is returned.\n\nThe same code also shows the effect of path halving. A chain `0 <- 1 <- 2 <- ... <- 7` (each node's parent is the previous one) becomes `[0, 0, 1, 1, 3, 3, 5, 5]` after a single `find(7)`. The path from 7 now needs about half the steps, and repeated finds flatten it further.\n\n### Java code\n\nThe program has the DSU class, Redundant Connection with the trace, Number of Provinces (components of an adjacency matrix), Accounts Merge (union accounts that share an email), and Kruskal's minimum spanning tree."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static class DSU {\n        final int[] parent, rank;\n        int sets;\n        DSU(int n) {\n            parent = new int[n]; rank = new int[n]; sets = n;\n            for (int i = 0; i < n; i++) parent[i] = i;\n        }\n        int find(int x) {\n            while (parent[x] != x) {\n                parent[x] = parent[parent[x]];   // path halving\n                x = parent[x];\n            }\n            return x;\n        }\n        boolean union(int a, int b) {\n            int ra = find(a), rb = find(b);\n            if (ra == rb) return false;\n            if (rank[ra] < rank[rb]) { int t = ra; ra = rb; rb = t; }\n            parent[rb] = ra;\n            if (rank[ra] == rank[rb]) rank[ra]++;\n            sets--;\n            return true;\n        }\n    }\n\n    static int[] redundant(int[][] edges, boolean trace) {\n        DSU dsu = new DSU(edges.length + 1);\n        for (int[] e : edges) {\n            boolean merged = dsu.union(e[0], e[1]);\n            if (trace) System.out.println(\"union(\" + e[0] + \",\" + e[1] + \") merged=\" + merged\n                + \" parent=\" + Arrays.toString(dsu.parent) + \" rank=\" + Arrays.toString(dsu.rank));\n            if (!merged) return e;\n        }\n        return new int[0];\n    }\n    static int provinces(int[][] isConnected) {\n        int n = isConnected.length;\n        DSU dsu = new DSU(n);\n        for (int i = 0; i < n; i++)\n            for (int j = i + 1; j < n; j++)\n                if (isConnected[i][j] == 1) dsu.union(i, j);\n        return dsu.sets;\n    }\n\n    static List<List<String>> accountsMerge(List<List<String>> accounts) {\n        DSU dsu = new DSU(accounts.size());\n        Map<String, Integer> owner = new HashMap<>();\n        for (int i = 0; i < accounts.size(); i++) {\n            for (String email : accounts.get(i).subList(1, accounts.get(i).size())) {\n                Integer prev = owner.putIfAbsent(email, i);\n                if (prev != null) dsu.union(prev, i);\n            }\n        }\n        Map<Integer, TreeSet<String>> groups = new TreeMap<>();\n        for (var e : owner.entrySet())\n            groups.computeIfAbsent(dsu.find(e.getValue()), k -> new TreeSet<>()).add(e.getKey());\n        List<List<String>> res = new ArrayList<>();\n        for (var g : groups.entrySet()) {\n            List<String> row = new ArrayList<>();\n            row.add(accounts.get(g.getKey()).get(0));\n            row.addAll(g.getValue());\n            res.add(row);\n        }\n        return res;\n    }\n\n    // Kruskal: sort edges {u, v, w} by weight, take an edge if it joins two components\n    static int kruskal(int n, int[][] edges, boolean trace) {\n        int[][] sorted = edges.clone();\n        Arrays.sort(sorted, Comparator.comparingInt(e -> e[2]));\n        DSU dsu = new DSU(n);\n        int total = 0, used = 0;\n        for (int[] e : sorted) {\n            boolean take = dsu.union(e[0], e[1]);\n            if (trace) System.out.println(\"edge \" + e[0] + \"-\" + e[1] + \" w=\" + e[2]\n                + (take ? \" take\" : \" skip (cycle)\"));\n            if (take) { total += e[2]; used++; }\n        }\n        return used == n - 1 ? total : -1;\n    }\n\n    public static void main(String[] args) {\n        System.out.println(\"--- redundant connection ---\");\n        System.out.println(\"answer: \" + Arrays.toString(\n            redundant(new int[][]{{1, 2}, {1, 3}, {2, 3}}, true)));\n        System.out.println(\"answer: \" + Arrays.toString(\n            redundant(new int[][]{{1, 2}, {2, 3}, {3, 4}, {1, 4}, {1, 5}}, false)));\n        System.out.println(\"provinces: \" + provinces(new int[][]{{1, 1, 0}, {1, 1, 0}, {0, 0, 1}}));\n        var accounts = List.of(\n            List.of(\"John\", \"johnsmith@mail.com\", \"john_newyork@mail.com\"),\n            List.of(\"John\", \"johnsmith@mail.com\", \"john00@mail.com\"),\n            List.of(\"Mary\", \"mary@mail.com\"),\n            List.of(\"John\", \"johnnybravo@mail.com\"));\n        for (var row : accountsMerge(accounts)) System.out.println(\"merged: \" + row);\n        System.out.println(\"--- Kruskal ---\");\n        int[][] edges = {{0, 1, 4}, {0, 2, 3}, {1, 2, 1}, {1, 3, 2}, {2, 3, 4}, {3, 4, 2}};\n        System.out.println(\"MST weight: \" + kruskal(5, edges, true));\n        // path compression effect on a chain built the worst way (no rank)\n        int n = 8;\n        int[] parent = new int[n];\n        for (int i = 0; i < n; i++) parent[i] = Math.max(i - 1, 0);\n        System.out.println(\"chain before: \" + Arrays.toString(parent));\n        int x = n - 1;\n        while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }\n        System.out.println(\"after find(7) with halving: \" + Arrays.toString(parent));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n--- redundant connection ---\nunion(1,2) merged=true parent=[0, 1, 1, 3] rank=[0, 1, 0, 0]\nunion(1,3) merged=true parent=[0, 1, 1, 1] rank=[0, 1, 0, 0]\nunion(2,3) merged=false parent=[0, 1, 1, 1] rank=[0, 1, 0, 0]\nanswer: [2, 3]\nanswer: [1, 4]\nprovinces: 2\nmerged: [John, john00@mail.com, john_newyork@mail.com, johnsmith@mail.com]\nmerged: [Mary, mary@mail.com]\nmerged: [John, johnnybravo@mail.com]\n--- Kruskal ---\nedge 1-2 w=1 take\nedge 1-3 w=2 take\nedge 3-4 w=2 take\nedge 0-2 w=3 take\nedge 0-1 w=4 skip (cycle)\nedge 2-3 w=4 skip (cycle)\nMST weight: 8\nchain before: [0, 0, 1, 2, 3, 4, 5, 6]\nafter find(7) with halving: [0, 0, 1, 1, 3, 3, 5, 5]",
+          "title": "Compile and run"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `provinces` returns `dsu.sets`, the counter maintained inside `union`; counting roots at the end is unnecessary.\n- `accountsMerge` does not union emails. It maps each email to the FIRST account index that owned it; the next time the same email shows up, it unions the two account indices. Then it groups emails by `find(account)`. The `TreeSet` gives the sorted emails the problem asks for, and the `TreeMap` keeps groups in a stable order.\n- `kruskal` sorts the edge list by weight with a comparator that uses `Integer.compare` semantics through `comparingInt`, then takes every edge whose endpoints are in different groups. A **minimum spanning tree** (MST) connects all V vertices with V - 1 edges and the smallest total weight. Here the weight is 1 + 2 + 2 + 3 = 8. If fewer than V - 1 edges are taken, the graph is disconnected and there is no spanning tree.\n- Index mapping: when the input uses labels (emails, letters, coordinates), map them to integers first, or write a DSU over a `HashMap`. Stone problems (LeetCode 947) union row `r` with column `c + 10001`, so rows and columns share one array."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Union by rank is optional in an interview. Path compression alone is O(log n) amortised and is what most people write. Mention union by rank, show it, and move on. The failure to avoid is a `find` without any compression, which degrades to O(n) per call."
+        },
+        {
+          "type": "markdown",
+          "text": "### Complexity and mistakes\n\nCreating the DSU is O(n). Each `find` and `union` is O(alpha(n)), effectively constant, amortised over the sequence. So processing E edges takes about O(E alpha(V)) and O(V) memory. Kruskal is dominated by sorting: O(E log E). For comparison, BFS over a static graph is O(V + E) once, so DSU wins when edges arrive online or when only the connectivity test is required; it loses when paths, distances or the explicit members of each component are required without extra bookkeeping.\n\nCommon mistakes:\n\n- Calling `union(a, b)` without `find`: setting `parent[a] = b` directly links two non-root nodes and silently splits groups.\n- Forgetting that elements may be numbered from 1 (use size `n + 1`) or that labels need an index map.\n- Reading `parent[x]` as the group id after a union. Only `find(x)` is guaranteed to be the current root.\n- Recursive `find` on a long chain: `StackOverflowError`. The iterative version above avoids it.\n- Counting groups by `n - number of successful unions` and then also decrementing in another place. Keep one counter, updated only in `union` when it returns true.\n- Expecting to delete an edge or split a group. Plain DSU cannot. Reverse the process (process deletions backwards as additions), or use another approach.\n- In Kruskal, sorting with `(a, b) -> a[2] - b[2]`: fine for small weights, a bug if weights can overflow. Prefer `Integer.compare`.\n\n### Questions to expect\n\n1. Count the connected components / provinces. (clue: \"groups of directly or indirectly connected\"; approach: union every edge, return the counter. DFS also works, but DSU is shorter and extends to the next questions.)\n2. Which edge makes a tree into a graph with a cycle? (clue: \"redundant edge\"; approach: the first edge whose endpoints already share a root. Follow-up: in a DIRECTED graph (Redundant Connection II) a node can also have two parents, which needs extra case analysis.)\n3. Merge accounts that share an email. (approach: map email to first owner, union owners, group emails by root, sort.)\n4. Are all the equality and inequality equations satisfiable? (`a==b`, `b!=c`) (approach: union all `==` first, then check that no `!=` pair shares a root.)\n5. Minimum cost to connect all points / cities. (approach: Kruskal on all pair distances, or Prim with a heap. Follow-up: how many edges does an MST have? V - 1.)\n6. How many cables must be moved to connect a network? (approach: if edges \\< V - 1 return -1, else answer = components - 1.)\n7. Number of islands II (islands appear one cell at a time, report the count after each; this one is Premium). (approach: DSU over cells, add a cell, union with land neighbours, report `sets`.)\n8. Swap characters at given index pairs to get the smallest string. (approach: DSU groups indices that can reach each other; sort the characters within each group and put them back in order.)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why use Union-Find instead of DFS for connected components? \"For a single static graph the costs are identical, O(V + E), and the simpler method is chosen. DSU is superior when edges arrive incrementally or when connectivity queries are interleaved with insertions, because each query costs almost O(1) instead of a new traversal. It also detects cycles in an undirected graph directly: an edge whose endpoints already share a root closes a cycle. It cannot split a group, produce a path or report distances.\" Follow-up: \"What do path compression and union by rank achieve?\" Without them a chain makes `find` cost O(n). With both, the amortised cost per operation is the inverse Ackermann function, at most 4 or 5 for any realistic input."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`547`",
+              "Number of Provinces",
+              "Medium",
+              "union every pair with a 1 in the matrix; the answer is the set counter"
+            ],
+            [
+              "`684`",
+              "Redundant Connection",
+              "Medium",
+              "return the first edge whose endpoints already share a root"
+            ],
+            [
+              "`1319`",
+              "Number of Operations to Make Network Connected",
+              "Medium",
+              "need at least n-1 cables; answer = components - 1"
+            ],
+            [
+              "`990`",
+              "Satisfiability of Equality Equations",
+              "Medium",
+              "union all equalities, then check each inequality"
+            ],
+            [
+              "`721`",
+              "Accounts Merge",
+              "Medium",
+              "union accounts sharing an email, group and sort emails"
+            ],
+            [
+              "`947`",
+              "Most Stones Removed with Same Row or Column",
+              "Medium",
+              "union row with column; answer = stones - components"
+            ],
+            [
+              "`1202`",
+              "Smallest String With Swaps",
+              "Medium",
+              "components of indices; sort characters inside each"
+            ],
+            [
+              "`399`",
+              "Evaluate Division",
+              "Medium",
+              "weighted DSU or graph search over ratios"
+            ],
+            [
+              "`1584`",
+              "Min Cost to Connect All Points",
+              "Medium",
+              "Kruskal over all pairs with Manhattan distance"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Union-Find tracks groups under merging: `find` returns the root, `union` joins two roots, same root means same group.\n- Path compression plus union by rank gives near-constant amortised time per operation (inverse Ackermann).\n- `union` returning false means \"already connected\", which is cycle detection in an undirected graph and the heart of Kruskal's MST.\n- Keep one `sets` counter updated inside `union`; map labels to integer ids before using arrays.\n- It cannot split groups or produce paths; BFS or DFS applies when those are required."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-5",
+      "type": "concept",
+      "title": "Shortest Paths",
+      "subtopicId": "5-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "BFS yields shortest paths when every edge has unit cost. When edges carry weights (distances, prices, delays), the path with the fewest edges is not necessarily the cheapest. Enumerating all paths is exponential. Shortest-path algorithms instead exploit optimal substructure: the best route to a vertex is the best route to a predecessor extended by one edge. The choice of algorithm depends on the edge weights."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Algorithm",
+            "Time",
+            "Note"
+          ],
+          "rows": [
+            [
+              "All edges equal",
+              "BFS",
+              "O(V + E)",
+              "levels are distances"
+            ],
+            [
+              "Weights are 0 or 1",
+              "0-1 BFS (deque)",
+              "O(V + E)",
+              "push 0-edges to the front"
+            ],
+            [
+              "Non-negative weights",
+              "Dijkstra (heap)",
+              "O((V + E) log V)",
+              "the default answer"
+            ],
+            [
+              "Limit on number of edges",
+              "Bellman-Ford rounds",
+              "O(KE)",
+              "also handles negative weights"
+            ],
+            [
+              "Negative weights, no limit",
+              "Bellman-Ford",
+              "O(VE)",
+              "detects negative cycles"
+            ],
+            [
+              "All pairs, V small",
+              "Floyd-Warshall",
+              "O(V cubed)",
+              "three nested loops"
+            ]
+          ],
+          "caption": "Choosing a shortest-path algorithm."
+        },
+        {
+          "type": "markdown",
+          "text": "### The idea\n\n**Dijkstra's algorithm** maintains for every vertex a tentative distance `dist[v]`, initialised to infinity except `dist[source] = 0`. It repeatedly extracts the unfinished vertex with the smallest tentative distance, using a `PriorityQueue` in O(log n). For each edge `u -> v` of weight `w`, if `dist[u] + w < dist[v]`, the value `dist[v]` is lowered and the pair is inserted into the queue. This step is called **relaxation**.\n\nWhy it works: when the smallest tentative distance is popped, no unfinished vertex can offer a shorter route to it, because every other route must pass through a vertex whose distance is at least as large, and adding a non-negative edge cannot make it smaller. That argument is exactly why **Dijkstra fails with negative edges**: a later negative edge could improve a vertex that has already been finalised.\n\nJava's `PriorityQueue` has no decrease-key operation. The standard workaround inserts a NEW entry `(vertex,` `newDistance)` on each improvement and discards an extracted entry as stale when its distance exceeds the current `dist[vertex]`. The queue holds at most E entries, which preserves the bound O(E log V).\n\n#### How to recognise it\n\n- \"minimum cost / time / distance\" with edge weights, travel between places.\n- \"time for a signal to reach every node\" (the maximum over the shortest distances).\n- \"path where the cost is the maximum (or product) along the path\" (a Dijkstra variant: change the combine step).\n- \"at most k stops/edges\" (Bellman-Ford rounds, or BFS with a state of (node, stops used)).\n- \"cells with different move costs\", \"break at most k walls\": a grid with weights.\n- \"shortest distance between all pairs, n up to about 100\": Floyd-Warshall.\n\n#### Template (Dijkstra)"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "int[] dist = new int[n];\nArrays.fill(dist, INF);                               // INF = Integer.MAX_VALUE / 2\ndist[src] = 0;\nPriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> Integer.compare(a[1], b[1]));\npq.offer(new int[]{src, 0});                          // {vertex, distance}\nwhile (!pq.isEmpty()) {\n    int[] top = pq.poll();\n    int u = top[0], d = top[1];\n    if (d > dist[u]) continue;                        // stale entry\n    for (int[] e : g.get(u)) {                        // e = {neighbour, weight}\n        if (d + e[1] < dist[e[0]]) {\n            dist[e[0]] = d + e[1];\n            pq.offer(new int[]{e[0], dist[e[0]]});\n        }\n    }\n}",
+          "title": "DijkstraTemplate.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Use `Integer.MAX_VALUE / 2` (or `Long.MAX_VALUE / 2`) as infinity, never `Integer.MAX_VALUE`. `INF + weight` would overflow to a huge negative number and look like the best path ever. The program below prints `INF + INF` and `Integer.MAX_VALUE + 1` to show the difference. Also check `dist[u] < INF` before relaxing from a vertex in Bellman-Ford."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nDirected weighted graph with 5 vertices (edges as `u -> v : w`): `0->1:4, 0->2:1, 2->1:2, 1->3:1, 2->3:5, 3->4:3`. Find the shortest distance from vertex 0. The direct edge `0 -> 1` costs 4, but going through 2 costs 1 + 2 = 3, so the obvious edge is not the best. Each row is one pop from the priority queue; `dist` is printed after relaxing the popped vertex's edges, `inf` means not reached yet."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Pop (vertex, d)",
+            "dist after (vertices 0 to 4)",
+            "Queue size"
+          ],
+          "rows": [
+            [
+              "1",
+              "`(0, 0)`",
+              "`[0, 4, 1, inf, inf]`",
+              "2"
+            ],
+            [
+              "2",
+              "`(2, 1)`",
+              "`[0, 3, 1, 6, inf]`",
+              "3"
+            ],
+            [
+              "3",
+              "`(1, 3)`",
+              "`[0, 3, 1, 4, inf]`",
+              "3"
+            ],
+            [
+              "4",
+              "`(1, 4)`",
+              "`unchanged: stale, skip (3 < 4)`",
+              "-"
+            ],
+            [
+              "5",
+              "`(3, 4)`",
+              "`[0, 3, 1, 4, 7]`",
+              "2"
+            ],
+            [
+              "6",
+              "`(3, 6)`",
+              "`unchanged: stale, skip (4 < 6)`",
+              "-"
+            ],
+            [
+              "7",
+              "`(4, 7)`",
+              "`[0, 3, 1, 4, 7]`",
+              "0"
+            ]
+          ],
+          "caption": "Dijkstra from vertex 0."
+        },
+        {
+          "type": "markdown",
+          "text": "Step 1 sets `dist[1] = 4` and `dist[2] = 1`. Step 2 pops the cheaper vertex 2 first. It improves vertex 1 from 4 to 3 and gives vertex 3 its first value, 1 + 5 = 6. Step 3 pops (1, 3): vertex 3 improves from 6 to 4. The queue still holds the old entries (1, 4) and (3, 6); they are popped later and ignored because their distance exceeds `dist` for that vertex (steps 4 and 6). Final answer: `[0, 3, 1, 4, 7]`.\n\nNow the \"at most k stops\" case with Bellman-Ford. Flights `0->1:100, 1->2:100, 2->0:100, 1->3:600, 2->3:200`, from 0 to 3. A round relaxes every edge using the distances from the PREVIOUS round, so after round `r` the array holds the best cost using at most `r` flights."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rounds done",
+            "dist for vertices 0 to 3"
+          ],
+          "rows": [
+            [
+              "0",
+              "`[0, inf, inf, inf]`"
+            ],
+            [
+              "1",
+              "`[0, 100, inf, inf]`"
+            ],
+            [
+              "2",
+              "`[0, 100, 200, 700]`"
+            ],
+            [
+              "3",
+              "`[0, 100, 200, 400]`"
+            ]
+          ],
+          "caption": "Bellman-Ford with edge limit."
+        },
+        {
+          "type": "markdown",
+          "text": "With k = 1 stop, 2 flights are permitted (k + 1 edges), so the answer is `dist[3]` after 2 rounds: 700 (via 0, 1, 3). With k = 2 stops, 3 flights are allowed and the cheaper route 0, 1, 2, 3 costs 400. Dijkstra would answer 400 regardless of stops, which is why it is the wrong tool when the number of edges is limited.\n\n### Java code\n\nThe program has Dijkstra with a trace, Network Delay Time, Cheapest Flights Within K Stops (Bellman-Ford), Path With Minimum Effort (Dijkstra where the path cost is the MAXIMUM step), a 0-1 BFS for the minimum obstacles to remove, and Floyd-Warshall."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static final int INF = Integer.MAX_VALUE / 2;\n\n    // edges {u, v, w}, directed\n    static int[] dijkstra(int n, int[][] edges, int src, boolean trace) {\n        List<List<int[]>> g = new ArrayList<>();\n        for (int i = 0; i < n; i++) g.add(new ArrayList<>());\n        for (int[] e : edges) g.get(e[0]).add(new int[]{e[1], e[2]});\n        int[] dist = new int[n];\n        Arrays.fill(dist, INF);\n        dist[src] = 0;\n        PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> Integer.compare(a[1], b[1]));\n        pq.offer(new int[]{src, 0});\n        int step = 0;\n        while (!pq.isEmpty()) {\n            int[] top = pq.poll();\n            int u = top[0], d = top[1];\n            if (d > dist[u]) {\n                if (trace) System.out.println(++step + \": pop (\" + u + \",\" + d + \") stale, skip\");\n                continue;\n            }\n            for (int[] e : g.get(u)) {\n                if (d + e[1] < dist[e[0]]) {\n                    dist[e[0]] = d + e[1];\n                    pq.offer(new int[]{e[0], dist[e[0]]});\n                }\n            }\n            if (trace) System.out.println(++step + \": pop (\" + u + \",\" + d + \") dist=\"\n                + Arrays.toString(dist).replace(\"\" + INF, \"inf\") + \" pq size=\" + pq.size());\n        }\n        return dist;\n    }\n\n    static int networkDelay(int[][] times, int n, int k) {\n        int[] dist = dijkstra(n + 1, times, k, false);\n        int max = 0;\n        for (int i = 1; i <= n; i++) max = Math.max(max, dist[i]);\n        return max >= INF ? -1 : max;\n    }\n\n    // Bellman-Ford limited to k+1 edges\n    static int cheapest(int n, int[][] flights, int src, int dst, int k, boolean trace) {\n        int[] dist = new int[n];\n        Arrays.fill(dist, INF);\n        dist[src] = 0;\n        for (int round = 0; round <= k; round++) {\n            int[] next = dist.clone();                 // read old, write new\n            for (int[] f : flights)\n                if (dist[f[0]] < INF && dist[f[0]] + f[2] < next[f[1]])\n                    next[f[1]] = dist[f[0]] + f[2];\n            dist = next;\n            if (trace) System.out.println(\"after \" + (round + 1) + \" edge(s): \"\n                + Arrays.toString(dist).replace(\"\" + INF, \"inf\"));\n        }\n        return dist[dst] >= INF ? -1 : dist[dst];\n    }\n\n    static int minEffort(int[][] h) {\n        int rows = h.length, cols = h[0].length;\n        int[][] best = new int[rows][cols];\n        for (int[] row : best) Arrays.fill(row, INF);\n    best[0][0] = 0;\n    PriorityQueue<int[]> pq = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0]));\n    pq.offer(new int[]{0, 0, 0});\n    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};\n    while (!pq.isEmpty()) {\n        int[] t = pq.poll();\n        int e = t[0], r = t[1], c = t[2];\n        if (e > best[r][c]) continue;\n        if (r == rows - 1 && c == cols - 1) return e;\n        for (int[] d : dirs) {\n            int nr = r + d[0], nc = c + d[1];\n            if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;\n            int ne = Math.max(e, Math.abs(h[nr][nc] - h[r][c]));   // path cost is a MAX\n            if (ne < best[nr][nc]) { best[nr][nc] = ne; pq.offer(new int[]{ne, nr, nc}); }\n        }\n    }\n    return 0;\n}\n\n// 0-1 BFS: grid cell 1 = obstacle (cost 1), 0 = free (cost 0)\nstatic int minObstacles(int[][] grid) {\n    int rows = grid.length, cols = grid[0].length;\n    int[][] dist = new int[rows][cols];\n    for (int[] row : dist) Arrays.fill(row, INF);\n    Deque<int[]> dq = new ArrayDeque<>();\n    dist[0][0] = 0;\n    dq.offerFirst(new int[]{0, 0});\n    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};\n    while (!dq.isEmpty()) {\n        int[] cur = dq.pollFirst();\n        for (int[] d : dirs) {\n            int nr = cur[0] + d[0], nc = cur[1] + d[1];\n            if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;\n            int w = grid[nr][nc];\n            if (dist[cur[0]][cur[1]] + w < dist[nr][nc]) {\n                dist[nr][nc] = dist[cur[0]][cur[1]] + w;\n                int[] cell = {nr, nc};\n                if (w == 0) dq.offerFirst(cell); else dq.offerLast(cell);\n            }\n        }\n    }\n    return dist[rows - 1][cols - 1];\n}\n\nstatic int[][] floyd(int n, int[][] edges) {\n    int[][] d = new int[n][n];\n    for (int[] row : d) Arrays.fill(row, INF);\n    for (int i = 0; i < n; i++) d[i][i] = 0;\n    for (int[] e : edges) d[e[0]][e[1]] = Math.min(d[e[0]][e[1]], e[2]);\n    for (int k = 0; k < n; k++)               // intermediate vertex MUST be the outer loop\n        for (int i = 0; i < n; i++)\n            for (int j = 0; j < n; j++)\n                if (d[i][k] + d[k][j] < d[i][j]) d[i][j] = d[i][k] + d[k][j];\n    return d;\n}\n\npublic static void main(String[] args) {\n    int[][] edges = {{0, 1, 4}, {0, 2, 1}, {2, 1, 2}, {1, 3, 1}, {2, 3, 5}, {3, 4, 3}};\n    System.out.println(\"--- Dijkstra from 0 ---\");\n    int[] dist = dijkstra(5, edges, 0, true);\n    System.out.println(\"final: \" + Arrays.toString(dist));\n    System.out.println(\"network delay: \"\n        + networkDelay(new int[][]{{2, 1, 1}, {2, 3, 1}, {3, 4, 1}}, 4, 2));\n    System.out.println(\"--- Bellman-Ford ---\");\n    int[][] flights = {{0, 1, 100}, {1, 2, 100}, {2, 0, 100}, {1, 3, 600}, {2, 3, 200}};\n    System.out.println(\"cheapest k=1: \" + cheapest(4, flights, 0, 3, 1, false));\n    System.out.println(\"cheapest k=2: \" + cheapest(4, flights, 0, 3, 2, true));\n    int[][] heights = {{1, 2, 2}, {3, 8, 2}, {5, 3, 5}};\n    System.out.println(\"min effort: \" + minEffort(heights));\n    System.out.println(\"min obstacles: \"\n        + minObstacles(new int[][]{{0, 1, 1}, {1, 1, 0}, {1, 1, 0}}));\n    int[][] fw = floyd(4, new int[][]{{0, 1, 3}, {1, 2, 1}, {2, 3, 1}, {0, 3, 10}});\n    for (int[] row : fw) System.out.println(Arrays.toString(row).replace(\"\" + INF, \"inf\"));\n    int a = INF + INF;\n        System.out.println(\"INF + INF = \" + a + \" (no overflow because INF = MAX/2)\");\n        System.out.println(\"MAX + 1 = \" + (Integer.MAX_VALUE + 1));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n--- Dijkstra from 0 ---\n1: pop (0,0) dist=[0, 4, 1, inf, inf] pq size=2\n2: pop (2,1) dist=[0, 3, 1, 6, inf] pq size=3\n3: pop (1,3) dist=[0, 3, 1, 4, inf] pq size=3\n4: pop (1,4) stale, skip\n5: pop (3,4) dist=[0, 3, 1, 4, 7] pq size=2\n6: pop (3,6) stale, skip\n7: pop (4,7) dist=[0, 3, 1, 4, 7] pq size=0\nfinal: [0, 3, 1, 4, 7]\nnetwork delay: 2\n--- Bellman-Ford ---\ncheapest k=1: 700\nafter 1 edge(s): [0, 100, inf, inf]\nafter 2 edge(s): [0, 100, 200, 700]\nafter 3 edge(s): [0, 100, 200, 400]\ncheapest k=2: 400\nmin effort: 2\nmin obstacles: 2\n[0, 3, 4, 5]\n[inf, 0, 1, 2]\n[inf, inf, 0, 1]\n[inf, inf, inf, 0]\nINF + INF = 2147483646 (no overflow because INF = MAX/2)\nMAX + 1 = -2147483648",
+          "title": "Compile and run"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- In `dijkstra` the check `d > dist[u]` is what skips stale entries (steps 4 and 6 of the trace). Without it the answer is still correct, but the work can blow up.\n- `networkDelay` runs Dijkstra from the source and takes the maximum distance over all nodes. If any node is still `INF`, the signal never arrives: return -1. The vertices are numbered from 1, so it allocates `n + 1` slots.\n- `cheapest` copies the array (`dist.clone()`) at the start of every round. Relaxing in place would allow one round to chain several edges and violate the stop limit; this is the most common error for this problem.\n- `minEffort` is Dijkstra with a different \"plus\": the cost of a path is the largest height difference on it, so the new cost is `Math.max(e, diff)`, not `e + diff`. This works because the max is also monotone: extending a path never lowers its cost.\n- `minObstacles` uses a `Deque`: a free cell (weight 0) goes to the FRONT, an obstacle (weight 1) to the BACK. The deque then behaves like a priority queue with only two priorities, at O(V + E) instead of a log factor.\n- In `floyd` the loop over the intermediate vertex `k` must be the outermost. Putting it innermost gives wrong answers, and the error is easy to miss in a small example."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Production routing, maps and network protocols use Dijkstra-like algorithms. OSPF, the routing protocol inside many company networks, runs Dijkstra on the link-state graph. Map applications use A-star (Dijkstra plus a guess of the remaining distance) and preprocessing tricks, because plain Dijkstra on a continent-size road graph is too slow for each request."
+        },
+        {
+          "type": "markdown",
+          "text": "### Complexity and mistakes\n\nDijkstra with a binary heap does at most E pushes and E pops of O(log E) each, which is O((V + E) log V) time and O(V + E) space. Bellman-Ford with K rounds is O(KE); with K = V - 1 rounds it is O(VE) and also finds the shortest paths when negative edges exist (one extra round that still improves something reveals a negative cycle). Floyd-Warshall is O(V cubed) time and O(V squared) space, so it is only practical for V up to a few hundred. 0-1 BFS is O(V + E).\n\nCommon mistakes:\n\n- Using Dijkstra with negative edges. Switch to Bellman-Ford (or SPFA) instead.\n- `Integer.MAX_VALUE` as infinity, then overflowing when adding a weight.\n- Using a plain `Queue` instead of a `PriorityQueue` for weighted edges (that is BFS and gives wrong costs).\n- Marking a vertex finished when it is first PUSHED. In Dijkstra it is final only when it is POPPED with its best distance; a later push may improve it.\n- Comparator written as `a[1] - b[1]`: overflow for large distances. Use `Integer.compare` (or `Long.compare` for long distances).\n- Not noticing that the answer needs `long`. Sums of many large weights (for instance 10^5 edges of 10^9) overflow `int`.\n- Cheapest flights: relaxing in place instead of from a copy, and off-by-one between \"k stops\" and \"k + 1 edges\".\n- Treating an undirected edge as directed once. Add it in both directions.\n\n### Questions to expect\n\n1. How long until a signal sent from node k reaches all n nodes? (clue: \"minimum time for all nodes\"; approach: Dijkstra from k, answer is the maximum distance, -1 if any node is unreachable.)\n2. Cheapest price from src to dst with at most k stops. (clue: \"at most k\"; approach: Bellman-Ford for k + 1 rounds with a copied array, or a Dijkstra/BFS whose state is (city, stops). Why not plain Dijkstra? It would ignore the limit and could return a path with too many stops.)\n3. In a grid of heights find the route that minimises the largest height difference between consecutive cells. (approach: Dijkstra on cells with `max` as the combine step. Alternative: binary search the answer plus BFS, or Union-Find adding edges in order of difference.)\n4. Of all paths with the highest success probability, return that probability. (approach: Dijkstra with a max-heap and multiplication, since probabilities in \\[0,1\\] never increase along a path.)\n5. Minimum walls to remove to get from the top-left to the bottom-right. (clue: costs are only 0 or 1; approach: 0-1 BFS.)\n6. Find the city with the fewest neighbours within a distance threshold. (clue: all-pairs distances and V at most 100; approach: Floyd-Warshall or Dijkstra from each city.)\n7. Count the number of shortest paths. (approach: Dijkstra plus a `ways[]` array: when `d + w < dist[v]` reset `ways[v]` `= ways[u]`; when it equals, add `ways[u]`. Use `long` and a modulus.)\n8. Report the actual path. (approach: store `parent[v] = u` whenever an edge is relaxed, then walk back from the target.)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does Dijkstra not work with negative edge weights, and which algorithm applies instead? \"Dijkstra finalises a vertex when it is extracted, which is correct only if all edge weights are non-negative: no other route can then be shorter. A negative edge discovered later can lower the distance of an already finalised vertex, so the invariant fails. Bellman-Ford is used instead; it relaxes all edges V - 1 times in O(VE) and detects a negative cycle if a further round still improves some distance. For a DAG, relaxing edges in topological order solves the problem in O(V + E).\" Follow-up: \"What is the complexity of Dijkstra?\" With a binary heap, O((V + E) log V). With a Fibonacci heap, O(E + V log V), which is rarely used in practice."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`743`",
+              "Network Delay Time",
+              "Medium",
+              "Dijkstra from k; answer is the largest distance, -1 if any is infinite"
+            ],
+            [
+              "`787`",
+              "Cheapest Flights Within K Stops",
+              "Medium",
+              "Bellman-Ford for k + 1 rounds using a copy of the array"
+            ],
+            [
+              "`1631`",
+              "Path With Minimum Effort",
+              "Medium",
+              "Dijkstra where the path cost is the max step"
+            ],
+            [
+              "`1514`",
+              "Path with Maximum Probability",
+              "Medium",
+              "Dijkstra with a max-heap and multiplication"
+            ],
+            [
+              "`1334`",
+              "Find the City With the Smallest Number of Neighbors at a Threshold Distance",
+              "Medium",
+              "Floyd-Warshall, count cities within the threshold"
+            ],
+            [
+              "`1976`",
+              "Number of Ways to Arrive at Destination",
+              "Medium",
+              "Dijkstra plus a ways array, use long and mod"
+            ],
+            [
+              "`778`",
+              "Swim in Rising Water",
+              "Hard",
+              "Dijkstra with max as the combine step (or binary search plus BFS)"
+            ],
+            [
+              "`2290`",
+              "Minimum Obstacle Removal to Reach Corner",
+              "Hard",
+              "0-1 BFS: free cell to the front, obstacle to the back"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Pick the algorithm from the weights: BFS (equal), 0-1 BFS (0 and 1), Dijkstra (non-negative), Bellman-Ford (negative or an edge limit), Floyd-Warshall (all pairs, small V).\n- Dijkstra = priority queue of (vertex, distance) + relax edges + skip stale entries; O((V + E) log V).\n- Use `Integer.MAX_VALUE / 2` as infinity, `Integer.compare` in comparators, and `long` when sums can be large.\n- Bellman-Ford with a stop limit must relax from a copy of the previous round.\n- If the path cost is a max (or a product), keep Dijkstra's structure and change only the combine step."
+        },
+        {
+          "type": "markdown",
+          "text": "#### PART 6\n\n### Dynamic Programming, Greedy and Bits\n\n*Three families of optimisation problems: memoised recursion (dynamic programming), locally optimal* *choice (greedy) and direct manipulation of the binary representation (bits).*\n\n**In this part** **6.1** Dynamic programming: the method **6.2** DP on grids and paths **6.3** Knapsack patterns **6.4** DP on strings and sequences **6.5** DP on intervals, trees and states **6.6** Greedy **6.7** Bit manipulation"
+        }
+      ]
+    }
+  ]
+}

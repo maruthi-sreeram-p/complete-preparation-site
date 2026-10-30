@@ -1,0 +1,1599 @@
+{
+  "source": {
+    "document": "DSA_Patterns.pdf",
+    "pages": "105-145",
+    "planDays": "18–20, 22–25"
+  },
+  "sections": [
+    {
+      "id": "ch-4-1",
+      "type": "concept",
+      "title": "Recursion and Divide and Conquer",
+      "subtopicId": "4-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Recursion means a function solves a problem by calling itself on a smaller version of the same problem. It underlies most of the techniques in this Part: tree traversals, backtracking, memoised dynamic programming, merge sort and quickselect.\n\nMany interview problems have a natural recursive shape (\"the answer for a tree is built from the answers for its two subtrees\"), and the brute-force solution is often a recursion that recomputes the same sub-problems over and over. Inspection of the call tree permits the work to be counted, redundant computation to be identified, and the algorithm to be corrected. Divide and conquer is the disciplined version: split the input, solve the pieces recursively, combine the results.\n\n### The idea\n\nEvery correct recursive function has three parts.\n\n- **Base case**: an input small enough to be answered directly, without recursion. Without it the recursion never stops.\n- **Recursive case**: reduce the input to one or more smaller inputs and invoke the function itself.\n- **Combine step**: turn the answers of the smaller calls into the answer for this call (sometimes there is nothing to combine).\n\nCorrectness follows by induction. The recursive case may *assume that the call on the smaller input returns the correct* *answer* (the inductive hypothesis). It is then sufficient to show that, given those answers, the function produces the correct result for its own input (the postcondition) and that the input strictly decreases on every call, so that the base case is reached.\n\nEach call gets its own **stack frame**, a block of memory holding its parameters, local variables and the return address. Frames accumulate on the thread's call stack and are popped as calls return. A recursion of depth d therefore uses O(d) stack space, even if it allocates nothing else. The JVM stack is small (often about 1 MB per thread by default), so a depth of some ten thousand frames or more can throw `StackOverflowError`; the exact limit depends on frame size and JVM settings.\n\n#### How to recognise it\n\n- \"Split the array in half\" or \"solve for the left and right part\": divide and conquer.\n- The problem definition itself is recursive: trees, nested structures, \"the n-th term depends on earlier terms\".\n- \"Compute x to the power n\", \"sort\", \"k-th smallest\", \"all ways to ...\": a smaller instance of the same question hides inside.\n- The brute force is exponential because it re-solves the same sub-problems: add a memo (a cache) to the recursion.\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Recursion template (fragment)\nstatic Result solve(Input in) {\n    if (isSmallEnough(in)) return directAnswer(in);      // base case\n    Input[] parts = split(in);                           // strictly smaller inputs\n    Result[] sub = new Result[parts.length];\n    for (int i = 0; i < parts.length; i++) sub[i] = solve(parts[i]);   // trust the calls\n    return combine(sub);                                 // build this answer\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Divide and conquer is that template where the split is balanced (usually halves) and the combine step is cheap. The cost follows a *recurrence*, an equation for T(n) in terms of T of smaller inputs:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Recurrence",
+            "Total cost",
+            "Typical example",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`T(n) = T(n/2) + O(1)`",
+              "O(log n)",
+              "binary search, fast power",
+              "one half is discarded, constant work"
+            ],
+            [
+              "`T(n) = T(n/2) + O(n)`",
+              "O(n)",
+              "quickselect on average",
+              "work shrinks geometrically: n + n/2 + n/4 + ..."
+            ],
+            [
+              "`T(n) = 2 T(n/2) + O(n)`",
+              "O(n log n)",
+              "merge sort",
+              "log n levels, each doing n total work"
+            ],
+            [
+              "`T(n) = 2 T(n/2) + O(1)`",
+              "O(n)",
+              "tree height on a balanced tree",
+              "n nodes, constant work each"
+            ],
+            [
+              "`T(n) = T(n-1) + O(1)`",
+              "O(n)",
+              "factorial, list recursion",
+              "one chain of n calls"
+            ],
+            [
+              "`T(n) = T(n-1) + T(n-2)`",
+              "O(2^n)",
+              "naive Fibonacci",
+              "each call spawns two big calls"
+            ]
+          ],
+          "caption": "Common recurrences and what they solve."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nFast exponentiation computes x to the power n with far fewer multiplications than the obvious loop. The idea: x^n = (x^(n/2))^2 when n is even, and x^n = (x^(n/2))^2 \\* x when n is odd (integer division). Each call halves n, so about log2(n) calls are needed instead of n.\n\nThe trace below follows `power(2, 10)`. The program prints one line when a call starts and one when it returns, indented by call depth. Input: x = 2, n = 10."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Call",
+            "Depth",
+            "What happens",
+            "Returns"
+          ],
+          "rows": [
+            [
+              "1",
+              "`power(2, 10)`",
+              "0",
+              "n is not 0, ask for power(2, 5)",
+              "waits"
+            ],
+            [
+              "2",
+              "`power(2, 5)`",
+              "1",
+              "ask for power(2, 2)",
+              "waits"
+            ],
+            [
+              "3",
+              "`power(2, 2)`",
+              "2",
+              "ask for power(2, 1)",
+              "waits"
+            ],
+            [
+              "4",
+              "`power(2, 1)`",
+              "3",
+              "ask for power(2, 0)",
+              "waits"
+            ],
+            [
+              "5",
+              "`power(2, 0)`",
+              "4",
+              "base case, n == 0",
+              "1"
+            ],
+            [
+              "6",
+              "`power(2, 1)`",
+              "3",
+              "n odd: 1 \\* 1 \\* 2",
+              "2"
+            ],
+            [
+              "7",
+              "`power(2, 2)`",
+              "2",
+              "n even: 2 \\* 2",
+              "4"
+            ],
+            [
+              "8",
+              "`power(2, 5)`",
+              "1",
+              "n odd: 4 \\* 4 \\* 2",
+              "32"
+            ],
+            [
+              "9",
+              "`power(2, 10)`",
+              "0",
+              "n even: 32 \\* 32",
+              "1024"
+            ]
+          ],
+          "caption": "Call stack for power(2, 10). Calls go down the table, returns come back up."
+        },
+        {
+          "type": "markdown",
+          "text": "Five frames were alive at the deepest point (steps 1 to 5), and only four combine steps (steps 6 to 9) were needed, compared with nine multiplications for the obvious loop. The stack grows to its maximum, hits the base case, then unwinds: every \"waits\" row becomes a \"returns\" row in reverse order. The invariant is that the stack grows monotonically until the base case is reached and then unwinds in the reverse order of the calls.\n\n### Java code\n\nThe first program contains everything this chapter discusses: factorial, iterative fast power (with the `Integer.MIN_VALUE` overflow case handled), merge sort, Tower of Hanoi, randomised quickselect, naive versus memoised Fibonacci, and a deliberate stack overflow."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static long fact(int n) { return n <= 1 ? 1 : n * fact(n - 1); }\n\n    static double myPow(double x, int n) {\n        long e = n;                    // widen first: -Integer.MIN_VALUE overflows int\n        if (e < 0) { x = 1 / x; e = -e; }\n        double result = 1;\n        while (e > 0) {\n            if ((e & 1) == 1) result *= x;\n            x *= x;\n            e >>= 1;\n        }\n        return result;\n    }\n\n    static void mergeSort(int[] a, int lo, int hi, int[] tmp) {   // sorts a[lo, hi)\n        if (hi - lo < 2) return;\n        int mid = lo + (hi - lo) / 2;\n        mergeSort(a, lo, mid, tmp);\n        mergeSort(a, mid, hi, tmp);\n        int i = lo, j = mid, k = lo;\n        while (i < mid && j < hi) tmp[k++] = a[i] <= a[j] ? a[i++] : a[j++];\n        while (i < mid) tmp[k++] = a[i++];\n        while (j < hi) tmp[k++] = a[j++];\n        System.arraycopy(tmp, lo, a, lo, hi - lo);\n    }\n\n    static int moves = 0;\n    static void hanoi(int n, char from, char to, char via, boolean print) {\n        if (n == 0) return;\n        hanoi(n - 1, from, via, to, print);       // park n-1 disks on the spare peg\n        moves++;\n        if (print) System.out.println(\"move disk \" + n + \" \" + from + \" -> \" + to);\n        hanoi(n - 1, via, to, from, print);       // bring them on top of disk n\n    }\n\n    static final Random RNG = new Random(7);\n    static int quickSelect(int[] a, int k) {      // k-th smallest, 0-based\n        int lo = 0, hi = a.length - 1;\n        while (lo < hi) {\n            int p = partition(a, lo, hi);\n            if (p == k) return a[p];\n            if (p < k) lo = p + 1; else hi = p - 1;\n        }\n        return a[lo];\n    }\n    static int partition(int[] a, int lo, int hi) {\n        swap(a, lo + RNG.nextInt(hi - lo + 1), hi);   // random pivot goes to the end\n        int pivot = a[hi], i = lo;\n        for (int j = lo; j < hi; j++) if (a[j] < pivot) swap(a, i++, j);\n        swap(a, i, hi);                           // pivot lands in its final position\n        return i;\n    }\n    static void swap(int[] a, int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }\n\n    static int fibCalls = 0;\n    static long fibSlow(int n) { fibCalls++; return n < 2 ? n : fibSlow(n - 1) + fibSlow(n - 2); }\n    static long fibMemo(int n, long[] memo) {\n        if (n < 2) return n;\n        if (memo[n] != 0) return memo[n];\n        return memo[n] = fibMemo(n - 1, memo) + fibMemo(n - 2, memo);\n    }\n    static int deep(int n) { return deep(n + 1) + 1; }\n\n    public static void main(String[] args) {\n        System.out.println(\"fact(5) = \" + fact(5));\n        System.out.println(\"myPow(2, 10) = \" + myPow(2, 10));\n        System.out.println(\"myPow(2, -2) = \" + myPow(2, -2));\n        System.out.println(\"myPow(2, MIN) = \" + myPow(2, Integer.MIN_VALUE));\n        int[] arr = {38, 27, 43, 3, 9, 82, 10};\n        mergeSort(arr, 0, arr.length, new int[arr.length]);\n        System.out.println(\"sorted = \" + Arrays.toString(arr));\n        hanoi(3, 'A', 'C', 'B', true);\n        moves = 0; hanoi(20, 'A', 'C', 'B', false);\n        System.out.println(\"hanoi(20) moves = \" + moves);\n        int[] b = {7, 10, 4, 3, 20, 15};\n        System.out.println(\"3rd smallest = \" + quickSelect(b.clone(), 2));\n        System.out.println(\"2nd largest = \" + quickSelect(b.clone(), b.length - 2));\n        System.out.println(\"fibSlow(30) = \" + fibSlow(30) + \" calls=\" + fibCalls);\n        System.out.println(\"fibMemo(30) = \" + fibMemo(30, new long[31]));\n        try { deep(1); }\n        catch (StackOverflowError e) { System.out.println(\"StackOverflowError caught\"); }\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nfact(5) = 120\nmyPow(2, 10) = 1024.0\nmyPow(2, -2) = 0.25\nmyPow(2, MIN) = 0.0\nsorted = [3, 9, 10, 27, 38, 43, 82]\nmove disk 1 A -> C\nmove disk 2 A -> B\nmove disk 1 C -> B\nmove disk 3 A -> C\nmove disk 1 B -> A\nmove disk 2 B -> C\nmove disk 1 A -> C\nhanoi(20) moves = 1048575\n3rd smallest = 7\n2nd largest = 15\nfibSlow(30) = 832040 calls=2692537\nfibMemo(30) = 832040\nStackOverflowError caught",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `mid = lo + (hi - lo) / 2` avoids overflow of `(lo + hi) / 2` on huge arrays.\n- Merge sort is *stable* because of `<=` when the two heads are equal: the left element goes first.\n- Hanoi: moving n disks takes T(n) = 2 T(n-1) + 1 moves, which solves to 2^n - 1. For n = 20 that is 1,048,575, matching the output. No algorithm can do better; this is an exponential *problem*, not a slow solution.\n- `fibSlow(30)` makes 2,692,537 calls to compute a number that needs only 30 distinct sub-problems. `fibMemo` stores each result once, making it O(n). This is the teaser for the dynamic programming Part: memoisation is just \"recursion plus a cache\".\n- `quickSelect` is a loop, not recursion, because after partitioning only one side matters. The expected cost is O(n) because the pivot is random; it is the engine behind \"k-th largest\" questions (an alternative to heaps).\n- `myPow` uses the binary expansion of the exponent iteratively: no stack, O(log n) time, O(1) space. The recursive version in the dry run is the same idea.\n\n### Complexity and mistakes\n\n**Time** equals the number of calls times the work per call. Analysis uses the call tree: for fast power it is a single chain of log2(n) calls; for merge sort it is a balanced tree with log2(n) levels and O(n) total work per level, giving O(n log n); for naive Fibonacci the tree has about 1.6^n nodes. **Space** equals the maximum number of live frames (the depth of the tree) plus any additionally allocated memory. Merge sort uses O(n) for the temp array plus O(log n) stack. Quickselect with random pivots uses O(1) extra here (it is a loop) and expected O(n) time but O(n^2) worst case.\n\nMistakes to avoid:\n\n- **Missing or unreachable base case.** `power(x, n)` with a base case `n == 1` loops forever for `n == 0`. Ask: \"which inputs can reach the base case, and do all of them?\"\n- **The input does not shrink.** Calling `solve(n)` from `solve(n)`, or `solve(mid)` when `mid == hi` in a range split, recurses forever. Check the smallest ranges (length 0, 1, 2) by hand.\n- **Overflow in the combine step.** `fact(21)` overflows `long`; `(lo + hi) / 2` overflows `int`. Also `-Integer.MIN_VALUE == Integer.MIN_VALUE`, which is why `myPow` widens to `long` before negating.\n- **Recomputing sub-problems.** If the call tree has the same call appearing many times (Fibonacci, grid paths), add a memo. If the sub-problems never repeat (merge sort, Hanoi), a memo only wastes memory.\n- **Deep recursion in production code.** A linked list or skewed tree with 100,000 nodes can overflow the stack. An explicit `Deque` or a loop should be used instead."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A recursive method that never returns does not hang quietly: the JVM throws `StackOverflowError` once the thread stack is exhausted. It is an `Error`, not an `Exception`; catching it (as the demo does) is fine for experiments but never a fix for a missing base case."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Compute x to the power n in O(log n).\" Clue: halve the exponent. Handle negative n and `Integer.MIN_VALUE`; mention the iterative bit version.\n2. \"Sort an array without using the library; guarantee O(n log n).\" Merge sort. Follow-up: \"What if memory is tight?\" Heap sort is O(1) extra; merge sort needs O(n) for arrays but O(1) for linked lists.\n3. \"Find the k-th largest element.\" Clue: a full sort is unnecessary. Quickselect gives expected O(n); a size-k min-heap gives O(n log k). Follow-up: \"What is quickselect's worst case, and how is it avoided?\" O(n^2); random pivot or median-of-medians.\n4. \"Move n disks between pegs.\" Pure recursion: solve n-1, move one, solve n-1 again. Know that 2^n - 1 moves are required.\n5. \"What is the time complexity of this recursive function?\" Write the recurrence, then solve it with the tree method (levels times work per level).\n6. \"A recursive solution is too slow; improve it.\" Spot repeated calls, add a memo (top-down DP), or convert to a loop (bottom-up).\n7. \"Find the k-th symbol in the n-th row of a grammar that doubles each row.\" Clue: row n is built from row n-1, so recurse on the parent index `(k + 1) / 2`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"Can you convert this recursion to iteration?\" Yes: recursion is equivalent to an explicit stack of frames. Maintain an explicit `Deque` holding the state of each frame (arguments plus \"where to resume\"). For tail-like recursion (the last action is the call, as in quickselect) a plain loop is enough. Java does not eliminate tail calls, so an iterative form is preferable for deep inputs, and this should be stated before coding."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`509`",
+              "Fibonacci Number",
+              "Easy",
+              "Two-term recurrence; compare naive, memo, and two-variable loop"
+            ],
+            [
+              "`70`",
+              "Climbing Stairs",
+              "Easy",
+              "Same recurrence as Fibonacci in disguise: ways(n) = ways(n-1) + ways(n-2)"
+            ],
+            [
+              "`169`",
+              "Majority Element",
+              "Easy",
+              "Divide and conquer: majority of the whole is the majority of one half (or use Boyer-Moore)"
+            ],
+            [
+              "`50`",
+              "Pow(x, n)",
+              "Medium",
+              "Halve the exponent; handle negative n and Integer.MIN\\_VALUE"
+            ],
+            [
+              "`912`",
+              "Sort an Array",
+              "Medium",
+              "Implement merge sort or heap sort; avoid O(n^2) pitfalls"
+            ],
+            [
+              "`215`",
+              "Kth Largest Element in an Array",
+              "Medium",
+              "Quickselect with a random pivot, or a min-heap of size k"
+            ],
+            [
+              "`779`",
+              "K-th Symbol in Grammar",
+              "Medium",
+              "Row n comes from row n-1: recurse on the parent and flip if k is even"
+            ],
+            [
+              "`241`",
+              "Different Ways to Add Parentheses",
+              "Medium",
+              "Split at each operator, solve both sides, combine all pairs"
+            ],
+            [
+              "`23`",
+              "Merge k Sorted Lists",
+              "Hard",
+              "Divide and conquer: merge lists in pairs, halving the count each round"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Recursion = base case + smaller sub-problem + combine; trust the call on the smaller input.\n\n- Draw the call tree. Time is (number of calls) x (work per call); space is the depth of the tree plus allocations.\n- Divide and conquer with halves and an O(n) combine gives O(n log n); one half discarded gives O(log n).\n- Repeated identical calls indicate the need for a memo; Fibonacci with and without it shows the exponential-to-linear jump.\n- The JVM stack is limited and Java has no tail-call elimination: very deep recursion needs an explicit stack.\n- Guard integer overflow: `lo + (hi - lo) / 2`, `long` for factorials and for negating `Integer.MIN_VALUE`."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-2",
+      "type": "concept",
+      "title": "Backtracking: Subsets, Permutations, Combinations",
+      "subtopicId": "4-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Some problems require producing *every* arrangement that satisfies a rule: all subsets of a set, all orderings of a list, all ways to pick k items, all strings of balanced brackets. The brute-force idea is to generate every possible candidate and filter. For a set of n elements that is 2^n subsets or n! orderings, which is unavoidable if the answer itself has that many items. The inefficiency lies in generating candidates that could have been rejected early, and in expressing the generator as n nested loops, which only works for a fixed n.\n\nBacktracking solves both problems. It builds a candidate one decision at a time, recursing after every decision, and *undoes* the decision on the way back so the same data structure can be reused for the next branch. Because it builds partial candidates, it can stop a branch the moment it becomes hopeless (pruning).\n\n### The idea\n\nThe search is modelled as a tree. The root is the empty candidate. Each edge is one decision (\"take element 2\", \"put a ( here\"). Each node is a partial candidate. A leaf, or a node that satisfies the goal, is an answer. Backtracking is a depth-first walk over this tree."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 425.4 128.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 112.0 L47.0 112.0 C48.7 112.0 50.0 110.7 50.0 109.0 L50.0 95.0 C50.0 93.3 48.7 92.0 47.0 92.0 L5.0 92.0 C3.3 92.0 2.0 93.3 2.0 95.0 L2.0 109.0 C2.0 110.7 3.3 112.0 5.0 112.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M55.9 66.0 L26.0 92.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M55.9 66.0 L95.8 92.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M205.6 66.0 L205.6 92.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M74.8 112.0 L116.8 112.0 C118.5 112.0 119.8 110.7 119.8 109.0 L119.8 95.0 C119.8 93.3 118.5 92.0 116.8 92.0 L74.8 92.0 C73.2 92.0 71.8 93.3 71.8 95.0 L71.8 109.0 C71.8 110.7 73.2 112.0 74.8 112.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M184.6 112.0 L226.6 112.0 C228.3 112.0 229.6 110.7 229.6 109.0 L229.6 95.0 C229.6 93.3 228.3 92.0 226.6 92.0 L184.6 92.0 C182.9 92.0 181.6 93.3 181.6 95.0 L181.6 109.0 C181.6 110.7 182.9 112.0 184.6 112.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M26.0 92.0 L30.8 90.7 L28.0 87.4 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M95.8 92.0 L93.3 87.7 L90.9 91.4 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.6 92.0 L207.8 87.5 L203.4 87.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.6 22.0 L55.9 46.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M205.6 22.0 L355.3 46.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M34.9 66.0 L76.9 66.0 C78.6 66.0 79.9 64.7 79.9 63.0 L79.9 49.0 C79.9 47.3 78.6 46.0 76.9 46.0 L34.9 46.0 C33.3 46.0 31.9 47.3 31.9 49.0 L31.9 63.0 C31.9 64.7 33.3 66.0 34.9 66.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M55.9 46.0 L60.7 47.4 L60.0 43.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M184.6 66.0 L226.6 66.0 C228.3 66.0 229.6 64.7 229.6 63.0 L229.6 49.0 C229.6 47.3 228.3 46.0 226.6 46.0 L184.6 46.0 C182.9 46.0 181.6 47.3 181.6 49.0 L181.6 63.0 C181.6 64.7 182.9 66.0 184.6 66.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.6 46.0 L207.8 41.5 L203.4 41.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M334.3 66.0 L376.3 66.0 C377.9 66.0 379.3 64.7 379.3 63.0 L379.3 49.0 C379.3 47.3 377.9 46.0 376.3 46.0 L334.3 46.0 C332.6 46.0 331.3 47.3 331.3 49.0 L331.3 63.0 C331.3 64.7 332.6 66.0 334.3 66.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M355.3 46.0 L351.2 43.1 L350.5 47.4 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M184.6 22.0 L226.6 22.0 C228.3 22.0 229.6 20.7 229.6 19.0 L229.6 5.0 C229.6 3.3 228.3 2.0 226.6 2.0 L184.6 2.0 C182.9 2.0 181.6 3.3 181.6 5.0 L181.6 19.0 C181.6 20.7 182.9 22.0 184.6 22.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"202.1\" y=\"14.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"6.9\" lengthAdjust=\"spacingAndGlyphs\">[ ]</text><text x=\"392.7\" y=\"26.0\" font-size=\"7.0\" fill=\"#a6c4e8\" font-weight=\"700\" textLength=\"24.9\" lengthAdjust=\"spacingAndGlyphs\">choose</text><text x=\"391.8\" y=\"38.0\" font-size=\"7.0\" fill=\"#99edf4\" font-weight=\"700\" textLength=\"26.7\" lengthAdjust=\"spacingAndGlyphs\">explore</text><text x=\"386.9\" y=\"50.0\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">un-choose</text><text x=\"51.5\" y=\"58.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"8.9\" lengthAdjust=\"spacingAndGlyphs\">[1]</text><text x=\"201.1\" y=\"58.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"8.9\" lengthAdjust=\"spacingAndGlyphs\">[2]</text><text x=\"350.8\" y=\"58.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"8.9\" lengthAdjust=\"spacingAndGlyphs\">[3]</text><text x=\"18.5\" y=\"104.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.9\" lengthAdjust=\"spacingAndGlyphs\">[1,2]</text><text x=\"88.4\" y=\"104.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.9\" lengthAdjust=\"spacingAndGlyphs\">[1,3]</text><text x=\"198.1\" y=\"104.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.9\" lengthAdjust=\"spacingAndGlyphs\">[2,3]</text></svg>",
+          "width": 425,
+          "caption": "The decision tree of backtracking. A step down the tree is \"choose\"; the recursive call is \"explore\"; the step back up is \"unchoose\", which restores the state so the next sibling starts clean.",
+          "alt": "[ ] | choose | explore | un-choose | [1] [2] [3] | [1,2] [1,3] [2,3]"
+        },
+        {
+          "type": "markdown",
+          "text": "Every backtracking solution has the same three beats, usually written as a loop over the available choices:\n\n1. **Choose**: add one option to the current path (and update any helper state such as `used[]`).\n2. **Explore**: recurse to make the next decision.\n3. **Unchoose**: remove the option again, restoring the state exactly as it was.\n\n#### How to recognise it\n\n- \"Return all ...\", \"list every ...\", \"generate all ...\": the output is a collection of combinatorial objects.\n- \"Find all combinations that sum to ...\", \"all valid arrangements\".\n- Input size is small (n up to about 10 to 20), the hint that exponential time is expected.\n- Decisions are independent steps: take or skip, which letter next, which unused element goes in this slot.\n- \"Count the ways\" with a tiny n also fits, but if n is large and sub-problems repeat, think dynamic programming instead.\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Backtracking template (fragment)\nstatic void backtrack(State s, List<Integer> path, List<List<Integer>> out) {\n    if (isGoal(s)) {                          // 1. record an answer (copy the path!)\n        out.add(new ArrayList<>(path));\n        return;                               //    or keep going, e.g. subsets record at every node\n    }\n    for (int choice : candidates(s)) {        // 2. loop over the options at this step\n        if (!isValid(s, choice)) continue;    //    prune early\n        path.add(choice);                     // 3. choose\n        backtrack(next(s, choice), path, out);    // 4. explore\n        path.remove(path.size() - 1);         // 5. unchoose\n    }\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The variant depends on two questions. First: *can order matter?* Subsets and combinations treat `[1, 2]` and `[2, 1]` as the same, so a `start` index is passed and only later elements are considered. Permutations treat them as different, so the loop ranges over all elements and tracks which are `used`. Second: *can elements repeat?* Combination Sum allows reusing an element (recurse with `i`, not `i + 1`); duplicates in the input need sorting plus a \"skip equal sibling\" rule."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Problem family",
+            "What the loop ranges over",
+            "Recursion argument",
+            "Duplicates and reuse"
+          ],
+          "rows": [
+            [
+              "Subsets",
+              "indices from `start` to end",
+              "`i + 1`",
+              "sort, skip `nums[i] ==` `nums[i-1]` when `i > start`"
+            ],
+            [
+              "Combinations",
+              "numbers from `start` to n",
+              "`i + 1`",
+              "same; prune with how many are still needed"
+            ],
+            [
+              "Combination sum",
+              "candidates from `start`",
+              "`i` (reuse allowed) or `i + 1`",
+              "sort, break when candidate exceeds remainder"
+            ],
+            [
+              "Permutations",
+              "all indices not yet `used`",
+              "none (loop restarts at 0)",
+              "sort, skip if equal to previous and previous unused"
+            ],
+            [
+              "Strings (letters, parentheses)",
+              "the legal characters at this position",
+              "next position",
+              "none, but the legality rules prune"
+            ]
+          ],
+          "caption": "Choosing the variant."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nTake `subsets([1, 2, 3])`. The program records the current path at every node of the tree, then tries to extend it with each later element. Input: `nums = [1, 2, 3]`. The trace below is real output from the program (each line is one call; `start` is the first index the loop may use)."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Call",
+            "start",
+            "path when called",
+            "What the call does"
+          ],
+          "rows": [
+            [
+              "1",
+              "0",
+              "`[]`",
+              "record \\[\\], then loop i = 0, 1, 2 (choose 1 first)"
+            ],
+            [
+              "2",
+              "1",
+              "`[1]`",
+              "record \\[1\\]; loop i = 1, 2 (choose 2 first)"
+            ],
+            [
+              "3",
+              "2",
+              "`[1, 2]`",
+              "record \\[1, 2\\]; loop i = 2 (choose 3)"
+            ],
+            [
+              "4",
+              "3",
+              "`[1, 2, 3]`",
+              "record \\[1, 2, 3\\]; loop is empty (start == length), return"
+            ],
+            [
+              "5",
+              "3",
+              "`[1, 3]`",
+              "back in call 2, unchoose 2 then choose 3: record \\[1, 3\\]; return"
+            ],
+            [
+              "6",
+              "2",
+              "`[2]`",
+              "back in call 1, unchoose 1, choose 2: record \\[2\\]; loop i = 2 (choose 3)"
+            ],
+            [
+              "7",
+              "3",
+              "`[2, 3]`",
+              "record \\[2, 3\\]; return"
+            ],
+            [
+              "8",
+              "3",
+              "`[3]`",
+              "back in call 1, unchoose 2, choose 3: record \\[3\\]; return"
+            ]
+          ],
+          "caption": "Subsets of [1, 2, 3], one row per call."
+        },
+        {
+          "type": "markdown",
+          "text": "Eight calls, eight subsets, which is 2^3. The order of results is depth-first: a set is recorded the moment it is built, before extensions of it. Notice the `start` argument at work: after choosing 2, the next call starts at index 2, so the path `[2, 1]` is never generated and each subset appears exactly once. Between rows 4 and 5 the code removed 3, then 2, then added 3 - the *unchoose* steps that do not print a line but are what make backtracking correct.\n\n### Java code\n\nThe program below holds eight classic problems. They share the same skeleton; compare how only the loop range, the recursion argument and the pruning line change."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    // 1. Subsets (distinct values)\n    static List<List<Integer>> subsets(int[] nums) {\n        List<List<Integer>> out = new ArrayList<>();\n        subsetsRec(nums, 0, new ArrayList<>(), out);\n        return out;\n    }\n    static void subsetsRec(int[] nums, int start, List<Integer> path, List<List<Integer>> out) {\n        out.add(new ArrayList<>(path));\n        for (int i = start; i < nums.length; i++) {\n            path.add(nums[i]);\n            subsetsRec(nums, i + 1, path, out);\n            path.remove(path.size() - 1);\n        }\n    }\n\n    // 2. Subsets II (duplicates in input)\n    static List<List<Integer>> subsetsWithDup(int[] nums) {\n        Arrays.sort(nums);\n        List<List<Integer>> out = new ArrayList<>();\n        dupRec(nums, 0, new ArrayList<>(), out);\n        return out;\n    }\n    static void dupRec(int[] nums, int start, List<Integer> path, List<List<Integer>> out) {\n        out.add(new ArrayList<>(path));\n        for (int i = start; i < nums.length; i++) {\n            if (i > start && nums[i] == nums[i - 1]) continue;   // skip same value at this level\n            path.add(nums[i]);\n            dupRec(nums, i + 1, path, out);\n            path.remove(path.size() - 1);\n        }\n    }\n\n    // 3. Permutations (distinct values) with a used[] array\n    static List<List<Integer>> permute(int[] nums) {\n        List<List<Integer>> out = new ArrayList<>();\n    permRec(nums, new boolean[nums.length], new ArrayList<>(), out);\n    return out;\n}\nstatic void permRec(int[] nums, boolean[] used, List<Integer> path, List<List<Integer>> out) {\n    if (path.size() == nums.length) { out.add(new ArrayList<>(path)); return; }\n    for (int i = 0; i < nums.length; i++) {\n        if (used[i]) continue;\n        used[i] = true;\n        path.add(nums[i]);\n        permRec(nums, used, path, out);\n        path.remove(path.size() - 1);\n        used[i] = false;\n    }\n}\n\n// 4. Permutations II (duplicates)\nstatic List<List<Integer>> permuteUnique(int[] nums) {\n    Arrays.sort(nums);\n    List<List<Integer>> out = new ArrayList<>();\n    uniqRec(nums, new boolean[nums.length], new ArrayList<>(), out);\n    return out;\n}\nstatic void uniqRec(int[] nums, boolean[] used, List<Integer> path, List<List<Integer>> out) {\n    if (path.size() == nums.length) { out.add(new ArrayList<>(path)); return; }\n    for (int i = 0; i < nums.length; i++) {\n        if (used[i]) continue;\n        if (i > 0 && nums[i] == nums[i - 1] && !used[i - 1]) continue;\n        used[i] = true;\n        path.add(nums[i]);\n        uniqRec(nums, used, path, out);\n        path.remove(path.size() - 1);\n        used[i] = false;\n    }\n}\n\n// 5. Combinations C(n, k)\nstatic List<List<Integer>> combine(int n, int k) {\n    List<List<Integer>> out = new ArrayList<>();\n    combRec(n, k, 1, new ArrayList<>(), out);\n    return out;\n}\nstatic void combRec(int n, int k, int start, List<Integer> path, List<List<Integer>> out) {\n    if (path.size() == k) { out.add(new ArrayList<>(path)); return; }\n    // prune: need (k - path.size()) more numbers, so i can be at most n - need + 1\n    for (int i = start; i <= n - (k - path.size()) + 1; i++) {\n        path.add(i);\n        combRec(n, k, i + 1, path, out);\n        path.remove(path.size() - 1);\n    }\n}\n\n// 6. Combination Sum (reuse allowed)\nstatic List<List<Integer>> combinationSum(int[] cand, int target) {\n    Arrays.sort(cand);\n    List<List<Integer>> out = new ArrayList<>();\n    csRec(cand, target, 0, new ArrayList<>(), out);\n    return out;\n}\nstatic void csRec(int[] c, int remain, int start, List<Integer> path, List<List<Integer>> out) {\n    if (remain == 0) { out.add(new ArrayList<>(path)); return; }\n    for (int i = start; i < c.length; i++) {\n        if (c[i] > remain) break;               // sorted, so everything after is too big\n        path.add(c[i]);\n        csRec(c, remain - c[i], i, path, out);  // i, not i + 1: same number may be reused\n        path.remove(path.size() - 1);\n    }\n}\n\n// 7. Letter combinations\nstatic final String[] KEYS = {\"\", \"\", \"abc\", \"def\", \"ghi\", \"jkl\", \"mno\", \"pqrs\", \"tuv\", \"wxyz\"};\nstatic List<String> letterCombinations(String digits) {\n    List<String> out = new ArrayList<>();\n    if (digits.isEmpty()) return out;\n    lcRec(digits, 0, new StringBuilder(), out);\n    return out;\n    }\n    static void lcRec(String d, int idx, StringBuilder sb, List<String> out) {\n        if (idx == d.length()) { out.add(sb.toString()); return; }\n        for (char ch : KEYS[d.charAt(idx) - '0'].toCharArray()) {\n            sb.append(ch);\n            lcRec(d, idx + 1, sb, out);\n            sb.setLength(sb.length() - 1);\n        }\n    }\n\n    // 8. Generate parentheses\n    static List<String> generateParenthesis(int n) {\n        List<String> out = new ArrayList<>();\n        gpRec(n, 0, 0, new StringBuilder(), out);\n        return out;\n    }\n    static void gpRec(int n, int open, int close, StringBuilder sb, List<String> out) {\n        if (sb.length() == 2 * n) { out.add(sb.toString()); return; }\n        if (open < n) {\n            sb.append('(');\n            gpRec(n, open + 1, close, sb, out);\n            sb.setLength(sb.length() - 1);\n        }\n        if (close < open) {\n            sb.append(')');\n            gpRec(n, open, close + 1, sb, out);\n            sb.setLength(sb.length() - 1);\n        }\n    }\n\n    public static void main(String[] args) {\n        System.out.println(\"subsets [1,2,3]        = \" + subsets(new int[]{1, 2, 3}));\n        System.out.println(\"subsets II [1,2,2]     = \" + subsetsWithDup(new int[]{2, 1, 2}));\n        System.out.println(\"permute [1,2,3]        = \" + permute(new int[]{1, 2, 3}));\n        System.out.println(\"permuteUnique [1,1,2]  = \" + permuteUnique(new int[]{1, 1, 2}));\n        System.out.println(\"combine(4, 2)          = \" + combine(4, 2));\n        System.out.println(\"combinationSum [2,3,5] = \" + combinationSum(new int[]{5, 3, 2}, 8));\n        System.out.println(\"letters \\\"23\\\"           = \" + letterCombinations(\"23\"));\n        System.out.println(\"parens(3)              = \" + generateParenthesis(3));\n        System.out.println(\"count parens(8)        = \" + generateParenthesis(8).size());\n        int[] eight = {1, 2, 3, 4, 5, 6, 7, 8};\n        System.out.println(\"count permute(8)       = \" + permute(eight).size());\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nsubsets [1,2,3]        = [[], [1], [1, 2], [1, 2, 3], [1, 3], [2], [2, 3], [3]]\nsubsets II [1,2,2]     = [[], [1], [1, 2], [1, 2, 2], [2], [2, 2]]\npermute [1,2,3]        = [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]]\npermuteUnique [1,1,2]  = [[1, 1, 2], [1, 2, 1], [2, 1, 1]]\ncombine(4, 2)          = [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]]\ncombinationSum [2,3,5] = [[2, 2, 2, 2], [2, 3, 3], [3, 5]]\nletters \"23\"           = [ad, ae, af, bd, be, bf, cd, ce, cf]\nparens(3)              = [((())), (()()), (())(), ()(()), ()()()]\ncount parens(8)        = 1430\ncount permute(8)       = 40320",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Copy the path when recording it**: `out.add(new ArrayList<>(path))`. If `path` itself is added, every stored answer is the same list object, and after the recursion finishes they all print as empty. This is the number one backtracking bug in Java.\n- **Skipping duplicates**: in `dupRec`, `i > start && nums[i] == nums[i - 1]` skips an equal value only among *siblings* (same loop). Using `i > 0` would wrongly forbid `[2, 2]`, because the second 2 is a child of the first, not a sibling. The input `{2, 1, 2}` was sorted inside the method; sorting is what makes equal values adjacent.\n- **Permutations with duplicates**: `!used[i - 1]` means \"the previous equal value is not currently in the path, so using this one would repeat a branch already explored\".\n- **Pruning in** `combine`: the loop bound `n - (k - path.size()) + 1` stops when there are not enough numbers left to fill the combination. It cuts the tree without changing the answers.\n- **Combination sum** sorts the candidates so that `break` (not `continue`) is correct once a candidate exceeds the remainder.\n- **Strings**: `sb.setLength(sb.length() - 1)` is the cheap unchoose for a `StringBuilder`. Generate Parentheses only recurses on moves that keep the string valid (`open < n`, `close < open`), so it never builds an invalid string: no filtering step is needed. The count 1430 for n = 8 is the 8th Catalan number.\n\n### Complexity and mistakes\n\nThe cost is (number of nodes in the decision tree) x (work per node). Subsets: 2^n nodes, and copying each answer costs O(n), so O(n x 2^n). Permutations: n! leaves, each costing O(n) to copy, so O(n x n!). Combinations C(n, k): O(k x C(n, k)). Letter combinations: up to 4^n for n digits. Generate Parentheses: Catalan(n), about 4^n / (n x sqrt(n)). Space: O(n) recursion depth plus the output, which dominates. When an interviewer asks about complexity, state it as \"output size times the cost of building one answer\".\n\nMistakes to avoid:\n\n- Forgetting to copy the path (see above) or forgetting the unchoose step, so state leaks into sibling branches.\n- Using `i` where `i + 1` belongs: `[1, 1]` appears in subsets, or a permutation reuses an element.\n- Using `i > 0` instead of `i > start` in duplicate skipping, which silently drops valid answers like `[2, 2]`.\n- Removing from a `List<Integer>` with `path.remove(x)` where `x` is an `int`: that removes by *index*. Use `path.remove(path.size() - 1)` (or `removeLast()` on a `Deque`). Avoid `path.remove(Integer.valueOf(x))` too, because it removes the first match.\n- Pruning too late: checking the sum only at the end of combination sum explores huge useless subtrees. Check before recursing, or `break` on sorted input."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`List<List<Integer>> out; out.add(path);` compiles and runs, and returns a list of N references to the same list, which has been emptied by the unchoose steps. A result consisting of empty lists indicates this defect."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Return all subsets of the array.\" Clue: \"all\". Take-or-skip via `start` index. Follow-up: \"What if there are duplicates?\" Sort and skip equal siblings.\n2. \"Return all permutations.\" `used[]` array, or swap in place (`swap(i, start)`, recurse, swap back). Follow-up: \"next permutation instead of all of them\" is a separate in-place algorithm.\n3. \"Choose k numbers from 1..n.\" Start index plus pruning on remaining count. Follow-up: \"only those summing to a target\" (Combination Sum III).\n4. \"Find combinations that sum to target; may reuse numbers.\" Recurse with `i`, sort and break. Follow-up: \"each number once, with duplicates in the input\" (Combination Sum II): recurse with `i + 1` and skip equal siblings.\n5. \"Phone keypad letter combinations.\" One level per digit, loop over its letters. The tree has no pruning, the count is the product of letters per digit.\n6. \"Generate all valid bracket strings of n pairs.\" Track `open` and `close`; add `)` only if `close < open`. Follow-up: \"Why is the count Catalan?\" Be ready to say it grows roughly as 4^n.\n7. \"Can this be done iteratively?\" For subsets, build incrementally: start with `[[]]` and for each number append it to a copy of every existing subset. Or enumerate bitmasks from 0 to 2^n - 1."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"How do you avoid duplicate results?\" Sort the input so equal values are adjacent. Then, at each level of the recursion, skip a candidate if it equals the previous candidate *at the same level* (`i > start && nums[i] == nums[i-1]`), because choosing it would reproduce a branch already explored. For permutations the same idea uses `used[i - 1]`. Follow-up: \"Could a `Set<List<Integer>>` be used instead?\" It is correct and simpler, but the duplicate branches are still explored, so it is slower and uses more memory; offer it as a fallback, then show the pruned version."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`78`",
+              "Subsets",
+              "Medium",
+              "Record at every node; loop from `start` so each set appears once"
+            ],
+            [
+              "`46`",
+              "Permutations",
+              "Medium",
+              "Loop over all indices, track `used[]` for the current path"
+            ],
+            [
+              "`77`",
+              "Combinations",
+              "Medium",
+              "Choose k of n; prune when too few numbers remain"
+            ],
+            [
+              "`17`",
+              "Letter Combinations of a Phone Number",
+              "Medium",
+              "One recursion level per digit, loop over its letters"
+            ],
+            [
+              "`22`",
+              "Generate Parentheses",
+              "Medium",
+              "Add `(` while open \\< n and `)` while close \\< open"
+            ],
+            [
+              "`39`",
+              "Combination Sum",
+              "Medium",
+              "Reuse allowed: recurse with `i`; sort and break on overshoot"
+            ],
+            [
+              "`216`",
+              "Combination Sum III",
+              "Medium",
+              "Fixed size k and numbers 1 to 9; stop when sum or size is exceeded"
+            ],
+            [
+              "`90`",
+              "Subsets II",
+              "Medium",
+              "Sort, skip equal siblings (`i > start`)"
+            ],
+            [
+              "`47`",
+              "Permutations II",
+              "Medium",
+              "Sort, skip if equal to previous value that is not in use"
+            ],
+            [
+              "`40`",
+              "Combination Sum II",
+              "Medium",
+              "Each number once with duplicates: `i + 1` plus sibling skip"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Backtracking = depth-first search over a decision tree: choose, explore, unchoose.\n\n- Copy the path when recording an answer; always restore state on the way back.\n- `start` index for unordered selections (subsets, combinations); `used[]` for permutations.\n- Sort first, then skip equal siblings (`i > start`) to remove duplicate answers.\n- Prune as early as possible (sorted break, remaining-count bound, validity checks).\n- Complexity is output size times cost per answer: O(n x 2^n) for subsets, O(n x n!) for permutations."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-3",
+      "type": "concept",
+      "title": "Backtracking on Grids and Constraints",
+      "subtopicId": "4-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The previous chapter generated objects. This one searches for a configuration that obeys *constraints*: a word traced through a letter grid, queens placed so none attack each other, digits placed in a sudoku, a string cut into palindromes. The brute-force approach (try every arrangement, then check) is infeasible: 8 queens on a 64-square board have about 4.4 billion placements. Constraint backtracking checks the rules after *every single move*, abandons a branch the moment a rule breaks, and so visits only a tiny fraction of the space.\n\n### The idea\n\nThe skeleton is the same as before (choose, explore, unchoose), with two additions. First, a fast **validity test** before each choice, which is the pruning. Second, the recursion often **returns a boolean**: \"did this branch find a solution?\" For \"does a solution exist\" problems (word search, sudoku) the search stops at the first success; for \"find all\" or \"count\" problems (N-Queens) it continues.\n\n#### How to recognise it\n\n- A grid and a path: \"does the word exist in the grid\", \"paths that visit every cell once\", \"maximum gold that can be collected\".\n- Placement under rules: \"place n queens\", \"fill the sudoku\", \"no two in the same row, column or diagonal\".\n- \"Partition/cut the string so that every piece is ...\": each cut point is a decision.\n- Small input again (board up to 9 x 9, grid up to about 6 x 6 for hard variants, strings up to 16 characters).\n- Words like \"valid\", \"without conflicts\", \"all configurations\".\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Constraint search (fragment): returns true as soon as one complete solution exists\nstatic boolean solve(State s) {\n    if (complete(s)) return true;\n    for (Move m : movesFrom(s)) {\n        if (!legal(s, m)) continue;       // prune: never enter an illegal state\n        apply(s, m);                      // choose, mutating shared state\n        if (solve(s)) return true;        // explore (stop at the first success)\n        undo(s, m);                       // unchoose\n    }\n    return false;                         // every move failed: tell the caller to backtrack\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Grid search adds one trick: **mark the cell visited by overwriting it** (for example with `'#'`), recurse in four directions, then restore the original letter. This avoids a separate `visited` array and makes unchoose a single assignment. For queens, scanning the board for attacks is unnecessary. Three boolean arrays: occupied columns, occupied \"/\" diagonals (indexed by `r + c`, constant along a diagonal), and occupied \"\\\\\" diagonals (indexed by `r - c + n`). Then every legality test is O(1).\n\n### Dry run\n\nThe trace covers N-Queens for n = 4: place one queen per row, row 0 first, and try columns left to right. A column is skipped when the column or either diagonal is already taken. Input: n = 4. The program prints one line per decision; there are 77 lines in total and the key ones are shown, with their real step numbers. `queens` lists the column chosen in each row so far (so `[1, 3, 0, 2]` means row 0 has its queen in column 1, row 1 in column 3, and so on)."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Position tried",
+            "queens",
+            "Result"
+          ],
+          "rows": [
+            [
+              "1",
+              "row 0, col 0",
+              "`[0]`",
+              "place"
+            ],
+            [
+              "2-3",
+              "row 1, cols 0 and 1",
+              "`[0]`",
+              "attacked (same column, then diagonal), skip"
+            ],
+            [
+              "4",
+              "row 1, col 2",
+              "`[0, 2]`",
+              "place"
+            ],
+            [
+              "5-8",
+              "row 2, cols 0 to 3",
+              "`[0, 2]`",
+              "all four attacked; row 2 has no move, back up"
+            ],
+            [
+              "10",
+              "row 1, col 3",
+              "`[0, 3]`",
+              "place (the only other choice for row 1)"
+            ],
+            [
+              "12",
+              "row 2, col 1",
+              "`[0, 3, 1]`",
+              "place"
+            ],
+            [
+              "13-16",
+              "row 3, cols 0 to 3",
+              "`[0, 3, 1]`",
+              "all attacked, back up"
+            ],
+            [
+              "18-21",
+              "rows 2 and 1 exhausted",
+              "`[0]`",
+              "no solution starts with a queen at (0, 0)"
+            ],
+            [
+              "22",
+              "row 0, col 1",
+              "`[1]`",
+              "place"
+            ],
+            [
+              "26",
+              "row 1, col 3",
+              "`[1, 3]`",
+              "place (cols 0 to 2 were attacked)"
+            ],
+            [
+              "27",
+              "row 2, col 0",
+              "`[1, 3, 0]`",
+              "place"
+            ],
+            [
+              "30",
+              "row 3, col 2",
+              "`[1, 3, 0, 2]`",
+              "place"
+            ],
+            [
+              "31",
+              "row 4 reached",
+              "`[1, 3, 0, 2]`",
+              "SOLUTION"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*N-Queens, n = 4. Selected steps of the real trace (the rest are repeats of the same moves).*\n\nAfter step 31 the search continues (it must, since all solutions are required) and finds the mirror image `[2, 0, 3, 1]` at step 47, then exhausts the rest of the tree. Out of 4^4 = 256 raw placements, the whole search produced only 77 trace lines, and two solutions exist for n = 4. A dead end at step 5 cut off every arrangement of rows 3 and below that begin with `[0, 2]`: that is what pruning buys.\n\n### Java code\n\nFour problems: Word Search on a small grid, N-Queens (printing boards for n = 4 and counting solutions up to n = 9), Palindrome Partitioning, and a complete Sudoku solver with a plain \"first empty cell\" strategy."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    // ---------- Word Search ----------\n    static boolean exist(char[][] board, String word) {\n        for (int r = 0; r < board.length; r++)\n            for (int c = 0; c < board[0].length; c++)\n                if (dfs(board, word, 0, r, c)) return true;\n        return false;\n    }\n    static boolean dfs(char[][] b, String w, int k, int r, int c) {\n        if (k == w.length()) return true;\n        if (r < 0 || c < 0 || r >= b.length || c >= b[0].length) return false;\n        if (b[r][c] != w.charAt(k)) return false;\n        char saved = b[r][c];\n        b[r][c] = '#';                                   // choose: mark visited\n        boolean found = dfs(b, w, k + 1, r + 1, c) || dfs(b, w, k + 1, r - 1, c)\n                     || dfs(b, w, k + 1, r, c + 1) || dfs(b, w, k + 1, r, c - 1);\n        b[r][c] = saved;                                 // unchoose\n        return found;\n    }\n\n    // ---------- N-Queens ----------\n    static List<List<String>> solveNQueens(int n) {\n        List<List<String>> out = new ArrayList<>();\n        place(n, 0, new int[n], new boolean[n], new boolean[2 * n], new boolean[2 * n], out);\n        return out;\n    }\n    static void place(int n, int r, int[] q, boolean[] col, boolean[] d1, boolean[] d2,\n                      List<List<String>> out) {\n        if (r == n) {\n            List<String> board = new ArrayList<>();\n            for (int i = 0; i < n; i++) {\n                char[] row = new char[n];\n                Arrays.fill(row, '.');\n                row[q[i]] = 'Q';\n                board.add(new String(row));\n            }\n            out.add(board);\n            return;\n        }\n        for (int c = 0; c < n; c++) {\n            int a = r + c, b = r - c + n;\n            if (col[c] || d1[a] || d2[b]) continue;\n            col[c] = d1[a] = d2[b] = true;\n            q[r] = c;\n            place(n, r + 1, q, col, d1, d2, out);\n            col[c] = d1[a] = d2[b] = false;\n        }\n    }\n\n    // ---------- Palindrome Partitioning ----------\n    static List<List<String>> partition(String s) {\n        List<List<String>> out = new ArrayList<>();\n        part(s, 0, new ArrayList<>(), out);\n        return out;\n    }\n    static void part(String s, int start, List<String> path, List<List<String>> out) {\n        if (start == s.length()) { out.add(new ArrayList<>(path)); return; }\n        for (int end = start + 1; end <= s.length(); end++) {\n            if (!isPal(s, start, end - 1)) continue;     // prune: only palindromic pieces\n            path.add(s.substring(start, end));\n            part(s, end, path, out);\n            path.remove(path.size() - 1);\n        }\n    }\n    static boolean isPal(String s, int i, int j) {\n        while (i < j) if (s.charAt(i++) != s.charAt(j--)) return false;\n        return true;\n    }\n\n    // ---------- Sudoku ----------\n    static int nodes = 0;\n    static boolean solveSudoku(char[][] g) {\n        for (int r = 0; r < 9; r++)\n            for (int c = 0; c < 9; c++) {\n                if (g[r][c] != '.') continue;\n                for (char d = '1'; d <= '9'; d++) {\n                    if (!ok(g, r, c, d)) continue;\n                    g[r][c] = d; nodes++;\n                    if (solveSudoku(g)) return true;\n                    g[r][c] = '.';\n                }\n                return false;                            // no digit fits this cell: dead end\n            }\n        return true;                                     // no empty cell left\n    }\n    static boolean ok(char[][] g, int r, int c, char d) {\n        for (int i = 0; i < 9; i++) {\n            if (g[r][i] == d || g[i][c] == d) return false;\n            if (g[3 * (r / 3) + i / 3][3 * (c / 3) + i % 3] == d) return false;\n        }\n        return true;\n    }\n\n    public static void main(String[] args) {\n        char[][] board = {\n            {'A', 'B', 'C', 'E'},\n            {'S', 'F', 'C', 'S'},\n            {'A', 'D', 'E', 'E'}};\n        System.out.println(\"ABCCED: \" + exist(board, \"ABCCED\"));\n        System.out.println(\"SEE:    \" + exist(board, \"SEE\"));\n        System.out.println(\"ABCB:   \" + exist(board, \"ABCB\"));\n\n        for (List<String> sol : solveNQueens(4)) {\n            System.out.println(String.join(\"\\n\", sol));\n            System.out.println();\n        }\n        for (int n = 1; n <= 9; n++) System.out.print(solveNQueens(n).size() + \" \");\n        System.out.println(\"<- solutions for n = 1..9\");\n\n        System.out.println(partition(\"aab\"));\n\n        String[] puzzle = {\n            \"53..7....\", \"6..195...\", \".98....6.\", \"8...6...3\", \"4..8.3..1\",\n            \"7...2...6\", \".6....28.\", \"...419..5\", \"....8..79\"};\n        char[][] g = new char[9][];\n        for (int i = 0; i < 9; i++) g[i] = puzzle[i].toCharArray();\n        boolean solved = solveSudoku(g);\n        System.out.println(\"solved=\" + solved + \" placements=\" + nodes);\n        for (char[] row : g) System.out.println(new String(row));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nABCCED: true\nSEE:    true\nABCB:   false\n.Q..\n...Q\nQ...\n..Q.\n\n..Q.\nQ...\n...Q\n.Q..\n\n1 0 0 2 10 4 40 92 352 <- solutions for n = 1..9\n[[a, a, b], [aa, b]]\nsolved=true placements=4208\n534678912\n672195348\n198342567\n859761423\n426853791\n713924856\n961537284\n287419635\n345286179",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Word Search** (`dfs`): the bounds check precedes the letter check, and the base case `k == w.length()` comes first. The `||` chain short-circuits, so the first direction that succeeds stops the search. The restore `b[r][c] = saved` runs on both success and failure, which keeps the board intact for the next starting cell.\n- **N-Queens**: the two diagonal arrays are sized `2 * n` because `r + c` ranges over 0 to 2n-2 and `r - c + n` over 1 to 2n-1. The solution counts 1, 0, 0, 2, 10, 4, 40, 92, 352 are the well-known sequence for n = 1 to 9.\n- **Palindrome Partitioning**: the loop picks the *end* of the next piece; a piece is explored only if it is a palindrome (prune). For `\"aab\"` the two partitions are `a|a|b` and `aa|b`. For longer strings precompute `isPal` in an O(n^2) table to avoid rechecking.\n- **Sudoku**: `return false` right after the digit loop is the dead-end signal, and the `g[r][c] = '.'` line is the unchoose. The `ok` test uses `3 * (r / 3) + i / 3` and `3 * (c / 3) + i % 3` to walk the 3 x 3 box that contains the cell. This puzzle required 4,208 placements. Harder puzzles need a smarter order: choose the empty cell with the fewest legal digits first (the \"most constrained variable\" idea), and keep row, column and box digit sets as bitmasks.\n\n### Complexity and mistakes\n\nThese searches are exponential in the worst case. Word Search is O(m x n x 3^L) for an L-letter word (4 directions at the first step, then at most 3 because the cell just visited is excluded), with O(L) stack. N-Queens is at worst O(n!) because each row has at most n minus (rows already placed) choices; real behaviour is far better thanks to diagonal pruning. Sudoku is bounded by 9^(empty cells) but with constraints is usually fast. Palindrome Partitioning is O(n x 2^n): up to 2^(n-1) ways to cut the string, and O(n) to copy each. Space for all of them is the recursion depth, O(L), O(n), O(81) and O(n) respectively, plus output.\n\nMistakes to avoid:\n\n- **Not restoring the cell** in word search (or restoring only on the success path). The board is then corrupted for the next start.\n- **Checking the bounds after reading the cell**: `b[r][c]` before `r >= 0` gives `ArrayIndexOutOfBoundsException`. Bounds first, content second.\n- **Diagonal index mistakes**: using `r - c` directly gives negative indices. Offset by `n - 1` or `n`.\n- **Returning too early** in an \"all solutions\" problem: `return true` after the first solution means N-Queens counts only one.\n- **Pruning with a wrong rule**: a prune must never cut a branch that could still contain a solution. The prune should be validated on small inputs against the unpruned version.\n- **Using** `String +=` **in the loop**: it makes a new string on every move, so prefer `StringBuilder` with `setLength` or a `List<String>` path."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "In word search, if the target word is longer than the number of cells, or needs letters the grid does not have (count letters first), the search can consume exponential time before returning false. A quick frequency check up front, or searching from the rarer end of the word, are standard speed-ups for the hard variants (Word Search II)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Does the word exist in the grid by moving to adjacent cells, using each cell once?\" Clue: path + no reuse. DFS with in-place marking. Follow-up: \"Many words at once\" is Word Search II, which uses a trie (see the chapter on tries).\n2. \"Place n queens so none attack.\" Row by row, three boolean arrays. Follow-up: \"Count the solutions only\" (N-Queens II): same code, `count++` at the base. Bitmask version for speed.\n3. \"Solve the sudoku.\" Fill the first empty cell with each legal digit. Follow-up: \"Validate a partially filled board\" is a one-pass check with three sets of seen digits.\n4. \"Split the string into palindromes in all ways.\" Choose the next piece's end, prune non-palindromes. Follow-up: \"minimum cuts\" is dynamic programming, not backtracking.\n5. \"Restore IP addresses from a digit string.\" Four segments of one to three digits in 0 to 255 with no leading zero (unless the segment is exactly 0): a depth-4 tree, pruning on segment validity and remaining length.\n6. \"Collect the maximum gold from a grid, start and stop anywhere.\" Backtrack from every non-zero cell, marking cells along the current path; take the best total. Same marking trick as word search.\n7. \"Count paths that visit every empty cell exactly once.\" Backtracking on a grid with a visited count; stop when the end cell is reached having used all cells."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"How would you make the sudoku solver faster?\" Three upgrades, in order of payoff: keep row, column and box constraints as bitmasks so the legality test is a couple of bit operations; always branch on the empty cell with the fewest candidates (fail early, small branching factor); and propagate forced moves (a cell with a single candidate is filled immediately). Mention that this is exactly how constraint solvers work, and that exact cover (Algorithm X, \"dancing links\") is the heavy-duty alternative."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`36`",
+              "Valid Sudoku",
+              "Medium",
+              "Not backtracking, but the same row, column and box bookkeeping with sets"
+            ],
+            [
+              "`79`",
+              "Word Search",
+              "Medium",
+              "DFS from each cell, mark visited in place, restore on return"
+            ],
+            [
+              "`131`",
+              "Palindrome Partitioning",
+              "Medium",
+              "Choose the end of each piece; recurse only on palindromic prefixes"
+            ],
+            [
+              "`93`",
+              "Restore IP Addresses",
+              "Medium",
+              "Four segments, each 1 to 3 digits, 0 to 255, no leading zeros"
+            ],
+            [
+              "`1219`",
+              "Path with Maximum Gold",
+              "Medium",
+              "Backtrack from every gold cell, collect, mark, restore"
+            ],
+            [
+              "`51`",
+              "N-Queens",
+              "Hard",
+              "Row by row with column and two diagonal arrays"
+            ],
+            [
+              "`52`",
+              "N-Queens II",
+              "Hard",
+              "Same search, count instead of building boards"
+            ],
+            [
+              "`37`",
+              "Sudoku Solver",
+              "Hard",
+              "First empty cell, try 1 to 9 with legality check, undo on failure"
+            ],
+            [
+              "`980`",
+              "Unique Paths III",
+              "Hard",
+              "Grid backtracking that must cover every empty cell exactly once"
+            ],
+            [
+              "`212`",
+              "Word Search II",
+              "Hard",
+              "Backtracking on the grid guided by a trie of all the words"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Constraint backtracking = choose, check the rules immediately, explore, undo.\n\n- Return a boolean for \"does a solution exist\"; keep going for \"find all\" or \"count\".\n- Mark visited by overwriting the cell and restore it on return; always check bounds before reading the cell.\n- N-Queens needs only three boolean arrays: column, `r + c`, and `r - c + n`.\n- Pruning is what makes exponential search practical; choose the most constrained decision first.\n- Complexity is exponential (for example O(m x n x 3^L) for word search), so the bound should be stated precisely together with the pruning rules."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-4",
+      "type": "concept",
+      "title": "Binary Tree DFS",
+      "subtopicId": "4-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A binary tree is a recursive structure: a node whose left and right children are themselves binary trees (or empty). That makes recursion the natural tool, and most tree problems fall into one of a few shapes. The brute-force approach treats a tree as an array: collecting nodes into lists and then searching them, or recomputing a property (such as height) at every node from scratch, which turns an O(n) job into O(n^2) on a skewed tree.\n\nDepth-first search (DFS) goes as deep as possible along one branch before backing up. On a tree it needs no visited set, because there are no cycles, and it uses stack space proportional to the height h of the tree: O(log n) for a balanced tree, O(n) for a chain.\n\n### The idea\n\nDefine a `TreeNode` with `val`, `left`, `right`. Every tree problem reduces to one question: *what does my function return for* *a subtree, and how are the two children's answers combined?* Three styles cover almost everything.\n\n- **Bottom-up (postorder)**: recurse into both children first, then compute this node's answer from theirs. Height, diameter, balanced check, max path sum, invert.\n- **Top-down (preorder)**: pass information *down* as parameters, such as the remaining target sum, the allowed value range, or the current depth. Path Sum, Validate BST bounds, Count Good Nodes.\n- **Both**: a helper returns one thing to the parent while updating a separate global answer. Diameter and max path sum use this \"return one value, record another\" trick."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 289.0 116.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M116.0 100.0 L134.0 100.0 C135.7 100.0 137.0 98.7 137.0 97.0 L137.0 85.0 C137.0 83.3 135.7 82.0 134.0 82.0 L116.0 82.0 C114.4 82.0 113.0 83.3 113.0 85.0 L113.0 97.0 C113.0 98.7 114.4 100.0 116.0 100.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 51.0 L125.0 91.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M155.0 51.0 L185.0 91.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M176.0 100.0 L194.0 100.0 C195.7 100.0 197.0 98.7 197.0 97.0 L197.0 85.0 C197.0 83.3 195.7 82.0 194.0 82.0 L176.0 82.0 C174.4 82.0 173.0 83.3 173.0 85.0 L173.0 97.0 C173.0 98.7 174.4 100.0 176.0 100.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M215.0 11.0 L155.0 51.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M215.0 11.0 L275.0 51.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\"/><path d=\"M146.0 60.0 L164.0 60.0 C165.7 60.0 167.0 58.7 167.0 57.0 L167.0 45.0 C167.0 43.3 165.7 42.0 164.0 42.0 L146.0 42.0 C144.4 42.0 143.0 43.3 143.0 45.0 L143.0 57.0 C143.0 58.7 144.4 60.0 146.0 60.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M266.0 60.0 L284.0 60.0 C285.7 60.0 287.0 58.7 287.0 57.0 L287.0 45.0 C287.0 43.3 285.7 42.0 284.0 42.0 L266.0 42.0 C264.4 42.0 263.0 43.3 263.0 45.0 L263.0 57.0 C263.0 58.7 264.4 60.0 266.0 60.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M206.0 20.0 L224.0 20.0 C225.7 20.0 227.0 18.7 227.0 17.0 L227.0 5.0 C227.0 3.3 225.7 2.0 224.0 2.0 L206.0 2.0 C204.4 2.0 203.0 3.3 203.0 5.0 L203.0 17.0 C203.0 18.7 204.4 20.0 206.0 20.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"212.5\" y=\"13.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">1</text><text x=\"3.7\" y=\"28.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"63.8\" lengthAdjust=\"spacingAndGlyphs\">preorder: 1 2 4 5 3</text><text x=\"6.2\" y=\"42.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"58.7\" lengthAdjust=\"spacingAndGlyphs\">inorder: 4 2 5 1 3</text><text x=\"152.5\" y=\"53.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">2</text><text x=\"272.5\" y=\"53.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">3</text><text x=\"2.0\" y=\"56.0\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"67.1\" lengthAdjust=\"spacingAndGlyphs\">postorder: 4 5 2 3 1</text><text x=\"122.5\" y=\"93.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">4</text><text x=\"182.5\" y=\"93.8\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\">5</text></svg>",
+          "width": 289,
+          "caption": "The three depth-first orders on the same tree. Preorder visits a node before its children, inorder between them, postorder after. Breadth-first (level) order is the subject of the next chapter.",
+          "alt": "1 | preorder: 1 2 4 5 3 | inorder: 4 2 5 1 3 | 2 3 | postorder: 4 5 2 3 1 | 4 5"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- The input is a `TreeNode root` and the question asks about paths, depth, symmetry, equality, or \"every node satisfies ...\".\n- \"Longest/maximum/minimum path\", \"height\", \"diameter\", \"balanced\", \"same\", \"subtree\".\n- A property of the whole tree defined by a property of its two subtrees.\n- \"Root to leaf\" paths (top-down with an accumulator) or \"any node to any node\" paths (bottom-up with a global maximum).\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Bottom-up: answer for a subtree is built from the answers of its children (fragment)\nstatic int solve(TreeNode n) {\n    if (n == null) return BASE;                 // empty tree: 0 for height, true for balanced\n    int l = solve(n.left);\n    int r = solve(n.right);\n    best = Math.max(best, combineForAnswer(n, l, r));   // optional global answer\n    return combineForParent(n, l, r);                    // what the parent needs\n}\n\n// Top-down: information flows in through parameters (fragment)\nstatic boolean solve(TreeNode n, int carried) {\n    if (n == null) return BASE;\n    int next = update(carried, n);\n    return solve(n.left, next) && solve(n.right, next);\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The three traversal orders differ only in *when* the node is visited relative to the two recursive calls. Preorder (node, left, right) is used to copy a tree and to serialise it. Inorder (left, node, right) visits a binary search tree in sorted order. Postorder (left, right, node) is bottom-up: children are finished before their parent, which is how you delete a tree or compute heights.\n\n### Dry run\n\nThe example computes the **diameter** (the number of edges on the longest path between any two nodes) of the tree with root 1, children 2 and 3, and node 2 having children 4 and 5. Input: `[1, 2, 3, 4, 5]`. The longest path is 4 - 2 - 1 - 3 (or 5 - 2 - 1 - 3), which has 3 edges. The helper returns the *height* of a subtree (counted in nodes, so a leaf has height 1 and an empty subtree 0) and updates `best` with `leftHeight + rightHeight` at each node, the longest path that bends at that node. Postorder visits 4, 5, 2, 3, 1."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Node",
+            "Left height",
+            "Right height",
+            "Path through node (l + r) Returns to parent",
+            "best"
+          ],
+          "rows": [
+            [
+              "1",
+              "`4`",
+              "0",
+              "0",
+              "0 1",
+              "0"
+            ],
+            [
+              "2",
+              "`5`",
+              "0",
+              "0",
+              "0 1",
+              "0"
+            ],
+            [
+              "3",
+              "`2`",
+              "1",
+              "1",
+              "2 2",
+              "2"
+            ],
+            [
+              "4",
+              "`3`",
+              "0",
+              "0",
+              "0 1",
+              "2"
+            ],
+            [
+              "5",
+              "`1`",
+              "2",
+              "1",
+              "3 3",
+              "3"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Postorder trace of the diameter computation (heights counted in nodes, diameter in edges).*\n\nAt step 3 node 2 combines the two leaves: the path 4 - 2 - 5 has 2 edges, so `best` becomes 2, but the parent can only extend *one* of the two branches, so it receives height 2 (the taller side plus itself). At step 5 the root joins the height-2 subtree on the left with the height-1 subtree on the right: 2 + 1 = 3 edges, the answer. The invariant: **the value** **returned upward (a straight path) differs from the value recorded (a bent path)**. Almost every \"path\" question on trees is this trick.\n\n### Java code\n\nThe listing builds trees from a LeetCode-style level-order array (`null` marks a missing node), then implements recursive and iterative traversals and the standard DFS problems. Each iterative traversal uses an explicit `ArrayDeque` as a stack, so it does not depend on JVM stack size."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static class TreeNode {\n        int val;\n        TreeNode left, right;\n        TreeNode(int val) { this.val = val; }\n    }\n\n    // Build from a level-order array where null means \"no node\" (LeetCode style).\n    static TreeNode build(Integer... vals) {\n        if (vals.length == 0 || vals[0] == null) return null;\n        TreeNode root = new TreeNode(vals[0]);\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.add(root);\n        int i = 1;\n        while (!q.isEmpty() && i < vals.length) {\n            TreeNode cur = q.poll();\n            if (vals[i] != null) { cur.left = new TreeNode(vals[i]); q.add(cur.left); }\n            i++;\n            if (i < vals.length && vals[i] != null) {\n                cur.right = new TreeNode(vals[i]);\n                q.add(cur.right);\n            }\n            i++;\n        }\n        return root;\n    }\n\n    // ---- recursive traversals ----\nstatic void pre(TreeNode n, List<Integer> out) {\n    if (n == null) return;\n    out.add(n.val);                 // node first\n    pre(n.left, out);\n    pre(n.right, out);\n}\nstatic void in(TreeNode n, List<Integer> out) {\n    if (n == null) return;\n    in(n.left, out);\n    out.add(n.val);                 // node in the middle\n    in(n.right, out);\n}\nstatic void post(TreeNode n, List<Integer> out) {\n    if (n == null) return;\n    post(n.left, out);\n    post(n.right, out);\n    out.add(n.val);                 // node last\n}\n\n// ---- iterative traversals ----\nstatic List<Integer> inorderIter(TreeNode root) {\n    List<Integer> out = new ArrayList<>();\n    Deque<TreeNode> stack = new ArrayDeque<>();\n    TreeNode cur = root;\n    while (cur != null || !stack.isEmpty()) {\n        while (cur != null) { stack.push(cur); cur = cur.left; }   // go as far left as possible\n        cur = stack.pop();\n        out.add(cur.val);                                          // visit\n        cur = cur.right;                                           // then the right subtree\n    }\n    return out;\n}\nstatic List<Integer> preorderIter(TreeNode root) {\n    List<Integer> out = new ArrayList<>();\n    if (root == null) return out;\n    Deque<TreeNode> stack = new ArrayDeque<>();\n    stack.push(root);\n    while (!stack.isEmpty()) {\n        TreeNode n = stack.pop();\n        out.add(n.val);\n        if (n.right != null) stack.push(n.right);   // right first so left is popped first\n        if (n.left != null) stack.push(n.left);\n    }\n    return out;\n}\nstatic List<Integer> postorderIter(TreeNode root) {\n    LinkedList<Integer> out = new LinkedList<>();\n    if (root == null) return out;\n    Deque<TreeNode> stack = new ArrayDeque<>();\n    stack.push(root);\n    while (!stack.isEmpty()) {                       // reversed \"root, right, left\"\n        TreeNode n = stack.pop();\n        out.addFirst(n.val);\n        if (n.left != null) stack.push(n.left);\n        if (n.right != null) stack.push(n.right);\n    }\n    return out;\n}\n\n// ---- classic DFS problems ----\nstatic int height(TreeNode n) {\n    return n == null ? 0 : 1 + Math.max(height(n.left), height(n.right));\n}\n\nstatic int diameter;                      // longest path measured in edges\nstatic int diameterOf(TreeNode root) { diameter = 0; depth(root); return diameter; }\nstatic int depth(TreeNode n) {\n    if (n == null) return 0;\n    int l = depth(n.left), r = depth(n.right);\n    diameter = Math.max(diameter, l + r);  // path that bends at this node\n    return 1 + Math.max(l, r);             // path that continues up to the parent\n}\n\nstatic boolean sameTree(TreeNode a, TreeNode b) {\n    if (a == null || b == null) return a == b;\n        return a.val == b.val && sameTree(a.left, b.left) && sameTree(a.right, b.right);\n    }\n\n    static boolean hasPathSum(TreeNode n, int target) {\n        if (n == null) return false;\n        if (n.left == null && n.right == null) return n.val == target;   // must end at a leaf\n        return hasPathSum(n.left, target - n.val) || hasPathSum(n.right, target - n.val);\n    }\n\n    static int bestPath;                      // max path sum (values may be negative)\n    static int maxPathSum(TreeNode root) {\n        bestPath = Integer.MIN_VALUE;\n        gain(root);\n        return bestPath;\n    }\n    static int gain(TreeNode n) {\n        if (n == null) return 0;\n        int l = Math.max(0, gain(n.left));     // ignore a negative branch\n        int r = Math.max(0, gain(n.right));\n        bestPath = Math.max(bestPath, n.val + l + r);   // bend here\n        return n.val + Math.max(l, r);                  // extend upward\n    }\n\n    static TreeNode invert(TreeNode n) {\n        if (n == null) return null;\n        TreeNode t = n.left; n.left = invert(n.right); n.right = invert(t);\n        return n;\n    }\n\n    // Balanced: returns height, or -1 if unbalanced anywhere (one pass, O(n))\n    static boolean isBalanced(TreeNode root) { return check(root) != -1; }\n    static int check(TreeNode n) {\n        if (n == null) return 0;\n        int l = check(n.left); if (l == -1) return -1;\n        int r = check(n.right); if (r == -1) return -1;\n        if (Math.abs(l - r) > 1) return -1;\n        return 1 + Math.max(l, r);\n    }\n\n    public static void main(String[] args) {\n        TreeNode t = build(1, 2, 3, 4, 5, null, 6);\n        List<Integer> a = new ArrayList<>(), b = new ArrayList<>(), c = new ArrayList<>();\n        pre(t, a); in(t, b); post(t, c);\n        System.out.println(\"preorder  \" + a + \" iter \" + preorderIter(t));\n        System.out.println(\"inorder   \" + b + \" iter \" + inorderIter(t));\n        System.out.println(\"postorder \" + c + \" iter \" + postorderIter(t));\n        System.out.println(\"height = \" + height(t));\n        System.out.println(\"diameter = \" + diameterOf(build(1, 2, 3, 4, 5)));\n        System.out.println(\"same tree = \" + sameTree(build(1, 2, 3), build(1, 2, 3))\n                + \", \" + sameTree(build(1, 2), build(1, null, 2)));\n        TreeNode ps = build(5, 4, 8, 11, null, 13, 4, 7, 2, null, null, null, 1);\n        System.out.println(\"hasPathSum 22 = \" + hasPathSum(ps, 22) + \", 9 = \" + hasPathSum(ps, 9));\n        System.out.println(\"maxPathSum = \" + maxPathSum(build(-10, 9, 20, null, null, 15, 7)));\n        List<Integer> inv = new ArrayList<>();\n        pre(invert(build(4, 2, 7, 1, 3, 6, 9)), inv);\n        System.out.println(\"inverted preorder = \" + inv);\n        System.out.println(\"balanced: \" + isBalanced(build(3, 9, 20, null, null, 15, 7))\n                + \", \" + isBalanced(build(1, 2, 2, 3, 3, null, null, 4, 4)));\n        // skewed tree: recursion depth equals n\n        TreeNode skew = new TreeNode(0), cur = skew;\n        for (int i = 1; i < 100_000; i++) { cur.right = new TreeNode(i); cur = cur.right; }\n        System.out.println(\"iterative inorder on 100000-node chain: \" + inorderIter(skew).size());\n        try { height(skew); }\n        catch (StackOverflowError e) { System.out.println(\"recursive height overflowed\"); }\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\npreorder  [1, 2, 4, 5, 3, 6] iter [1, 2, 4, 5, 3, 6]\ninorder   [4, 2, 5, 1, 3, 6] iter [4, 2, 5, 1, 3, 6]\npostorder [4, 5, 2, 6, 3, 1] iter [4, 5, 2, 6, 3, 1]\nheight = 3\ndiameter = 3\nsame tree = true, false\nhasPathSum 22 = true, 9 = false\nmaxPathSum = 42\ninverted preorder = [4, 7, 9, 6, 2, 3, 1]\nbalanced: true, false\niterative inorder on 100000-node chain: 100000\nrecursive height overflowed",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Iterative inorder**: push the whole left spine, pop and visit, then move to the right child. The stack always holds the ancestors whose right subtrees are still pending.\n- **Iterative preorder** pushes the right child first so the left is popped first. **Iterative postorder** is the trick of producing \"node, right, left\" and reversing it (here with `addFirst`).\n- `hasPathSum` tests `n.left == null && n.right == null` before comparing. Without the leaf test, a tree `[1, 2]` with target 1 would wrongly return true, because node 1 is not a leaf.\n- `maxPathSum` clamps child gains at 0 (`Math.max(0, gain(...))`): a branch with a negative sum is better dropped. `bestPath` starts at `Integer.MIN_VALUE` because all values may be negative. The result 42 is the path 15 - 20 - 7.\n- `isBalanced` returns the height or a sentinel -1 so the check is a single O(n) pass. The naive version calls `height` at every node and is O(n^2) on a skewed tree.\n- `sameTree`: `a == b` after the null test is true only if both are null. One null and one non-null is false.\n- The chain of 100,000 nodes is handled by the iterative traversal, while recursive `height` overflowed the stack on the build machine (the exact limit depends on JVM settings and frame size).\n\n### Complexity and mistakes\n\nEach node is visited once and does O(1) work, so time is **O(n)** for all these problems. Space is the recursion depth: **O(h)**, where h = log n for a balanced tree and n for a chain. The iterative versions use O(h) for the explicit stack. Morris traversal achieves O(1) extra space by temporarily rewiring pointers; mention it, but do not volunteer to code it unless asked.\n\nMistakes to avoid:\n\n- **Forgetting the null base case**, or putting the leaf test where only null is handled, producing `NullPointerException` on `n.left.val`.\n- **Confusing height and depth, nodes and edges.** Fix the convention first: LeetCode's max depth counts nodes; diameter counts edges. The helper must state which one it returns.\n- **Returning the bent path to the parent** in diameter or max path sum. A parent can extend only one child's branch.\n- **Using** `int` **global state across calls**: static fields such as `best` must be reset per query (see `diameterOf`), or LeetCode test cases will leak into each other.\n- **Comparing** `Integer` **objects with** `==`, for example `a.val == b.val` when `val` is declared `Integer`. Use `int`, or `.equals`.\n- **Validating a BST by comparing only parent and child.** Each node must respect bounds inherited from all ancestors (see the next-but-one chapter)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A \"path\" in these problems is a sequence of connected nodes that does not have to start at the root or end at a leaf (Diameter, Max Path Sum), but in Path Sum I and II it must run from the root to a leaf. The definition determines the code."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Print the tree inorder/preorder/postorder, then do it without recursion.\" Know all six versions. Follow-up: \"Morris traversal for O(1) space.\"\n2. \"Find the maximum depth / minimum depth.\" Max: `1 + max(l, r)`. Minimum depth has a subtle precondition: a node with one child is not a leaf, so use `1 + min(l, r)` only when both children exist (or use BFS).\n3. \"Is this tree height-balanced?\" Bottom-up with a -1 sentinel; mention the O(n^2) top-down version and why it is worse.\n4. \"Diameter of a binary tree.\" Return height, record `l + r`. Follow-up: \"weighted edges\" - same code with weights.\n5. \"Maximum path sum where nodes can be negative.\" Clamp child gains at 0, record `val + l + r`, return `val +` `max(l, r)`.\n6. \"Do two trees match? Is one a subtree of the other? Is a tree symmetric?\" `sameTree` as a building block; symmetric compares `a.left` with `b.right` and `a.right` with `b.left`.\n7. \"Invert a binary tree.\" Swap children recursively (or with a queue). Mention the anecdote only if asked; the code is four lines.\n8. \"Root-to-leaf path sums, return all paths.\" Backtracking on a path list: add, recurse, remove (same choose/explore/unchoose rhythm as the earlier chapters)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"Walk me through recursion on a tree and tell me its space complexity.\" Each call handles one node and delegates the subtrees, so the maximum stack depth equals the tree height h. A balanced tree gives O(log n), a degenerate chain gives O(n). For inputs that may form a long chain, an iterative traversal with an explicit stack avoids `StackOverflowError`."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`104`",
+              "Maximum Depth of Binary Tree",
+              "Easy",
+              "`1 + max(left, right)` bottom-up"
+            ],
+            [
+              "`100`",
+              "Same Tree",
+              "Easy",
+              "Compare values and recurse on both pairs of children"
+            ],
+            [
+              "`226`",
+              "Invert Binary Tree",
+              "Easy",
+              "Swap the children at every node"
+            ],
+            [
+              "`94`",
+              "Binary Tree Inorder Traversal",
+              "Easy",
+              "Recursive, then iterative with a stack (left spine)"
+            ],
+            [
+              "`144`",
+              "Binary Tree Preorder Traversal",
+              "Easy",
+              "Stack with the right child pushed first"
+            ],
+            [
+              "`101`",
+              "Symmetric Tree",
+              "Easy",
+              "Mirror comparison: left with right, right with left"
+            ],
+            [
+              "`110`",
+              "Balanced Binary Tree",
+              "Easy",
+              "Return height or -1 in one pass"
+            ],
+            [
+              "`543`",
+              "Diameter of Binary Tree",
+              "Easy",
+              "Return height, record left + right"
+            ],
+            [
+              "`572`",
+              "Subtree of Another Tree",
+              "Easy",
+              "For each node, run Same Tree"
+            ],
+            [
+              "`112`",
+              "Path Sum",
+              "Easy",
+              "Subtract down the path, test only at leaves"
+            ],
+            [
+              "`113`",
+              "Path Sum II",
+              "Medium",
+              "Backtracking path list with copy at the leaf"
+            ],
+            [
+              "`437`",
+              "Path Sum III",
+              "Medium",
+              "Prefix sums in a hash map along the root path"
+            ],
+            [
+              "`124`",
+              "Binary Tree Maximum Path Sum",
+              "Hard",
+              "Clamp gains at 0, bend at every node"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Tree problems are recursion on subtrees: decide what each call returns and how to combine two children.\n\n- Bottom-up (postorder) for properties built from children; top-down (preorder) for information passed down as parameters.\n- For path problems return the best *straight* path and record the best *bent* path in a global.\n- O(n) time, O(h) stack space; use an explicit stack when the tree may be a long chain.\n- Check the leaf definition (`left == null && right == null`) and nodes-versus-edges counting before coding."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-5",
+      "type": "concept",
+      "title": "Binary Tree BFS and Level Order",
+      "subtopicId": "4-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Some questions are about *levels*: \"the nodes at each depth\", \"the rightmost visible node\", \"the shallowest leaf\", \"connect each node to its right neighbour\". Depth-first search can answer them with extra bookkeeping (a depth parameter and lists indexed by depth), but breadth-first search (BFS) fits the question exactly: it visits every node of depth d before any node of depth d + 1. It uses a queue, a first-in-first-out line, to remember the nodes that are waiting.\n\n### The idea\n\nPut the root in a queue. Repeat: take the node at the front, process it, and add its non-null children at the back. Because children go to the back, all nodes of one level are in front of all nodes of the next. To work *level by level*, freeze the queue's size at the start of each round: that many nodes belong to the current level, and anything added during the round belongs to the next.\n\n#### How to recognise it\n\n- \"Level order\", \"by level\", \"row by row\", \"zigzag\".\n- \"Left view\", \"right side view\", \"the last/first node on each level\".\n- \"Minimum depth\", \"shortest distance to a leaf\": BFS stops at the first leaf it meets, so it never explores the deeper parts of the tree.\n- \"Connect nodes at the same level\", \"average of each level\", \"largest value in each row\".\n- The same technique on a grid or graph (shortest path in an unweighted graph) is covered in the graphs Part; the tree version is the gentle introduction.\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Level-order BFS skeleton (fragment)\nDeque<TreeNode> q = new ArrayDeque<>();\nif (root != null) q.offer(root);\nwhile (!q.isEmpty()) {\n    int size = q.size();                 // number of nodes on this level - freeze it\n    for (int i = 0; i < size; i++) {\n        TreeNode n = q.poll();           // front of the queue\n        // process n (add to this level's list, check i == size - 1, ...)\n        if (n.left != null)  q.offer(n.left);\n        if (n.right != null) q.offer(n.right);\n    }\n    // finish the level\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Dry run\n\nInput tree `[3, 9, 20, null, null, 15, 7]`: root 3, with children 9 and 20, and 20 has children 15 and 7. The goal is the level order `[[3], [9, 20], [15, 7]]`. The table shows the queue before each round, the nodes taken, and the queue after (real output of `levelOrderTrace` in the listing below)."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Round",
+            "size",
+            "Queue before",
+            "Nodes polled (level)",
+            "Queue after"
+          ],
+          "rows": [
+            [
+              "1",
+              "1",
+              "`[3]`",
+              "`[3]`",
+              "`[9, 20]`"
+            ],
+            [
+              "2",
+              "2",
+              "`[9, 20]`",
+              "`[9, 20]`",
+              "`[15, 7]`"
+            ],
+            [
+              "3",
+              "2",
+              "`[15, 7]`",
+              "`[15, 7]`",
+              "`[]`"
+            ]
+          ],
+          "caption": "Level-order trace. The queue is shown front to back."
+        },
+        {
+          "type": "markdown",
+          "text": "Round 1 takes 3 and appends its two children. Round 2 freezes `size = 2` and takes both 9 and 20: node 9 has no children, node 20 appends 15 and 7. Round 3 takes 15 and 7, which have no children, so the queue empties and the loop ends. The frozen `size` is what separates the levels: without it the result is one flat list `[3, 9, 20, 15, 7]`, which is correct as a plain BFS order but not as a list of levels.\n\n### Java code\n\nThe program implements level order (with the trace), zigzag, right side view, minimum depth, connecting next pointers with O(1) extra space, and serialise/deserialise using BFS with `null` markers."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static class TreeNode {\n        int val;\n        TreeNode left, right, next;\n        TreeNode(int val) { this.val = val; }\n    }\n\n    static TreeNode build(Integer... vals) {\n        if (vals.length == 0 || vals[0] == null) return null;\n        TreeNode root = new TreeNode(vals[0]);\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.add(root);\n        int i = 1;\n        while (!q.isEmpty() && i < vals.length) {\n            TreeNode cur = q.poll();\n            if (vals[i] != null) { cur.left = new TreeNode(vals[i]); q.add(cur.left); }\n            i++;\n            if (i < vals.length && vals[i] != null) {\n                cur.right = new TreeNode(vals[i]);\n                q.add(cur.right);\n            }\n            i++;\n        }\n        return root;\n    }\n\n    static String show(Deque<TreeNode> q) {\n        StringBuilder sb = new StringBuilder(\"[\");\n        for (TreeNode n : q) sb.append(sb.length() > 1 ? \", \" : \"\").append(n.val);\n        return sb.append(\"]\").toString();\n    }\n\n    // Level order with a trace of the queue (for the dry run)\n    static List<List<Integer>> levelOrderTrace(TreeNode root) {\n        List<List<Integer>> res = new ArrayList<>();\n        if (root == null) return res;\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.offer(root);\n        int round = 0;\n        while (!q.isEmpty()) {\n            int size = q.size();                       // freeze the number of nodes on this level\n            String before = show(q);\n            List<Integer> level = new ArrayList<>();\n            for (int i = 0; i < size; i++) {\n                TreeNode n = q.poll();\n                level.add(n.val);\n                if (n.left != null) q.offer(n.left);\n                if (n.right != null) q.offer(n.right);\n            }\n            System.out.println(++round + \" | size=\" + size + \" | \" + before + \" | \" + level\n                    + \" | \" + show(q));\n            res.add(level);\n        }\n        return res;\n    }\n\n    static List<List<Integer>> levelOrder(TreeNode root) {\n        List<List<Integer>> res = new ArrayList<>();\n        if (root == null) return res;\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.offer(root);\n        while (!q.isEmpty()) {\n            int size = q.size();\n            List<Integer> level = new ArrayList<>();\n            for (int i = 0; i < size; i++) {\n                TreeNode n = q.poll();\n                level.add(n.val);\n            if (n.left != null) q.offer(n.left);\n            if (n.right != null) q.offer(n.right);\n        }\n        res.add(level);\n    }\n    return res;\n}\n\nstatic List<List<Integer>> zigzag(TreeNode root) {\n    List<List<Integer>> res = new ArrayList<>();\n    if (root == null) return res;\n    Deque<TreeNode> q = new ArrayDeque<>();\n    q.offer(root);\n    boolean leftToRight = true;\n    while (!q.isEmpty()) {\n        int size = q.size();\n        LinkedList<Integer> level = new LinkedList<>();\n        for (int i = 0; i < size; i++) {\n            TreeNode n = q.poll();\n            if (leftToRight) level.addLast(n.val); else level.addFirst(n.val);\n            if (n.left != null) q.offer(n.left);\n            if (n.right != null) q.offer(n.right);\n        }\n        res.add(level);\n        leftToRight = !leftToRight;\n    }\n    return res;\n}\n\nstatic List<Integer> rightSideView(TreeNode root) {\n    List<Integer> view = new ArrayList<>();\n    if (root == null) return view;\n    Deque<TreeNode> q = new ArrayDeque<>();\n    q.offer(root);\n    while (!q.isEmpty()) {\n        int size = q.size();\n        for (int i = 0; i < size; i++) {\n            TreeNode n = q.poll();\n            if (i == size - 1) view.add(n.val);       // last node of the level\n            if (n.left != null) q.offer(n.left);\n            if (n.right != null) q.offer(n.right);\n        }\n    }\n    return view;\n}\n\nstatic int minDepth(TreeNode root) {\n    if (root == null) return 0;\n    Deque<TreeNode> q = new ArrayDeque<>();\n    q.offer(root);\n    int depth = 1;\n    while (!q.isEmpty()) {\n        for (int i = q.size(); i > 0; i--) {\n            TreeNode n = q.poll();\n            if (n.left == null && n.right == null) return depth;   // first leaf = shallowest\n            if (n.left != null) q.offer(n.left);\n            if (n.right != null) q.offer(n.right);\n        }\n        depth++;\n    }\n    return depth;\n}\n\n// Connect next pointers on ANY binary tree, O(1) extra space (uses the next links themselves)\nstatic void connect(TreeNode root) {\n    TreeNode levelStart = root;\n    while (levelStart != null) {\n        TreeNode dummy = new TreeNode(0), tail = dummy;\n        for (TreeNode n = levelStart; n != null; n = n.next) {\n            if (n.left != null)  { tail.next = n.left;  tail = tail.next; }\n            if (n.right != null) { tail.next = n.right; tail = tail.next; }\n        }\n        levelStart = dummy.next;           // the first node of the next level\n    }\n}\n    // Serialize / deserialize with BFS and \"null\" markers (LinkedList allows null elements)\n    static String serialize(TreeNode root) {\n        List<String> out = new ArrayList<>();\n        Deque<TreeNode> q = new LinkedList<>();\n        q.add(root);\n        while (!q.isEmpty()) {\n            TreeNode n = q.poll();\n            if (n == null) { out.add(\"null\"); continue; }\n            out.add(String.valueOf(n.val));\n            q.add(n.left);\n            q.add(n.right);\n        }\n        int end = out.size();\n        while (end > 0 && out.get(end - 1).equals(\"null\")) end--;   // trim trailing nulls\n        return String.join(\",\", out.subList(0, end));\n    }\n\n    static TreeNode deserialize(String data) {\n        if (data.isEmpty()) return null;\n        String[] p = data.split(\",\");\n        TreeNode root = new TreeNode(Integer.parseInt(p[0]));\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.add(root);\n        int i = 1;\n        while (!q.isEmpty() && i < p.length) {\n            TreeNode n = q.poll();\n            if (!p[i].equals(\"null\")) {\n                n.left = new TreeNode(Integer.parseInt(p[i]));\n                q.add(n.left);\n            }\n            i++;\n            if (i < p.length && !p[i].equals(\"null\")) {\n                n.right = new TreeNode(Integer.parseInt(p[i]));\n                q.add(n.right);\n            }\n            i++;\n        }\n        return root;\n    }\n\n    public static void main(String[] args) {\n        TreeNode t = build(3, 9, 20, null, null, 15, 7);\n        System.out.println(levelOrderTrace(t));\n        System.out.println(\"zigzag  = \" + zigzag(build(1, 2, 3, 4, 5, 6, 7)));\n        System.out.println(\"right   = \" + rightSideView(build(1, 2, 3, null, 5, null, 4)));\n        System.out.println(\"minDepth = \" + minDepth(build(2, null, 3, null, 4, null, 5, null, 6)));\n        TreeNode c = build(1, 2, 3, 4, 5, null, 7);\n        connect(c);\n        System.out.println(\"next of 4 = \" + c.left.left.next.val + \", next of 5 = \"\n                + c.left.right.next.val + \", next of 7 = \" + c.right.right.next);\n        String data = serialize(build(1, 2, 3, null, null, 4, 5));\n        System.out.println(\"serialized = \" + data);\n        System.out.println(\"round trip = \" + serialize(deserialize(data)));\n        System.out.println(\"empty tree = '\" + serialize(null) + \"'\");\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\n1 | size=1 | [3] | [3] | [9, 20]\n2 | size=2 | [9, 20] | [9, 20] | [15, 7]\n3 | size=2 | [15, 7] | [15, 7] | []\n[[3], [9, 20], [15, 7]]\nzigzag  = [[1], [3, 2], [4, 5, 6, 7]]\nright   = [1, 3, 4]\nminDepth = 5\nnext of 4 = 5, next of 5 = 7, next of 7 = null\nserialized = 1,2,3,null,null,4,5\nround trip = 1,2,3,null,null,4,5\nempty tree = ''",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Use** `ArrayDeque` **as the queue**, not `Stack` and not a hand-rolled array. `offer` adds at the tail, `poll` removes from the head. `ArrayDeque` does not accept `null` elements, which is why `serialize` uses a `LinkedList` (it allows `null`) to carry the \"missing child\" markers.\n- **Zigzag** is level order plus a boolean that flips each level; `LinkedList.addFirst` writes right-to-left levels without a reverse step. Only the storage order of each level's values changes, not the traversal order.\n- **Right side view**: `i == size - 1` picks the last node of each level. The left-view variant tests `i == 0`.\n- **Min depth** returns as soon as it polls a node with no children. That is the shallowest leaf, and BFS finds it without visiting deeper levels. In the skewed example `[2, null, 3, null, 4, null, 5, null, 6]` the answer is 5, because a node with only one child is not a leaf.\n- `connect` builds the `next` links of the *next* level while walking the current level through its own `next` links, so it needs no queue (O(1) space). A dummy head makes appending uniform. It works for any binary tree, not only perfect ones.\n- **Serialise** the tree to `1,2,3,null,null,4,5`: this is the same format LeetCode uses, trailing `null`s trimmed. **Deserialise** reads the string in the same order, giving each dequeued parent the next two tokens as its children. The empty tree becomes the empty string.\n\n### Complexity and mistakes\n\nTime is O(n): every node enters and leaves the queue once. Space is O(w), where w is the maximum width of the tree (the largest number of nodes on one level). For a perfect binary tree w is about n/2, so the queue is O(n); for a chain it is O(1). DFS needs O(h) stack, so the better choice depends on the shape: wide and shallow trees favour DFS for space, narrow and deep trees favour BFS.\n\nMistakes to avoid:\n\n- **Not freezing the size.** Writing `for (int i = 0; i < q.size(); i++)` re-evaluates `q.size()` while children are being added, mixing levels.\n- **Offering** `null` **into an** `ArrayDeque` causes `NullPointerException`. Test children before offering, or use `LinkedList` deliberately.\n- **Forgetting the empty-tree guard**: `q.offer(null)` crashes; check `root == null` first.\n- **Using** `q.remove()` **or** `q.element()` **on an empty queue** throws; `poll()` and `peek()` return `null` instead. Pick one family and know the difference.\n- **Min depth by recursion with** `1 + min(l, r)` gives the wrong answer when one child is missing (the missing side counts as depth 0). BFS avoids this entirely.\n- **Reversing the wrong thing in zigzag.** Alternating the direction of insertion into the level list is correct; alternating the order of enqueueing breaks the next level."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Inserting at the front of an `ArrayList` (`level.add(0, x)`) shifts every existing element, so zigzag built that way costs O(k^2) per level of k nodes. `LinkedList.addFirst` is O(1). Alternatively, collect left to right and call `Collections.reverse(level)` on the odd levels, which is O(k)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Return the level order traversal.\" The template above. Follow-up: \"bottom-up order\" (Level Order II): reverse the list of levels at the end, or `addFirst` each level.\n2. \"Zigzag level order.\" Alternate the direction of storing values per level.\n3. \"What does the tree look like from the right/left side?\" Last/first node of each level. DFS alternative: visit right first and record the first node seen at each new depth.\n4. \"Find the minimum depth.\" BFS returns on the first leaf; mention why DFS needs care.\n5. \"Connect each node to its next right node.\" Perfect tree: use the parent's `next`. General tree: the dummy-head level walk. Follow-up: \"constant extra space\" - this is the point of the question.\n6. \"Average / maximum / sum of each level.\" Compute inside the inner loop; use `long` for sums to avoid overflow with large values.\n7. \"Serialise and deserialise a binary tree.\" Select a format (BFS with markers, or preorder with markers) and justify how the end of each subtree is determined. Follow-up: \"For a BST, can the markers be omitted?\" Yes, preorder values alone are enough because the order property fixes the shape."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"BFS or DFS for this tree problem?\" The choice follows from the question: level-based answers (views, width, minimum depth, level aggregates) point to BFS; path-based or subtree-based answers (diameter, path sum, validity of a property) point to DFS. Then state the space: BFS O(width), DFS O(height). The preferred traversal is the one whose auxiliary memory is smaller for the expected tree shape."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`102`",
+              "Binary Tree Level Order Traversal",
+              "Medium",
+              "Queue with the frozen level size"
+            ],
+            [
+              "`107`",
+              "Binary Tree Level Order Traversal II",
+              "Medium",
+              "Level order, then reverse the list of levels"
+            ],
+            [
+              "`637`",
+              "Average of Levels in Binary Tree",
+              "Easy",
+              "Sum each level in a `long`, divide by its size"
+            ],
+            [
+              "`111`",
+              "Minimum Depth of Binary Tree",
+              "Easy",
+              "BFS stops at the first leaf"
+            ],
+            [
+              "`199`",
+              "Binary Tree Right Side View",
+              "Medium",
+              "Take the last node of every level"
+            ],
+            [
+              "`103`",
+              "Binary Tree Zigzag Level Order Traversal",
+              "Medium",
+              "Flip the insertion direction each level"
+            ],
+            [
+              "`515`",
+              "Find Largest Value in Each Tree Row",
+              "Medium",
+              "Track the maximum within each level"
+            ],
+            [
+              "`116`",
+              "Populating Next Right Pointers in Each Node",
+              "Medium",
+              "Perfect tree: link using the parent's `next`"
+            ],
+            [
+              "`117`",
+              "Populating Next Right Pointers in Each Node II",
+              "Medium",
+              "Any tree: build the next level's links with a dummy head"
+            ],
+            [
+              "`297`",
+              "Serialize and Deserialize Binary Tree",
+              "Hard",
+              "BFS or preorder with null markers; parse in the same order"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Level-by-level questions are BFS: queue plus a frozen `size` per round.\n\n- `ArrayDeque` with `offer` and `poll`; guard `root == null`; never offer `null` to an `ArrayDeque`.\n- Right/left view = last/first of each level; zigzag = alternate insertion direction; min depth = first leaf.\n- Time O(n), space O(maximum width); DFS is O(height), so pick by tree shape.\n- Next-pointer connection can be done in O(1) space by walking the previous level's links."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-6",
+      "type": "concept",
+      "title": "BST and Tree Construction",
+      "subtopicId": "4-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A **binary search tree (BST)** is a binary tree with an ordering rule: for every node, all values in its left subtree are smaller and all values in its right subtree are larger (the strict version used by LeetCode has no duplicates). That one rule makes search, insert and delete O(h): at every node roughly half of the remaining tree can be discarded, as in binary search on a sorted array. The brute-force view, scanning all n nodes, discards that structure.\n\nThis chapter covers three connected skills: using the ordering (validate, k-th smallest, lowest common ancestor, iterator), rebuilding a tree from its traversals, and building a balanced BST from sorted data.\n\n### The idea\n\nThe central fact: **the inorder traversal of a BST is the sorted sequence.** Most BST questions reduce to that sentence. \"k-th smallest\" is the k-th element of an inorder walk. \"Validate\" means the inorder sequence is strictly increasing. A BST iterator is an inorder walk paused after each element. **A BST and where the lowest common ancestor (LCA) sits**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "     5\n   /   \\\n  3     7        inorder: 2 3 4 5 6 7 8   (sorted)\n / \\   / \\\n2   4 6   8      LCA(2, 4) = 3    LCA(2, 8) = 5    LCA(3, 4) = 3"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- \"Binary search tree\" in the statement: use the ordering instead of visiting everything.\n- \"k-th smallest/largest\", \"sorted order\", \"next smaller element\": inorder (reverse inorder for largest).\n- \"Validate a BST\": propagate bounds, or check that inorder is increasing.\n- \"Lowest common ancestor\": in a BST walk down; in a general tree recurse on both sides.\n- \"Construct a tree from preorder and inorder (or postorder and inorder)\": the first preorder element is the root, and its position in inorder splits left from right.\n- \"Convert a sorted array/list to a balanced BST\": pick the middle as the root.\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// BST search: discard half the tree at every step (fragment)\nTreeNode cur = root;\nwhile (cur != null && cur.val != target) cur = target < cur.val ? cur.left : cur.right;",
+          "title": "Template.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Validate with bounds: each node must lie strictly inside (lo, hi) (fragment)\nstatic boolean valid(TreeNode n, long lo, long hi) {\n    if (n == null) return true;\n    if (n.val <= lo || n.val >= hi) return false;\n    return valid(n.left, lo, n.val) && valid(n.right, n.val, hi);\n}",
+          "title": "Validate.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For construction the template is a sentence: take `root = preorder[next++]`, find `mid`, the root's index in the inorder array, then build the left subtree from inorder `[lo, mid-1]` and the right from `[mid+1, hi]`, in that order.\n\nWhy not just compare each node with its children? Because the rule applies to the whole subtree. The tree `5 -> (1, 6` `-> (3, 7))` has every parent-child pair in order, yet 3 sits in the right subtree of 5 and is smaller than 5, so it is not a BST. Passing down the allowed range `(lo, hi)` catches this.\n\n### Dry run\n\nBuild the tree from `preorder = [3, 9, 20, 15, 7]` and `inorder = [9, 3, 15, 20, 7]`. Rule: the next unused preorder value is the root of the current inorder range. Find it in the inorder array (a hash map gives the index in O(1)); everything to its left in that range is the left subtree, everything to its right is the right subtree. Recurse on the left first, because preorder lists the left subtree before the right. The table is the real trace of `construct`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Root (next preorder)",
+            "Inorder range",
+            "Split index",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "1",
+              "`3`",
+              "`[0, 4]`",
+              "1",
+              "left part \\[0, 0\\] (size 1), right part \\[2, 4\\] (size 3)"
+            ],
+            [
+              "2",
+              "`9`",
+              "`[0, 0]`",
+              "0",
+              "one element, both sides empty: leaf 9 (left child of 3)"
+            ],
+            [
+              "3",
+              "`20`",
+              "`[2, 4]`",
+              "3",
+              "left part \\[2, 2\\], right part \\[4, 4\\]: 20 is the right child of 3"
+            ],
+            [
+              "4",
+              "`15`",
+              "`[2, 2]`",
+              "2",
+              "leaf 15 (left child of 20)"
+            ],
+            [
+              "5",
+              "`7`",
+              "`[4, 4]`",
+              "4",
+              "leaf 7 (right child of 20)"
+            ]
+          ],
+          "caption": "Constructing the tree from preorder and inorder."
+        },
+        {
+          "type": "markdown",
+          "text": "The tree is 3 with children 9 and 20, and 20 has children 15 and 7. The shared counter `pre` advances through the preorder array exactly once, which is why the left recursion must run *before* the right one: the preorder array lists the whole left subtree before any right-subtree value. Swap the two calls and you build garbage.\n\n### Java code\n\nThe listing contains: BST validation with `long` bounds, k-th smallest by early-exit iterative inorder, LCA for a BST (iterative) and for a general tree (recursive), construction from preorder and inorder, a BST iterator, a sorted array turned into a height-balanced BST, and BST insert and delete."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static class TreeNode {\n        int val;\n        TreeNode left, right;\n        TreeNode(int val) { this.val = val; }\n    }\n\n    static TreeNode build(Integer... vals) {\n        if (vals.length == 0 || vals[0] == null) return null;\n        TreeNode root = new TreeNode(vals[0]);\n        Deque<TreeNode> q = new ArrayDeque<>();\n        q.add(root);\n        int i = 1;\n        while (!q.isEmpty() && i < vals.length) {\n            TreeNode cur = q.poll();\n            if (vals[i] != null) { cur.left = new TreeNode(vals[i]); q.add(cur.left); }\n            i++;\n            if (i < vals.length && vals[i] != null) {\n                cur.right = new TreeNode(vals[i]);\n                q.add(cur.right);\n            }\n            i++;\n        }\n        return root;\n    }\n\n    static void inorder(TreeNode n, List<Integer> out) {\n        if (n == null) return;\n        inorder(n.left, out);\n        out.add(n.val);\n        inorder(n.right, out);\n    }\n\n    // ---- validate BST: every node must lie inside the open interval (lo, hi) ----\n    static boolean isValidBST(TreeNode n, long lo, long hi) {\n        if (n == null) return true;\n        if (n.val <= lo || n.val >= hi) return false;\n        return isValidBST(n.left, lo, n.val) && isValidBST(n.right, n.val, hi);\n    }\n\n    // ---- kth smallest: stop the iterative inorder after k pops ----\n    static int kthSmallest(TreeNode root, int k) {\n        Deque<TreeNode> stack = new ArrayDeque<>();\n        TreeNode cur = root;\n        while (cur != null || !stack.isEmpty()) {\n            while (cur != null) { stack.push(cur); cur = cur.left; }\n            cur = stack.pop();\n            if (--k == 0) return cur.val;\n            cur = cur.right;\n        }\n        throw new IllegalArgumentException(\"k out of range\");\n    }\n\n    // ---- LCA in a BST: walk down using the ordering ----\n    static TreeNode lcaBST(TreeNode root, int p, int q) {\n        TreeNode cur = root;\n        while (cur != null) {\n            if (p < cur.val && q < cur.val) cur = cur.left;\n            else if (p > cur.val && q > cur.val) cur = cur.right;\n            else return cur;                       // paths diverge here (or one equals cur)\n        }\n        return null;\n    }\n\n    // ---- LCA in a general binary tree ----\n    static TreeNode lca(TreeNode n, TreeNode p, TreeNode q) {\n    if (n == null || n == p || n == q) return n;\n    TreeNode l = lca(n.left, p, q), r = lca(n.right, p, q);\n    return (l != null && r != null) ? n : (l != null ? l : r);\n}\nstatic TreeNode find(TreeNode n, int v) {\n    if (n == null || n.val == v) return n;\n    TreeNode l = find(n.left, v);\n    return l != null ? l : find(n.right, v);\n}\n\n// ---- build from preorder + inorder ----\nstatic int pre;                                       // next index in preorder\nstatic Map<Integer, Integer> pos;                     // value -> index in inorder\nstatic TreeNode buildTree(int[] preorder, int[] inorder, boolean trace) {\n    pos = new HashMap<>();\n    for (int i = 0; i < inorder.length; i++) pos.put(inorder[i], i);\n    pre = 0;\n    return construct(preorder, 0, inorder.length - 1, trace);\n}\nstatic TreeNode construct(int[] preorder, int lo, int hi, boolean trace) {\n    if (lo > hi) return null;\n    int rootVal = preorder[pre++];\n    int mid = pos.get(rootVal);\n    if (trace) System.out.println(\"root=\" + rootVal + \" | inorder range [\" + lo + \", \" + hi\n            + \"] | split at \" + mid + \" | left size \" + (mid - lo)\n            + \", right size \" + (hi - mid));\n    TreeNode node = new TreeNode(rootVal);\n    node.left = construct(preorder, lo, mid - 1, trace);     // left BEFORE right\n    node.right = construct(preorder, mid + 1, hi, trace);\n    return node;\n}\n\n// ---- BST iterator (amortised O(1) next, O(h) memory) ----\nstatic class BSTIterator {\n    private final Deque<TreeNode> stack = new ArrayDeque<>();\n    BSTIterator(TreeNode root) { pushLeft(root); }\n    private void pushLeft(TreeNode n) { for (; n != null; n = n.left) stack.push(n); }\n    boolean hasNext() { return !stack.isEmpty(); }\n    int next() {\n        TreeNode n = stack.pop();\n        pushLeft(n.right);\n        return n.val;\n    }\n}\n\n// ---- sorted array -> height-balanced BST ----\nstatic TreeNode sortedArrayToBST(int[] a, int lo, int hi) {\n    if (lo > hi) return null;\n    int mid = lo + (hi - lo) / 2;\n    TreeNode n = new TreeNode(a[mid]);\n    n.left = sortedArrayToBST(a, lo, mid - 1);\n    n.right = sortedArrayToBST(a, mid + 1, hi);\n    return n;\n}\n\n// ---- BST search / insert / delete ----\nstatic TreeNode insert(TreeNode n, int v) {\n    if (n == null) return new TreeNode(v);\n    if (v < n.val) n.left = insert(n.left, v); else n.right = insert(n.right, v);\n    return n;\n}\nstatic TreeNode delete(TreeNode n, int key) {\n    if (n == null) return null;\n    if (key < n.val) n.left = delete(n.left, key);\n    else if (key > n.val) n.right = delete(n.right, key);\n    else {\n        if (n.left == null) return n.right;          // zero or one child: splice out\n        if (n.right == null) return n.left;\n        TreeNode succ = n.right;                     // two children: smallest of right subtree\n        while (succ.left != null) succ = succ.left;\n        n.val = succ.val;\n        n.right = delete(n.right, succ.val);\n    }\n    return n;\n}\n    static List<Integer> preorder(TreeNode n) {\n        List<Integer> out = new ArrayList<>();\n        Deque<TreeNode> st = new ArrayDeque<>();\n        if (n != null) st.push(n);\n        while (!st.isEmpty()) {\n            TreeNode x = st.pop();\n            out.add(x.val);\n            if (x.right != null) st.push(x.right);\n            if (x.left != null) st.push(x.left);\n        }\n        return out;\n    }\n\n    public static void main(String[] args) {\n        TreeNode bst = build(5, 3, 7, 2, 4, 6, 8);\n        System.out.println(\"valid BST? \" + isValidBST(bst, Long.MIN_VALUE, Long.MAX_VALUE));\n        TreeNode trap = build(5, 1, 6, null, null, 3, 7);        // 3 is in the right subtree of 5\n        System.out.println(\"trap tree valid? \" + isValidBST(trap, Long.MIN_VALUE, Long.MAX_VALUE));\n        TreeNode edge = build(Integer.MAX_VALUE);\n        System.out.println(\"MAX_VALUE alone valid? \"\n                + isValidBST(edge, Long.MIN_VALUE, Long.MAX_VALUE));\n        System.out.println(\"kth smallest k=3: \" + kthSmallest(bst, 3));\n        System.out.println(\"LCA BST (2, 4) = \" + lcaBST(bst, 2, 4).val\n                + \", (2, 8) = \" + lcaBST(bst, 2, 8).val);\n        System.out.println(\"LCA tree (4, 8) = \" + lca(bst, find(bst, 4), find(bst, 8)).val);\n\n        int[] preorder = {3, 9, 20, 15, 7}, inorderArr = {9, 3, 15, 20, 7};\n        TreeNode built = buildTree(preorder, inorderArr, true);\n        List<Integer> chk = new ArrayList<>();\n        inorder(built, chk);\n        System.out.println(\"rebuilt inorder = \" + chk + \", preorder = \" + preorder(built));\n\n        BSTIterator it = new BSTIterator(bst);\n        StringBuilder sb = new StringBuilder();\n        while (it.hasNext()) sb.append(it.next()).append(' ');\n        System.out.println(\"iterator: \" + sb.toString().trim());\n\n        TreeNode fromArr = sortedArrayToBST(new int[]{-10, -3, 0, 5, 9}, 0, 4);\n        System.out.println(\"sorted array -> BST preorder = \" + preorder(fromArr));\n\n        TreeNode t = null;\n        for (int v : new int[]{50, 30, 70, 20, 40, 60, 80}) t = insert(t, v);\n        t = delete(t, 50);\n        System.out.println(\"after delete 50, preorder = \" + preorder(t));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\nvalid BST? true\ntrap tree valid? false\nMAX_VALUE alone valid? true\nkth smallest k=3: 4\nLCA BST (2, 4) = 3, (2, 8) = 5\nLCA tree (4, 8) = 5\nroot=3 | inorder range [0, 4] | split at 1 | left size 1, right size 3\nroot=9 | inorder range [0, 0] | split at 0 | left size 0, right size 0\nroot=20 | inorder range [2, 4] | split at 3 | left size 1, right size 1\nroot=15 | inorder range [2, 2] | split at 2 | left size 0, right size 0\nroot=7 | inorder range [4, 4] | split at 4 | left size 0, right size 0\nrebuilt inorder = [9, 3, 15, 20, 7], preorder = [3, 9, 20, 15, 7]\niterator: 2 3 4 5 6 7 8\nsorted array -> BST preorder = [0, -10, -3, 5, 9]\nafter delete 50, preorder = [60, 30, 20, 40, 70, 80]",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Bounds as** `long`: the test `MAX_VALUE alone valid? true` is the edge case. If bounds were `int` with `Integer.MIN_VALUE`/`MAX_VALUE` as sentinels, a node holding exactly `Integer.MAX_VALUE` would be rejected. Using `long` or `Integer` objects with `null` for \"no bound\" avoids it.\n- `kthSmallest` stops after k pops, so it costs O(h + k), not O(n). For repeated queries on a tree that changes, store subtree sizes in the nodes (an \"order-statistic tree\") and answer in O(h).\n- `lcaBST` needs no recursion and no stack: while both values are on the same side, descend; the first node where they split (or equal one of them) is the LCA.\n- `lca` **for a general tree**: if the node is `p` or `q`, return it. If both sides return non-null, this node is the LCA. Otherwise pass up whichever side found something. It assumes both nodes exist in the tree.\n- `buildTree`: the `HashMap` from value to inorder index replaces an O(n) search per node, making the whole construction O(n). It assumes distinct values.\n- `BSTIterator` keeps only the left spine on its stack: O(h) memory, and `next()` is amortised O(1) because each node is pushed and popped once over a full run.\n- `sortedArrayToBST` picks the middle element, so the two halves differ in size by at most one: height is about log2(n). Always taking the first element would produce a chain.\n- `delete` shows the three cases: no child (return the other side, which is null), one child (splice out), two children (copy the inorder successor, the smallest value in the right subtree, then delete that successor).\n\n### Complexity and mistakes\n\nSearch, insert and delete cost **O(h)**: O(log n) on a balanced tree, O(n) on a chain, which results from inserting sorted data into an unbalanced BST. Self-balancing trees (AVL, red-black) keep h at O(log n); in Java, `TreeMap` and `TreeSet` are red-black trees. Validate, construct, and the full traversals cost O(n). Space is O(h) for recursion, plus O(n) for the hash map in construction.\n\nMistakes to avoid:\n\n- **Local-only validation** (parent versus child). Always carry bounds from all ancestors.\n- **Bounds with** `int` **sentinels** or `<=` versus `<` confusion with duplicates. Ask whether duplicates are allowed and on which side they go.\n- **Wrong build order**: recursing right before left when consuming preorder. For postorder + inorder the order flips: build right first, consuming postorder from the end.\n- **Recomputing the inorder index by scanning** for each node. That makes construction O(n^2) on a skewed tree; use the map.\n- **LCA when a node is the ancestor of the other.** Returning the node itself is correct (a node counts as its own descendant in LeetCode's definition).\n- **Deleting a node and forgetting to reassign**: write `n.left = delete(n.left, key)` so the parent's link is updated. Without the assignment, a deleted leaf stays in the tree."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Repeatedly locating the middle of a linked list is avoidable: it costs O(n log n). Convert the list to an array first (O(n) extra space), or simulate the inorder construction with a moving list pointer for O(n) time and O(log n) space."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Validate that a tree is a BST.\" Bounds recursion or inorder strictly increasing. Follow-up: \"what if duplicates are allowed on the right?\" Change one comparison; say which.\n2. \"Find the k-th smallest element, and then handle frequent updates.\" Iterative inorder with early stop, then augmented nodes with subtree sizes.\n3. \"Lowest common ancestor in a BST, then in a general tree.\" Iterative split-point walk, then the two-sided recursion. Follow-up: \"with parent pointers\" becomes the intersection of two linked lists.\n4. \"Rebuild the tree from preorder and inorder.\" Root from preorder, split by inorder index. Follow-up: \"from inorder and postorder\" (root from the end, build right first); \"from preorder alone\" works only for a BST (use bounds).\n5. \"Implement an iterator with `next()` and `hasNext()` in O(h) memory.\" Stack of the left spine.\n6. \"Convert a sorted array (or list) into a height-balanced BST.\" Middle as root. Follow-up: \"is the result unique?\" No, even length gives two valid choices of middle.\n7. \"Insert into and delete from a BST.\" Recursion that returns the (possibly new) subtree root; three cases for delete.\n8. \"Why use a BST over a sorted array or hash map?\" Ordered operations with dynamic updates: floor/ceiling, range queries, in-order iteration in O(log n) per update."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"What is the worst case of a BST and how is it avoided?\" Inserting already sorted data produces a chain, so search degrades to O(n). Avoid it with a self-balancing tree (AVL or red-black; `TreeMap` is red-black in Java), by shuffling input before inserting, or by building from sorted data with the middle-element method. A strong follow-up answer: \"Rotations restore balance in O(1) per fix, so the cost stays O(log n) per operation.\""
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`700`",
+              "Search in a Binary Search Tree",
+              "Easy",
+              "Walk left or right by comparison"
+            ],
+            [
+              "`108`",
+              "Convert Sorted Array to Binary Search Tree",
+              "Easy",
+              "Middle element as root, recurse on halves"
+            ],
+            [
+              "`701`",
+              "Insert into a Binary Search Tree",
+              "Medium",
+              "Descend to a null slot and attach the new node"
+            ],
+            [
+              "`98`",
+              "Validate Binary Search Tree",
+              "Medium",
+              "Pass `(lo, hi)` bounds down; use `long` bounds"
+            ],
+            [
+              "`230`",
+              "Kth Smallest Element in a BST",
+              "Medium",
+              "Inorder with early exit after k nodes"
+            ],
+            [
+              "`235`",
+              "Lowest Common Ancestor of a Binary Search Tree",
+              "Medium",
+              "First node where the two values split sides"
+            ],
+            [
+              "`236`",
+              "Lowest Common Ancestor of a Binary Tree",
+              "Medium",
+              "Both sides non-null means this node is the LCA"
+            ],
+            [
+              "`173`",
+              "Binary Search Tree Iterator",
+              "Medium",
+              "Stack holding the left spine"
+            ],
+            [
+              "`105`",
+              "Construct Binary Tree from Preorder and Inorder Traversal",
+              "Medium",
+              "Preorder root plus inorder index map"
+            ],
+            [
+              "`106`",
+              "Construct Binary Tree from Inorder and Postorder Traversal",
+              "Medium",
+              "Root from the end of postorder; build right subtree first"
+            ],
+            [
+              "`450`",
+              "Delete Node in a BST",
+              "Medium",
+              "Splice out, or copy the inorder successor"
+            ],
+            [
+              "`109`",
+              "Convert Sorted List to Binary Search Tree",
+              "Medium",
+              "Middle of the list, or inorder construction with a moving pointer"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A BST's inorder traversal is sorted; use the ordering to discard half the tree at each step.\n\n- Validate with bounds from all ancestors (as `long`), never parent versus child only.\n- Preorder gives roots, inorder gives the left/right split: build left before right and use a hash map for indices.\n- Search, insert, delete are O(h); only a balanced tree guarantees O(log n), and `TreeMap` is Java's balanced BST.\n- LCA: split-point walk in a BST, two-sided recursion in a general tree."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-7",
+      "type": "concept",
+      "title": "Tries",
+      "subtopicId": "4-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Consider a collection of 100,000 words that must support \"is this word present?\", \"which words start with `ca`?\", and \"give me five suggestions for the prefix `car`\". A hash set answers the first question in O(L) (L is the word length, since hashing reads every character) but cannot answer the second without scanning every word. A sorted array can find a prefix by binary search, but inserting a new word costs O(n). A **trie** (pronounced \"try\", taken from the word retrieval; also called a prefix tree) answers all three in time proportional to the length of the query, independent of how many words are stored.\n\n### The idea\n\nA trie is a tree where each edge is labelled with one character and each path from the root spells a prefix. Words that share a prefix share the nodes of that prefix, so the common beginning is stored only once. A node has up to 26 children for lowercase letters (an array of 26 references, or a `HashMap<Character, Node>` for large alphabets) and a flag `end` marking that a word finishes there. The flag is needed because `car` is a word and also a prefix of `card`. **The trie after inserting cat, car, dog, cap, cab, card, care (end-of-word nodes marked with \\*)**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "(root)\n├─ c\n│  └─ a\n│     ├─ b*\n│     ├─ p*\n│     ├─ r*\n│     │  ├─ d*\n│     │  └─ e*\n│     └─ t*\n└─ d\n   └─ o\n      └─ g*"
+        },
+        {
+          "type": "markdown",
+          "text": "#### How to recognise it\n\n- Many strings and many *prefix* queries: \"starts with\", \"autocomplete\", \"words with this prefix\", \"longest common prefix of many words\".\n- \"Dictionary of words\" combined with a grid or a stream: the trie prunes search paths that cannot lead to any word (Word Search II).\n- \"Replace words by their shortest root\", \"longest word built one character at a time\".\n- Wildcard search such as `b.d`: the trie restricts branching to existing children.\n- Maximum XOR of two numbers: a trie over the *bits* of the numbers (an XOR trie).\n\n#### Template"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Trie node and the two loops every trie method is built from (fragment)\nstatic class Node {\n    Node[] next = new Node[26];\n    boolean end;\n}\n\nstatic void insert(Node root, String word) {\n    Node cur = root;\n    for (char ch : word.toCharArray()) {\n        if (cur.next[ch - 'a'] == null) cur.next[ch - 'a'] = new Node();\n        cur = cur.next[ch - 'a'];\n    }\n    cur.end = true;\n}\n\nstatic Node walk(Node root, String s) {       // follow s; null if the path breaks\n    Node cur = root;\n    for (char ch : s.toCharArray()) {\n        cur = cur.next[ch - 'a'];\n        if (cur == null) return null;\n    }\n    return cur;\n}",
+          "title": "Template.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`search(word)` is `walk` followed by \"node exists and `end` is true\". `startsWith(prefix)` is equivalent to \"the walk succeeded\". Everything else (autocomplete, counting, wildcard) walks to the prefix node and then runs a DFS below it.\n\n### Dry run\n\n`cat`, `car` and `dog` are inserted into an empty trie. For each character, the algorithm either follows an existing child (reuse) or create one. `pass` counts how many inserted words go through the node. This is the real trace from the program (note: the root is node 0 and is not printed)."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Word",
+            "Char",
+            "Action",
+            "pass after"
+          ],
+          "rows": [
+            [
+              "1",
+              "`cat`",
+              "c",
+              "create node under root",
+              "1"
+            ],
+            [
+              "2",
+              "`cat`",
+              "a",
+              "create node under c",
+              "1"
+            ],
+            [
+              "3",
+              "`cat`",
+              "t",
+              "create node under a, then mark end",
+              "1"
+            ],
+            [
+              "4",
+              "`car`",
+              "c",
+              "reuse the existing c node",
+              "2"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Word",
+            "Char",
+            "Action",
+            "pass after"
+          ],
+          "rows": [
+            [
+              "5",
+              "`car`",
+              "a",
+              "reuse the existing a node",
+              "2"
+            ],
+            [
+              "6",
+              "`car`",
+              "r",
+              "create a sibling of t under a, then mark end",
+              "1"
+            ],
+            [
+              "7",
+              "`dog`",
+              "d",
+              "create node under root (no shared prefix)",
+              "1"
+            ],
+            [
+              "8",
+              "`dog`",
+              "o",
+              "create node under d",
+              "1"
+            ],
+            [
+              "9",
+              "`dog`",
+              "g",
+              "create node under o, then mark end",
+              "1"
+            ]
+          ],
+          "caption": "Inserting cat, car and dog."
+        },
+        {
+          "type": "markdown",
+          "text": "Three words of three letters need 9 character steps but only 7 new nodes plus the root: 8 nodes total, because `ca` is shared. Now search: `search(\"car\")` follows c, a, r and finds `end = true`; `search(\"ca\")` reaches a node but its `end` is false, so it returns false; `startsWith(\"ca\")` returns true; `startsWith(\"cz\")` falls off the trie at `z`. Each query touches at most as many nodes as the query has characters.\n\n### Java code\n\nOne program with: a `Trie` class (insert, search, startsWith, prefix counts via `pass`, autocomplete with a limit, and wildcard search where `.` matches any letter), Word Search II (trie plus grid DFS), and a binary XOR trie for the maximum XOR pair."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Main {\n    static class Trie {\n        private static class Node {\n            Node[] next = new Node[26];\n            boolean end;                       // a word finishes at this node\n            int pass;                          // how many words pass through (for counts)\n        }\n        private final Node root = new Node();\n        int nodes = 1;\n\n        void insert(String word, boolean trace) {\n            Node cur = root;\n            for (char ch : word.toCharArray()) {\n                int i = ch - 'a';\n                boolean created = cur.next[i] == null;\n                if (created) { cur.next[i] = new Node(); nodes++; }\n                cur = cur.next[i];\n                cur.pass++;\n                if (trace) System.out.println(\"insert \" + word + \" | char \" + ch + \" | \"\n                        + (created ? \"create node\" : \"reuse node\") + \" | pass=\" + cur.pass);\n            }\n            cur.end = true;\n        }\n        void insert(String word) { insert(word, false); }\n\n        private Node walk(String s) {          // follow s from the root, or null if it breaks\n            Node cur = root;\n            for (char ch : s.toCharArray()) {\n                cur = cur.next[ch - 'a'];\n                if (cur == null) return null;\n            }\n            return cur;\n        }\n        boolean search(String w)     { Node n = walk(w); return n != null && n.end; }\n        boolean startsWith(String p) { return walk(p) != null; }\n        int countPrefix(String p)    { Node n = walk(p); return n == null ? 0 : n.pass; }\n\n        // autocomplete: up to k words with the prefix, in alphabetical order\n        List<String> suggest(String prefix, int k) {\n            List<String> out = new ArrayList<>();\n            Node n = walk(prefix);\n            if (n != null) collect(n, new StringBuilder(prefix), out, k);\n            return out;\n        }\n        private void collect(Node n, StringBuilder sb, List<String> out, int k) {\n            if (out.size() == k) return;\n            if (n.end) out.add(sb.toString());\n        for (int i = 0; i < 26 && out.size() < k; i++) {\n            if (n.next[i] == null) continue;\n            sb.append((char) ('a' + i));\n            collect(n.next[i], sb, out, k);\n            sb.setLength(sb.length() - 1);\n        }\n    }\n\n    // wildcard search: '.' matches any one letter\n    boolean searchWild(String w) { return wild(root, w, 0); }\n    private boolean wild(Node n, String w, int idx) {\n        if (n == null) return false;\n        if (idx == w.length()) return n.end;\n        char ch = w.charAt(idx);\n        if (ch != '.') return wild(n.next[ch - 'a'], w, idx + 1);\n        for (Node child : n.next) if (child != null && wild(child, w, idx + 1)) return true;\n        return false;\n    }\n}\n\n// ---- Word Search II: walk the grid and the trie together ----\nstatic class TNode {\n    TNode[] next = new TNode[26];\n    String word;                           // non-null at the end of a dictionary word\n}\nstatic List<String> findWords(char[][] board, String[] words) {\n    TNode root = new TNode();\n    for (String w : words) {\n        TNode cur = root;\n        for (char ch : w.toCharArray()) {\n            if (cur.next[ch - 'a'] == null) cur.next[ch - 'a'] = new TNode();\n            cur = cur.next[ch - 'a'];\n        }\n        cur.word = w;\n    }\n    List<String> found = new ArrayList<>();\n    for (int r = 0; r < board.length; r++)\n        for (int c = 0; c < board[0].length; c++) dfs(board, r, c, root, found);\n    return found;\n}\nstatic void dfs(char[][] b, int r, int c, TNode parent, List<String> found) {\n    if (r < 0 || c < 0 || r >= b.length || c >= b[0].length) return;\n    char ch = b[r][c];\n    if (ch == '#' || parent.next[ch - 'a'] == null) return;     // visited, or no word continues\n    TNode node = parent.next[ch - 'a'];\n    if (node.word != null) { found.add(node.word); node.word = null; }   // report once\n    b[r][c] = '#';\n    dfs(b, r + 1, c, node, found);\n    dfs(b, r - 1, c, node, found);\n    dfs(b, r, c + 1, node, found);\n    dfs(b, r, c - 1, node, found);\n    b[r][c] = ch;\n}\n\n// ---- XOR trie: maximum XOR of two numbers (bitwise trie of 31 bits) ----\nstatic int maxXor(int[] nums) {\n    int[][] child = new int[nums.length * 31 + 2][2];     // child[node][bit], 0 = none\n    int size = 1;\n    for (int x : nums) {\n        int cur = 0;\n        for (int b = 30; b >= 0; b--) {\n            int bit = (x >> b) & 1;\n            if (child[cur][bit] == 0) child[cur][bit] = size++;\n            cur = child[cur][bit];\n        }\n    }\n    int best = 0;\n    for (int x : nums) {\n        int cur = 0, val = 0;\n        for (int b = 30; b >= 0; b--) {\n            int want = 1 - ((x >> b) & 1);                 // opposite bit makes the XOR bit 1\n            if (child[cur][want] != 0) { val |= 1 << b; cur = child[cur][want]; }\n            else cur = child[cur][1 - want];\n        }\n        best = Math.max(best, val);\n        }\n        return best;\n    }\n\n    public static void main(String[] args) {\n        Trie t = new Trie();\n        for (String w : new String[]{\"cat\", \"car\", \"dog\"}) t.insert(w, true);\n        System.out.println(\"nodes = \" + t.nodes + \" (including the root)\");\n        for (String w : new String[]{\"cap\", \"card\", \"care\", \"cab\", \"bat\"}) t.insert(w);\n        System.out.println(\"search(car)=\" + t.search(\"car\") + \" search(ca)=\" + t.search(\"ca\")\n                + \" startsWith(ca)=\" + t.startsWith(\"ca\")\n                + \" startsWith(cz)=\" + t.startsWith(\"cz\"));\n        System.out.println(\"countPrefix(ca)=\" + t.countPrefix(\"ca\")\n                + \" countPrefix(car)=\" + t.countPrefix(\"car\"));\n        System.out.println(\"suggest(ca, 3) = \" + t.suggest(\"ca\", 3));\n        System.out.println(\"suggest(car, 5) = \" + t.suggest(\"car\", 5));\n        System.out.println(\"searchWild(c.t)=\" + t.searchWild(\"c.t\") + \" searchWild(..g)=\"\n                + t.searchWild(\"..g\") + \" searchWild(c..d)=\" + t.searchWild(\"c..d\")\n                + \" searchWild(.a)=\" + t.searchWild(\".a\"));\n\n        char[][] board = {\n            {'o', 'a', 'a', 'n'},\n            {'e', 't', 'a', 'e'},\n            {'i', 'h', 'k', 'r'},\n            {'i', 'f', 'l', 'v'}};\n        String[] dict = {\"oath\", \"pea\", \"eat\", \"rain\"};\n        System.out.println(\"grid words = \" + findWords(board, dict));\n        System.out.println(\"max XOR = \" + maxXor(new int[]{3, 10, 5, 25, 2, 8}));\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Main.java\ninsert cat | char c | create node | pass=1\ninsert cat | char a | create node | pass=1\ninsert cat | char t | create node | pass=1\ninsert car | char c | reuse node | pass=2\ninsert car | char a | reuse node | pass=2\ninsert car | char r | create node | pass=1\ninsert dog | char d | create node | pass=1\ninsert dog | char o | create node | pass=1\ninsert dog | char g | create node | pass=1\nnodes = 8 (including the root)\nsearch(car)=true search(ca)=false startsWith(ca)=true startsWith(cz)=false\ncountPrefix(ca)=6 countPrefix(car)=3\nsuggest(ca, 3) = [cab, cap, car]\nsuggest(car, 5) = [car, card, care]\nsearchWild(c.t)=true searchWild(..g)=true searchWild(c..d)=true searchWild(.a)=false\ngrid words = [oath, eat]\nmax XOR = 28",
+          "title": "Output (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- **Autocomplete** is \"walk to the prefix node, then DFS its children in order a to z\". Because children are visited alphabetically, results come out sorted, and the `k` limit stops the search early. The cost is O(L + size of the explored part), not the size of the whole trie.\n- `countPrefix` shows why storing counts is cheap and useful: `ca` is on the path of six words, `car` of three. This is the idea behind Map Sum Pairs and \"how many words start with ...\".\n- **Wildcard** `.`: only the dot branches into all children; ordinary letters follow a single edge. Worst case it explores the entire trie below, so cost is O(26^dots x L) in the worst case, but real dictionaries are sparse.\n- **Word Search II**: instead of running a separate word search per word, one DFS over the grid carries the current trie node. The moment no word continues (`parent.next[...] == null`), the branch is abandoned. Setting `node.word =` `null` after reporting avoids duplicates. A further optimisation, pruning empty trie branches after a word is found, is mentioned in the questions below.\n- **XOR trie**: each number becomes a path of 31 bits, from the most significant. To maximise `x XOR y`, at every bit prefer the child with the *opposite* bit (it contributes a 1 to the result). The answer for `{3, 10, 5, 25, 2, 8}` is 28 (5 XOR 25). The arrays-of-ints representation avoids millions of small objects.\n\n### Complexity and mistakes\n\nInsert, search and startsWith are **O(L)**, where L is the length of the word, regardless of how many words are stored. Memory is O(total characters) in the worst case, times 26 references per node for the array version: that is the principal cost. 100,000 words of average length 8 could create up to 800,000 nodes, each holding an array of 26 references plus object headers, which is far more than the raw strings. Use a `HashMap<Character, Node>` (or a compressed trie) when the alphabet is large or the trie is sparse. A hash set uses less memory when you never need prefix queries.\n\nMistakes to avoid:\n\n- **Treating a prefix as a word**: `startsWith` and `search` differ only by the `end` check. Mixing them up fails `search(\"ca\")`.\n- **Index errors**: `ch - 'a'` assumes lowercase letters only; an uppercase letter or a digit gives a negative or out-of-range index and `ArrayIndexOutOfBoundsException`. Check the constraints, or use a map.\n- **Missing the empty string or a single-character word.** The loops handle them, but `end` on the root must be thought about if the empty word is allowed.\n- **Moving to a child before creating it in insert** (`cur = cur.next[i]` while it is null) gives `NullPointerException`.\n- **Reporting the same word twice** in Word Search II when it can be formed along several paths; clear the stored word after the first hit.\n- **Recursing with a shared** `StringBuilder` without undoing the append in autocomplete."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A trie of 26-element arrays is memory hungry. In an interview mention the trade-off in one sentence (\"array children are fastest, map children are smaller for sparse data\"), and pick the array unless the alphabet is large or unspecified."
+        },
+        {
+          "type": "markdown",
+          "text": "### Questions to expect\n\n1. \"Implement a trie with insert, search and startsWith.\" The template above. Be ready to explain the role of the `end` flag.\n2. \"Add and search words where `.` matches any letter.\" Trie plus DFS that branches on the dot.\n3. \"Design autocomplete: top 3 suggestions for each prefix typed.\" Walk the prefix node by node; either DFS to collect sorted words, or store top-k at each node. The same effect is possible with a sorted array and binary search (the Search Suggestions problem).\n4. \"Find all dictionary words in a grid.\" Build a trie of the words, DFS from each cell. Follow-up: prune trie branches once their words are found so repeated visits get cheaper.\n5. \"Replace each word in a sentence with its shortest dictionary root.\" Insert roots, then walk each word and stop at the first `end` node.\n6. \"Maximum XOR of two numbers in an array.\" Binary trie of the bits; greedy opposite-bit walk. Time O(32 n), space O(32 n). Follow-up: \"XOR with a limit or in a subarray\" extends the idea with counts or persistence.\n7. \"Longest word that can be built one character at a time from other words.\" Trie (or sorted set); every prefix along the path must itself be a word.\n8. \"Trie versus hash map?\" The hash map is smaller and faster for exact lookups. The trie wins for prefix queries, sorted enumeration, wildcard matching and longest-prefix matching (for example, IP routing)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"How would you store autocomplete suggestions at scale?\" A trie gives prefix lookup in O(L). For ranking, store at each node the top-k completions with their frequencies, updated offline in batches, so a query is O(L + k). Mention memory: compress single-child chains (a radix tree), or shard by first letters. Keep the answer to the data structure unless the interviewer asks about distributed design."
+        },
+        {
+          "type": "markdown",
+          "text": "### LeetCode practice"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "#",
+            "Title",
+            "Level",
+            "Key idea"
+          ],
+          "rows": [
+            [
+              "`208`",
+              "Implement Trie (Prefix Tree)",
+              "Medium",
+              "The classic node with 26 children and an end flag"
+            ],
+            [
+              "`648`",
+              "Replace Words",
+              "Medium",
+              "Stop at the first end-of-word node on the walk"
+            ],
+            [
+              "`720`",
+              "Longest Word in Dictionary",
+              "Medium",
+              "Only extend through nodes that are words themselves"
+            ],
+            [
+              "`211`",
+              "Design Add and Search Words Data Structure",
+              "Medium",
+              "DFS that branches over all children on a dot"
+            ],
+            [
+              "`677`",
+              "Map Sum Pairs",
+              "Medium",
+              "Store a value per node, sum below the prefix node"
+            ],
+            [
+              "`1268`",
+              "Search Suggestions System",
+              "Medium",
+              "Walk the prefix and collect up to three sorted words"
+            ],
+            [
+              "`421`",
+              "Maximum XOR of Two Numbers in an Array",
+              "Medium",
+              "Binary trie, take the opposite bit when it exists"
+            ],
+            [
+              "`212`",
+              "Word Search II",
+              "Hard",
+              "One grid DFS guided by a trie of all words"
+            ]
+          ],
+          "caption": "LeetCode problems for this pattern."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A trie stores strings as paths from the root, so shared prefixes are stored once.\n\n- Insert, search and startsWith cost O(L); the `end` flag distinguishes words from prefixes.\n- Prefix questions (autocomplete, counts, wildcard, longest prefix) walk to the prefix node then DFS below it.\n- Memory is the cost: 26 references per node; use maps or radix compression for sparse data.\n- Tries over bits (XOR trie) solve maximum-XOR problems in O(32 n); tries guide grid DFS in Word Search II."
+        },
+        {
+          "type": "markdown",
+          "text": "#### PART 5\n\n### Heaps and Graphs\n\n*Priority queues for \"best so far\" problems, then graphs: traversal, ordering, connectivity and shortest paths.*\n\n**In this part** **5.1** Heaps and Top-K **5.2** Graph Representation, DFS and BFS **5.3** Topological Sort **5.4** Union-Find (Disjoint Set Union) **5.5** Shortest Paths"
+        }
+      ]
+    }
+  ]
+}

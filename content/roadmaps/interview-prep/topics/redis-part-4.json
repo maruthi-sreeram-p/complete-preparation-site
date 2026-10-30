@@ -1,0 +1,347 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "134-141",
+    "planDays": "26"
+  },
+  "sections": [
+    {
+      "id": "ch-4-3",
+      "type": "concept",
+      "title": "Expiration",
+      "subtopicId": "4-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A cache without expiry slowly turns into a second copy of your database that is always a little wrong. Sessions that never expire fill memory with logged-out users. Redis solves both with a **time to live** (TTL): you attach a deadline to a key and Redis deletes the key when the deadline passes. This chapter shows the commands, then explains how Redis actually enforces them (it is more subtle than \"a timer per key\") and how expiry interacts with replicas, the AOF and hashes.\n\n### Setting, reading and removing a TTL\n\nA TTL belongs to the *key*, not the value. Most keys have none and live until deleted or evicted. The relevant commands:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`EXPIRE key seconds` `[NX|XX|GT|LT]`",
+              "Set TTL in seconds",
+              "Options since 7.0: NX only if no TTL, XX only if TTL exists, GT only if new TTL is greater, LT only if smaller"
+            ],
+            [
+              "`PEXPIRE key ms`",
+              "Same in milliseconds",
+              "Millisecond precision"
+            ],
+            [
+              "`EXPIREAT / PEXPIREAT key` `ts`",
+              "Expire at an absolute Unix time (seconds / ms)",
+              "Good for \"end of day\" deadlines"
+            ],
+            [
+              "`TTL / PTTL key`",
+              "Remaining time",
+              "-1 = key exists but has no TTL, -2 = key does not exist"
+            ],
+            [
+              "`EXPIRETIME / PEXPIRETIME` `key`",
+              "Absolute expiry time",
+              "Since 7.0; same -1 / -2 codes"
+            ],
+            [
+              "`PERSIST key`",
+              "Remove the TTL",
+              "Returns 1 if a TTL was removed"
+            ],
+            [
+              "`SET key v EX s / PX ms /` `EXAT ts / PXAT ts`",
+              "Write and set TTL atomically",
+              "Prefer this over SET followed by EXPIRE"
+            ],
+            [
+              "`SET key v KEEPTTL`",
+              "Overwrite value, keep the old TTL",
+              "Without it, SET clears the TTL"
+            ],
+            [
+              "`GETEX key EX s`",
+              "Read a value and refresh its TTL",
+              "Useful for sliding session expiry"
+            ]
+          ],
+          "caption": "Expiry commands."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:abc123 \"user:42\" EX 1800\nOK\n127.0.0.1:6379> TTL session:abc123\n(integer) 1800\n127.0.0.1:6379> GETEX session:abc123 EX 1800\n\"user:42\"\n127.0.0.1:6379> EXPIRE session:abc123 100 GT\n(integer) 0\n127.0.0.1:6379> PERSIST session:abc123\n(integer) 1\n127.0.0.1:6379> TTL session:abc123\n(integer) -1\n127.0.0.1:6379> TTL no:such:key\n(integer) -2",
+          "title": "Working with TTLs on a ShopStream session"
+        },
+        {
+          "type": "markdown",
+          "text": "Three behaviours catch people out:\n\n- **Overwriting clears the TTL.** A plain `SET key newvalue` removes any existing expiry. If you refresh a cached product with `SET product:1001 json` and forget `EX`, the key becomes immortal. Use `SET ... EX` every time, or `KEEPTTL` if you really want to keep the old deadline.\n- **Other commands keep it.** `INCR`, `APPEND`, `HSET`, `LPUSH` and similar modify the value and leave the TTL alone. `RENAME` moves the TTL to the new name. `DEL` removes the key and its TTL.\n- **A past deadline deletes immediately.** `EXPIRE key 0`, `EXPIRE key -1`, or `EXPIREAT` with a timestamp in the past removes the key right away."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Keep the TTL atomic with the write `SET key value EX 60` is one command. `SET key value` followed by `EXPIRE key 60` is two; if the client crashes between them the key lives forever. The same reasoning is why `SETEX`, `PSETEX` and `SETNX` are legacy: the `SET` options cover them."
+        },
+        {
+          "type": "markdown",
+          "text": "### How Redis expires keys: lazy plus active\n\nRedis stores a deadline per key in a second dictionary (the *expires* dictionary), a mapping from key to absolute millisecond timestamp. It would be too expensive to keep every deadline in a sorted structure and wake up exactly on time. Instead, Redis combines two cheap strategies.\n\n**Passive (lazy) expiration.** Every time a command touches a key, Redis first checks the key's deadline. If it has passed, the key is deleted on the spot and the command sees \"no such key\". So a read never returns a logically expired value. This costs nothing for keys no one accesses, which is exactly the problem: an expired key that nobody asks for would sit in memory forever.\n\n**Active expiration.** To reclaim those, Redis runs an *active expire cycle* many times per second, inside `serverCron` (and a short \"fast\" cycle before the loop sleeps). The classic algorithm, which is still the basis today:\n\n1. Pick 20 random keys from the set of keys that have a TTL.\n2. Delete every one of them that has expired.\n3. If more than 25 percent of the sample was expired, go back to step 1.\n\nThe loop is time-bounded, by default to a small slice of CPU per second, so expiry can never take over the server. The directive `active-expire-effort` (1 to 10, default 1) lets you trade CPU for more aggressive cleanup if expired keys pile up.\n\n**Why 25 percent? A feedback loop that scales with the garbage**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "sample 20 keys with TTL ──▶ delete expired ones\n        │\n        ├─ expired ≤ 25% of sample  ──▶ stop; few dead keys, check again next tick\n        │\n        └─ expired > 25% of sample  ──▶ sample again (likely lots of dead keys left)"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 117.7\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M402.0 74.8 L302.0 74.8\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M152.0 46.8 L172.0 54.8\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M5.0 54.8 L59.0 54.8 C60.7 54.8 62.0 53.4 62.0 51.8 L62.0 29.8 C62.0 28.1 60.7 26.8 59.0 26.8 L5.0 26.8 C3.3 26.8 2.0 28.1 2.0 29.8 L2.0 51.8 C2.0 53.4 3.3 54.8 5.0 54.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M85.0 54.8 L149.0 54.8 C150.7 54.8 152.0 53.4 152.0 51.8 L152.0 29.8 C152.0 28.1 150.7 26.8 149.0 26.8 L85.0 26.8 C83.3 26.8 82.0 28.1 82.0 29.8 L82.0 51.8 C82.0 53.4 83.3 54.8 85.0 54.8 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M175.0 64.8 L231.0 64.8 C232.7 64.8 234.0 63.4 234.0 61.8 L234.0 47.8 C234.0 46.1 232.7 44.8 231.0 44.8 L175.0 44.8 C173.3 44.8 172.0 46.1 172.0 47.8 L172.0 61.8 C172.0 63.4 173.3 64.8 175.0 64.8 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.0 54.8 L168.6 51.1 L167.0 55.1 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M265.0 54.8 L339.0 54.8 C340.7 54.8 342.0 53.4 342.0 51.8 L342.0 29.8 C342.0 28.1 340.7 26.8 339.0 26.8 L265.0 26.8 C263.3 26.8 262.0 28.1 262.0 29.8 L262.0 51.8 C262.0 53.4 263.3 54.8 265.0 54.8 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M365.0 54.8 L439.0 54.8 C440.7 54.8 442.0 53.4 442.0 51.8 L442.0 29.8 C442.0 28.1 440.7 26.8 439.0 26.8 L365.0 26.8 C363.3 26.8 362.0 28.1 362.0 29.8 L362.0 51.8 C362.0 53.4 363.3 54.8 365.0 54.8 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 55.8 L299.8 60.3 L304.2 60.3 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M62.0 40.8 L82.0 40.8\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M152.0 34.8 L172.0 28.8\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M342.0 40.8 L362.0 40.8\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M175.0 38.8 L231.0 38.8 C232.7 38.8 234.0 37.4 234.0 35.8 L234.0 21.8 C234.0 20.1 232.7 18.8 231.0 18.8 L175.0 18.8 C173.3 18.8 172.0 20.1 172.0 21.8 L172.0 35.8 C172.0 37.4 173.3 38.8 175.0 38.8 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M82.0 40.8 L76.6 38.2 L76.6 43.4 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.0 28.8 L167.1 28.0 L168.3 32.2 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M362.0 40.8 L356.6 38.2 L356.6 43.4 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"62.0\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"90.0\" lengthAdjust=\"spacingAndGlyphs\">Lazy expiry (on access)</text><text x=\"289.6\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"104.9\" lengthAdjust=\"spacingAndGlyphs\">Active expiry (background)</text><text x=\"185.4\" y=\"31.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"35.2\" lengthAdjust=\"spacingAndGlyphs\">delete, (nil)</text><text x=\"277.3\" y=\"38.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"49.4\" lengthAdjust=\"spacingAndGlyphs\">sample 20 keys</text><text x=\"18.3\" y=\"43.3\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"27.4\" lengthAdjust=\"spacingAndGlyphs\">GET key</text><text x=\"96.5\" y=\"43.3\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"41.1\" lengthAdjust=\"spacingAndGlyphs\">TTL passed?</text><text x=\"379.2\" y=\"43.2\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"45.7\" lengthAdjust=\"spacingAndGlyphs\">delete expired</text><text x=\"285.8\" y=\"47.6\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"32.4\" lengthAdjust=\"spacingAndGlyphs\">with a TTL</text><text x=\"184.2\" y=\"57.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">return value</text><text x=\"287.3\" y=\"86.8\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"129.4\" lengthAdjust=\"spacingAndGlyphs\">repeat while more than 25% were expired</text><text x=\"147.5\" y=\"106.8\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"207.9\" lengthAdjust=\"spacingAndGlyphs\">both together keep memory bounded without scanning every key</text></svg>",
+          "width": 444,
+          "caption": "A key is removed either when a command touches it after its deadline (lazy) or when the sampling cycle finds it (active). Notice that memory is reclaimed late for keys that are neither accessed nor sampled soon.",
+          "alt": "Lazy expiry (on access) Active expiry (background) | delete, (nil) | sample 20 keys | GET key TTL passed? delete expired | with a TTL | return value | repeat while more than 25% were expired | both together keep memory bounded without scanning every key"
+        },
+        {
+          "type": "markdown",
+          "text": "What follows from this design:\n\n- **Expired keys can still use memory for a while.** After a mass expiry (for example thousands of sessions created in the same minute with the same TTL), the sampling cycle may take several seconds to clear them. `INFO stats` shows `expired_keys` (a running count) and `expired_stale_perc` indicates how stale the TTL set currently is.\n- **Mass expiry at the same instant is a latency risk.** If a million keys expire in the same second, the active cycle can spend its full time budget repeatedly, and the main thread has less time for clients. Add random jitter to TTLs in caches (the caching patterns Part uses 10 to 20 percent jitter).\n- **Lazy free applies.** With `lazyfree-lazy-expire yes` the memory of expired keys is released on a background thread."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "TTL does not mean \"memory freed at that instant\" `DBSIZE` and `INFO keyspace` count keys that are logically expired but not yet deleted. Do not size capacity from the number of keys you expect to be alive at a moment; look at `used_memory`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Expiry with replicas, AOF and RDB\n\nExpiry has to give the same result on every node, but clocks differ and replicas receive commands later. Redis therefore keeps one rule: **only the primary decides that a key has expired.**\n\n- When the primary deletes an expired key (lazily or actively), it sends a `DEL` (or `UNLINK` with lazy free) to its replicas and appends it to the AOF. Replicas do not delete keys on their own clock.\n- A replica still hides keys that are logically expired for *reads*: a `GET` on a replica returns nil for a key whose deadline has passed, even before the `DEL` arrives. Memory is freed only when the `DEL` comes.\n- In the AOF, relative commands such as `EXPIRE key 100` are rewritten as absolute `PEXPIREAT` commands, so replaying the AOF later does not extend lifetimes. Likewise `SET ... EX 60` is propagated with an absolute deadline.\n- An RDB file stores absolute expiry timestamps. When a primary loads an RDB it skips keys that have already expired; a replica loads them and waits for `DEL` from the primary. If the server was stopped for an hour, all keys with a TTL shorter than an hour are gone on restart.\n- Inside a Lua script or `MULTI`, time is effectively frozen to the start of the script, so a key does not expire half way through; scripts see a consistent clock.\n\nThis means a primary and replica with badly skewed clocks can behave oddly with absolute timestamps (`EXPIREAT`). Run NTP on all nodes.\n\n### Expiry on hash fields\n\nBefore Redis 7.4 a TTL applied only to a whole key, which made \"one hash per user with some fields expiring early\" impossible. Now fields can have their own TTL: `HEXPIRE`, `HPEXPIRE`, `HEXPIREAT`, `HPEXPIREAT`, `HTTL`, `HPTTL`, `HEXPIRETIME`, `HPERSIST`. Redis 8.0 added `HGETEX` (read and set field TTL), `HSETEX` (write and set TTL) and `HGETDEL` (read and delete). Field commands take a `FIELDS numfields field [field ...]` clause and return one status per field."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "HSET product:1001 name \"Mug\" price 1299 flash_price 999\nHEXPIRE product:1001 3600 FIELDS 1 flash_price\nHTTL product:1001 FIELDS 2 flash_price name",
+          "title": "Per-field TTL on a ShopStream product hash (syntax from the 7.4+ command pages)"
+        },
+        {
+          "type": "markdown",
+          "text": "The `HTTL` reply for that call is a list with the remaining seconds for `flash_price` and `-1` for `name` (the field exists with no TTL); `-2` means the field does not exist. When the last field of a hash expires the key itself is removed. Field expiry is also implemented with a passive part and an active part, but it is tracked separately from key-level expiry, so a key can have its own TTL and also fields with TTLs. Use it for things like a flash-sale price or a \"verified\" flag that must lapse; do not use it as a substitute for a separate key when you need keyspace notifications per item.\n\n### Patterns: session expiry in a ShopStream service\n\nTwo designs for sessions show why the TTL commands have so many options.\n\n- **Absolute expiry**: the session ends a fixed time after login no matter what. Set the TTL once with `SET ... EX` and never refresh it. Use `EXPIRE ... NX` when you re-save the session and must not extend it.\n- **Sliding expiry**: the session lives as long as the user stays active. Refresh the TTL on every request with `GETEX key` `EX seconds` (read and refresh in one round trip), or `EXPIRE key seconds`. Combine with `EXPIRE ... LT` or `GT` if you need to enforce a rule such as \"never shorten\" or \"never exceed a cap\".\n\nA practical combination is a sliding 30-minute idle timeout with an absolute 12-hour maximum: store the login time in the session, refresh the idle TTL on each request, and refuse to refresh once the absolute limit passed. Here it is with the Spring `StringRedisTemplate`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.session;\n\nimport java.time.Duration;\nimport java.util.Optional;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class SessionStore {\n\n    private static final Duration IDLE_TIMEOUT = Duration.ofMinutes(30);\n\n    private final StringRedisTemplate redis;\n\n    public SessionStore(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    public void create(String sessionId, String userId) {\n        // value and TTL in one atomic command: SET key value EX seconds\n        redis.opsForValue().set(\"session:\" + sessionId, userId, IDLE_TIMEOUT);\n    }\n\n    public Optional<String> touch(String sessionId) {\n        // GETEX: read the value and slide the expiry in a single round trip\n        String userId = redis.opsForValue()\n                .getAndExpire(\"session:\" + sessionId, IDLE_TIMEOUT);\n        return Optional.ofNullable(userId);\n    }\n\n    public void destroy(String sessionId) {\n        redis.delete(\"session:\" + sessionId);\n    }\n}",
+          "title": "SessionStore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `set(key, value, Duration)` maps to a single `SET ... PX` (or `EX`) command, so there is no window with a TTL-less key, and `getAndExpire` maps to `GETEX`. Never write `set(key, value)` followed by `expire(key, ...)` in two calls.\n\n### TTL jitter and keyspace notifications\n\nIf you load 100 000 products at start-up with the same 10-minute TTL, they all expire in the same few seconds, the cache goes cold at once, and the database sees a burst of misses (a cache avalanche, covered in the caching failures chapter). Add random jitter when you set the TTL:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.cache;\nimport java.time.Duration;\nimport java.util.concurrent.ThreadLocalRandom;\npublic final class TtlJitter {\n    private TtlJitter() {\n    }\n    /** Returns base plus a random 0..20 percent, so entries written together expire apart. */\n    public static Duration withJitter(Duration base) {\n        long extra = (long) (base.toMillis() * 0.2 * ThreadLocalRandom.current().nextDouble());\n        return base.plusMillis(extra);\n    }\n}",
+          "title": "TtlJitter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Redis can also publish an event when a key expires, using **keyspace notifications**. They are off by default (`notify-keyspace-events \"\"`) because they cost CPU. To receive `expired` events set `notify-keyspace-events Ex` (`E` selects keyevent channels, `x` the expired events) and subscribe to `__keyevent@0__:expired`. The events are emitted at the moment Redis actually deletes the key, not the instant the TTL elapsed, and because they travel through pub/sub nobody who was disconnected receives them."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not build workflows on expiry notifications Keyspace notifications with the `expired` event fire when Redis *deletes* the key, which may be seconds after the deadline, and are delivered by fire-and-forget pub/sub, so they can be lost. The chapter on delayed tasks in the Patterns Part shows a safer design with a sorted set."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does Redis expire keys, and why can an expired key still be in memory? Two mechanisms. Lazy expiration checks the deadline whenever a key is accessed and deletes it if it is past due. Active expiration repeatedly samples 20 random keys that have a TTL, deletes the expired ones, and repeats if more than 25 percent were expired, within a CPU time budget. Keys that are never touched and not yet sampled stay in memory until a sample finds them. Replicas do not expire on their own; the primary sends `DEL` for each expired key."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A TTL is per key; `SET` without `EX`/`KEEPTTL` clears it, so set value and TTL in one command.\n- Expiry = lazy check on access + active random sampling (20 keys, repeat while over 25 percent are expired).\n- Expired keys can linger in memory, and synchronized TTLs can cause latency bumps: add jitter.\n- Only the primary expires keys; replicas and the AOF receive explicit deletes and absolute timestamps.\n- Hash fields can have their own TTL since 7.4 (`HEXPIRE`), and 8.0 added `HGETEX`/`HSETEX`/`HGETDEL`."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-4",
+      "type": "concept",
+      "title": "Memory Limits and Eviction",
+      "subtopicId": "4-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Expiry removes data you declared temporary. **Eviction** removes data when Redis runs out of the memory you allowed it, even though you never said the data was disposable. It is what lets Redis serve as a cache: a full cache keeps working by dropping the least valuable entries to make room for new ones.\n\n### maxmemory and what happens when it is reached\n\nSet a ceiling with `maxmemory` (bytes, or with suffixes like `2gb`). The default `0` means no limit on 64-bit systems, so Redis will grow until the operating system kills it. Always set a limit in production, below physical RAM with room for fork copy-on-write, buffers and the OS.\n\nWhen a command that may add data arrives and memory use is above the limit, Redis tries to free memory according to `maxmemory-policy`. If it cannot (or the policy is `noeviction`), commands that would increase memory are rejected with an error, while reads and deletes still work."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG SET maxmemory 2mb\nOK\n127.0.0.1:6379> CONFIG GET maxmemory-policy\n1) \"maxmemory-policy\"\n2) \"noeviction\"\n127.0.0.1:6379> SET product:99999 \"x\"\n(error) OOM command not allowed when used memory > 'maxmemory'.\n127.0.0.1:6379> GET product:1001\n\"{...cached json...}\"",
+          "title": "The default policy refuses writes at the limit"
+        },
+        {
+          "type": "markdown",
+          "text": "An application that gets `OOM command not allowed` from Redis usually surfaces it as a 500. For a cache this is the wrong default. For a primary datastore (queues, locks you cannot lose) it is the right one, because silently deleting data would be worse.\n\n### The eviction policies"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Policy",
+            "Candidates",
+            "Chooses the victim by"
+          ],
+          "rows": [
+            [
+              "`noeviction`",
+              "none",
+              "Does not evict; writes that need memory fail"
+            ],
+            [
+              "`allkeys-lru`",
+              "all keys",
+              "Least recently used"
+            ],
+            [
+              "`allkeys-lfu`",
+              "all keys",
+              "Least frequently used"
+            ],
+            [
+              "`allkeys-random`",
+              "all keys",
+              "Random"
+            ],
+            [
+              "`allkeys-lrm`",
+              "all keys",
+              "Least recently modified (Redis 8.6)"
+            ],
+            [
+              "`volatile-lru`",
+              "keys with a TTL",
+              "Least recently used"
+            ],
+            [
+              "`volatile-lfu`",
+              "keys with a TTL",
+              "Least frequently used"
+            ],
+            [
+              "`volatile-random`",
+              "keys with a TTL",
+              "Random"
+            ],
+            [
+              "`volatile-ttl`",
+              "keys with a TTL",
+              "Shortest remaining TTL"
+            ],
+            [
+              "`volatile-lrm`",
+              "keys with a TTL",
+              "Least recently modified (Redis 8.6)"
+            ]
+          ],
+          "caption": "maxmemory-policy values."
+        },
+        {
+          "type": "markdown",
+          "text": "The `volatile-*` policies only consider keys that have an expiry; if none do, they behave like `noeviction`. That makes them a trap: a cache whose writers forgot `EX` will start failing writes even though it is \"full of cache data\".\n\n**LRM** (least recently modified), new in 8.6, orders by the last time a key was *written* rather than read. The release notes describe it as giving better control for write-heavy workloads; it suits data where being read often does not prove it is valuable, but being updated recently does. If you run an older server, the `CONFIG SET` for these policy names fails with an error that lists the policies your version accepts.\n\n### Approximated LRU and LFU\n\nTrue LRU needs a linked list updated on every access: extra pointers per key and extra work per read. Redis approximates instead. Each key's redisObject holds a 24-bit field with a coarse last-access clock. To evict, Redis **samples** `maxmemory-samples` random keys (default 5), compares them, and evicts the best victim. Since version 3.0 it also keeps a small pool of good candidates between rounds, which improves accuracy. Raising `maxmemory-samples` to 10 gets close to true LRU at a modest CPU cost; lowering it saves CPU.\n\n**LFU** uses the same 24 bits differently: 16 bits for the time of the last decrement and 8 bits for a logarithmic access counter (a Morris counter). The counter grows probabilistically, so it saturates only after a very large number of accesses:\n\n- `lfu-log-factor` (default 10): higher means the counter grows more slowly. With 10, it saturates around one million accesses.\n- `lfu-decay-time` (default 1): minutes without access before the counter drops by one. `0` disables decay.\n\nLFU protects keys that are *consistently* popular from being flushed by a one-time scan of many rarely used keys, which pure LRU would let through. You can see the counter with `OBJECT FREQ` (only when an LFU policy is selected; otherwise Redis answers with an error)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG SET maxmemory-policy allkeys-lfu\nOK\n127.0.0.1:6379> SET hot 1\nOK\n127.0.0.1:6379> OBJECT FREQ hot\n(integer) 5\n127.0.0.1:6379> GET hot\n\"1\"\n127.0.0.1:6379> OBJECT FREQ hot\n(integer) 6",
+          "title": "The LFU counter rises with access"
+        },
+        {
+          "type": "markdown",
+          "text": "(New keys start at a small initial counter value, 5, so they are not evicted immediately.)"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 115.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 100.5 L99.0 100.5 C100.7 100.5 102.0 99.1 102.0 97.5 L102.0 67.5 C102.0 65.8 100.7 64.5 99.0 64.5 L5.0 64.5 C3.3 64.5 2.0 65.8 2.0 67.5 L2.0 97.5 C2.0 99.1 3.3 100.5 5.0 100.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M305.0 46.5 L439.0 46.5 C440.7 46.5 442.0 45.1 442.0 43.5 L442.0 13.5 C442.0 11.8 440.7 10.5 439.0 10.5 L305.0 10.5 C303.3 10.5 302.0 11.8 302.0 13.5 L302.0 43.5 C302.0 45.1 303.3 46.5 305.0 46.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.0 100.5 L209.0 100.5 C210.7 100.5 212.0 99.1 212.0 97.5 L212.0 67.5 C212.0 65.8 210.7 64.5 209.0 64.5 L115.0 64.5 C113.3 64.5 112.0 65.8 112.0 67.5 L112.0 97.5 C112.0 99.1 113.3 100.5 115.0 100.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M225.0 100.5 L319.0 100.5 C320.7 100.5 322.0 99.1 322.0 97.5 L322.0 67.5 C322.0 65.8 320.7 64.5 319.0 64.5 L225.0 64.5 C223.3 64.5 222.0 65.8 222.0 67.5 L222.0 97.5 C222.0 99.1 223.3 100.5 225.0 100.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M335.0 100.5 L439.0 100.5 C440.7 100.5 442.0 99.1 442.0 97.5 L442.0 67.5 C442.0 65.8 440.7 64.5 439.0 64.5 L335.0 64.5 C333.3 64.5 332.0 65.8 332.0 67.5 L332.0 97.5 C332.0 99.1 333.3 100.5 335.0 100.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 34.5 L262.0 34.5 L262.0 18.5 L2.0 18.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 34.5 L207.0 34.5 L207.0 18.5 L2.0 18.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M207.0 34.5 L262.0 34.5 L262.0 18.5 L207.0 18.5 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.0 42.5 L262.0 10.5\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.50\" stroke-linejoin=\"round\"/><path d=\"M264.0 26.5 L302.0 28.5\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M302.0 28.5 L296.7 25.6 L296.5 30.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"239.5\" y=\"6.5\" font-size=\"7.2\" fill=\"#efa39f\" font-weight=\"700\" textLength=\"45.1\" lengthAdjust=\"spacingAndGlyphs\">maxmemory</text><text x=\"340.7\" y=\"26.4\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"62.6\" lengthAdjust=\"spacingAndGlyphs\">maxmemory-policy</text><text x=\"80.3\" y=\"30.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"43.5\" lengthAdjust=\"spacingAndGlyphs\">used memory</text><text x=\"351.1\" y=\"35.4\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"41.9\" lengthAdjust=\"spacingAndGlyphs\">picks victims</text><text x=\"36.1\" y=\"80.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"31.8\" lengthAdjust=\"spacingAndGlyphs\">noeviction</text><text x=\"132.8\" y=\"80.6\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"58.3\" lengthAdjust=\"spacingAndGlyphs\">allkeys-* / volatile-*</text><text x=\"256.5\" y=\"80.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"31.1\" lengthAdjust=\"spacingAndGlyphs\">volatile-ttl</text><text x=\"340.7\" y=\"80.7\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"92.7\" lengthAdjust=\"spacingAndGlyphs\">sampling: maxmemory-samples</text><text x=\"19.8\" y=\"89.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"64.4\" lengthAdjust=\"spacingAndGlyphs\">writes get OOM error</text><text x=\"132.2\" y=\"88.9\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"59.6\" lengthAdjust=\"spacingAndGlyphs\">lru, lfu, lrm, random</text><text x=\"246.1\" y=\"89.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"51.8\" lengthAdjust=\"spacingAndGlyphs\">shortest TTL first</text><text x=\"353.3\" y=\"88.7\" font-size=\"6.4\" fill=\"#e7e9f3\" textLength=\"67.5\" lengthAdjust=\"spacingAndGlyphs\">approximate, not exact</text></svg>",
+          "width": 444,
+          "caption": "On each write at the memory limit Redis samples a few keys, picks the best victim per policy, evicts it, and repeats until memory is under the limit. Notice that the sample is random, so the result is an approximation.",
+          "alt": "maxmemory | maxmemory-policy | used memory | picks victims | noeviction allkeys-* / volatile-* volatile-ttl sampling: maxmemory-samples | writes get OOM error lru, lfu, lrm, random shortest TTL first approximate, not exact"
+        },
+        {
+          "type": "markdown",
+          "text": "### Eviction is work on the main thread\n\nEviction happens before a command is executed: Redis checks memory, evicts until it is under the limit, then runs the command. A single big write may need to evict many keys, and freeing a large value takes time. Two knobs help:\n\n- `maxmemory-eviction-tenacity` (default 10) bounds how long a single eviction round may run; higher values evict more aggressively per call, lower values protect latency but let memory overshoot temporarily.\n- `lazyfree-lazy-eviction yes` frees evicted values on a background thread.\n\nReplicas ignore `maxmemory` by default (`replica-ignore-maxmemory yes`): the primary evicts and sends `DEL` for evicted keys to replicas, so replicas stay identical. Memory used by replication output buffers and AOF buffers is not meant to count toward the `maxmemory` data limit, so leave spare RAM for them.\n\n### A worked scenario: sizing the catalogue cache\n\nShopStream's catalogue has 200 000 products at roughly 600 bytes each in Redis, about 120 MB for all of them, but the traffic is skewed: 5 percent of products receive most of the page views. The team sets `maxmemory 100mb` on a cache instance with `allkeys-lfu`. What happens?\n\n1. The first misses fill the cache with hot and cold products alike until memory reaches 100 MB (about 83 percent of the whole catalogue).\n2. A new write now triggers eviction: Redis samples keys and removes the one with the lowest LFU counter. Hot products have high counters (they are read constantly) and survive; a product seen once has a low counter and goes first.\n3. The hit ratio stays high because the working set (the hot 5 percent, around 6 MB) fits comfortably. `evicted_keys` ticks up slowly; that is the cache doing its job, not an incident.\n\nNow imagine a nightly report job that scans every product exactly once. Under `allkeys-lru` that scan makes every product look \"recently used\" and can push out the genuinely hot keys. Under `allkeys-lfu` the scan produces counters of 1 and the hot keys stay protected, which is why LFU is the better default for catalogue-style data. It is not free: LFU needs a few accesses to learn that a new key is valuable, and a key that was hot yesterday decays slowly (`lfu-decay-time`).\n\nYou can reproduce the basic behaviour on a laptop. With `maxmemory 2mb` and `allkeys-lru`, writing 30 000 keys of 100 bytes succeeds for every command, and `INFO stats` afterwards shows tens of thousands of `evicted_keys` while `DBSIZE` stays near what fits in memory:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG SET maxmemory-policy allkeys-lru\nOK\n127.0.0.1:6379> DBSIZE\n(integer) 5810\n127.0.0.1:6379> INFO stats\n# Stats\nevicted_keys:30494",
+          "title": "Writes keep succeeding, old keys disappear (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "The `DBSIZE` and `evicted_keys` values are from a test on a 2 MB limit, so they will differ on your machine. The point is the pair: the dataset size is capped, and evictions counted instead of errors.\n\n### Choosing a policy"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Use"
+          ],
+          "rows": [
+            [
+              "Pure cache; every key can be rebuilt; all have TTLs or not",
+              "allkeys-lru, or allkeys-lfu if some keys are hot for long periods (product pages) and you fear scan pollution"
+            ],
+            [
+              "Cache and durable data in the same instance (not recommended)",
+              "volatile-lru or volatile-lfu, and set TTLs only on the cache keys"
+            ],
+            [
+              "Redis as primary store, queues, streams, locks",
+              "noeviction; plan capacity and monitor memory instead"
+            ],
+            [
+              "Write-heavy data where recent writes matter (8.6+)",
+              "allkeys-lrm or volatile-lrm; benchmark first"
+            ],
+            [
+              "Strict ordering by deadline (for example short-lived tokens)",
+              "volatile-ttl"
+            ],
+            [
+              "Uniform access, no skew",
+              "allkeys-random is cheap and often adequate"
+            ]
+          ],
+          "caption": "Which policy for which job."
+        },
+        {
+          "type": "markdown",
+          "text": "The cleanest design for a ShopStream deployment is to separate roles. The catalogue cache runs on an instance with `allkeys-lfu`; sessions, carts and the order stream run on another with `noeviction` and persistence. Mixing both on one instance forces compromises in both directions.\n\n#### Monitoring eviction\n\nWatch `evicted_keys` in `INFO stats`, `used_memory` against `maxmemory`, and the cache hit ratio from `keyspace_hits` and `keyspace_misses`. A steadily rising `evicted_keys` with a falling hit ratio means the cache is too small for its working set. If evicted keys include things you expected to be permanent (sessions), your policy or your separation of roles is wrong."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Evicting queue data is data loss With any `allkeys-*` policy a list or stream used as a job queue is a candidate for eviction like any other key. One memory spike and the whole queue key can vanish, with no error. Keep queues and locks on a `noeviction` instance, or use `volatile-*` policies and never set a TTL on them."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What happens when Redis reaches maxmemory, and how does it choose what to evict? With the default `noeviction`, write commands that need memory fail with an OOM error. With any other policy Redis evicts keys before executing the command: it samples `maxmemory-samples` keys (default 5) from all keys or only from keys with a TTL, depending on the policy, and removes the one that is least recently used, least frequently used, random, nearest to expiry (or least recently modified, in 8.6). LRU and LFU are approximations built from a per-key 24-bit field, avoiding the cost of exact bookkeeping."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Always set `maxmemory`; the default of 0 lets Redis grow until the OS intervenes.\n- `noeviction` rejects writes (reads still work); the other policies evict by LRU, LFU, random, TTL or (8.6) LRM, over all keys or only keys with a TTL.\n- LRU and LFU are sampled approximations; `maxmemory-samples` trades accuracy for CPU.\n- `volatile-*` policies do nothing for keys without TTL, so a cache without TTLs can still hit OOM.\n- Do not put queues, locks or sessions you cannot lose on an instance that evicts; separate cache from durable roles."
+        }
+      ]
+    }
+  ]
+}

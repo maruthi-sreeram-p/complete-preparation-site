@@ -1,0 +1,296 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "126-133",
+    "planDays": "2"
+  },
+  "sections": [
+    {
+      "id": "ch-4-1",
+      "type": "concept",
+      "title": "Strings in depth",
+      "subtopicId": "4-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every Java program is full of strings: names, log lines, JSON, SQL, keys of maps. Because they are everywhere, the design of `java.lang.String` shapes the speed and memory of whole applications. Interviewers love this class for the same reason: a handful of simple facts (immutability, the pool, `==` versus `equals`) explain a surprising number of bugs. In this chapter you will learn what a `String` really is in memory, why it is immutable, how the string pool works, what `+` compiles to, when to use `StringBuilder`, and the methods you should know by heart.\n\n### What a String is\n\nA `String` is an immutable sequence of UTF-16 code units. Immutable means that once the object exists, no method can change its content. Every method that looks like a modification (`toUpperCase`, `replace`, `concat`, `substring`) returns a new `String` and leaves the original alone."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Immut {\n    public static void main(String[] args) {\n        String s = \"hello\";\n        String t = s.toUpperCase();   // new object\n        s.concat(\" world\");           // result thrown away!\n        System.out.println(s + \" \" + t);\n        s = s.concat(\" world\");       // reassign the variable, not the object\n        System.out.println(s);\n    }\n}",
+          "title": "Immut.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Immut.java\nhello HELLO\nhello world",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The second line of `main` is the classic beginner bug: calling `concat` and ignoring the result does nothing. The variable `s` is a reference; the last line moves the reference to a new object. The old `\"hello\"` object is untouched (and becomes garbage if nothing else points to it).\n\n#### Why immutable?\n\nThe designers chose immutability for reasons that still matter today:\n\n- **Safety as a map key and in sets.** `hashCode` is computed from the content. If content could change, an entry would be lost inside a `HashMap` after mutation. `String` also caches its hash in a field, so repeated lookups are cheap.\n- **Security.** Class names, file paths, and network host names are strings. A checked path cannot be changed by another thread between the check and the use.\n- **Thread safety for free.** Any number of threads can share a `String` without locks.\n- **Sharing.** The JVM can share one object between all places that use the same literal (the string pool, below).\n\n### Inside the object: byte[] and coder\n\nUntil Java 8, a `String` held a `char[]`, two bytes per character. Most strings in real programs are Latin-1 (English letters, digits, punctuation), so half the memory was wasted. **Compact strings** (JEP 254, Java 9) changed the internals. A `String` now holds:\n\n- `value`: a `byte[]` with the characters.\n- `coder`: a byte, `0` = LATIN1 (one byte per char) or `1` = UTF16 (two bytes per char).\n- `hash`: the cached hash code (and a flag saying whether it has been computed).\n\nIf every character of the string is in the range U+0000 to U+00FF, the JVM stores one byte per character; if even one character is outside that range, the whole string is stored as UTF-16. The feature is on by default (`-XX:+CompactStrings`); the API behaves identically, so you never see it except as lower memory use. You can confirm the flag on your machine:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -XX:+PrintFlagsFinal -version | grep CompactStrings\n     bool CompactStrings         = true         {pd product} {default}",
+          "title": "Check the flag"
+        },
+        {
+          "type": "markdown",
+          "text": "The cost of the feature is a tiny check on each operation to see which encoding applies; the benefit is that heaps full of ASCII text (logs, JSON, identifiers) shrink noticeably. `length()` still counts UTF-16 code units, not bytes."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "You can find the private `coder` field with reflection, but `setAccessible(true)` on it fails on a modern JDK because of strong encapsulation (JEP 403, Java 17). That is deliberate. Use `getBytes(StandardCharsets.ISO_8859_1).length` or a heap analyser if you must measure."
+        },
+        {
+          "type": "markdown",
+          "text": "### The string pool and intern\n\nPrograms create the same literal many times: `\"OK\"`, `\"id\"`, `\"GET\"`. The JVM keeps a table of unique strings called the **string pool** (or string intern table). When the class loader resolves a string literal, the JVM looks it up in the pool: if an equal string is there, the existing object is used; if not, a new one is created and added. Since Java 7 the pool lives in the ordinary heap (before that it sat in PermGen), so pooled strings can be garbage-collected when nothing refers to them. The table is a hash table whose size is tunable with `-XX:StringTableSize` (the default here is 65536 buckets)."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 122.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M162.0 106.0 L312.0 106.0 L312.0 2.0 L162.0 2.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\" fill-rule=\"evenodd\"/><path d=\"M72.0 19.0 L187.0 38.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 51.0 L187.0 44.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 87.0 L342.0 85.0\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M190.0 54.0 L284.0 54.0 C285.7 54.0 287.0 52.7 287.0 51.0 L287.0 31.0 C287.0 29.3 285.7 28.0 284.0 28.0 L190.0 28.0 C188.3 28.0 187.0 29.3 187.0 31.0 L187.0 51.0 C187.0 52.7 188.3 54.0 190.0 54.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 30.0 L69.0 30.0 C70.7 30.0 72.0 28.7 72.0 27.0 L72.0 11.0 C72.0 9.3 70.7 8.0 69.0 8.0 L5.0 8.0 C3.3 8.0 2.0 9.3 2.0 11.0 L2.0 27.0 C2.0 28.7 3.3 30.0 5.0 30.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 62.0 L69.0 62.0 C70.7 62.0 72.0 60.7 72.0 59.0 L72.0 43.0 C72.0 41.3 70.7 40.0 69.0 40.0 L5.0 40.0 C3.3 40.0 2.0 41.3 2.0 43.0 L2.0 59.0 C2.0 60.7 3.3 62.0 5.0 62.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 98.0 L69.0 98.0 C70.7 98.0 72.0 96.7 72.0 95.0 L72.0 79.0 C72.0 77.3 70.7 76.0 69.0 76.0 L5.0 76.0 C3.3 76.0 2.0 77.3 2.0 79.0 L2.0 95.0 C2.0 96.7 3.3 98.0 5.0 98.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M187.0 38.0 L182.1 34.5 L181.2 39.7 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M187.0 44.0 L181.4 41.7 L181.8 46.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M345.0 98.0 L439.0 98.0 C440.7 98.0 442.0 96.7 442.0 95.0 L442.0 75.0 C442.0 73.3 440.7 72.0 439.0 72.0 L345.0 72.0 C343.3 72.0 342.0 73.3 342.0 75.0 L342.0 95.0 C342.0 96.7 343.3 98.0 345.0 98.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M342.0 85.0 L336.6 82.4 L336.6 87.6 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"199.5\" y=\"14.0\" font-size=\"7.2\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"74.9\" lengthAdjust=\"spacingAndGlyphs\">string pool (in heap)</text><text x=\"35.1\" y=\"21.4\" font-size=\"7.0\" fill=\"#e7e9f3\">a</text><text x=\"227.0\" y=\"43.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"20.1\" lengthAdjust=\"spacingAndGlyphs\">&quot;java&quot;</text><text x=\"35.0\" y=\"53.4\" font-size=\"7.0\" fill=\"#e7e9f3\">b</text><text x=\"15.1\" y=\"89.3\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"43.9\" lengthAdjust=\"spacingAndGlyphs\">c = new String</text><text x=\"372.1\" y=\"87.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"39.8\" lengthAdjust=\"spacingAndGlyphs\">&quot;java&quot; (copy)</text><text x=\"159.3\" y=\"114.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"155.4\" lengthAdjust=\"spacingAndGlyphs\">a == b is true; a == c is false; a.equals(c) is true</text></svg>",
+          "width": 444,
+          "caption": "Two literals share one pooled object; new String creates a separate heap object with the same content.",
+          "alt": "string pool (in heap) | a | \"java\" | b | c = new String \"java\" (copy) | a == b is true; a == c is false; a.equals(c) is true"
+        },
+        {
+          "type": "markdown",
+          "text": "Four expressions create strings in different ways. Run this and predict each line before you look at the answer:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class PoolDemo {\n    public static void main(String[] args) {\n        String a = \"java\";\n        String b = \"java\";\n        String c = new String(\"java\");\n        String d = c.intern();\n        String part = \"ja\";\n        String e = part + \"va\";\n        String f = \"ja\" + \"va\";\n        System.out.println(\"a == b          : \" + (a == b));\n        System.out.println(\"a == c          : \" + (a == c));\n        System.out.println(\"a.equals(c)     : \" + a.equals(c));\n        System.out.println(\"a == d (intern) : \" + (a == d));\n        System.out.println(\"a == e (runtime): \" + (a == e));\n        System.out.println(\"a == f (const)  : \" + (a == f));\n    }\n}",
+          "title": "PoolDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java PoolDemo.java\na == b          : true\na == c          : false\na.equals(c)     : true\na == d (intern) : true\na == e (runtime): false\na == f (const)  : true",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `a == b`: both literals resolve to the same pooled object.\n- `new String(\"java\")` always allocates a fresh object, so `a == c` is false although the content is equal. `new` `String(String)` is almost never useful; it only creates garbage.\n- `intern()` returns the pooled instance with that content (adding one if needed), so `d` is the same object as `a`.\n- `\"ja\" + \"va\"` is a **constant expression**: the compiler folds it into the literal `\"java\"` at compile time. `part + \"va\"` involves a non-final variable, so it is computed at run time and produces a new object. (If `part` were declared `final` `String part = \"ja\";` it would be a constant variable and `e` would be pooled too.)\n\n#### == versus equals\n\n`==` on references asks \"are these the same object?\". `equals` asks \"do these have the same content?\". For strings you almost always want `equals`. Comparing with `==` seems to work in tests because literals are pooled, and then fails in production when the value comes from user input, a file, or a database. To avoid a `NullPointerException`, write the literal first: `\"admin\".equals(role)`, or use `java.util.Objects.equals(a, b)`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Never rely on `==` for strings, even \"just this once\". Whether two equal strings are the same object depends on how each was created. Static analysers flag it for a reason."
+        },
+        {
+          "type": "markdown",
+          "text": "#### When is intern() worth it?\n\n`intern()` can save memory when you load millions of strings drawn from a small set of values (country codes, status names) and keep them for a long time. It has costs: a lookup in the global table on every call, and the table is a shared resource. In most code a `HashMap<String,String>` of your own, or simply not worrying, is better. Modern JVMs also offer string deduplication in G1 (`-XX:+UseStringDeduplication`), which shares the `byte[]` of equal strings during garbage collection without changing identity."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How many objects does `String s = new String(\"abc\");` create? At most two: the literal `\"abc\"` in the pool (created when the class is resolved, only if not already there) and one new `String` object on the heap. `s` refers to the heap object. If `\"abc\"` was already pooled, only one new object is created by this statement."
+        },
+        {
+          "type": "markdown",
+          "text": "### Concatenation: + and what it compiles to\n\nThe `+` operator on strings is syntax sugar; the compiler decides what to emit. Before Java 9 `javac` generated a hidden `StringBuilder` and chained `append` calls. Since Java 9 (JEP 280) it emits a single `invokedynamic` instruction that calls `StringConcatFactory`. The JVM picks the best strategy at the first execution: it can compute the exact final length, allocate the right array once, and copy the parts, which beats a `StringBuilder` chain. You can see it in bytecode:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Indy {\n    static String f(String a, int b) { return \"id=\" + a + \", n=\" + b; }\n}",
+          "title": "Indy.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Indy.java && javap -c -p Indy\n  static java.lang.String f(java.lang.String, int);\n    Code:\n       0: aload_0\n       1: iload_1\n       2: invokedynamic #7,  0   // InvokeDynamic #0:makeConcatWithConstants:(...)\n       7: areturn",
+          "title": "Trimmed javap output"
+        },
+        {
+          "type": "markdown",
+          "text": "The constant parts of the expression (`\"id=\"` and `\", n=\"`) are stored once as a recipe string in the constant pool, with placeholders for the two arguments. Target 8 (`javac --release 8`) still produces the `StringBuilder` form because indy concatenation needs a Java 9+ runtime.\n\n### StringBuilder and StringBuffer\n\nA single `+` is fine. The trouble is `+` (or `+=`) in a loop: each iteration creates a new `String` and copies everything built so far, so building a string of length n costs O(n squared) character copies. `StringBuilder` is a mutable buffer: `append` writes into spare capacity and only grows the array occasionally (the new capacity is roughly double plus 2)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Perf {\n    static String plus(int n) {\n        String s = \"\";\n        for (int i = 0; i < n; i++) s += \"x\";\n        return s;\n    }\n    static String sb(int n) {\n        StringBuilder b = new StringBuilder();\n        for (int i = 0; i < n; i++) b.append('x');\n        return b.toString();\n    }\n    public static void main(String[] args) {\n        for (int w = 0; w < 3; w++) { plus(2000); sb(2000); }   // warm up the JIT\n        for (int n : new int[]{10_000, 50_000, 100_000}) {\n            long t0 = System.nanoTime(); plus(n);\n            long t1 = System.nanoTime(); sb(n);\n            long t2 = System.nanoTime();\n            System.out.printf(\"n=%,d  +=: %d ms   StringBuilder: %d ms%n\",\n                              n, (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000);\n        }\n    }\n}",
+          "title": "Perf.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Perf.java\nn=10,000  +=: 63 ms   StringBuilder: 0 ms\nn=50,000  +=: 1083 ms   StringBuilder: 2 ms\nn=100,000  +=: 1783 ms   StringBuilder: 4 ms",
+          "title": "Typical output (measured on the build machine; your numbers will differ)"
+        },
+        {
+          "type": "markdown",
+          "text": "Look at the shape, not the exact milliseconds: doubling the input makes `+=` roughly quadratic, while `StringBuilder` stays linear. This is a crude measurement (no JMH, one run); the conclusion is the well-known one.\n\nYou can watch the buffer grow. A default `StringBuilder` starts with capacity 16 and, on overflow, grows to roughly `old` `* 2 + 2`:\n\n**Observed capacity while appending one char at a time**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "initial capacity 16\nlen 17 -> capacity 34\nlen 35 -> capacity 70\nlen 71 -> capacity 142"
+        },
+        {
+          "type": "markdown",
+          "text": "If you know the approximate final size, pass it to the constructor, `new StringBuilder(4096)`, and avoid the copies."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "Mutable?",
+            "Thread-safe?"
+          ],
+          "rows": [
+            [
+              "`String`",
+              "`no`",
+              "yes (immutable)"
+            ],
+            [
+              "`StringBuilder`",
+              "`yes`",
+              "no: use inside one thread (Java 5+)"
+            ],
+            [
+              "`StringBuffer`",
+              "`yes`",
+              "yes: every method is synchronized (legacy, Java 1.0)"
+            ]
+          ],
+          "caption": "String, StringBuilder and StringBuffer compared."
+        },
+        {
+          "type": "markdown",
+          "text": "`StringBuffer` is the old thread-safe variant. Its per-call locking is almost never what you want: a buffer shared between threads rarely makes sense, and the lock does not make a sequence of calls atomic. Use `StringBuilder` unless you are maintaining old code. Useful `StringBuilder` methods: `append`, `insert`, `delete`, `deleteCharAt`, `reverse`, `setCharAt`, `setLength`, `indexOf`, `toString`."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "A loop that builds output with `+=` can often be replaced by `String.join(\", \", list)`, `Collectors.joining`, or `String.repeat`. They use a builder internally and say what you mean."
+        },
+        {
+          "type": "markdown",
+          "text": "### The methods you should know\n\nThe next listing exercises the methods that appear most often in code and interviews. Read each line, predict the result, then compare with the output."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Methods {\n    public static void main(String[] args) {\n        String s = \"\\u2003 Hello, Java  \\n\";       // starts with an EM SPACE\n        System.out.println(s.trim().length() + \" \" + s.strip().length());\n        System.out.println(\" \".isBlank() + \" \" + \"\".isEmpty());\n        System.out.println(\"ab\".repeat(3));\n        System.out.println(\"a\\nb\\r\\nc\".lines().toList());\n        System.out.println(\"%s scored %.1f\".formatted(\"Asha\", 91.456));\n        System.out.println(String.join(\"|\", List.of(\"a\", \"b\", \"c\")));\n        System.out.println(\"a,b,,c,,\".split(\",\").length);\n        System.out.println(\"a,b,,c,,\".split(\",\", -1).length);\n        System.out.println(Arrays.toString(\"a1b22c\".split(\"\\\\d+\")));\n        System.out.println(Arrays.toString(\"\".split(\",\")) + \" \" + \"\".split(\",\").length);\n        System.out.println(Arrays.toString(\"a.b\".split(\".\")));\n        System.out.println(\"banana\".indexOf(\"an\", 2) + \" \" + \"banana\".lastIndexOf('a'));\n        System.out.println(\"Java\".compareTo(\"Jazz\") + \" \" + \"a\".compareToIgnoreCase(\"B\"));\n        System.out.println(\"hello\".hashCode() + \" \" + \"Aa\".hashCode() + \" \" + \"BB\".hashCode());\n        System.out.println(String.valueOf((Object) null) + \" \" + \"x\" + null);\n        String r = \"Hello\".transform(x -> x + \"!\");\n        System.out.println(r);\n    }\n}",
+          "title": "Methods.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Methods.java\n13 11\ntrue true\nababab\n[a, b, c]\nAsha scored 91.5\na|b|c\n4\n6\n[a, b, c]\n[] 1\n[]\n3 5\n-4 -1\n99162322 2112 2112\nnull xnull\nHello!",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Points worth learning from that output:\n\n- `trim` **vs** `strip`**.** `trim()` (Java 1.0) removes only characters up to U+0020. `strip()` (Java 11) removes all Unicode whitespace as defined by `Character.isWhitespace`, including the em space, so it trimmed two more characters here. Prefer `strip`, `stripLeading`, `stripTrailing`. `isBlank()` is true for empty or whitespace-only strings.\n- `lines()` splits on `\\n`, `\\r`, and `\\r\\n` and returns a `Stream<String>`.\n- `split` **drops trailing empty strings.** `\"a,b,,c,,\".split(\",\")` gives 4 parts, not 6; pass a negative limit to keep them. The pattern is a regular expression, so `split(\".\")` matches every character and returns nothing; use `split(\"\\\\.\")` for a literal dot. `\"\".split(\",\")` returns an array with one empty string, not an empty array. More on regex in the next chapter.\n- `compareTo` returns the difference of the first differing chars (`'v'` - `'z'` = -4); rely only on its sign.\n- **Equal hash codes do not imply equal strings.** `\"Aa\"` and `\"BB\"` collide. The formula is `s[0]*31^(n-1) + ... +` `s[n-1]`, which is exactly the `hashCode` that `HashMap` buckets use.\n- `\"x\" + null` gives `\"xnull\"`: concatenation converts `null` to the text `null`.\n\nOther everyday methods: `charAt`, `substring(begin, end)` (end exclusive; copies, not a view, since Java 7u6), `contains`, `startsWith`, `endsWith`, `replace(CharSequence, CharSequence)` (literal), `replaceAll` (regex), `toLowerCase`, `valueOf`, `chars()`, `toCharArray`, `indent`, `stripIndent`, `translateEscapes`, and `String.valueOf` for turning anything into text.\n\n### switch on strings\n\nSince Java 7 a `switch` can select on a `String`. It uses `equals` semantics (internally a `hashCode` switch followed by an `equals` check), so it is case-sensitive and a `null` selector throws `NullPointerException`. With Java 14 switch expressions the code is short:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class SwitchOnString {\n    static int level(String day) {\n        return switch (day) {\n            case \"MON\", \"TUE\" -> 1;\n            case \"WED\"        -> 2;\n            default           -> 0;\n        };\n    }\n    public static void main(String[] args) {\n        System.out.println(level(\"TUE\") + \" \" + level(\"WED\") + \" \" + level(\"tue\"));\n    }\n}",
+          "title": "SwitchOnString.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java SwitchOnString.java\n1 2 0",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Case labels must be constant expressions, so you cannot use a variable as a label. Normalise the selector (`day.strip().toUpperCase(Locale.ROOT)`) when input comes from users; the chapter on Unicode and Locale explains why `Locale.ROOT` matters there."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring applications you meet strings mostly at boundaries: request parameters, JSON fields, SQL text, log messages. Two habits pay off. First, log with placeholders (`log.info(\"order {} failed\", id)`) so no string is built when the level is disabled. Second, never build SQL by concatenating user input; use prepared statements. The concatenation itself is cheap, but the injection risk is not."
+        },
+        {
+          "type": "markdown",
+          "text": "### Strings in everyday text processing\n\nMost string work is a small number of recurring recipes. The program below counts word frequencies in a text block, builds a delimited string three ways, and shows the `split` edge cases that surprise people."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\nimport java.util.Comparator;\nimport java.util.Map;\nimport java.util.StringJoiner;\nimport java.util.TreeMap;\nimport java.util.function.Function;\nimport java.util.stream.Collectors;\n\npublic class Wf {\n    public static void main(String[] args) {\n        String text = \"\"\"\n            To be, or not to be, that is the question:\n            Whether 'tis nobler in the mind to suffer\n            \"\"\";\n        Map<String, Long> freq = Arrays.stream(text.toLowerCase().split(\"\\\\W+\"))\n            .filter(w -> !w.isBlank())\n            .collect(Collectors.groupingBy(Function.identity(), TreeMap::new,\n                Collectors.counting()));\n        System.out.println(freq);\n        String top = freq.entrySet().stream()\n            .sorted(Map.Entry.<String, Long>comparingByValue().reversed()\n                .thenComparing(Map.Entry.comparingByKey()))\n            .limit(3)\n            .map(e -> e.getKey() + \"=\" + e.getValue())\n            .collect(Collectors.joining(\", \", \"[\", \"]\"));\n        System.out.println(top);\n\n        StringJoiner sj = new StringJoiner(\", \", \"{\", \"}\");\n        sj.setEmptyValue(\"EMPTY\");\n        System.out.println(sj);\n        sj.add(\"a\").add(\"b\");\n        System.out.println(sj + \" \" + String.join(\"|\", \"x\", \"y\", \"z\"));\n\n        System.out.println(\"hello\".chars().filter(c -> c == 'l').count());\n        System.out.println(\"hello\".chars().mapToObj(c -> String.valueOf((char) c))\n            .collect(Collectors.joining(\"-\")));\n        System.out.println(new StringBuilder(\"racecar\").reverse().toString().equals(\"racecar\"));\n\n        // hash caching\n        String k = \"Aa\";\n        String k2 = \"BB\";\n        System.out.println(k.hashCode() + \" \" + k2.hashCode() + \" \" + k.equals(k2));\n        char[] pw = {'s', '3', 'c'};\n        Arrays.fill(pw, '\\0');\n        System.out.println((int) pw[0]);\n        System.out.println(\"a,b,,c,,\".split(\",\").length + \" \" + \"a,b,,c,,\".split(\",\", -1).length\n            + \" \" + Arrays.toString(\" x  y \".split(\" \")));\n    }\n}",
+          "title": "Wf.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Wf.java\n{be=2, in=1, is=1, mind=1, nobler=1, not=1, or=1, question=1,\n suffer=1, that=1, the=2, tis=1, to=3, whether=1}\n[to=3, be=2, the=2]\nEMPTY\n{a, b} x|y|z\n2\nh-e-l-l-o\ntrue\n2112 2112 false\n0\n4 6 [, x, , y]",
+          "title": "Output (the first line is one line in reality; wrapped here)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `split(\"\\\\W+\")` splits on runs of non-word characters. The regex is a `String`, so the backslash is doubled. A text block (`\"\"\"`) keeps the original line breaks, which `\\W+` also treats as separators.\n- `Collectors.groupingBy(..., TreeMap::new, counting())` gives a sorted frequency table in one pipeline; Part 7 explains collectors.\n- `String.join`, `StringJoiner` and `Collectors.joining` all insert a delimiter *between* elements, so there is no trailing comma to trim. `StringJoiner` also supports a prefix, a suffix and a value for the empty case.\n- `chars()` yields an `IntStream` of UTF-16 code units; cast to `char` to rebuild text. Use `codePoints()` when characters outside the BMP are possible (see the Unicode chapter).\n- `\"Aa\"` and `\"BB\"` have the same `hashCode` (2112) but are not equal. Equal hash codes do not imply equal objects, which is exactly why `HashMap` still calls `equals`. `String` caches its hash code in a field after the first call, so using strings as map keys is cheap.\n- `\"a,b,,c,,\".split(\",\")` returns 4 elements, because trailing empty strings are removed; the limit `-1` keeps them (6). A leading separator produces a leading empty string (`\" x y \".split(\" \")` gives `[\"\", \"x\", \"\", \"y\"]`). Prefer `split(\"\\\\s+\")` after `strip()` for whitespace.\n\n#### Passwords and char arrays\n\nBecause a `String` is immutable, a password held in one stays in memory until garbage collection, and may be visible in a heap dump or in the string pool if it came from a literal. Security-sensitive APIs (`KeyStore.load`, `PBEKeySpec`, `Console.readPassword`) therefore take `char[]`, which you can overwrite with `Arrays.fill(pw, '\\0')` as soon as you are done (the last printed `0` above is the code of that overwritten character). This is a mitigation, not a guarantee: the framework that read the password from an HTTP request has often already made `String` copies. Still, never log a password and never keep one in a field longer than necessary."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Use `isBlank()` to test for empty or whitespace-only text and `strip()` (not `trim()`) to remove whitespace; `strip` understands Unicode white space, `trim` only removes characters up to U+0020. Compare with a constant first to avoid null checks: `\"yes\".equals(answer)` never throws when `answer` is `null`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A `String` is immutable; \"modifying\" methods return new objects, so always use their return value.\n\n- Since Java 9 a `String` stores a `byte[]` plus a `coder` (Latin-1 or UTF-16), so ASCII text costs one byte per char.\n- Literals and compile-time constants are pooled; `new String(...)` and run-time concatenation are not. Compare content with `equals`, never `==`.\n- `+` compiles to `invokedynamic` (`StringConcatFactory`) since Java 9; inside loops use `StringBuilder` to avoid quadratic copying.\n- Prefer `strip` over `trim`, `StringBuilder` over `StringBuffer`; remember that `split` takes a regex and drops trailing empties."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Strings in depth"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `String s = \"a\"; s.concat(\"b\"); s.toUpperCase(); System.out.println(s);`",
+              "answer": "It prints `a`. Both calls return new strings that are discarded; `String` never changes in place."
+            },
+            {
+              "question": "Given `String x = \"hi\"; String y = new String(\"hi\");`, what are `x == y`, `x.equals(y)` and `x == y.intern()`?",
+              "answer": "`false`, `true`, `true`. `==` compares references; `intern()` returns the pooled instance, which is the same object as the literal `x`."
+            },
+            {
+              "question": "Why is `for (...) s += item;` slow for large inputs, and what do you use instead?",
+              "answer": "Each `+=` allocates a new string and copies all earlier characters, so the total work is quadratic. Use `StringBuilder` (or `String.join`, `Collectors.joining`)."
+            },
+            {
+              "question": "What does `\"a,,b,,\".split(\",\").length` return? How would you keep the trailing empty parts?",
+              "answer": "`3` (parts `a`, empty, `b`; trailing empties are dropped). Use `split(\",\", -1)` to keep them (gives 5)."
+            },
+            {
+              "question": "Name two reasons `String` is immutable and one consequence for the string pool.",
+              "answer": "Safe map keys / cached hash, security of names and paths, thread safety. Because content never changes, the JVM can safely share one pooled object among all uses of a literal."
+            },
+            {
+              "question": "What is the difference between `trim()` and `strip()`, and between `StringBuilder` and `StringBuffer`?",
+              "answer": "`trim` removes chars up to U+0020 only; `strip` (Java 11) removes all Unicode whitespace. `StringBuffer` is synchronized and legacy; `StringBuilder` is the unsynchronised, faster default."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

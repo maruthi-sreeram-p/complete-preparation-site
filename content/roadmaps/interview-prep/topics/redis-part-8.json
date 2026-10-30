@@ -1,0 +1,930 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "263-301",
+    "planDays": "27"
+  },
+  "sections": [
+    {
+      "id": "ch-8-1",
+      "type": "concept",
+      "title": "Caching fundamentals",
+      "subtopicId": "8-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Caching is the single most common reason people install Redis, and also the most common source of subtle production bugs. A cache is a small, fast copy of data that lives somewhere else (the **source of truth**, usually a relational database). Reading from the copy is cheaper than reading from the source, so you do it first. The idea is trivial; the difficulty is entirely in the word \"copy\". A copy can become wrong, can disappear, can be missing exactly when everybody asks for it, and can quietly cost more than it saves.\n\nThis chapter gives you the vocabulary and the decisions that apply to every caching pattern in the rest of this Part: what is worth caching, how to measure whether the cache works, how to choose a TTL, how to name keys, how to serialize values, and how to live with stale data. The next chapters then build the actual patterns (cache-aside, write-through and friends) and the failure modes.\n\n### Why a cache helps\n\nA request to a relational database typically costs one network round trip plus query planning, index lookups, possibly disk reads, and row serialization. That is often 1 to 20 milliseconds under light load and much more under load. A Redis `GET` of a small value costs one network round trip plus a hash table lookup, typically well under a millisecond inside the same data centre. The numbers vary with your hardware and network, so treat them as orders of magnitude, but the shape is stable: a cache hit is one or two orders of magnitude cheaper than a database read.\n\nThe second benefit matters more in production than the first. A cache **protects the database**. If 95% of reads are answered by Redis, the database sees 5% of the traffic, and a traffic spike that would have flattened it becomes survivable. This is also why cache failures are dangerous: when the cache is cold or down, all the traffic lands on a database that was sized on the assumption that the cache exists.\n\n### What to cache, and what not to\n\nGood cache candidates share three properties: they are **read much more often than written**, they are **expensive** **to compute or fetch**, and they **tolerate being slightly stale**. Typical examples in ShopStream:\n\n- the product detail page (`product:{id}`): read thousands of times per update, a joined query over several tables;\n- category listings and the home page \"featured\" block: expensive aggregations, same answer for every visitor;\n- results of a call to a slow third party (shipping rate lookup, currency rates);\n- computed values such as \"number of reviews and average rating\".\n\nPoor candidates:\n\n- data that changes on every request or is unique per request (a cache hit ratio near zero costs memory and adds latency to every miss);\n- data that must never be stale: the exact stock of a flash-sale item at the moment of purchase, an account balance before a debit. You can show a cached \"about 12 left\" on the product page, but the decision to sell must be made against the source of truth (or against Redis used as the primary store with the right atomic operations, see the chapter on flash-sale stock later in this Part);\n- huge values that are rarely re-read (a 5 MB report for one user);\n- anything cheap. A primary-key lookup on a warm database table may be fast enough that a cache adds complexity for no gain. Measure first."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Cache the **shape the caller needs**, not the raw rows. A cached `ProductView` record that already contains price, rating and image URLs saves the join and the mapping code. A cached copy of the `products` row saves only one query out of the four you still have to run."
+        },
+        {
+          "type": "markdown",
+          "text": "### Hit ratio: the one number that matters\n\nThe **hit ratio** is the fraction of lookups answered from the cache:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "hit ratio = hits / (hits + misses)"
+        },
+        {
+          "type": "markdown",
+          "text": "Redis counts keyspace hits and misses server-wide; you read them from `INFO stats`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INFO stats\n# Stats\n...\nkeyspace_hits:1843920\nkeyspace_misses:90211\n...",
+          "title": "Server-wide hit and miss counters"
+        },
+        {
+          "type": "markdown",
+          "text": "With those two numbers the ratio is 1843920 / (1843920 + 90211) ≈ 0.953, or 95%. Two cautions. First, the counters are for the whole server and count every command that looks up a key, including `GET`s that your application uses for locks or rate limits, so an application-level metric (a Micrometer counter in your cache layer) is more truthful for a specific cache. Second, the ratio alone does not tell you whether the cache is **worth** having. The useful way to think is expected cost per request:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "avg latency = hit_ratio * t_hit + (1 - hit_ratio) * (t_hit + t_source)"
+        },
+        {
+          "type": "markdown",
+          "text": "If a hit costs 0.5 ms, the database read costs 10 ms and the hit ratio is 90%, the average is 0.5 + 0.1 × 10 = 1.5 ms, against 10 ms without a cache. At 50% the average is 5.5 ms; at 20% it is 8.5 ms and you are paying memory and complexity for a small gain. These figures are illustrative.\n\nWhat decides your hit ratio? Mostly three things: the **popularity distribution** of your keys (a few products get most views, which caches love), the **TTL** (shorter TTLs mean more misses) and the **memory budget** (if the working set does not fit, eviction removes entries before they are re-read).\n\n### Choosing a TTL\n\nA time-to-live (TTL) is the maximum age of a cached value. It has two roles: it bounds staleness, and it bounds memory (entries nobody asks for again disappear). Choose it from the **business tolerance for stale data**, not from habit:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Data",
+            "TTL",
+            "Reasoning"
+          ],
+          "rows": [
+            [
+              "Product description and images",
+              "1 hour to 1 day",
+              "Edited rarely; also explicitly invalidated on edit"
+            ],
+            [
+              "Product price",
+              "1 to 5 minutes",
+              "Wrong prices hurt; invalidate on change as well"
+            ],
+            [
+              "Category page with counts",
+              "30 to 60 seconds",
+              "Expensive query, nobody notices a minute of lag"
+            ],
+            [
+              "Result of \"not found\" lookup",
+              "30 to 60 seconds",
+              "Short, because the item may appear soon (negative caching)"
+            ],
+            [
+              "Third party exchange rate",
+              "the provider's update interval",
+              "No point in asking more often than the data changes"
+            ]
+          ],
+          "caption": "Illustrative TTL starting points for ShopStream data."
+        },
+        {
+          "type": "markdown",
+          "text": "Three practical rules:\n\n1. **Always set a TTL**, even when you also invalidate explicitly. The TTL is your safety net for every bug in the invalidation code. A key without a TTL that is never deleted stays forever; this is how caches silently fill with garbage and why the anti-pattern list at the end of this Part has \"no TTL\" in it.\n2. **Add jitter** when many keys are created at the same moment (a bulk warm-up, a deployment). If 100,000 keys all get exactly 600 seconds, they all expire in the same second. The chapter on cache failure modes explains the damage and the fix.\n3. **Do not use one global TTL.** Group data by how stale it may be and give each group its own.\n\n### Key design and versioned keys\n\nCache keys must be **deterministic** (same inputs, same key), **unique** (different inputs, different key) and **readable** (you will debug them with `redis-cli`). Use the `entity:id:field` convention with colons, and put in the key every input that changes the result:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "product:1042                         one product\nproduct:1042:v3                       one product, schema version 3\ncatalog:page:electronics:2:sort=price:lang=en    a listing; every parameter is part of the key\nuser:77:recommendations"
+        },
+        {
+          "type": "markdown",
+          "text": "Two key-design ideas pay for themselves quickly.\n\n**Schema version in the key.** When you change the shape of the cached object (add a field, rename a property), old entries in Redis still have the old shape, and the new code cannot read them. Instead of flushing, put a version in a key prefix: `shopstream:v3:product:1042`. Deploy the new code and it reads and writes `v3` keys, ignoring `v2` ones, which age out through their TTL. Rolling deployments, where old and new application instances run side by side, work because each version reads only its own keys.\n\n**Version token for group invalidation.** Sometimes one change must invalidate many keys: \"a category was renamed, so every listing page of that category is wrong\". Deleting a set of keys by pattern is expensive (it needs `SCAN`, never `KEYS`). A cleaner trick is to store a small counter `catalog:ver:electronics` and include its value in the listing keys: `catalog:electronics:v{ver}:page:2`. To invalidate the whole group you `INCR` the counter. Old pages are no longer referenced and expire naturally."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Keys are not free either. A key like `catalog:page:electronics:2:sort=price:lang=en` is fine. But never include unbounded user input directly (a free-text search query of 2,000 characters) in a key: hash it first (for example with SHA-256 and hex-encode) and keep the readable parts short. Also remember that Redis cluster hashes the whole key, or the part in `{...}`, to decide the shard; see the chapter on cluster hash tags in the scaling Part."
+        },
+        {
+          "type": "markdown",
+          "text": "### Serialization\n\nRedis stores bytes. Your Java object must be turned into bytes on write and back on read. Your choice affects size, speed, readability and compatibility across deploys."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Format",
+            "Good",
+            "Watch out"
+          ],
+          "rows": [
+            [
+              "JSON (Jackson)",
+              "Human readable in `redis-cli`; works across languages; tolerant of added fields",
+              "Larger than binary; need to pin the types you deserialize"
+            ],
+            [
+              "Java serialization",
+              "Zero setup (the default for `RedisTemplate`)",
+              "Opaque bytes; breaks when the class changes; security risk on untrusted data; do not use"
+            ],
+            [
+              "Binary (Protobuf, MessagePack, Kryo)",
+              "Compact and fast",
+              "Needs schema discipline; not readable in the CLI"
+            ],
+            [
+              "Plain string / hash fields",
+              "Smallest and cheapest for tiny values; you can update one field with `HSET`",
+              "You write the mapping yourself"
+            ]
+          ],
+          "caption": "Common serialization choices for cached values."
+        },
+        {
+          "type": "markdown",
+          "text": "For a book-sized service the sensible default is **JSON through Jackson**. In Spring Data Redis 4 that means `GenericJacksonJsonRedisSerializer` or the typed `JacksonJsonRedisSerializer<T>` (Jackson 3). The typed one is safer for caches: it knows exactly which class to read, so you never need to embed class names in the JSON, which also avoids the polymorphic deserialization risks that come with default typing. The Spring chapters earlier in this book show how to wire them.\n\nA practical point: design cached objects as **immutable records of simple types**. A record `ProductView(long id,` `String name, long priceCents, double rating)` serializes the same way in every JVM and survives refactoring much better than an entity with lazy-loaded collections.\n\n### Stale data is a feature you manage\n\nA cache that is never wrong is a cache that is never used. Staleness is the price of the speed, so the right questions are: **how stale, for whom, and what happens if it is wrong?** The \"5 minutes old price\" on the listing page is fine as long as the checkout recomputes the price from the database. Draw this line explicitly in your design: *display paths* may read the cache; *decision paths* (charge, reserve, authorize) read the source of truth.\n\nCommon staleness bugs:\n\n- the write path updates the database and forgets to touch the cache (the TTL eventually hides the bug, which makes it hard to find);\n- a read racing with a write puts an old value back into the cache after the invalidation (explained in the next chapters);\n- a second service writes to the same table and knows nothing about your cache.\n\n### Cache warming\n\nA **cold** cache (empty after a restart, a failover to a fresh node, a flush, a new region) has a hit ratio of zero and sends the full load to the database. For small systems this does not matter. For busy systems you **warm** the cache before you take traffic, or you pace the traffic:\n\n- pre-load the hottest keys from a list (the top 10,000 products by views yesterday), with jittered TTLs;\n- run the warm-up as a throttled background job, not as a thundering burst of queries against the database;\n- keep Redis persistent (RDB or AOF) if re-warming is expensive, so a restart reloads the data from disk rather than from the database;\n- when you deploy a new cache key version, warm the new keys before switching the traffic to them.\n\n### Configuring Redis to behave as a cache\n\nA Redis instance used purely as a cache wants a different configuration from one that stores primary data. The settings that matter (each is explained in depth in the memory and persistence chapters of the Redis Inside Part):"
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "# Hard memory ceiling for the dataset. Leave headroom for buffers and fork copy-on-write.\nmaxmemory 2gb\n\n# When the ceiling is reached, evict instead of returning errors on writes.\n# allkeys-lfu keeps frequently used keys; allkeys-lru is the classic alternative.\nmaxmemory-policy allkeys-lfu\n\n# Free memory in a background thread when keys are evicted, expired or overwritten.\nlazyfree-lazy-eviction yes\nlazyfree-lazy-expire yes\nlazyfree-lazy-server-del yes\n\n# A pure cache can usually be rebuilt, so persistence is optional.\n# Disable snapshots if a cold start after a restart is acceptable:\nsave \"\"\nappendonly no",
+          "title": "redis.conf (cache-only instance)"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. The default `maxmemory-policy` is `noeviction`, which means a full instance answers write commands with an out-of-memory error. That is right for a primary store and wrong for a cache, so a cache needs an eviction policy. With `allkeys-*` policies Redis may evict **any** key, including keys that have no TTL; with `volatile-*` policies only keys that have a TTL are candidates, which is the safer choice if the same instance also holds a few permanent keys (feature flags, for example) that must not disappear. If you disable persistence, remember the consequence: a restart or a failover to an empty node produces a completely cold cache, and the avalanche defences from the failure-modes chapter become important."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Use one Redis instance (or at least one logical purpose) per role when you can. A cache that is allowed to evict and a lock or stock store that must never lose a key have opposite requirements. Mixing them under `allkeys-lru` means eviction can silently delete a lock or a counter. Either run separate instances, or use `volatile-*` policies and make sure only cache keys carry TTLs."
+        },
+        {
+          "type": "markdown",
+          "text": "### A first look at a cache in redis-cli\n\nBefore writing Java, watch the mechanics in a terminal. This session shows a miss, a fill with a TTL, a hit, the countdown and the expiry."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> GET shopstream:v1:product:1042\n(nil)\n127.0.0.1:6379> SET shopstream:v1:product:1042 \"{\\\"id\\\":1042,\\\"price\\\":8900}\" EX 600\nOK\n127.0.0.1:6379> GET shopstream:v1:product:1042\n\"{\\\"id\\\":1042,\\\"price\\\":8900}\"\n127.0.0.1:6379> TTL shopstream:v1:product:1042\n(integer) 594\n127.0.0.1:6379> DEL shopstream:v1:product:1042\n(integer) 1\n127.0.0.1:6379> GET shopstream:v1:product:1042\n(nil)",
+          "title": "Cache lifecycle by hand"
+        },
+        {
+          "type": "markdown",
+          "text": "The first `GET` is the miss, `SET ... EX 600` is the fill, the next `GET` is the hit, `TTL` counts down, and `DEL` is the invalidation after a database write. Cache-aside in four commands; everything else in this Part is about doing those four steps safely under concurrency, at scale, and with failures."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you decide whether something should be cached? Cache data that is read far more than it is written, expensive to produce, and tolerant of slight staleness. Then measure: compute the hit ratio and the saved latency. Always set a TTL as a safety net, separate display paths (can be stale) from decision paths (must read the source of truth), and have a plan for a cold cache and for the database load when the cache is down."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Caching fundamentals\n\n- A cache is a copy; every caching decision is a decision about how wrong the copy may be.\n- Cache read-heavy, expensive, staleness-tolerant data in the shape the caller needs.\n- Measure the hit ratio (`keyspace_hits`, `keyspace_misses`, or better an application metric) and think in expected latency.\n- Always set a TTL, vary it per data class, add jitter to keys created together.\n- Keys are deterministic and include every input; put a schema version in the key to survive deployments.\n- Prefer JSON via Jackson with immutable records; plan for a cold cache."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-2",
+      "type": "concept",
+      "title": "Cache-aside",
+      "subtopicId": "8-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "**Cache-aside** (also called lazy loading) is the default caching pattern, and the one you will write most often. The application code, not Redis, is responsible for filling the cache. Redis is a dumb, fast key-value store that sits beside the database, and that is exactly why it is so popular: any application can use it with nothing more than `GET`, `SET` and `DEL`."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 413.4 124.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M195.0 112.0 L299.0 112.0 C300.7 112.0 302.0 110.7 302.0 109.0 L302.0 85.0 C302.0 83.3 300.7 82.0 299.0 82.0 L195.0 82.0 C193.3 82.0 192.0 83.3 192.0 85.0 L192.0 109.0 C192.0 110.7 193.3 112.0 195.0 112.0 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 64.0 L192.0 94.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M192.0 100.0 L92.0 70.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 72.0 L89.0 72.0 C90.7 72.0 92.0 70.7 92.0 69.0 L92.0 41.0 C92.0 39.3 90.7 38.0 89.0 38.0 L5.0 38.0 C3.3 38.0 2.0 39.3 2.0 41.0 L2.0 69.0 C2.0 70.7 3.3 72.0 5.0 72.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M192.0 94.0 L187.6 89.9 L186.1 94.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 70.0 L96.4 74.1 L97.9 69.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 48.0 L192.0 18.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M192.0 26.0 L92.0 54.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M92.0 60.0 L192.0 24.0\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M195.0 32.0 L299.0 32.0 C300.7 32.0 302.0 30.7 302.0 29.0 L302.0 5.0 C302.0 3.3 300.7 2.0 299.0 2.0 L195.0 2.0 C193.3 2.0 192.0 3.3 192.0 5.0 L192.0 29.0 C192.0 30.7 193.3 32.0 195.0 32.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M192.0 18.0 L186.1 17.1 L187.6 22.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 54.0 L97.9 55.1 L96.5 50.0 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M192.0 24.0 L188.0 23.6 L189.2 26.9 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"226.9\" y=\"19.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"40.1\" lengthAdjust=\"spacingAndGlyphs\">Redis cache</text><text x=\"116.5\" y=\"24.0\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"31.0\" lengthAdjust=\"spacingAndGlyphs\">1 GET key</text><text x=\"318.4\" y=\"24.0\" font-size=\"6.8\" fill=\"#eec7a0\" textLength=\"67.3\" lengthAdjust=\"spacingAndGlyphs\">4 SET key value EX ttl</text><text x=\"153.5\" y=\"46.0\" font-size=\"6.8\" fill=\"#abe3c4\" textLength=\"33.1\" lengthAdjust=\"spacingAndGlyphs\">2 hit: done</text><text x=\"28.4\" y=\"57.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"37.2\" lengthAdjust=\"spacingAndGlyphs\">Application</text><text x=\"292.6\" y=\"62.0\" font-size=\"6.8\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"118.9\" lengthAdjust=\"spacingAndGlyphs\">writes: update DB, then delete the key</text><text x=\"99.2\" y=\"86.0\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"41.5\" lengthAdjust=\"spacingAndGlyphs\">3 miss: query</text><text x=\"231.1\" y=\"99.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"31.8\" lengthAdjust=\"spacingAndGlyphs\">Database</text></svg>",
+          "width": 413,
+          "caption": "Cache-aside: on a read the application checks Redis first and, on a miss, loads from the database and fills the cache; on a write it changes the database and invalidates the cache entry.",
+          "alt": "Redis cache | 1 GET key 4 SET key value EX ttl | 2 hit: done | Application | writes: update DB, then delete the key | 3 miss: query | Database"
+        },
+        {
+          "type": "markdown",
+          "text": "### The read flow\n\n1. The application computes the cache key and runs `GET` on Redis.\n2. **Hit:** a value is returned. Deserialize it and return it. Done.\n3. **Miss:** `GET` returns `(nil)`. The application queries the database.\n4. The application writes the result to Redis with a TTL (`SET key value EX 600`).\n5. It returns the result to the caller.\n\nOn the very first request for a key you pay the full price plus one extra round trip to Redis. Every later request, until the entry expires or is removed, is a hit. That is the meaning of \"lazy\": data enters the cache only when somebody asks for it, so the cache naturally contains the popular data and nothing else.\n\n### The write flow\n\nWhen data changes you update the **database first** and then deal with the cache. You have two options.\n\n- **Invalidate** (delete the cache entry): `DEL product:1042`. The next read misses, loads the fresh row and refills the cache. Simple and robust.\n- **Update** (overwrite the cache entry with the new value): needs the application to have the exact new representation, and creates a race when two writers interleave (below).\n\nThe strong default is **invalidate, do not update**. Deleting is idempotent (you can safely repeat it), does not require building the cached representation on the write path, and cannot leave a wrong value behind that lives until the TTL. The cost is one extra miss after each write, which is cheap for read-heavy data.\n\n### Code: a plain Java cache-aside with StringRedisTemplate\n\nThis is a complete, minimal implementation without any Spring Cache annotations, so every step is visible. It uses a Jackson 3 `JsonMapper` and `StringRedisTemplate`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.Optional;\nimport java.util.concurrent.ThreadLocalRandom;\n\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.stereotype.Service;\n\nimport tools.jackson.databind.json.JsonMapper;\n\n@Service\npublic class ProductCache {\n\n    private static final Duration BASE_TTL = Duration.ofMinutes(10);\n\n    private final StringRedisTemplate redis;\n    private final JsonMapper json;\n    private final ProductRepository repository;\n\n    public ProductCache(StringRedisTemplate redis, JsonMapper json,\n                        ProductRepository repository) {\n        this.redis = redis;\n        this.json = json;\n        this.repository = repository;\n    }\n\n    public Optional<ProductView> find(long id) {\n        String key = key(id);\n        String cached = redis.opsForValue().get(key);          // 1. look in the cache\n        if (cached != null) {\n            return Optional.of(json.readValue(cached, ProductView.class));   // 2. hit\n        }\n        Optional<ProductView> loaded = repository.findViewById(id);         // 3. miss\n        loaded.ifPresent(view ->\n            redis.opsForValue().set(key, json.writeValueAsString(view), ttlWithJitter())); // 4\n        return loaded;                                                       // 5\n    }\n\n    public void update(long id, ProductUpdate change) {\n        repository.update(id, change);      // 1. database first (the source of truth)\n        redis.delete(key(id));              // 2. then invalidate\n    }\n\n    private static String key(long id) {\n        return \"shopstream:v1:product:\" + id;\n    }\n\n    private static Duration ttlWithJitter() {\n        long jitterSeconds = ThreadLocalRandom.current().nextLong(0, 60);\n        return BASE_TTL.plusSeconds(jitterSeconds);\n    }\n}",
+          "title": "ProductCache.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `json.readValue` and `writeValueAsString` are Jackson 3 methods and do not throw checked exceptions, so the code stays short. Inject the `JsonMapper` that Spring Boot auto-configures.\n- The key carries a schema version (`v1`) and the entity id.\n- `ttlWithJitter()` adds up to 60 seconds, so entries created together do not expire together.\n- The write path changes the database before it deletes the cache entry. Reversing the order is a bug, as the next section shows.\n- A \"not found\" result is not cached here. The failure-modes chapter shows how to cache negatives safely.\n\n### The same thing with Spring's cache annotations\n\nYou rarely need to write the code above by hand in a Spring application. `@Cacheable` is cache-aside implemented by a proxy around your method, and `@CacheEvict` is the invalidate step. The Spring chapter on the cache abstraction covers configuration; this is the shape:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.cache.annotation.CacheEvict;\nimport org.springframework.cache.annotation.Cacheable;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Service\npublic class CatalogService {\n\n    private final ProductRepository repository;\n\n    public CatalogService(ProductRepository repository) {\n        this.repository = repository;\n    }\n\n    @Cacheable(cacheNames = \"products\", key = \"#id\", unless = \"#result == null\")\n    public ProductView getProduct(long id) {\n        return repository.findViewById(id).orElse(null);\n    }\n\n    @Transactional\n    @CacheEvict(cacheNames = \"products\", key = \"#id\")\n    public void updateProduct(long id, ProductUpdate change) {\n        repository.update(id, change);\n    }\n}",
+          "title": "CatalogService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The annotation version has two subtle behaviours to know. `@CacheEvict` by default runs **after the method returns** **successfully**, which is not necessarily after the surrounding transaction commits (see the next section for why that matters). And calling `getProduct` from another method of the same class bypasses the proxy, so the cache is not consulted at all.\n\n### Race conditions in cache-aside\n\nCache-aside is simple, but it is not atomic: \"read the database, then write the cache\" are two separate steps, and other threads and processes run in between. Three classic races follow. Understand them, because they are the content of most \"caching consistency\" interview questions.\n\n#### Race 1: stale fill after a write\n\nTwo threads, A reads and B writes, interleave like this:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "time   Thread A (reader)                 Thread B (writer)\n 1     GET product:1 -> miss\n 2     SELECT row            -> price 10\n 3                                       UPDATE price = 12  (commit)\n 4                                       DEL product:1      (nothing to delete)\n 5     SET product:1 {price: 10}         <- stale value written AFTER the delete\n 6     ...                               cache now says 10, database says 12"
+        },
+        {
+          "type": "markdown",
+          "text": "The cache holds a stale value until the TTL expires. The window is narrow (A must be slow between its read and its write), but under load it happens. This is why the TTL is not optional, and why systems that need tighter consistency add a version check or a short lock (see the chapter on keeping cache and database consistent).\n\n#### Race 2: wrong order of write steps\n\nIf the writer deletes the cache entry **before** updating the database, a reader can load the old row in between and put the old value back:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Writer: DEL product:1  ->  Reader: miss, SELECT old row, SET old value  ->  Writer: UPDATE database"
+        },
+        {
+          "type": "markdown",
+          "text": "Now the stale value is in the cache after the database already changed, and there is no later delete to clean it up. With \"database first, delete second\" the bad interleaving needs a reader that started *before* the write and finishes *after* the delete (Race 1), which is much less likely. So: **write the database, then delete the cache.**\n\n#### Race 3: delete before commit\n\nIf the delete happens inside a transaction that has not committed yet, a reader can miss, read the old committed row (the new one is not visible yet), and refill the cache with it before the commit. The fix is to delete **after the commit**, for instance with a `@TransactionalEventListener(phase = AFTER_COMMIT)` or Spring's `transactionAware()` cache manager, which postpones cache puts and evictions until the surrounding transaction commits."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The order is: commit the database change, then invalidate the cache. Anything else lets a concurrent reader put the old value back. Even in the right order a rare stale fill remains possible, so keep the TTL as a safety net."
+        },
+        {
+          "type": "markdown",
+          "text": "### What if the cache call itself fails?\n\nA cache must never be able to take your application down. If Redis times out or refuses the connection, the read path should **log, count, and fall back to the database** instead of returning an error. The write path is trickier: if the database write succeeded but the `DEL` failed, you now have a stale entry. Options are to retry the delete a few times, to publish the key to a small retry queue, or to rely on a short TTL. Decide it deliberately; do not leave it to chance. The chapter on connection management in the Java clients Part covers timeouts and graceful degradation.\n\n### Caching a value as a hash instead of a JSON string\n\nStoring the whole object as one JSON string is the simplest choice, but Redis hashes offer something a string cannot: you can read or change **one field** without rewriting the whole value. For an entry with a frequently changing field (the stock count shown on the product page, a view counter) a hash is a natural fit."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:1042 name \"Trail Shoe\" priceCents 8900 rating 4.6 stockHint 12\n(integer) 4\n127.0.0.1:6379> EXPIRE product:1042 600\n(integer) 1\n127.0.0.1:6379> HGET product:1042 priceCents\n\"8900\"\n127.0.0.1:6379> HINCRBY product:1042 stockHint -1\n(integer) 11\n127.0.0.1:6379> HGETALL product:1042\n1) \"name\"\n2) \"Trail Shoe\"\n3) \"priceCents\"\n4) \"8900\"\n5) \"rating\"\n6) \"4.6\"\n7) \"stockHint\"\n8) \"11\"",
+          "title": "A product cached as a hash"
+        },
+        {
+          "type": "markdown",
+          "text": "The trade-offs: field values are strings, so numbers and nested structures need converting; there is a single TTL per key (Redis 7.4 and later can also expire individual hash fields with `HEXPIRE`, which is rarely needed for caches); and a missing key still means a miss for the whole object. With Spring Data Redis you can map an object to a hash with `HashMapper` implementations (see the hash mapping chapter in the Spring Part). Use a JSON string for \"read the whole thing, replace the whole thing\" caches and a hash when partial updates are really useful.\n\n### Caching lists and pages\n\nListings (a category page, search results, \"customers also bought\") need extra care, because they are **derived from** **many rows** and any of those rows can change.\n\n- **Cache per page, not per query.** Key the page by every parameter: `catalog:electronics:sort=price:page=2:size=20`. A short TTL (30 to 120 seconds) is usually the best invalidation strategy for listings, because a single product edit would otherwise have to invalidate every page that might contain it.\n- **Cache ids, not objects.** Store the ordered list of product ids per page (a small value) and resolve each id from the product cache (`MGET` for all ids in one round trip). Now a product edit invalidates one `product:{id}` key, and every page that shows it automatically displays the new data on its next read. This is the most effective trick for listing caches.\n- **Do not cache unbounded results.** Cap page size and total page count. Deep pagination (`page=48000`) is a penetration and big-key risk."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.util.List;\nimport java.util.Objects;\n\nimport org.springframework.data.redis.core.StringRedisTemplate;\n\npublic class ListingCache {\n\n    private final StringRedisTemplate redis;\n\n    public ListingCache(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    /** Resolve a cached page of product ids into cached product JSON in one round trip. */\n    public List<String> productJsonForPage(List<Long> idsOnPage) {\n        List<String> keys = idsOnPage.stream()\n            .map(id -> \"shopstream:v1:product:\" + id)\n            .toList();\n        List<String> values = redis.opsForValue().multiGet(keys);   // MGET\n        // null entries are per-product misses: load those from the database and fill them\n        return values == null ? List.of() : values.stream().filter(Objects::nonNull).toList();\n    }\n}",
+          "title": "ListingCache.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`multiGet` sends one `MGET`, so a page of 20 products costs one round trip instead of 20. In a Redis Cluster, `MGET` across keys in different slots is not allowed by the server; the Lettuce and Spring clients split such calls per node for you, but the single-round-trip property no longer holds. Keep that in mind when you choose key names (see the cluster chapter).\n\n### Pros and cons"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Strengths",
+            "Weaknesses"
+          ],
+          "rows": [
+            [
+              "Simple; works with any database and any Redis",
+              "Application code carries the caching logic (easy to forget or duplicate)"
+            ],
+            [
+              "Cache contains only what was requested",
+              "First request per key is slow (cold miss)"
+            ],
+            [
+              "A Redis outage degrades performance instead of correctness",
+              "Race conditions between fill and invalidation"
+            ],
+            [
+              "Cache and database can use different data models",
+              "Two systems to keep in step; data can be stale up to the TTL"
+            ]
+          ],
+          "caption": "Cache-aside trade-offs."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Explain cache-aside and its main race condition. Read: check the cache, on a miss load from the database and populate the cache with a TTL. Write: update the database, then delete the cache entry. The main race is a reader that loaded the old row before a write, and puts it into the cache after the writer's delete, leaving stale data until the TTL. Mitigations: always set a TTL, delete after commit, optionally a delayed second delete or a version check."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Cache-aside\n\n- The application loads data on a miss and stores it with a TTL; Redis never talks to the database.\n- On writes, update the database first and then delete the cache entry; deleting is safer than overwriting.\n- Delete after the transaction commits, never before.\n- A reader that started before a write can still re-fill a stale value; the TTL bounds the damage.\n- Treat Redis failures as cache misses on reads; decide explicitly what to do when an invalidation fails.\n- `@Cacheable` and `@CacheEvict` implement this pattern, with self-invocation as the usual trap."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-4",
+      "type": "concept",
+      "title": "Cache failure modes",
+      "subtopicId": "8-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A cache works until the day it does not, and the failure is nearly always the same story: something makes many requests miss at once, and the database, which relied on the cache to absorb them, falls over. The database slowdown makes the requests slower, so more of them pile up, the miss fills never complete, and the system collapses. The five classic names are **stampede**, **penetration**, **avalanche**, **hot key** and **big key**. They are different problems with different cures, and interviewers like to see that you can tell them apart."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Name",
+            "What happens",
+            "Main cures"
+          ],
+          "rows": [
+            [
+              "Stampede (dogpile, breakdown)",
+              "One hot key expires; many concurrent requests miss and all hit the database",
+              "Single-flight lock, early/probabilistic refresh, stale-while-revalidate"
+            ],
+            [
+              "Penetration",
+              "Requests for keys that do not exist miss every time, so the database is hit every time",
+              "Negative caching, Bloom filter, input validation"
+            ],
+            [
+              "Avalanche",
+              "Many keys expire together, or Redis goes down; the database receives a mass of misses",
+              "TTL jitter, warming, replication/HA, rate limiting, circuit breakers"
+            ],
+            [
+              "Hot key",
+              "One key receives so much traffic that a single Redis node (one thread) becomes the bottleneck",
+              "Local in-process copy, key replication with suffixes, client-side caching"
+            ],
+            [
+              "Big key",
+              "One key holds a huge value; operations on it block the server and the network",
+              "Split into smaller keys, compress, paginate, use `UNLINK`"
+            ]
+          ],
+          "caption": "The five cache failure modes at a glance."
+        },
+        {
+          "type": "markdown",
+          "text": "### Cache stampede (dogpile)"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 127.7\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 100.8 L49.0 100.8 C50.7 100.8 52.0 99.4 52.0 97.8 L52.0 87.8 C52.0 86.1 50.7 84.8 49.0 84.8 L5.0 84.8 C3.3 84.8 2.0 86.1 2.0 87.8 L2.0 97.8 C2.0 99.4 3.3 100.8 5.0 100.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 32.8 L132.0 64.8\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M52.0 52.8 L132.0 64.8\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M52.0 72.8 L132.0 64.8\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M52.0 92.8 L132.0 64.8\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M132.0 64.8 L129.3 61.8 L128.0 65.1 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M132.0 64.8 L128.7 62.5 L128.2 66.0 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 80.8 L49.0 80.8 C50.7 80.8 52.0 79.4 52.0 77.8 L52.0 67.8 C52.0 66.1 50.7 64.8 49.0 64.8 L5.0 64.8 C3.3 64.8 2.0 66.1 2.0 67.8 L2.0 77.8 C2.0 79.4 3.3 80.8 5.0 80.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M132.0 64.8 L128.2 63.4 L128.6 66.9 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M132.0 64.8 L128.0 64.3 L129.2 67.6 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M135.0 84.8 L199.0 84.8 C200.7 84.8 202.0 83.4 202.0 81.8 L202.0 47.8 C202.0 46.1 200.7 44.8 199.0 44.8 L135.0 44.8 C133.3 44.8 132.0 46.1 132.0 47.8 L132.0 81.8 C132.0 83.4 133.3 84.8 135.0 84.8 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 80.8 L299.0 80.8 C300.7 80.8 302.0 79.4 302.0 77.8 L302.0 67.8 C302.0 66.1 300.7 64.8 299.0 64.8 L255.0 64.8 C253.3 64.8 252.0 66.1 252.0 67.8 L252.0 77.8 C252.0 79.4 253.3 80.8 255.0 80.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M365.0 72.8 L439.0 72.8 C440.7 72.8 442.0 71.4 442.0 69.8 L442.0 41.8 C442.0 40.1 440.7 38.8 439.0 38.8 L365.0 38.8 C363.3 38.8 362.0 40.1 362.0 41.8 L362.0 69.8 C362.0 71.4 363.3 72.8 365.0 72.8 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 32.8 L362.0 54.8\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 40.8 L49.0 40.8 C50.7 40.8 52.0 39.4 52.0 37.8 L52.0 27.8 C52.0 26.1 50.7 24.8 49.0 24.8 L5.0 24.8 C3.3 24.8 2.0 26.1 2.0 27.8 L2.0 37.8 C2.0 39.4 3.3 40.8 5.0 40.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 60.8 L49.0 60.8 C50.7 60.8 52.0 59.4 52.0 57.8 L52.0 47.8 C52.0 46.1 50.7 44.8 49.0 44.8 L5.0 44.8 C3.3 44.8 2.0 46.1 2.0 47.8 L2.0 57.8 C2.0 59.4 3.3 60.8 5.0 60.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 40.8 L299.0 40.8 C300.7 40.8 302.0 39.4 302.0 37.8 L302.0 27.8 C302.0 26.1 300.7 24.8 299.0 24.8 L255.0 24.8 C253.3 24.8 252.0 26.1 252.0 27.8 L252.0 37.8 C252.0 39.4 253.3 40.8 255.0 40.8 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 60.8 L299.0 60.8 C300.7 60.8 302.0 59.4 302.0 57.8 L302.0 47.8 C302.0 46.1 300.7 44.8 299.0 44.8 L255.0 44.8 C253.3 44.8 252.0 46.1 252.0 47.8 L252.0 57.8 C252.0 59.4 253.3 60.8 255.0 60.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M362.0 54.8 L357.8 50.5 L356.0 55.4 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"70.3\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"73.3\" lengthAdjust=\"spacingAndGlyphs\">Without protection</text><text x=\"292.0\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"90.0\" lengthAdjust=\"spacingAndGlyphs\">With single-flight / lock</text><text x=\"19.2\" y=\"35.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 1</text><text x=\"269.2\" y=\"35.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 1</text><text x=\"19.2\" y=\"55.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 2</text><text x=\"269.2\" y=\"55.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 2</text><text x=\"384.7\" y=\"53.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"34.7\" lengthAdjust=\"spacingAndGlyphs\">one rebuild</text><text x=\"153.3\" y=\"58.8\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"27.4\" lengthAdjust=\"spacingAndGlyphs\">DB hit by</text><text x=\"385.0\" y=\"62.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"34.0\" lengthAdjust=\"spacingAndGlyphs\">then cache</text><text x=\"151.5\" y=\"67.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"31.0\" lengthAdjust=\"spacingAndGlyphs\">4 identical</text><text x=\"19.2\" y=\"75.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 3</text><text x=\"156.0\" y=\"75.3\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"22.0\" lengthAdjust=\"spacingAndGlyphs\">queries</text><text x=\"269.2\" y=\"75.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 3</text><text x=\"19.2\" y=\"95.0\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"15.5\" lengthAdjust=\"spacingAndGlyphs\">req 4</text><text x=\"282.9\" y=\"96.8\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"108.2\" lengthAdjust=\"spacingAndGlyphs\">others wait briefly or get stale data</text></svg>",
+          "width": 444,
+          "caption": "A hot key expires; without protection every waiting request queries the database, with a lock only one request rebuilds the value while the others wait or use the stale copy.",
+          "alt": "Without protection With single-flight / lock | req 1 req 1 | req 2 req 2 one rebuild | DB hit by | then cache | 4 identical | req 3 queries req 3 | req 4 others wait briefly or get stale data"
+        },
+        {
+          "type": "markdown",
+          "text": "Picture the product page of a popular item, read 5,000 times a second. Its cache entry has a 10 minute TTL and the database query takes 200 ms. At the instant the key expires, the next request misses and starts the 200 ms query. During those 200 ms another 1,000 requests arrive, they also miss, and each starts the same query. The database suddenly runs 1,000 identical heavy queries in parallel, gets slower, which lengthens the window, and which brings in even more requests. A single expiry has become an outage.\n\nAll the cures reduce the number of concurrent rebuilds of one key to one (or close to it).\n\n#### Cure 1: single-flight with a lock\n\nOn a miss, take a short lock with `SET lock:product:1042 token NX PX 5000`. The winner loads from the database and fills the cache. The losers either wait a few milliseconds and re-read the cache, or return a stale value."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\nimport java.time.Duration;\nimport java.util.Optional;\nimport java.util.UUID;\nimport java.util.function.Supplier;\nimport org.springframework.data.redis.core.StringRedisTemplate;\npublic class StampedeGuard {\n    private final StringRedisTemplate redis;\n    public StampedeGuard(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    /** Returns the cached string, or rebuilds it once across all instances. */\n    public String getOrLoad(String key, Duration ttl, Supplier<String> loader)\n            throws InterruptedException {\n        for (int attempt = 0; attempt < 20; attempt++) {\n            String cached = redis.opsForValue().get(key);\n            if (cached != null) {\n                return cached;\n            }\n            String lockKey = \"lock:\" + key;\n            String token = UUID.randomUUID().toString();\n            Boolean won = redis.opsForValue()\n                .setIfAbsent(lockKey, token, Duration.ofSeconds(5));\n            if (Boolean.TRUE.equals(won)) {\n                try {\n                    String again = redis.opsForValue().get(key);   // double-check after winning\n                    if (again != null) {\n                        return again;                              // someone filled it meanwhile\n                    }\n                    String value = loader.get();                 // only the winner hits the DB\n                    redis.opsForValue().set(key, value, ttl);\n                    return value;\n                } finally {\n                    // release only our own lock (compare-and-delete, see the locks chapter)\n                    if (token.equals(redis.opsForValue().get(lockKey))) {\n                        redis.delete(lockKey);\n                    }\n                }\n            }\n            Thread.sleep(25 + (long) (Math.random() * 25));       // lost: wait, then re-read\n        }\n        return loader.get();   // lock holder is slow or dead: fall back to loading directly\n    }\n}",
+          "title": "StampedeGuard.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- After winning the lock the code reads the cache **again**. A caller may have seen a miss, been slow, and taken the lock just after another winner filled the cache and released it; the second read stops that caller from rebuilding a value that already exists.\n- The lock has its own TTL (5 seconds). If the winner crashes, the lock disappears by itself and another request takes over.\n- Losers wait with a small random sleep and re-read the cache instead of querying the database. After a bounded number of attempts they fall back to loading directly, so a stuck lock cannot block users forever.\n- The `get`-then-`delete` release in `finally` is not atomic. It is acceptable here because the lock only protects an optimisation, but the locks chapter shows the correct Lua (or `DELEX`) release for cases where it matters.\n- `Thread.sleep` blocks a platform thread; with virtual threads on Java 21 (Spring Boot 4 can enable them) that is cheap.\n\nSpring's `@Cacheable(sync = true)` gives the same protection **inside one JVM** (a per-key lock in the cache abstraction). With ten application instances you still get up to ten concurrent rebuilds, which is usually fine. Use a distributed lock like the above when the rebuild is truly expensive.\n\n#### Cure 2: probabilistic early expiration\n\nInstead of waiting for the key to expire, each reader flips a weighted coin and sometimes refreshes the value *early*. The nearer the expiry, the likelier the refresh. This is the \"XFetch\" algorithm from a 2015 paper on optimal probabilistic cache stampede prevention. The decision rule is:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "refresh now if:   now - delta * beta * ln(random()) >= expiry\ndelta  = how long the recompute took (measured when you stored the value)\nbeta   = tuning factor, 1.0 is a good default\nrandom() in (0, 1]; ln(random()) is negative, so the term adds a random head start"
+        },
+        {
+          "type": "markdown",
+          "text": "Store `delta` (the recompute time) and the expiry timestamp alongside the value, for instance as fields of a JSON wrapper. Slow rebuilds start earlier, fast ones later, and you need no lock at all, because the chance that many readers pick the same instant is tiny. The drawback is that it spends extra recomputations, and the logic is more intricate than a lock.\n\n#### Cure 3: serve stale, refresh in the background\n\nStore the value with a **soft TTL** inside the payload and a **longer hard TTL** on the key (for example 5 minutes soft, 30 minutes hard). Readers always get a value; when the soft deadline has passed, one reader (chosen by a short `SET NX`) starts an asynchronous refresh and everybody continues to be served the old value. This is the stale-while-revalidate behaviour from the previous chapter, and for read-heavy hot keys it is the most user-friendly option because nobody waits. It trades a bounded amount of staleness for latency.\n\n#### Cure 4: never expire the hot keys\n\nFor a small, known set of keys (home page, top 100 products) you can store them *without* a TTL and refresh them from a scheduled job or on change events. This eliminates the expiry moment entirely but makes a refresh failure a staleness problem, so add monitoring on the age of the data.\n\n### Cache penetration\n\nPenetration means the cache cannot help because the requested key **does not exist** in the database either. A request for `product:999999999` misses in Redis, misses in the database, and there is nothing to cache, so the next request repeats the same expensive trip. This happens with innocent bugs (a bad link), crawlers, and deliberately with an attack: a script requests random ids, and every request goes to the database.\n\n#### Cure 1: negative caching\n\nCache the *absence*. When the database returns nothing, store a small sentinel for a short time:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.Optional;\n\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport tools.jackson.databind.json.JsonMapper;\n\npublic class NegativeCaching {\n\n    private static final String NOT_FOUND = \"__NULL__\";\n\n    private final StringRedisTemplate redis;\n    private final JsonMapper json;\n    private final ProductRepository repository;\n\n    public NegativeCaching(StringRedisTemplate redis, JsonMapper json,\n                           ProductRepository repository) {\n        this.redis = redis;\n        this.json = json;\n        this.repository = repository;\n    }\n\n    public Optional<ProductView> find(long id) {\n        String key = \"shopstream:v1:product:\" + id;\n        String cached = redis.opsForValue().get(key);\n        if (NOT_FOUND.equals(cached)) {\n            return Optional.empty();                               // known to be missing\n        }\n        if (cached != null) {\n            return Optional.of(json.readValue(cached, ProductView.class));\n        }\n        Optional<ProductView> loaded = repository.findViewById(id);\n        if (loaded.isPresent()) {\n            redis.opsForValue().set(key, json.writeValueAsString(loaded.get()),\n                Duration.ofMinutes(10));\n        } else {\n            redis.opsForValue().set(key, NOT_FOUND, Duration.ofSeconds(45)); // short TTL\n        }\n        return loaded;\n    }\n}",
+          "title": "NegativeCaching.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Keep the negative TTL **short** (30 to 60 seconds): the product may be created a moment later, and a long negative entry would hide it. When you create the entity, delete the negative entry. The drawback of negative caching is memory: an attacker who requests a million different random ids creates a million small keys. Combine it with input validation and rate limiting, and consider the next cure.\n\n#### Cure 2: Bloom filter\n\nA **Bloom filter** is a compact probabilistic set. It answers \"is this id possibly in the set?\" with either **definitely not** or **probably yes**. It never gives a false negative for items added to it, and rarely gives a false positive. Redis 8 includes Bloom filters as a built-in data type (`BF.RESERVE`, `BF.ADD`, `BF.EXISTS`), no module needed. Fill the filter with all valid product ids at startup and on every create; check it before touching the cache or database."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> BF.RESERVE bf:product:ids 0.001 1000000\nOK\n127.0.0.1:6379> BF.ADD bf:product:ids 1042\n(integer) 1\n127.0.0.1:6379> BF.EXISTS bf:product:ids 1042\n(integer) 1\n127.0.0.1:6379> BF.EXISTS bf:product:ids 999999999\n(integer) 0",
+          "title": "A Bloom filter guarding product ids"
+        },
+        {
+          "type": "markdown",
+          "text": "`BF.RESERVE key error_rate capacity` creates a filter sized for a given false positive rate (0.001 = 0.1%) and expected number of items. If the answer is `0`, return \"not found\" immediately without any lookup. If it is `1`, proceed to the cache and the database; the 0.1% of false positives still cost one lookup, which is harmless. The costs of a Bloom filter are that deletions are not supported in the standard variant (use a Cuckoo filter if you need deletes), and that it must be filled completely and kept in step with the database. The details of probabilistic structures are in the data structures Part.\n\n#### Cure 3: validate before you look up\n\nMany penetration requests are malformed: negative ids, ids outside the range your sequence generator has ever produced, strings where numbers belong. Reject them at the controller. Combined with rate limiting (see the rate limiting chapter later in this Part) this is cheap and removes the easy attacks.\n\n### Cache avalanche\n\nAn **avalanche** is a stampede of many keys at once. Two typical causes:\n\n1. **Mass expiry.** You warm the cache with 200,000 products, all with `EX 3600`. An hour later, all of them expire in the same second and the database receives the entire catalogue load.\n2. **Cache outage.** Redis restarts without persistence, or its node dies and a replica takes over late, or the network drops. The cache is empty or unreachable and every request goes to the database.\n\nDefences:\n\n- **TTL jitter:** add a random component to every TTL (`3600 + random(0, 600)` seconds). Cheap and always worth doing, as the `ProductCache` example does.\n- **Staggered warm-up:** warm in batches with pauses and different TTLs.\n- **High availability for Redis:** replication with Sentinel or Cluster, so that a single node failure does not empty the cache (see the scaling Part). Persistence, so a restart loads data from disk.\n- **Protect the database:** rate limits or a concurrency limit (bulkhead) in front of the database, plus a circuit breaker that returns a degraded response (stale data, a placeholder) when the database is overloaded. It is better to serve 80% of users well than 100% of users with timeouts.\n- **Multi-level caching:** a small in-process cache with a short TTL absorbs the first shock when Redis is cold; see the multi-level caching chapter.\n\n### Hot keys\n\nA **hot key** is a single key that receives a disproportionate share of traffic: the product of a viral advertisement, the feature-flag document read on every request, the leaderboard top 10. A Redis instance executes commands on one thread; a cluster hashes a key to exactly one shard. So one key can saturate one node's CPU or network card while other nodes sit idle, and adding shards does not help.\n\nDetect hot keys with `redis-cli --hotkeys` (requires an LFU `maxmemory-policy`), with `MONITOR` briefly on a test system (never casually on a busy production server), or with the `HOTKEYS` command in Redis 8.6, which is designed for exactly this (check its page in the command reference of your version for its options). Your application metrics, which count lookups per key prefix, are often the most practical tool.\n\nCures:\n\n- **Local copy:** keep the hot value in the application's memory for a few seconds (Caffeine) so most reads never reach Redis. This is the best single fix for read-hot keys. The next chapters on multi-level caching and client-side caching build on it.\n- **Replicate the key under several names:** store the value as `home:featured:0` to `home:featured:7` and have each client read a random suffix. In Cluster mode the eight keys land on different slots and therefore possibly different shards. You must update all copies on change.\n- **Read from replicas** for read-hot keys, accepting replication lag.\n- **Split a hot counter:** for write-hot counters, shard the counter (`views:1042:0..7`) and sum on read.\n\n### Big keys\n\nA **big key** is one that holds a very large value: a string of tens of megabytes, a hash with millions of fields, a list or sorted set with millions of members. Because Redis executes commands one at a time on the main thread, an operation that touches the whole key (`HGETALL`, `SMEMBERS`, `LRANGE 0 -1`, `DEL`) blocks every other client for the duration, and ships a huge reply across the network. Replication, persistence and key migration between cluster nodes also suffer. A deletion of a 10 million element collection with `DEL` can stall the server for a noticeable time.\n\nCures:\n\n- **Prevent:** cap the size of collections that grow with user activity (trim lists with `LTRIM`, bound sorted sets, expire old fields), and never cache a \"whole table\" as one value.\n- **Split:** shard a big hash into buckets by `hash(field) mod N` (`cart-index:0` to `cart-index:63`), page a big list into chunks.\n- **Compress** large text values (gzip or LZ4) before storing, if CPU is cheaper than memory and bandwidth for you.\n- **Delete without blocking:** use `UNLINK` instead of `DEL` (it frees memory in a background thread), and iterate with `SSCAN`, `HSCAN`, `ZSCAN` in batches.\n- **Find them:** `redis-cli --bigkeys` scans and reports the biggest key per type; `--memkeys` reports by memory use; `MEMORY USAGE key SAMPLES 0` gives the size of one key.\n\n### Lab: prove the stampede guard works\n\nDo not trust a stampede guard you have not tried to break. This test starts 200 concurrent readers against an empty cache and counts how many times the (slow) loader runs. Without protection the count is close to 200; with the `StampedeGuard` from earlier it should be 1 on a single Redis. It uses virtual threads from Java 21, which make hundreds of blocked callers cheap."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport java.time.Duration;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\nimport java.util.concurrent.atomic.AtomicInteger;\n\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.data.redis.core.StringRedisTemplate;\n\n@SpringBootTest\nclass StampedeGuardTest {\n\n    @Autowired\n    StringRedisTemplate redis;\n\n    @Test\n    void onlyOneCallerRebuildsTheValue() throws Exception {\n        redis.delete(\"demo:hot\");\n        StampedeGuard guard = new StampedeGuard(redis);\n        AtomicInteger loaderCalls = new AtomicInteger();\n\n        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {\n            List<Future<String>> results = new ArrayList<>();\n            for (int i = 0; i < 200; i++) {\n                results.add(pool.submit(() -> guard.getOrLoad(\"demo:hot\",\n                    Duration.ofSeconds(30), () -> {\n                    loaderCalls.incrementAndGet();\n                    sleep(300);                       // pretend the database query is slow\n                    return \"value\";\n                })));\n            }\n            for (Future<String> f : results) {\n                assertEquals(\"value\", f.get());\n            }\n        }\n        assertEquals(1, loaderCalls.get());\n    }\n\n    private static void sleep(long millis) {\n        try {\n            Thread.sleep(millis);\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n    }\n}",
+          "title": "StampedeGuardTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If the assertion fails with 2 or 3 loader calls, check the double-check inside the lock: without it, a caller that saw a miss just before the winner stored the value can take the lock right after the winner released it and rebuild the value again. Even with it, \"one rebuild per expiry instead of hundreds\" is the goal rather than a hard guarantee, because a lock that expires during a slow load lets a second caller in.\n\n### Signals that tell you the cache is in trouble\n\nEach failure mode leaves a fingerprint in metrics. Put these on a dashboard and alert on them before users complain."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "First check"
+          ],
+          "rows": [
+            [
+              "Database query rate spikes at regular intervals, matching a TTL",
+              "Stampede or avalanche on a popular key set",
+              "Compare spike period with TTLs; look at jitter and rebuild locking"
+            ],
+            [
+              "Miss rate high, but the same missing ids repeat in the logs",
+              "Penetration",
+              "Top missing keys; add negative caching or a Bloom filter"
+            ],
+            [
+              "`evicted_keys` rising steadily in `INFO stats`",
+              "Cache too small for the working set, or no TTL on junk keys",
+              "`used_memory`, `maxmemory`, key TTL coverage"
+            ],
+            [
+              "One Redis node at high CPU while the others idle",
+              "Hot key in a cluster",
+              "`redis-cli --hotkeys` (LFU policy) or the key-level metrics of your app"
+            ],
+            [
+              "Latency spikes in Redis and `slowlog` shows `HGETALL`, `SMEMBERS` or `DEL`",
+              "Big key",
+              "`redis-cli --bigkeys`, `MEMORY USAGE`"
+            ],
+            [
+              "Hit ratio drops after each deployment",
+              "Cache key schema version changed, cold cache",
+              "Warm-up job; roll out version changes gradually"
+            ]
+          ],
+          "caption": "Symptoms and the failure mode they suggest."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not rely on a single mitigation. A real incident combines modes: an avalanche (mass expiry) turns the hottest keys into stampedes, and the database overload makes every rebuild slower. Layer the defences: jittered TTLs, single-flight on rebuilds, negative caching, rate limits in front of the database, and monitoring that shows the miss rate before the database pages you."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Distinguish cache penetration, breakdown (stampede) and avalanche. Penetration: the key does not exist anywhere, so every request goes through to the database; cure with negative caching and a Bloom filter. Breakdown or stampede: one hot key expires and many concurrent requests rebuild it; cure with a lock or single-flight, or early refresh. Avalanche: many keys expire at once or the cache is down; cure with TTL jitter, high availability, and protecting the database with rate limits and circuit breakers."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Cache failure modes\n\n- Stampede: one hot key, many concurrent rebuilds. Use a TTL-bound lock (single-flight), probabilistic early refresh or serve-stale-and-refresh.\n- Penetration: nonexistent keys. Use short negative caching, a Bloom filter (built in since Redis 8) and input validation.\n- Avalanche: many keys expire together, or Redis disappears. Jitter TTLs, keep Redis highly available, protect the database.\n- Hot key: one node is the bottleneck. Add a local copy, key replicas with suffixes, or split the counter.\n- Big key: operations block the single command thread. Split, bound and `UNLINK`; find them with `--bigkeys`."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-7",
+      "type": "concept",
+      "title": "Distributed locks",
+      "subtopicId": "8-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Inside one JVM you protect shared state with `synchronized` or a `ReentrantLock`. When the same code runs on ten instances of a service, those locks protect nothing across processes. A **distributed lock** is a mutual-exclusion primitive that lives outside the application so that only one process at a time enters a critical section: \"only one instance runs the nightly price import\", \"only one worker processes order 42\", \"only one request rebuilds this cache entry\".\n\nRedis is a popular lock service because it is fast and already deployed. But a lock built on Redis is easy to get subtly wrong, and the honest summary of the whole field is: **a distributed lock is a way to reduce duplicate work, and it** **is only a correctness guarantee if the protected resource cooperates**. This chapter builds the lock step by step, shows where it breaks, and tells you when to avoid it."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 421.6 134.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M206.0 112.0 L348.0 112.0 C350.2 112.0 352.0 110.2 352.0 108.0 L352.0 6.0 C352.0 3.8 350.2 2.0 348.0 2.0 L206.0 2.0 C203.8 2.0 202.0 3.8 202.0 6.0 L202.0 108.0 C202.0 110.2 203.8 112.0 206.0 112.0 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.0 19.0 L202.0 40.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 69.0 L202.0 52.0\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 32.0 L69.0 32.0 C70.7 32.0 72.0 30.7 72.0 29.0 L72.0 9.0 C72.0 7.3 70.7 6.0 69.0 6.0 L5.0 6.0 C3.3 6.0 2.0 7.3 2.0 9.0 L2.0 29.0 C2.0 30.7 3.3 32.0 5.0 32.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 82.0 L69.0 82.0 C70.7 82.0 72.0 80.7 72.0 79.0 L72.0 59.0 C72.0 57.3 70.7 56.0 69.0 56.0 L5.0 56.0 C3.3 56.0 2.0 57.3 2.0 59.0 L2.0 79.0 C2.0 80.7 3.3 82.0 5.0 82.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M217.0 62.0 L337.0 62.0 C338.7 62.0 340.0 60.7 340.0 59.0 L340.0 43.0 C340.0 41.3 338.7 40.0 337.0 40.0 L217.0 40.0 C215.3 40.0 214.0 41.3 214.0 43.0 L214.0 59.0 C214.0 60.7 215.3 62.0 217.0 62.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M202.0 40.0 L197.1 36.6 L196.3 41.7 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M202.0 52.0 L196.3 50.1 L197.0 55.3 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M217.0 102.0 L337.0 102.0 C338.7 102.0 340.0 100.7 340.0 99.0 L340.0 77.0 C340.0 75.3 338.7 74.0 337.0 74.0 L217.0 74.0 C215.3 74.0 214.0 75.3 214.0 77.0 L214.0 99.0 C214.0 100.7 215.3 102.0 217.0 102.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"265.3\" y=\"13.0\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"23.4\" lengthAdjust=\"spacingAndGlyphs\">Redis</text><text x=\"24.0\" y=\"21.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"25.9\" lengthAdjust=\"spacingAndGlyphs\">Client A</text><text x=\"97.9\" y=\"20.0\" font-size=\"6.6\" fill=\"#a6c4e8\" textLength=\"64.3\" lengthAdjust=\"spacingAndGlyphs\">SET NX PX 30000: OK</text><text x=\"368.4\" y=\"42.0\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"51.2\" lengthAdjust=\"spacingAndGlyphs\">if A dies, the TTL</text><text x=\"243.3\" y=\"53.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"67.3\" lengthAdjust=\"spacingAndGlyphs\">lock:order:7 = tokenA</text><text x=\"373.2\" y=\"52.0\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"41.7\" lengthAdjust=\"spacingAndGlyphs\">frees the lock</text><text x=\"24.0\" y=\"71.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.0\" lengthAdjust=\"spacingAndGlyphs\">Client B</text><text x=\"102.4\" y=\"78.0\" font-size=\"6.6\" fill=\"#99edf4\" textLength=\"55.3\" lengthAdjust=\"spacingAndGlyphs\">SET NX: (nil), retry</text><text x=\"247.6\" y=\"86.1\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"58.7\" lengthAdjust=\"spacingAndGlyphs\">release: Lua checks</text><text x=\"253.2\" y=\"94.4\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"47.6\" lengthAdjust=\"spacingAndGlyphs\">token, then DEL</text></svg>",
+          "width": 422,
+          "caption": "Acquire with SET NX PX and a unique token, do the work, release with a script that deletes the key only if the token still matches.",
+          "alt": "Redis | Client A SET NX PX 30000: OK | if A dies, the TTL | lock:order:7 = tokenA frees the lock | Client B | SET NX: (nil), retry | release: Lua checks | token, then DEL"
+        },
+        {
+          "type": "markdown",
+          "text": "### The basic lock: SET NX PX\n\nThe primitive is a single command:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET lock:order:42 \"worker-7:3f9c1a\" NX PX 30000\nOK\n127.0.0.1:6379> SET lock:order:42 \"worker-9:77b2e0\" NX PX 30000\n(nil)\n127.0.0.1:6379> PTTL lock:order:42\n(integer) 28431",
+          "title": "Acquire a lock for 30 seconds"
+        },
+        {
+          "type": "markdown",
+          "text": "Each part has a purpose:\n\n- `NX` means \"only set if the key does not exist\". Redis executes commands one at a time, so exactly one concurrent caller gets `OK`; the others get `(nil)`. This is the mutual exclusion.\n- `PX 30000` sets an expiry of 30,000 milliseconds **in the same atomic command**. If the holder crashes, the lock vanishes by itself and the system recovers. Setting the key and then calling `EXPIRE` as two commands is a classic bug: a crash between them leaves a lock that never expires.\n- The **value is a random unique token** (a UUID, or worker id plus random), identifying *who* holds the lock. It is essential for safe release, as the next section shows.\n\n### Releasing safely: compare, then delete\n\nThe naive release is `DEL lock:order:42`. It is dangerous. Consider this sequence:\n\n1. Worker A takes the lock with a 30 second TTL.\n2. A is slow (a long database call, a garbage collection pause). The 30 seconds pass; the lock **expires**.\n3. Worker B acquires the lock.\n4. A finishes and calls `DEL`. It deletes **B's** lock.\n5. Worker C acquires the lock while B is still working. Now two workers are inside the critical section.\n\nThe fix is to delete the key only if it still holds *your* token. \"Read the value, compare, delete\" must be atomic, so it runs as a Lua script:"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "if redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('DEL', KEYS[1])\nelse\n  return 0\nend",
+          "title": "unlock.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "In Redis 8.4 and later there is a native command that does the same thing:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> DELEX lock:order:42 IFEQ \"worker-7:3f9c1a\"\n(integer) 1\n127.0.0.1:6379> DELEX lock:order:42 IFEQ \"worker-7:3f9c1a\"\n(integer) 0",
+          "title": "Compare-and-delete with DELEX (Redis 8.4+)"
+        },
+        {
+          "type": "markdown",
+          "text": "`DELEX key IFEQ value` deletes the key only if the stored string equals `value` and returns `1` if it deleted, `0` otherwise. If your whole fleet runs a Redis version that has it, it replaces the script; otherwise keep the Lua version. The 8.4 `SET` command also gained `IFEQ`, which lets you extend a lock's TTL only if you still own it (`SET key token IFEQ token PX` `30000`), though check the command page for your exact version before depending on it. A Lua script for extension works everywhere:"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "if redis.call('GET', KEYS[1]) == ARGV[1] then\n  return redis.call('PEXPIRE', KEYS[1], ARGV[2])\nelse\n  return 0\nend",
+          "title": "extend.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "### A lock helper in Java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.locks;\n\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.Optional;\nimport java.util.UUID;\n\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\n\npublic class RedisLock {\n\n    private static final DefaultRedisScript<Long> UNLOCK = new DefaultRedisScript<>(\"\"\"\n        if redis.call('GET', KEYS[1]) == ARGV[1] then\n          return redis.call('DEL', KEYS[1])\n        else\n          return 0\n        end\n        \"\"\", Long.class);\n\n    private final StringRedisTemplate redis;\n\n    public RedisLock(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    /** Returns a token if the lock was acquired, otherwise empty. */\n    public Optional<String> tryLock(String name, Duration ttl) {\n        String token = UUID.randomUUID().toString();\n        Boolean ok = redis.opsForValue().setIfAbsent(\"lock:\" + name, token, ttl);\n        return Boolean.TRUE.equals(ok) ? Optional.of(token) : Optional.empty();\n    }\n\n    /** Releases the lock only if we still own it. Returns true if we did. */\n    public boolean unlock(String name, String token) {\n        Long deleted = redis.execute(UNLOCK, List.of(\"lock:\" + name), token);\n        return deleted != null && deleted == 1L;\n    }\n}",
+          "title": "RedisLock.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.orders;\nimport java.time.Duration;\nimport java.util.Optional;\nimport com.shopstream.locks.RedisLock;\nimport org.springframework.stereotype.Service;\n@Service\npublic class OrderProcessor {\n    private final RedisLock lock;\n    public OrderProcessor(RedisLock lock) {\n        this.lock = lock;\n    }\n\n    public void process(long orderId) {\n        String name = \"order:\" + orderId;\n        Optional<String> token = lock.tryLock(name, Duration.ofSeconds(30));\n        if (token.isEmpty()) {\n            return;                       // someone else is on it: skip, retry later, or fail fast\n        }\n        try {\n            // do the work: must finish well inside the 30 seconds\n        } finally {\n            lock.unlock(name, token.get());\n        }\n    }\n}",
+          "title": "OrderProcessor.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `setIfAbsent(key, value, Duration)` is `SET key value NX PX ...` underneath.\n- The script is a constant sent by hash after the first call (`EVALSHA`), so the release is one cheap round trip.\n- `tryLock` does not wait. A waiting variant loops with a small sleep and a deadline; never spin without a pause and without a limit.\n- The work inside the lock must be much shorter than the TTL, and the code must be written knowing the lock *can* expire underneath it. Which brings us to the real problem.\n\n### The fundamental problem: the lock can expire while you still think you hold\n\n### it\n\nA lock with a TTL is a **lease**: the holder has the right to the resource only for a limited time. If the holder pauses longer than the lease (a long GC pause, a stalled VM, a slow network call, a blocked thread), the lock expires, someone else takes it, and the original holder wakes up *still believing it owns the lock*. No amount of care in the unlock code fixes this, because the holder does not know that time passed.\n\nTwo defences exist, and they solve different parts of the problem.\n\n#### Defence 1: renewal (watchdog)\n\nA background task extends the lease while the work is in progress: every third of the TTL, run the extend script above; stop when the work finishes. If the holder process dies, the renewals stop and the lock expires, which is what you want. Redisson's `RLock` does this automatically (below). Renewal makes expiry during normal slow work unlikely. It does **not** help against a process that is paused entirely, because a paused process also pauses its watchdog.\n\n#### Defence 2: fencing tokens\n\nA **fencing token** is a number that increases every time the lock is granted. The holder sends the token with every write to the protected resource, and the resource **rejects any request carrying a token lower than one it has** **already seen**. A delayed old holder wakes up, sends its old token, and the resource refuses it. This is the only approach that stays safe even when the lock expires unnoticed, but it needs the resource (the database, a storage service) to check tokens. With a relational database it is easy: keep a `last_token` column and update `WHERE` `last_token < ?`.\n\nRedis can mint the token if acquire is atomic with the increment, so use a script:"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = lock key, KEYS[2] = fence counter key\n-- ARGV[1] = owner token, ARGV[2] = ttl in ms\nif redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2]) then\n  return redis.call('INCR', KEYS[2])    -- returns the fencing token (1, 2, 3, ...)\nelse\n  return 0                              -- not acquired\nend",
+          "title": "acquire_with_fence.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "In a Redis Cluster both keys must be in the same slot, so give them a shared hash tag: `{order:42}:lock` and `{order:42}:fence`. Note also that after a failover to a replica that missed the last increment, the counter could go backwards, so Redis counters are a pragmatic fencing source, not a mathematically perfect one. A database sequence is stronger when you have one.\n\n### Redlock and the debate\n\nA single Redis node (or a primary with asynchronous replicas) has one more weakness: if the primary dies right after granting a lock and before replicating the key, the promoted replica does not know about the lock, and a second client can acquire it. For a lock that must tolerate that, the Redis documentation describes the **Redlock** algorithm. Roughly:\n\n1. Take the current time.\n2. Try to acquire the lock (same key, same random token, short TTL) on each of **N independent Redis primaries** (typically 5), one after the other, with a small per-node timeout.\n3. The lock is acquired if it was obtained on a **majority** (at least 3 of 5) *and* the elapsed time is less than the lock TTL. The remaining validity is the TTL minus the elapsed time minus a small allowance for clock drift.\n4. If acquisition failed, release the lock on all nodes.\n\nThe nodes are independent: separate machines, no replication between them.\n\nThe algorithm was publicly criticised by Martin Kleppmann, a distributed systems researcher, and defended by Redis's creator Salvatore Sanfilippo. In neutral summary: Kleppmann's argument is that Redlock's safety depends on timing assumptions (bounded process pauses, bounded network delay, reasonably accurate clocks) that real systems violate, so it cannot give correctness when a client pauses after acquiring the lock, and it provides no fencing token; for correctness he recommends a consensus-based system with fencing, and for efficiency a single Redis node is enough. The defenders answered that the algorithm explicitly accounts for elapsed time and drift, and that the pause problem affects every lease-based lock, including those built on consensus systems, unless the resource also cooperates through fencing. Both sides agree on the practical point: **if a duplicate execution would be a correctness** **disaster, the lock alone is not enough; the resource must defend itself** (fencing, unique constraints, idempotent operations).\n\nA guideline that follows from the debate:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Purpose",
+            "Meaning",
+            "Reasonable tool"
+          ],
+          "rows": [
+            [
+              "Efficiency",
+              "A duplicate run wastes work but does no harm (rebuild a cache entry, run a report twice)",
+              "Single-node `SET NX PX` with token; Redisson `RLock`"
+            ],
+            [
+              "Correctness, soft",
+              "A duplicate causes inconsistency that you can repair",
+              "Lock plus idempotent operations and unique constraints"
+            ],
+            [
+              "Correctness, hard",
+              "A duplicate causes money or data loss",
+              "Do not rely on Redis locks alone: database constraints or row locks, fencing tokens, or a consensus system"
+            ]
+          ],
+          "caption": "Which lock for which purpose."
+        },
+        {
+          "type": "markdown",
+          "text": "### Redisson RLock\n\nRedisson (a Java client covered in the Java clients Part) implements locks and the watchdog for you. `RLock` is reentrant (the same thread can lock again), works across JVMs, and when you do not specify a lease time it uses a **watchdog**: the lock is held for `lockWatchdogTimeout` (30 seconds by default) and automatically extended while the owning thread is alive."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.orders;\nimport java.util.concurrent.TimeUnit;\nimport org.redisson.api.RLock;\nimport org.redisson.api.RedissonClient;\nimport org.springframework.stereotype.Service;\n@Service\npublic class RedissonOrderProcessor {\n    private final RedissonClient redisson;\n    public RedissonOrderProcessor(RedissonClient redisson) {\n        this.redisson = redisson;\n    }\n\n    public void process(long orderId) throws InterruptedException {\n        RLock lock = redisson.getLock(\"lock:order:\" + orderId);\n        // wait up to 2 seconds to get the lock; no lease time => watchdog keeps it alive\n        if (!lock.tryLock(2, TimeUnit.SECONDS)) {\n            return;                               // could not get it in time\n        }\n        try {\n            // critical section\n        } finally {\n            if (lock.isHeldByCurrentThread()) {\n                lock.unlock();\n            }\n        }\n    }\n}",
+          "title": "RedissonOrderProcessor.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If you pass an explicit lease time (`tryLock(wait, lease, unit)`), the watchdog is **not** used and the lock expires after the lease, which is the right choice when you want a hard upper bound. Redisson also provides a `RedissonMultiLock` and a Redlock-style lock across several Redis instances in its API; check the Redisson documentation for the current status and licensing of each feature before choosing it, since some features are in the paid edition. Also note that Redisson's lock is a Redis hash with a Lua-managed owner id and count, so it is not the simple string key shown above.\n\n### Waiting for a lock without hammering Redis\n\n`tryLock` returns immediately. Sometimes you want to **wait** a bounded time for the lock. The naive way is a tight loop of `SET NX`, which sends thousands of useless commands a second when the lock is busy. Use a sleep with exponential backoff and jitter, and a hard deadline:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.locks;\n\nimport java.time.Duration;\nimport java.util.Optional;\nimport java.util.concurrent.ThreadLocalRandom;\n\npublic class WaitingLock {\n\n    private final RedisLock lock;\n\n    public WaitingLock(RedisLock lock) {\n        this.lock = lock;\n    }\n\n    public Optional<String> lockWithin(String name, Duration ttl, Duration maxWait)\n            throws InterruptedException {\n        long deadline = System.nanoTime() + maxWait.toNanos();\n        long sleepMillis = 10;\n        while (System.nanoTime() < deadline) {\n            Optional<String> token = lock.tryLock(name, ttl);\n            if (token.isPresent()) {\n                return token;\n            }\n            long jitter = ThreadLocalRandom.current().nextLong(sleepMillis / 2 + 1);\n            Thread.sleep(sleepMillis + jitter);\n            sleepMillis = Math.min(sleepMillis * 2, 200);     // back off, but cap the pause\n        }\n        return Optional.empty();\n    }\n}",
+          "title": "WaitingLock.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Redisson avoids polling: its lock waiters subscribe to a pub/sub channel and are woken when the holder releases the lock, which is a better design when many callers contend for one lock.\n\n### A renewing lease for scheduled jobs\n\nA common real use is \"run this scheduled job on exactly one instance\". The job may take longer than any TTL you would like to commit to up front, so the holder renews the lease while it works. This sketch uses the extend script and a scheduled executor. If a renewal reports that the lock is no longer ours, the job must stop, because someone else may now be running it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.locks;\n\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.ScheduledExecutorService;\nimport java.util.concurrent.ScheduledFuture;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicBoolean;\n\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\n\npublic class LeaseHolder implements AutoCloseable {\n\n    private static final DefaultRedisScript<Long> EXTEND = new DefaultRedisScript<>(\"\"\"\n        if redis.call('GET', KEYS[1]) == ARGV[1] then\n          return redis.call('PEXPIRE', KEYS[1], ARGV[2])\n        else\n          return 0\n        end\n        \"\"\", Long.class);\n\n    private final ScheduledExecutorService scheduler =\n        Executors.newSingleThreadScheduledExecutor();\n    private final AtomicBoolean lost = new AtomicBoolean(false);\n    private final ScheduledFuture<?> renewal;\n\n    public LeaseHolder(StringRedisTemplate redis, String key, String token, Duration ttl) {\n        long ttlMillis = ttl.toMillis();\n        this.renewal = scheduler.scheduleAtFixedRate(() -> {\n            Long ok = redis.execute(EXTEND, List.of(key), token, String.valueOf(ttlMillis));\n            if (ok == null || ok == 0L) {\n                lost.set(true);                    // we no longer own the lock\n                renewal().cancel(false);\n            }\n        }, ttlMillis / 3, ttlMillis / 3, TimeUnit.MILLISECONDS);\n    }\n\n    private ScheduledFuture<?> renewal() {\n        return renewal;\n    }\n\n    /** The job should check this between steps and stop when it turns true. */\n    public boolean isLost() {\n        return lost.get();\n    }\n\n    @Override\n    public void close() {\n        scheduler.shutdownNow();\n    }\n}",
+          "title": "LeaseHolder.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Renewal runs at one third of the TTL, so two consecutive renewals can fail before the lease expires.\n- `isLost()` is cooperative: the job must poll it. Nothing can forcibly stop code that does not look.\n- A Redis outage makes renewals fail (`ok == null`), which marks the lease as lost. That is the conservative choice: stop rather than risk a double run.\n- Closing the holder stops the renewals; the lock then expires on its own or is released explicitly with the safe unlock.\n\n### Lab: watch a lock being taken, refused, stolen and released\n\nOpen two terminals with `redis-cli` (call them A and B). This session shows exactly why the token check matters."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET lock:demo \"tokenA\" NX PX 3000\nOK",
+          "title": "Terminal A takes the lock with a short TTL"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET lock:demo \"tokenB\" NX PX 30000\n(nil)\n127.0.0.1:6379> SET lock:demo \"tokenB\" NX PX 30000\nOK",
+          "title": "Terminal B tries immediately, then again after the lease expired"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> DEL lock:demo\n(integer) 1\n127.0.0.1:6379> GET lock:demo\n(nil)",
+          "title": "Terminal A wakes up late and releases with a plain DEL (the bug)"
+        },
+        {
+          "type": "markdown",
+          "text": "A's late `DEL` removed B's lock; B still thinks it holds it. Now repeat the experiment with the safe release: in A use `EVAL` `\"if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end\" 1` `lock:demo tokenA` and observe that it returns `(integer) 0` when B owns the lock, leaving B's lock alone.\n\n### Failure scenarios and what they cost"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Event",
+            "What happens",
+            "Mitigation"
+          ],
+          "rows": [
+            [
+              "Holder crashes",
+              "Lock expires after the TTL; others proceed",
+              "Keep TTL short, renew while alive"
+            ],
+            [
+              "Holder pauses longer than the TTL",
+              "Two holders at once for a while",
+              "Fencing tokens or idempotent work"
+            ],
+            [
+              "Redis primary fails, replica promoted",
+              "The lock key may be missing on the replica; a second client can acquire it",
+              "Accept for efficiency locks; use constraints for correctness; consider `WAIT` as a partial mitigation"
+            ],
+            [
+              "Network partition around the client",
+              "Client cannot renew; the lock expires",
+              "Stop work when renewal fails"
+            ],
+            [
+              "Clock jumps on the Redis server",
+              "Expiry may fire early or late",
+              "Redis uses its own clock; keep time sync healthy, avoid long jumps"
+            ],
+            [
+              "Release called twice",
+              "Second call returns 0 and does nothing (with the token check)",
+              "None needed"
+            ]
+          ],
+          "caption": "How a Redis lock behaves when things go wrong."
+        },
+        {
+          "type": "markdown",
+          "text": "### When not to use a lock\n\nLocks are the heaviest tool for coordination. Before reaching for one, check whether a cheaper construction removes the need:\n\n- **Atomic single commands.** Decrementing stock with a Lua script or `DECR` is atomic by itself. No lock needed.\n- **Optimistic locking.** `WATCH`/`MULTI`/`EXEC` in Redis, or a `version` column in SQL (`UPDATE ... WHERE version = ?`), detects conflicting writers and retries instead of blocking.\n- **Unique constraints and idempotency keys.** Let the database reject the duplicate. \"Process payment for order 42\" guarded by a unique `(order_id, kind)` row is safer than any lock.\n- **Single consumer by design.** A stream consumer group delivers each entry to one consumer, so \"only one worker handles message X\" needs no lock.\n- **Leader election for scheduled jobs.** A `SET NX PX` lease with renewal is fine for \"only one pod runs the nightly import\", but libraries like ShedLock (a Spring-oriented scheduler lock) package exactly this for you.\n- **Partition the work** instead of locking it: route all events for one order to the same worker (by hash), and the worker handles them in order without cross-process locks."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Reentrancy and thread identity. A simple string-token lock like `RedisLock` is not reentrant: the same thread asking twice will fail the second time. Redisson locks are reentrant but tied to a thread id; with reactive code, thread hopping or virtual threads, check how the owner is identified before trusting unlock calls from a different thread."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never use a lock with no TTL, and never assume the TTL cannot elapse. A lock without expiry is held forever after one crash. A lock with an expiry is a lease that may end while you are still working. Design the critical section so a second concurrent run is harmless (idempotent steps, version checks, unique constraints), and use fencing tokens where it is not."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "A typical use in ShopStream is the \"rebuild once\" lock from the stampede section and a lease for the scheduled nightly catalogue import. Neither needs more than a single-node `SET NX PX` lock, because a rare double run only wastes effort. Stock reservations and payments use atomic Lua scripts and database constraints instead of locks."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you implement a distributed lock with Redis, and what can go wrong? Acquire with `SET key token NX PX ttl` (atomic, with a unique token and an expiry); release with a Lua script or `DELEX IFEQ` that deletes only if the token matches. Problems: the lock can expire while the holder is still working (GC pause, slow call), allowing two holders; a failover can lose a lock that was not yet replicated; clocks and pauses make timing assumptions unsafe. Mitigate with renewal (watchdog), fencing tokens checked by the resource, idempotent operations, and by not using a Redis lock as the only guard for money-critical work. Redlock extends the idea over several independent nodes but remains debated."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Distributed locks\n\n- Acquire with one atomic command: `SET key token NX PX ttl`; the token is random and unique per acquisition.\n- Release only if the token matches (Lua script, or `DELEX key IFEQ token` on Redis 8.4+); never plain `DEL`.\n- A lock with a TTL is a lease and may expire under a paused holder; renewal lowers the odds, fencing tokens checked by the resource remove the danger.\n- Redlock uses a majority of independent nodes; the Kleppmann/Sanfilippo debate shows that timing assumptions matter and the protected resource should defend itself.\n- Redisson's `RLock` gives reentrancy and a watchdog; an explicit lease time disables the watchdog.\n- Prefer atomic commands, optimistic concurrency, unique constraints and partitioning over locks when you can."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-8",
+      "type": "concept",
+      "title": "Rate limiting",
+      "subtopicId": "8-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every public API eventually meets a client that sends too much: a buggy retry loop, a scraper, a login form under a password-guessing attack, or simply one noisy tenant who starves everyone else. A **rate limiter** decides, for each incoming request, whether the caller is still within its allowance. If not, the service answers quickly and cheaply with `429 Too Many Requests` instead of doing the expensive work.\n\nRedis is the usual home for the counters because a rate limiter has three requirements that match Redis well. The state must be shared by every instance of your service (a counter in JVM memory only sees one instance). The check sits on the hot path of every request, so it must take well under a millisecond. And the state is disposable: counters expire by themselves, so TTLs do the cleanup.\n\nIn ShopStream, the gateway limits each client by IP address and each logged-in user by id. The keys look like `rl:{ip}:{route}`, and every algorithm below can use that naming.\n\n### What you must decide first\n\nBefore choosing an algorithm, answer four questions. They matter more than the algorithm.\n\n- **Who is limited?** An IP address (cheap, but shared by offices and mobile carriers behind NAT), a user id, an API key, a tenant, or a combination such as user plus route.\n- **What is the budget?** \"100 requests per minute\" is a rate; \"10 per second with bursts up to 50\" is a rate plus a burst allowance. Different algorithms express these differently.\n- **What does a rejected request cost?** Reject early and cheaply, ideally at the gateway, before authentication or database access.\n- **What if Redis is down? Fail open** (let traffic through, accept the risk) or **fail closed** (reject everything). A public catalogue endpoint should usually fail open; a login or payment endpoint under attack may prefer fail closed. Decide deliberately and write it down.\n\n### Fixed window counter\n\nThe simplest limiter: one counter per client per time window. Divide time into windows (for example, one minute), and count requests in the current window. When the count exceeds the limit, reject."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR rl:203.0.113.7:/api/search\n(integer) 1\n127.0.0.1:6379> EXPIRE rl:203.0.113.7:/api/search 60\n(integer) 1\n127.0.0.1:6379> INCR rl:203.0.113.7:/api/search\n(integer) 2",
+          "title": "Fixed window with INCR and EXPIRE"
+        },
+        {
+          "type": "markdown",
+          "text": "The first request creates the key (`INCR` treats a missing key as 0) and sets a 60 second TTL. Every following request in that window only increments. When the key expires, the next request starts a new window. `INCR` is atomic, so two instances can never lose an update.\n\nThere is one subtle bug in this two-command version: if the client crashes between `INCR` and `EXPIRE`, the key lives forever and the user is blocked forever. Do both in one atomic step with a short Lua script:"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = counter key, ARGV[1] = window length in ms\nlocal count = redis.call('INCR', KEYS[1])\nif count == 1 then\n  redis.call('PEXPIRE', KEYS[1], ARGV[1])\nend\nreturn count",
+          "title": "fixed_window.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "The weakness of the fixed window is the **boundary burst**. With a limit of 100 per minute, a client can send 100 requests in the last second of minute one and 100 more in the first second of minute two: 200 requests within two seconds, while never violating the rule. Whether this matters depends on what is behind the API. For \"stop abuse\" it is often acceptable; for \"protect a fragile backend\" it is not.\n\n### Sliding window log\n\nTo remove the boundary burst, remember the exact time of every request and count those in the last N milliseconds. A sorted set fits: the member identifies the request, the score is its timestamp.\n\nThe algorithm has four steps: remove members with a score older than `now - window` (`ZREMRANGEBYSCORE`); count what remains (`ZCARD`); if the count is at or above the limit, reject; otherwise add the current request (`ZADD`) and refresh the key TTL. These steps must be one atomic unit, otherwise two concurrent requests can both see 99 and both be admitted. A Lua script does that:"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = zset key\n-- ARGV[1] = window in ms, ARGV[2] = limit, ARGV[3] = unique request id\nlocal window_ms = tonumber(ARGV[1])\nlocal limit = tonumber(ARGV[2])\nlocal member = ARGV[3]\n\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\nredis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window_ms)\nlocal count = redis.call('ZCARD', KEYS[1])\nif count >= limit then\n  local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')\n  local retry_ms = tonumber(oldest[2]) + window_ms - now\n  return {0, 0, retry_ms}\nend\nredis.call('ZADD', KEYS[1], now, member)\nredis.call('PEXPIRE', KEYS[1], window_ms)\nreturn {1, limit - count - 1, 0}",
+          "title": "sliding_window_log.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the script reads the clock with `TIME` inside Redis, so all application instances share one clock and clock skew between servers cannot corrupt the window. The returned array is `{allowed, remaining, retry_after_ms}`. The member must be unique per request (a UUID); if two requests used the same member, the second `ZADD` would overwrite the first and the limiter would under-count.\n\nThe log is exact but expensive: memory is proportional to the limit (a limit of 10,000 per hour stores up to 10,000 members per client). Use it for small limits where precision matters, such as \"5 login attempts per 15 minutes\".\n\n### Sliding window counter\n\nA good compromise keeps two counters, for the current and the previous fixed window, and estimates the sliding total by weighting the previous window by how much of it still overlaps the sliding window."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 388.0 71.1\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M116.0 40.2 L316.0 40.2 L316.0 16.2 L116.0 16.2 Z\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"1.50\" stroke-linejoin=\"round\" stroke-dasharray=\"4.0 2.0\"/><path d=\"M328.0 28.2 L386.0 28.2\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M10.0 28.2 C10.0 26.0 8.2 24.2 6.0 24.2 C3.8 24.2 2.0 26.0 2.0 28.2 C2.0 30.4 3.8 32.2 6.0 32.2 C8.2 32.2 10.0 30.4 10.0 28.2\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M50.0 28.2 C50.0 26.0 48.2 24.2 46.0 24.2 C43.8 24.2 42.0 26.0 42.0 28.2 C42.0 30.4 43.8 32.2 46.0 32.2 C48.2 32.2 50.0 30.4 50.0 28.2\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 28.2 C90.0 26.0 88.2 24.2 86.0 24.2 C83.8 24.2 82.0 26.0 82.0 28.2 C82.0 30.4 83.8 32.2 86.0 32.2 C88.2 32.2 90.0 30.4 90.0 28.2\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M160.0 28.2 C160.0 26.0 158.2 24.2 156.0 24.2 C153.8 24.2 152.0 26.0 152.0 28.2 C152.0 30.4 153.8 32.2 156.0 32.2 C158.2 32.2 160.0 30.4 160.0 28.2\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M200.0 28.2 C200.0 26.0 198.2 24.2 196.0 24.2 C193.8 24.2 192.0 26.0 192.0 28.2 C192.0 30.4 193.8 32.2 196.0 32.2 C198.2 32.2 200.0 30.4 200.0 28.2\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M240.0 28.2 C240.0 26.0 238.2 24.2 236.0 24.2 C233.8 24.2 232.0 26.0 232.0 28.2 C232.0 30.4 233.8 32.2 236.0 32.2 C238.2 32.2 240.0 30.4 240.0 28.2\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M280.0 28.2 C280.0 26.0 278.2 24.2 276.0 24.2 C273.8 24.2 272.0 26.0 272.0 28.2 C272.0 30.4 273.8 32.2 276.0 32.2 C278.2 32.2 280.0 30.4 280.0 28.2\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M320.0 28.2 C320.0 26.0 318.2 24.2 316.0 24.2 C313.8 24.2 312.0 26.0 312.0 28.2 C312.0 30.4 313.8 32.2 316.0 32.2 C318.2 32.2 320.0 30.4 320.0 28.2\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M386.0 28.2 L380.6 25.6 L380.6 30.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"34.4\" y=\"6.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"23.1\" lengthAdjust=\"spacingAndGlyphs\">expired</text><text x=\"159.7\" y=\"6.2\" font-size=\"7.0\" fill=\"#eec7a0\" font-weight=\"700\" textLength=\"112.6\" lengthAdjust=\"spacingAndGlyphs\">window = last 60 s, ending now</text><text x=\"359.1\" y=\"18.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"13.8\" lengthAdjust=\"spacingAndGlyphs\">time</text><text x=\"88.8\" y=\"54.2\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"254.5\" lengthAdjust=\"spacingAndGlyphs\">count requests inside the window (sorted set by timestamp); reject above the limit</text></svg>",
+          "width": 388,
+          "caption": "Fixed windows versus a sliding window. Notice how the sliding estimate blends the previous and current counters.",
+          "alt": "expired window = last 60 s, ending now | time | count requests inside the window (sorted set by timestamp); reject above the limit"
+        },
+        {
+          "type": "markdown",
+          "text": "If the window is 60 seconds, the previous window had 84 requests, and we are 25 percent into the current window which has 36, the estimate is 84 × 0.75 + 36 = 99. It is an approximation (it assumes requests in the previous window were evenly spread), but the error is small in practice and the memory cost is two integers per client."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = key prefix, ARGV[1] = window in ms, ARGV[2] = limit\nlocal window_ms = tonumber(ARGV[1])\nlocal limit = tonumber(ARGV[2])\n\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\nlocal current_window = math.floor(now / window_ms)\nlocal elapsed_fraction = (now % window_ms) / window_ms\n\nlocal current_key = KEYS[1] .. ':' .. current_window\nlocal previous_key = KEYS[1] .. ':' .. (current_window - 1)\n\nlocal current = tonumber(redis.call('GET', current_key) or '0')\nlocal previous = tonumber(redis.call('GET', previous_key) or '0')\nlocal estimated = previous * (1 - elapsed_fraction) + current\n\nif estimated >= limit then\n  return {0, 0}\nend\nredis.call('INCR', current_key)\nredis.call('PEXPIRE', current_key, window_ms * 2)\nreturn {1, math.floor(limit - estimated - 1)}",
+          "title": "sliding_window_counter.lua"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Keys built inside a script This script computes key names (`KEYS[1] .. ':' .. current_window`) that were not declared to Redis. On a single node that works. In Redis Cluster the declared keys decide which node runs the script, and undeclared keys are not guaranteed to live there. If you need this variant in a cluster, put a hash tag in the prefix (for example `rl:{user42}`) so all derived keys share a slot, and test it. The token bucket below avoids the problem by using one key."
+        },
+        {
+          "type": "markdown",
+          "text": "### Token bucket\n\nThe token bucket is the most popular algorithm because it expresses what people actually want: a steady rate plus a burst allowance. Picture a bucket that holds up to `capacity` tokens. Tokens are added at a fixed refill rate until the bucket is full. Each request removes one token (or more for expensive calls); if the bucket is empty, the request is rejected."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 395.1 113.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M275.0 82.3 L389.0 82.3 C390.7 82.3 392.0 81.0 392.0 79.3 L392.0 57.3 C392.0 55.7 390.7 54.3 389.0 54.3 L275.0 54.3 C273.3 54.3 272.0 55.7 272.0 57.3 L272.0 79.3 C272.0 81.0 273.3 82.3 275.0 82.3 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 80.3 L222.0 80.3 L222.0 10.3 L152.0 10.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"1.20\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 44.3 L152.0 44.3\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M222.0 40.3 L272.0 32.3\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M222.0 60.3 L272.0 68.3\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M177.0 66.3 C177.0 63.6 174.8 61.3 172.0 61.3 C169.2 61.3 167.0 63.6 167.0 66.3 C167.0 69.1 169.2 71.3 172.0 71.3 C174.8 71.3 177.0 69.1 177.0 66.3\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.0 54.3 C205.0 51.6 202.8 49.3 200.0 49.3 C197.2 49.3 195.0 51.6 195.0 54.3 C195.0 57.1 197.2 59.3 200.0 59.3 C202.8 59.3 205.0 57.1 205.0 54.3\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M177.0 46.3 C177.0 43.6 174.8 41.3 172.0 41.3 C169.2 41.3 167.0 43.6 167.0 46.3 C167.0 49.1 169.2 51.3 172.0 51.3 C174.8 51.3 177.0 49.1 177.0 46.3\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.0 34.3 C205.0 31.6 202.8 29.3 200.0 29.3 C197.2 29.3 195.0 31.6 195.0 34.3 C195.0 37.1 197.2 39.3 200.0 39.3 C202.8 39.3 205.0 37.1 205.0 34.3\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 60.3 L99.0 60.3 C100.7 60.3 102.0 59.0 102.0 57.3 L102.0 33.3 C102.0 31.7 100.7 30.3 99.0 30.3 L5.0 30.3 C3.3 30.3 2.0 31.7 2.0 33.3 L2.0 57.3 C2.0 59.0 3.3 60.3 5.0 60.3 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 44.3 L146.6 41.7 L146.6 46.9 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M275.0 44.3 L389.0 44.3 C390.7 44.3 392.0 43.0 392.0 41.3 L392.0 19.3 C392.0 17.7 390.7 16.3 389.0 16.3 L275.0 16.3 C273.3 16.3 272.0 17.7 272.0 19.3 L272.0 41.3 C272.0 43.0 273.3 44.3 275.0 44.3 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M272.0 32.3 L266.3 30.6 L267.1 35.7 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M272.0 68.3 L267.1 64.9 L266.3 70.0 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M177.0 26.3 C177.0 23.6 174.8 21.3 172.0 21.3 C169.2 21.3 167.0 23.6 167.0 26.3 C167.0 29.1 169.2 31.3 172.0 31.3 C174.8 31.3 177.0 29.1 177.0 26.3\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"150.6\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"72.8\" lengthAdjust=\"spacingAndGlyphs\">bucket (capacity 10)</text><text x=\"298.5\" y=\"28.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"67.1\" lengthAdjust=\"spacingAndGlyphs\">request takes 1 token</text><text x=\"315.6\" y=\"36.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"32.8\" lengthAdjust=\"spacingAndGlyphs\">-&gt; allowed</text><text x=\"29.4\" y=\"43.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"45.2\" lengthAdjust=\"spacingAndGlyphs\">refill: 5 tokens</text><text x=\"34.5\" y=\"52.1\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"34.9\" lengthAdjust=\"spacingAndGlyphs\">per second</text><text x=\"310.8\" y=\"66.4\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"42.4\" lengthAdjust=\"spacingAndGlyphs\">bucket empty</text><text x=\"305.7\" y=\"74.9\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"52.6\" lengthAdjust=\"spacingAndGlyphs\">-&gt; 429 Too Many</text><text x=\"270.9\" y=\"102.3\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"122.1\" lengthAdjust=\"spacingAndGlyphs\">state per client: tokens + last refill time</text></svg>",
+          "width": 395,
+          "caption": "Token bucket: refill at a steady rate, spend one token per request, burst up to the bucket capacity.",
+          "alt": "bucket (capacity 10) | request takes 1 token | -> allowed | refill: 5 tokens | per second | bucket empty | -> 429 Too Many | state per client: tokens + last refill time"
+        },
+        {
+          "type": "markdown",
+          "text": "You do not need a background process to add tokens. Store only two fields, the token count and the time of the last update, and compute the refill lazily when the next request arrives: `tokens = min(capacity, tokens + elapsed ×` `rate)`."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = bucket key (a hash)\n-- ARGV[1] = capacity, ARGV[2] = refill tokens per second, ARGV[3] = cost\nlocal capacity = tonumber(ARGV[1])\nlocal refill_per_sec = tonumber(ARGV[2])\nlocal cost = tonumber(ARGV[3])\n\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\n\nlocal data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')\nlocal tokens = tonumber(data[1])\nlocal ts = tonumber(data[2])\nif tokens == nil then\n  tokens = capacity\n  ts = now\nend\n\nlocal elapsed = math.max(0, now - ts)\ntokens = math.min(capacity, tokens + elapsed * refill_per_sec / 1000)\n\nlocal allowed = 0\nlocal retry_ms = 0\nif tokens >= cost then\n  tokens = tokens - cost\n  allowed = 1\nelse\n  retry_ms = math.ceil((cost - tokens) * 1000 / refill_per_sec)\nend\n\nredis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)\nredis.call('PEXPIRE', KEYS[1], math.ceil(capacity / refill_per_sec * 1000) * 2)\nreturn {allowed, math.floor(tokens), retry_ms}",
+          "title": "token_bucket.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- A new client starts with a full bucket, so its first burst is allowed.\n- The key TTL is twice the time needed to refill an empty bucket. An idle client's key disappears on its own, and a recreated bucket starts full, which is the state the idle client would have reached anyway.\n- Fractional tokens are kept in the hash, but the script returns `math.floor(tokens)`, because Redis converts Lua numbers to integers in replies.\n- The reply carries `retry_ms`, which the HTTP layer turns into a `Retry-After` header.\n\nWith capacity 3 and a refill of 1 token per second, the fourth immediate call is rejected:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli --eval token_bucket.lua rl:user:42 , 3 1 1\n1) (integer) 1\n2) (integer) 2\n3) (integer) 0\n$ redis-cli --eval token_bucket.lua rl:user:42 , 3 1 1\n1) (integer) 1\n2) (integer) 1\n3) (integer) 0\n$ redis-cli --eval token_bucket.lua rl:user:42 , 3 1 1\n1) (integer) 1\n2) (integer) 0\n3) (integer) 0\n$ redis-cli --eval token_bucket.lua rl:user:42 , 3 1 1\n1) (integer) 0\n2) (integer) 0\n3) (integer) 986",
+          "title": "Trying the token bucket (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "In `--eval`, the comma separates key names from arguments, and spaces around it are required.\n\n### Leaky bucket\n\nThe **leaky bucket** is the token bucket's mirror image. Requests pour into a bucket that drains at a constant rate; if the bucket overflows, requests are rejected. Used as a *meter*, the level rises with each request and drains over time, and the same lazy-update trick works; the effect is almost identical to a token bucket. Used as a *queue*, it smooths bursts into a constant output rate by delaying requests, which is what traffic shapers do. For API protection most teams pick the token bucket and move on. Choose the queue form only when the downstream system must see a perfectly steady rate."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Algorithm",
+            "Memory per client",
+            "Strength",
+            "Weakness"
+          ],
+          "rows": [
+            [
+              "Fixed window",
+              "one counter",
+              "simplest, very fast",
+              "up to 2× burst at window edges"
+            ],
+            [
+              "Sliding window log",
+              "one entry per request",
+              "exact",
+              "memory grows with the limit"
+            ],
+            [
+              "Sliding window counter",
+              "two counters",
+              "smooth, cheap",
+              "approximate"
+            ],
+            [
+              "Token bucket",
+              "one small hash",
+              "rate plus burst, intuitive",
+              "two parameters to tune"
+            ],
+            [
+              "Leaky bucket",
+              "one small hash or a queue",
+              "constant output rate",
+              "extra latency in queue form"
+            ]
+          ],
+          "caption": "Choosing an algorithm."
+        },
+        {
+          "type": "markdown",
+          "text": "### Calling the script from Spring\n\nLoad each script once as a `RedisScript` and call it through `StringRedisTemplate`. Spring computes the SHA-1, tries `EVALSHA`, and falls back to `EVAL` if the server has not seen the script yet."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.gateway.ratelimit;\n\nimport java.util.List;\nimport org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class TokenBucketRateLimiter {\n\n    public record Decision(boolean allowed, long remaining, long retryAfterMs) {}\n    private final StringRedisTemplate redis;\n    private final DefaultRedisScript<List> script;\n\n    public TokenBucketRateLimiter(StringRedisTemplate redis) {\n        this.redis = redis;\n        this.script = new DefaultRedisScript<>();\n        this.script.setLocation(new ClassPathResource(\"scripts/token_bucket.lua\"));\n        this.script.setResultType(List.class);\n    }\n\n    public Decision tryAcquire(String key, int capacity, double refillPerSec, int cost) {\n        List<?> reply = redis.execute(script, List.of(key),\n                String.valueOf(capacity), String.valueOf(refillPerSec), String.valueOf(cost));\n        if (reply == null || reply.size() < 3) {\n            return new Decision(true, capacity, 0);   // fail open on a malformed reply\n        }\n        return new Decision(\n                ((Number) reply.get(0)).longValue() == 1L,\n                ((Number) reply.get(1)).longValue(),\n                ((Number) reply.get(2)).longValue());\n    }\n}",
+          "title": "TokenBucketRateLimiter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The class returns a small record instead of throwing, so the caller decides what to do. The script is expected at `src/main/resources/scripts/token_bucket.lua`. Because `List.class` is the result type, the numbers arrive as `Long` values.\n\n### A servlet filter at the gateway\n\nPut the limiter in front of everything else. A servlet filter is enough to show the idea; Spring Cloud Gateway or an API management product would apply the same logic in its own filter type."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.gateway.ratelimit;\n\nimport jakarta.servlet.FilterChain;\nimport jakarta.servlet.ServletException;\nimport jakarta.servlet.http.HttpServletRequest;\nimport jakarta.servlet.http.HttpServletResponse;\nimport java.io.IOException;\nimport org.springframework.stereotype.Component;\nimport org.springframework.web.filter.OncePerRequestFilter;\n\n@Component\npublic class RateLimitFilter extends OncePerRequestFilter {\n\n    private static final int CAPACITY = 20;\n    private static final double REFILL_PER_SEC = 5.0;\n\n    private final TokenBucketRateLimiter limiter;\n\n    public RateLimitFilter(TokenBucketRateLimiter limiter) {\n        this.limiter = limiter;\n    }\n\n    @Override\n    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,\n                                    FilterChain chain) throws ServletException, IOException {\n        String key = \"rl:\" + request.getRemoteAddr() + \":\" + request.getRequestURI();\n\n        TokenBucketRateLimiter.Decision d;\n        try {\n            d = limiter.tryAcquire(key, CAPACITY, REFILL_PER_SEC, 1);\n        } catch (RuntimeException redisDown) {\n            chain.doFilter(request, response);      // fail open\n            return;\n        }\n\n        response.setHeader(\"RateLimit-Limit\", String.valueOf(CAPACITY));\n        response.setHeader(\"RateLimit-Remaining\", String.valueOf(d.remaining()));\n        if (!d.allowed()) {\n            long seconds = Math.max(1, (d.retryAfterMs() + 999) / 1000);\n            response.setHeader(\"Retry-After\", String.valueOf(seconds));\n            response.setStatus(429);\n            response.getWriter().write(\"{\\\"error\\\":\\\"rate_limited\\\"}\");\n            return;\n        }\n        chain.doFilter(request, response);\n    }\n}",
+          "title": "RateLimitFilter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the `catch` implements the fail-open decision explicitly; the key combines client and route so a flood on `/api/search` does not block `/api/cart`; and a rejected request gets `429` plus `Retry-After` in whole seconds. Behind a load balancer, `getRemoteAddr()` is the balancer's address. Configure the container to honour `X-Forwarded-For` from trusted proxies only (Spring Boot has `server.forward-headers-strategy`); trusting that header from arbitrary clients lets attackers choose their own identity.\n\nThe `429` status and `Retry-After` are standard HTTP. For the remaining budget, many APIs send `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`; an IETF draft proposes unprefixed `RateLimit-*` fields instead. There is no final standard yet, so pick one style, document it, and use it consistently."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Design a rate limiter for an API with many servers. Keep the counters in a shared store (Redis), key them by client identity, and make the check-and-update atomic with a Lua script so concurrent requests cannot both pass. Token bucket gives rate plus burst; sliding window counter gives smooth limits cheaply. Read time from Redis, not from the app servers. Return 429 with Retry-After, and decide fail-open versus fail-closed. In Redis Cluster a client's key lives on one shard, so the limiter scales by client."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Rate limiting is not authentication Limiting by IP protects you from accidents and crude abuse, not from a distributed attacker with many addresses. Combine it with per-account limits, and apply stricter limits to sensitive endpoints such as login and password reset."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Pick the key (IP, user, API key, route) and the failure policy (open or closed) before the algorithm.\n- The check and the update must be atomic: `INCR` for the fixed window, a Lua script for everything else.\n- Fixed window is cheapest but allows edge bursts; sliding log is exact but memory heavy; sliding counter is the usual compromise; token bucket models rate plus burst.\n- Read the clock inside Redis with `TIME`, and let TTLs delete idle clients' state.\n- Reject with `429`, `Retry-After` and a consistent set of rate-limit headers."
+        }
+      ]
+    }
+  ]
+}

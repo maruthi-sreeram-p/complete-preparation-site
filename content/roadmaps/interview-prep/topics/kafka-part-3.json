@@ -1,0 +1,262 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "49-52",
+    "planDays": "42"
+  },
+  "sections": [
+    {
+      "id": "ch-3-4",
+      "type": "concept",
+      "title": "Reliability: Acknowledgements, Retries and Idempotence",
+      "subtopicId": "3-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "When the order-service publishes `OrderCreated`, three things can go wrong. The record can be lost (the customer paid, but no other service ever hears of the order). It can be duplicated (the warehouse reserves stock twice). Or two events of the same order can arrive in the wrong order. A reliable producer prevents all three. Part of the work is done by producer settings, part by topic settings on the broker side, and part by your own code, which must look at the result of every send.\n\n### acks: who must confirm the write\n\nThe `acks` setting decides when the broker may answer a produce request."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "acks",
+            "The leader answers when ...",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "`0`",
+              "immediately, without writing anything",
+              "Fastest. Failures are invisible, retries do not apply, and the returned offset is always -1."
+            ],
+            [
+              "`1`",
+              "it has written the record to its own log",
+              "If the leader dies before the followers copied the record, the record is lost."
+            ],
+            [
+              "`all`",
+              "all in-sync replicas have the record",
+              "The record survives as long as one in-sync replica survives. This is the default and the right choice for business events."
+            ]
+          ],
+          "caption": "The three acks levels."
+        },
+        {
+          "type": "markdown",
+          "text": "Notice the words \"in-sync replicas\". `acks=all` does not mean all replicas of the partition, only those currently keeping up with the leader (the ISR). If two of three replicas fall behind, the ISR is just the leader, and `acks=all` quietly behaves like `acks=1`. The topic setting `min.insync.replicas` closes this hole: it is the minimum ISR size for which the leader accepts a write when the producer asks for `acks=all`. The documented standard recipe is replication factor 3, `min.insync.replicas=2` and `acks=all`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Replicas in sync",
+            "Result of a write",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "3 of 3",
+              "Succeeds when all three have it",
+              "Normal operation"
+            ],
+            [
+              "2 of 3",
+              "Succeeds when both in-sync replicas have it",
+              "One broker is down; the data is still on two machines"
+            ],
+            [
+              "1 of 3",
+              "Rejected with NotEnoughReplicasException",
+              "Only the leader is left; the cluster refuses writes rather than weaken the guarantee"
+            ]
+          ],
+          "caption": "Writes to a topic with replication factor 3 and min.insync.replicas=2, acks=all."
+        },
+        {
+          "type": "markdown",
+          "text": "Reads keep working in the last row; only writes are refused. This is a deliberate trade of availability for durability. The topic must be created with these settings, because the producer cannot enforce them on its own (this needs a cluster with at least three brokers):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --create --topic orders --partitions 3 --replication-factor 3 \\\n    --config min.insync.replicas=2 --bootstrap-server localhost:9092\nCreated topic orders.",
+          "title": "Create a durable topic"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The default min.insync.replicas is 1 Out of the box a topic has `min.insync.replicas=1`, so `acks=all` alone gives weaker durability than most people assume. Check the value on every important topic with `kafka-topics.sh --describe`. On clusters that use Eligible Leader Replicas, which Kafka enables by default for new 4.1 and later clusters, the exact semantics of this setting change somewhat; the operations Part explains the details."
+        },
+        {
+          "type": "markdown",
+          "text": "### Retries and timeouts\n\nTransient problems (a leader election, a brief network break) are normal in a cluster, so the producer retries retriable errors by itself. The `retries` setting defaults to 2147483647, which is practically unlimited, and the Kafka documentation advises leaving it alone. What really limits the effort is `delivery.timeout.ms` (default 120000, two minutes): the upper bound on the time from `send()` returning until the producer reports success or failure.\n\n**One record's time budget**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "send() returns\n|<------------------- delivery.timeout.ms (default 120 s) -------------------->|\n| wait in the batch | request 1 (up to 30 s) | backoff | request 2 (up to 30 s) | ...\n|  linger.ms        | request.timeout.ms     | 100 ms+ |                        |\n|                   |                        |\n+-- answer arrives: the Future completes, the callback gets the RecordMetadata\n+-- the budget is used up: the record fails with a TimeoutException"
+        },
+        {
+          "type": "markdown",
+          "text": "The settings fit together by one rule: `delivery.timeout.ms` must be at least `linger.ms + request.timeout.ms`. A record may wait `linger.ms` in its batch and then needs at least one full request attempt, otherwise batches would expire before they could be answered. The client checks this when it is created: a smaller `delivery.timeout.ms` that you set explicitly is rejected with a `ConfigException`, and if you left it unset the producer raises it for you and logs a warning. Either way a wrong combination shows up at start-up, not in production traffic. Between attempts the producer waits `retry.backoff.ms` (100 ms), growing up to `retry.backoff.max.ms` (1000 ms). The documentation also advises a `request.timeout.ms` above the brokers' `replica.lag.time.max.ms`, so that a slow follower is dropped from the ISR before the producer gives up on a request, which would trigger an unnecessary retry.\n\nWhen the budget is used up, the callback receives a `TimeoutException`, with a message such as `Expiring 1` `record(s) for orders-1: 120000 ms has passed since batch creation`. From this point the problem is yours."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "After a timeout you do not know what happened A `TimeoutException` after the delivery timeout means \"no answer in time\", not \"the broker did not write it\". The write may have succeeded and only the response was lost. If your application now sends the same event again, the topic can contain it twice. Idempotence (next section) covers the producer's own retries, but not a second `send()` made by your code. Plan for this: make consumers idempotent (for example by remembering `eventId`) or use an outbox table, both covered later in the book."
+        },
+        {
+          "type": "markdown",
+          "text": "### Idempotence: retries without duplicates\n\nConsider a produce request that the broker handled correctly, but the response was lost on the network. The producer sees a timeout and retries, and without protection the record would be appended twice. The idempotent producer prevents this. When it starts, the broker assigns it a producer id (PID). Every batch it sends carries the PID and a sequence number per partition. The broker remembers the latest sequence numbers per producer and partition (the last five batches, which is why `max.in.flight.requests.per.connection` may not exceed 5), so it can recognise a retried batch.\n\n**The broker removes the duplicate**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "producer (PID 42)                          broker, partition orders-1\n  batch, sequence 7 ───────────────────────►  append, remember (PID 42, seq 7)\n                    ◄──── response lost ───X\n  retry: batch, sequence 7 ────────────────►  already seen: do not append again\n                    ◄────────────── ack ───── (answer success)\n  next batch, sequence 8 ──────────────────►  expected next number: append"
+        },
+        {
+          "type": "markdown",
+          "text": "If the broker instead sees a sequence number that skips ahead, data has been lost somewhere, and it answers with an `OutOfOrderSequenceException`. Retries also keep their order: with idempotence on, the producer preserves the order of batches within a partition even when requests fail and are repeated, for up to five requests in flight. Without idempotence, `retries` above zero combined with more than one request in flight can reorder records, because a retried first batch may land behind a second batch that succeeded. The old advice \"set `max.in.flight.requests.per.connection=1` to keep order\" is therefore obsolete.\n\nIdempotence is on by default. It requires `acks=all`, `retries` above 0 and at most five in-flight requests. The documentation spells out two behaviours that matter: if you do not set `enable.idempotence` and set a conflicting option (for example `acks=1`), idempotence is silently switched off; if you set it explicitly to `true` and a conflicting option exists, the producer fails with a `ConfigException`. So set `enable.idempotence=true` explicitly in code, which turns a silent downgrade into an early error.\n\nKnow its limits. Idempotence removes duplicates caused by the producer's own retries, within one producer instance (one PID) and per partition. It does not help if your code sends the same event twice, if the application restarts (a new producer gets a new PID), or if you write to several partitions and need all-or-nothing. For the last two, see transactions later in this Part.\n\n### What errors look like\n\nErrors reach you in two ways: `send()` may throw, or the `Future` and callback complete with an exception. The most important split is between retriable and non-retriable errors. A retriable error is transient, and the producer retries it for you until `delivery.timeout.ms` expires; you only see it afterwards. A non-retriable error is permanent, the producer gives up at once, and retrying the same record would only fail the same way."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Exception",
+            "Retried?",
+            "Cause and what to do"
+          ],
+          "rows": [
+            [
+              "`TimeoutException (also` `BufferExhaustedException)`",
+              "yes",
+              "No answer in time, or no metadata or buffer space within max.block.ms. Outcome unknown. Resend later or park the event, and alert."
+            ],
+            [
+              "`NotEnoughReplicasException`",
+              "yes",
+              "ISR smaller than min.insync.replicas. Fix the brokers. Nothing was written."
+            ],
+            [
+              "`NotEnoughReplicasAfterAppendExcept` `ion`",
+              "yes",
+              "Same, but discovered after the append. The record may be in the leader's log; without idempotence the retry duplicates it."
+            ],
+            [
+              "`RecordTooLargeException`",
+              "no",
+              "Record larger than max.request.size or the broker and topic limits. Never retry. Park it and shrink the data (see the claim check pattern)."
+            ],
+            [
+              "`SerializationException`",
+              "no",
+              "Thrown by send() itself: the object does not fit the serializer. A bug in your code."
+            ],
+            [
+              "`AuthorizationException`",
+              "no",
+              "Missing ACL for the topic. Stop and fix the permissions."
+            ],
+            [
+              "`ProducerFencedException`",
+              "no",
+              "Transactional only: another instance with the same transactional.id started. Close this producer."
+            ],
+            [
+              "`OutOfOrderSequenceException`",
+              "no",
+              "The broker's sequence check failed, so data may have been lost. For a transactional producer it is fatal; an idempotent-only producer may continue but loses the ordering guarantee. Investigate."
+            ]
+          ],
+          "caption": "Common producer errors."
+        },
+        {
+          "type": "markdown",
+          "text": "One small method can turn the table into code. A callback that only logs is the most common reliability bug; the useful thing is to decide, per error, whether to park, stop or resend."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.producer;\n\nimport java.util.Properties;\nimport org.apache.kafka.clients.producer.ProducerConfig;\nimport org.apache.kafka.common.errors.AuthorizationException;\nimport org.apache.kafka.common.errors.RecordTooLargeException;\nimport org.apache.kafka.common.errors.SerializationException;\nimport org.apache.kafka.common.errors.TimeoutException;\nimport org.apache.kafka.common.serialization.StringSerializer;\n\npublic final class ReliableProducerSupport {\n    public enum Action { PARK, STOP, RESEND_LATER, ALERT }\n\n    private ReliableProducerSupport() { }\n\n    public static Properties props(String bootstrapServers) {\n        Properties props = new Properties();\n        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);\n        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());\n        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());\n        props.put(ProducerConfig.CLIENT_ID_CONFIG, \"order-service\");\n        props.put(ProducerConfig.ACKS_CONFIG, \"all\");\n        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);\n        props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);\n        props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);\n        props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 120_000);\n        return props;\n    }\n\n    /** Decide what to do with a failed send, based on the kind of exception. */\n    public static Action decide(Exception e) {\n        return switch (e) {\n            case RecordTooLargeException ex -> Action.PARK;     // retrying gives the same error\n            case SerializationException ex -> Action.PARK;      // a bug: fix the code\n            case AuthorizationException ex -> Action.STOP;      // fix the ACLs first\n            case TimeoutException ex -> Action.RESEND_LATER;    // outcome unknown\n            default -> Action.ALERT;\n        };\n    }\n}",
+          "title": "ReliableProducerSupport.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Every value is spelled out even where it equals the default. That is deliberate: a reviewer can see the intended guarantees, and an explicit `enable.idempotence=true` fails fast on a conflicting setting.\n- `decide()` needs a `default` branch because other exceptions exist. Anything unexpected should alert a human rather than be retried blindly.\n- Which action to take is a business decision. For `RESEND_LATER`, the safe implementation writes the event to a table or queue and relies on idempotent consumers.\n\n### The \"do not lose data\" recipe\n\nReliability is the sum of several layers. The table lists every layer; if one is missing, the chain has a weak link."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Where",
+            "Value",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`replication.factor`",
+              "topic",
+              "3",
+              "Three copies; one broker can fail and two copies remain"
+            ],
+            [
+              "`min.insync.replicas`",
+              "topic",
+              "2",
+              "A write needs two copies, otherwise it is rejected instead of weakened"
+            ],
+            [
+              "`unclean.leader.election.ena` `ble`",
+              "topic",
+              "false (default)",
+              "Never promote a replica that is missing committed records"
+            ],
+            [
+              "`acks`",
+              "producer",
+              "all (default)",
+              "Wait for every in-sync replica"
+            ],
+            [
+              "`enable.idempotence`",
+              "producer",
+              "true (default)",
+              "No duplicates from retries; set it explicitly"
+            ],
+            [
+              "`delivery.timeout.ms`",
+              "producer",
+              "120000 (default)",
+              "How long the producer keeps trying before your callback must act"
+            ],
+            [
+              "`callback or outbox`",
+              "your code",
+              "check every result",
+              "A failed send must go somewhere: retry queue, outbox table, alert"
+            ],
+            [
+              "`close() and flush()`",
+              "your code",
+              "on shutdown",
+              "Do not abandon buffered records"
+            ]
+          ],
+          "caption": "Settings for no data loss on important topics."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Does acks=all guarantee that no data is ever lost? No. `acks=all` waits for all in-sync replicas, and if only the leader is in sync it behaves like `acks=1`. To be safe you also need replication factor 3 or more, `min.insync.replicas=2` or more, and `unclean.leader.election.enable=false`, so the broker refuses writes instead of weakening the guarantee. On the client side, the application must check every callback (a timeout means \"outcome unknown\"), and must close or flush the producer on shutdown. Even then, a catastrophic loss of all replicas is not covered."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `acks=all` plus topic `min.insync.replicas=2` and replication factor 3 is the durable combination; `acks=all` alone depends on the current ISR size.\n- The producer retries retriable errors until `delivery.timeout.ms` (2 minutes); keep `delivery.timeout.ms` at least `linger.ms + request.timeout.ms`.\n- The idempotent producer (on by default) removes duplicates caused by its own retries through producer id and sequence numbers, and keeps order for up to five requests in flight.\n- Idempotence does not cover duplicate `send()` calls by your code, producer restarts, or multi-partition atomicity.\n- After a `TimeoutException` the outcome is unknown; non-retriable errors such as `RecordTooLargeException` will fail every time."
+        }
+      ]
+    }
+  ]
+}
