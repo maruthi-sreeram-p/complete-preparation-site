@@ -1,0 +1,1029 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "147-168"
+  },
+  "sections": [
+    {
+      "id": "ch-9-1",
+      "type": "concept",
+      "title": "Designing Events and Topics",
+      "subtopicId": "9-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Kafka will carry any bytes you give it, which is exactly why design mistakes are so easy to make. A badly named database column can be renamed in a migration. A badly designed event is copied into logs, retained for days or years, read by consumers you have never heard of, and replayed long after the team that wrote it has moved on. This chapter covers the decisions you take before writing any code: what kind of message you are sending, what it is called, what it contains, which topic it goes to and which key it carries.\n\nEvery pattern chapter in this Part has the same shape: the problem, the forces that make it hard, the solution, a short implementation sketch using the ShopStream services, the trade-offs, and when not to use it. The sketches are deliberately small. The complete working code is in the project chapters at the end of the book.\n\n### Commands, events and queries\n\nThree kinds of message travel between services, and mixing them up is the root of many muddled designs."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Kind",
+            "Meaning",
+            "Receiver",
+            "ShopStream example"
+          ],
+          "rows": [
+            [
+              "Command",
+              "\"Please do this.\" An instruction that can be refused or can fail.",
+              "One specific handler",
+              "`ReserveStock`, aimed at `inventory-service`"
+            ],
+            [
+              "Event",
+              "\"This happened.\" A fact that cannot be refused or changed.",
+              "Anyone interested; the publisher does not know who",
+              "`StockReserved`, published by `inventory-service`"
+            ],
+            [
+              "Query",
+              "\"Tell me this.\" A question that expects an answer now.",
+              "One specific service",
+              "\"What is the status of order o-1001?\""
+            ]
+          ],
+          "caption": "Three kinds of message and how they differ."
+        },
+        {
+          "type": "markdown",
+          "text": "Commands are written in the imperative (`ReserveStock`), events in the past tense (`StockReserved`). A quick test: if nobody ever read this message, would the sender still have done its job? If yes, it is an event. If the sender is waiting for somebody to act, it is a command.\n\nPrefer events for communication between services. A publisher of events does not know its consumers, so `analytics-app` and `search-indexer` could be added to ShopStream without touching `order-service`. A command makes the sender responsible for knowing the receiver. That is acceptable inside an orchestrated saga (a later chapter), but it is more coupling. Queries do not belong in Kafka in most designs: use the service's API or a read model (see the chapters on CQRS and on request-reply).\n\nThe names tell readers what they are looking at. `NotificationRequested` on the `notifications` topic is deliberately command-like: `order-service` wants a notification sent and `notification-service` is its single handler. That is a legitimate use of a topic as a work queue, as long as everyone knows that is what it is and nobody treats it as a business fact.\n\n### Naming events\n\nName events with a past-tense verb in the language of the business: `OrderCreated`, `PaymentAuthorized`, `ShipmentDispatched`. Avoid technical or CRUD names such as `OrderUpdated` or `OrdersRowChanged`. A generic `OrderUpdated` forces every consumer to compare the old and new state to work out what happened, while `OrderCancelled` with a `reason` field says it directly.\n\nTwo more rules keep event streams clean:\n\n- **One fact per event, published by the service that owns the fact.** `OrderConfirmed` should not secretly mean \"stock reserved and payment taken\" too. Those are facts owned by `inventory-service` and `payment-service`, and they publish their own events.\n- **Do not leak your database.** An event is a public API. Design it from the business point of view, not from the shape of your tables, or every schema refactoring becomes a breaking change for other teams.\n\n### The event envelope\n\nEvery event carries the same few fields, whatever its content, so that tooling, debugging and consumers can treat events uniformly."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`eventId`",
+              "Unique id (a UUID) of this event. The key for de-duplication, tracing and idempotency."
+            ],
+            [
+              "`type`",
+              "Stable name of the event type, for example `ORDER_CREATED`. Lets a consumer choose a handler without guessing from field names."
+            ],
+            [
+              "`version`",
+              "Version of this event type's schema, an integer starting at 1. Lets consumers cope with old and new shapes during an upgrade."
+            ],
+            [
+              "`occurredAt`",
+              "When the business fact happened (ISO-8601, UTC). Not the same as the Kafka record timestamp, which is set by the producer or the broker depending on `message.timestamp.type`."
+            ],
+            [
+              "`correlationId`",
+              "Optional. Shared by every event and command caused by the same original request; makes a saga traceable."
+            ]
+          ],
+          "caption": "Envelope fields. The first four appear in every ShopStream event."
+        },
+        {
+          "type": "markdown",
+          "text": "In ShopStream the envelope fields come first and the business data follows in the same flat object:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"eventId\": \"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\",\n  \"type\": \"ORDER_CREATED\",\n  \"version\": 1,\n  \"occurredAt\": \"2026-10-08T10:15:30Z\",\n  \"orderId\": \"o-1001\",\n  \"customerId\": \"c-77\",\n  \"lines\": [ { \"sku\": \"SKU-RED-SHOE-42\", \"qty\": 2, \"unitPrice\": 499.00 } ],\n  \"total\": 998.00,\n  \"currency\": \"INR\"\n}",
+          "title": "OrderCreated event (value of a record on the orders topic)"
+        },
+        {
+          "type": "markdown",
+          "text": "Some teams prefer a nested layout with the business data under a `data` field. The CloudEvents specification, hosted by the CNCF, standardises a set of envelope attributes and defines a Kafka binding in which they travel as record headers. Both are legitimate. What matters is choosing one layout for the whole organisation and writing it down.\n\nKeep `type` in the body so that a consumer in any language can route without special header handling. When you also want to filter or route without deserialising the payload, copy it into a record header. The publisher below does both jobs: it sets the key and the header in one place, so no caller can forget them."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport java.nio.charset.StandardCharsets;\nimport java.util.concurrent.CompletableFuture;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.springframework.kafka.core.KafkaTemplate;\nimport org.springframework.kafka.support.SendResult;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderEventPublisher {\n\n    private final KafkaTemplate<String, Object> kafka;\n\n    public OrderEventPublisher(KafkaTemplate<String, Object> kafka) {\n        this.kafka = kafka;\n    }\n\n    public CompletableFuture<SendResult<String, Object>> publish(\n            String orderId, String type, Object event) {\n        var record = new ProducerRecord<String, Object>(\"orders\", orderId, event);\n        record.headers().add(\"event-type\", type.getBytes(StandardCharsets.UTF_8));\n        return kafka.send(record);\n    }\n}",
+          "title": "OrderEventPublisher.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the topic is fixed (`orders`), the key is always the `orderId`, and the method returns the `CompletableFuture` so the caller decides what a failed send means. Publishing from inside a database transaction has a trap of its own, which the chapter on the outbox pattern deals with.\n\n### One topic per entity or one per event type?\n\nYou have to decide how events map to topics. There are two common answers."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "One topic per event type",
+            "One topic per entity (aggregate)"
+          ],
+          "rows": [
+            [
+              "Example `order-created`, `order-confirmed`, `order-cancelled`",
+              "`orders` holds all three"
+            ],
+            [
+              "Ordering None between types, because they sit in different partitions",
+              "Total order per key: an order's lifecycle is replayed in sequence"
+            ],
+            [
+              "Schemas One schema per topic, simple",
+              "Several event types in one topic; the schema tooling must support it"
+            ],
+            [
+              "Consumers Subscribe only to what they need",
+              "See events they ignore and must skip them"
+            ],
+            [
+              "Topic count Grows with every new event",
+              "Grows with entities"
+            ]
+          ],
+          "caption": "Topic-per-event-type versus topic-per-entity."
+        },
+        {
+          "type": "markdown",
+          "text": "The deciding question is whether events must be processed in order relative to each other. An order can be created, confirmed and cancelled, and a consumer that sees the cancellation before the creation has a problem. Events that must stay ordered belong in one topic, with the id of the thing they describe as the key. That is why ShopStream uses one topic per entity, owned by one service: `orders`, `payments`, `inventory` and `shipments`.\n\nA consumer of a multi-type topic usually dispatches on the type. Spring for Apache Kafka supports this with a class-level `@KafkaListener` and one `@KafkaHandler` method per payload type, where the payload class is derived from the type information the JSON serializer places in a record header."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.shipping;\n\nimport com.shopstream.events.OrderCancelled;\nimport com.shopstream.events.OrderConfirmed;\nimport org.springframework.kafka.annotation.KafkaHandler;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.stereotype.Component;\n\n@Component\n@KafkaListener(id = \"shipping-orders\", topics = \"orders\", groupId = \"shipping-service\")\npublic class OrderEventsListener {\n\n    @KafkaHandler\n    void on(OrderConfirmed event) {\n        // create the shipment for event.orderId()\n    }\n\n    @KafkaHandler\n    void on(OrderCancelled event) {\n        // cancel a pending shipment, if there is one\n    }\n    @KafkaHandler(isDefault = true)\n    void ignore(Object other) {\n        // OrderCreated and any future event type: not our business\n    }\n}",
+          "title": "OrderEventsListener.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For the payload type to be found, the producer and consumer agree on short type tokens instead of Java class names, because the two services do not share a package. This is the `spring.json.type.mapping` setting, a comma-separated list of `token:className` pairs:"
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "# order-service (producer)\nspring.kafka.producer.value-serializer=\\\n  org.springframework.kafka.support.serializer.JacksonJsonSerializer\nspring.kafka.producer.properties[spring.json.type.mapping]=\\\n  OrderConfirmed:com.shopstream.events.OrderConfirmed,\\\n  OrderCancelled:com.shopstream.events.OrderCancelled\n\n# shipping-service (consumer): same tokens, its own classes\nspring.kafka.consumer.value-deserializer=\\\n  org.springframework.kafka.support.serializer.JacksonJsonDeserializer\nspring.kafka.consumer.properties[spring.json.type.mapping]=\\\n  OrderConfirmed:com.shopstream.events.OrderConfirmed,\\\n  OrderCancelled:com.shopstream.events.OrderCancelled",
+          "title": "application.properties (order-service and shipping-service)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A new event type can break old consumers. A deserializer that builds a class from a type token cannot build one for a token it has never heard of, so adding `OrderRefunded` to `orders` makes the record fail deserialisation in every consumer that was not updated first. The default handler above never gets a chance to run. Decide in advance how unknown types are handled: wrap the deserializer so the failure is routed to the error handler and skipped, or dispatch on the envelope `type` field after reading the payload into a tolerant structure. The Spring chapters show the error-handling setup."
+        },
+        {
+          "type": "markdown",
+          "text": "### Keys, ordering and partitions\n\nThe key is the id of the thing whose events must stay in order, almost always the aggregate id: `orderId` for the order topics, `customerId` for `notifications` and `customers`. Kafka hashes the key to a partition, a partition is read by one consumer of a group at a time, and a partition is read in offset order. So all events of one order arrive in the order they were published. The idempotent producer, which is on by default, keeps that order even when a send is retried.\n\nChoosing the key badly causes two opposite problems. A key with few distinct values (the country, say) puts most of the traffic on a few partitions and one consumer does all the work. A random key, or none, spreads the load beautifully and destroys any per-entity ordering. Use a null key only for events where order truly does not matter, such as `page-views` that carry their own timestamp."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A key orders events inside one topic only. `orders` and `payments` are both keyed by `orderId`, but they are different topics with different partitions. A consumer that reads both can see `PaymentAuthorized` before the `OrderCreated` it belongs to. Never build logic that depends on the relative order of events from different topics or from different keys. Use the data in the events (a status, a version) to decide what to do, as the saga chapter shows."
+        },
+        {
+          "type": "markdown",
+          "text": "Also remember that the key-to-partition mapping depends on the partition count. Adding partitions to a live topic sends the same key to a different partition, and for a while events of one order can sit in two partitions. Choose the partition count with growth in mind when you create the topic.\n\n### Evolving events without breaking consumers\n\nEvents outlive the code that wrote them, and producers and consumers are deployed at different times. The practical rules:\n\n- **Only add.** New optional fields with sensible defaults are safe. Removing a field, renaming it, or changing its type or meaning (for example switching `total` from rupees to paise) breaks readers silently.\n- **Be a tolerant reader.** A consumer reads the fields it needs and ignores the rest. Configure your deserialiser to ignore unknown properties, because a producer that adds a field must not crash anybody.\n- **Use** `version` **for compatible evolution and a new type for a break.** When a change cannot be made compatible, publish a new event type (or a new topic) next to the old one for a migration period, move the consumers, then retire the old one.\n- **Write the contract down.** A schema registry with compatibility checks (see the chapter on schemas and data contracts) enforces the rules by machine; an event catalogue, for example in the AsyncAPI format, tells humans what each event means and who owns it."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you guarantee that all events of one order are processed in order? Use the `orderId` as the record key. The same key always maps to the same partition, a partition is consumed by exactly one consumer of a group, in offset order, and the idempotent producer keeps retries from reordering. The guarantee holds only inside one partition: it does not cover other keys, other topics, or a period during which the partition count was changed."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Designing events and topics\n\n- Prefer events (facts, past tense) for communication between services; use commands deliberately and name them as commands.\n- Give every event an envelope: `eventId`, `type`, `version`, `occurredAt`, plus a correlation id when requests span services.\n- Group events that must stay ordered into one topic and key them by the aggregate id; ordering never crosses keys or topics.\n- Treat events as a public API: add fields, never repurpose them, and plan for unknown types and unknown fields.\n- Choose the partition count up front, because changing it remaps keys."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-2",
+      "type": "concept",
+      "title": "Event Notification and Event-Carried State Transfer",
+      "subtopicId": "9-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "When `order-service` publishes that an order was confirmed, how much should the event say? The shipping service needs the delivery address and the items. The notification service needs the customer's contact details. The search indexer needs almost everything. Put too little in the event and every consumer calls back to the publisher. Put too much in and you copy data all over the company.\n\nThere are two classic answers, and a middle path between them.\n\n### Event notification (thin events)\n\nAn **event notification** says that something happened and carries little more than the identity of the thing:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"eventId\": \"9a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d\",\n  \"type\": \"ORDER_CONFIRMED\",\n  \"version\": 1,\n  \"occurredAt\": \"2026-10-08T10:15:42Z\",\n  \"orderId\": \"o-1001\"\n}",
+          "title": "OrderConfirmed as a thin event"
+        },
+        {
+          "type": "markdown",
+          "text": "A consumer that needs details calls `GET /orders/o-1001` on `order-service`. The publisher stays the single source of truth and the event contract is tiny and stable. The costs show up at run time:\n\n- **Runtime coupling.** If `order-service` is down or slow, every consumer stalls, even though Kafka was supposed to decouple them.\n- **Callback load.** Five consumers mean five calls per event, and a replay of a million events means a million calls against a service that is busy with live traffic.\n- **Racing the truth.** By the time the consumer calls back, the order may have been cancelled. It handles an `ORDER_CONFIRMED` event but reads a `CANCELLED` order, so the data no longer matches the event.\n\n### Event-carried state transfer (fat events)\n\nWith **event-carried state transfer** the event contains the data consumers need, so they never have to ask:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"eventId\": \"9a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d\",\n  \"type\": \"ORDER_CONFIRMED\",\n  \"version\": 1,\n  \"occurredAt\": \"2026-10-08T10:15:42Z\",\n  \"orderId\": \"o-1001\",\n  \"customerId\": \"c-77\",\n  \"lines\": [ { \"sku\": \"SKU-RED-SHOE-42\", \"qty\": 2, \"unitPrice\": 499.00 } ],\n  \"total\": 998.00,\n  \"currency\": \"INR\",\n  \"shippingAddress\": { \"name\": \"Asha Rao\", \"city\": \"Hyderabad\", \"pin\": \"500081\" }\n}",
+          "title": "OrderConfirmed as a fat event"
+        },
+        {
+          "type": "markdown",
+          "text": "Consumers are now autonomous: `shipping-service` keeps working while `order-service` is down, a replay needs no callbacks, and the event describes the facts as they were when it was published. The costs are different:\n\n- **Bigger messages and more coupling to the data shape.** Every consumer that reads `shippingAddress` is now affected if its structure changes.\n- **Copies of data.** Each consumer holds its own copy, which is eventually consistent with the source and can drift if it mishandles an event.\n- **Spreading personal data.** A name and an address in an event are now in every consumer's database, in the topic, in its backups, for as long as retention allows. Data-protection duties (deletion requests, minimisation) apply to all of those copies."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Thin event (notification)",
+            "Fat event (state transfer)"
+          ],
+          "rows": [
+            [
+              "Consumer needs details",
+              "Calls back to the publisher",
+              "Already has them"
+            ],
+            [
+              "Publisher unavailable",
+              "Consumers stall",
+              "Consumers continue"
+            ],
+            [
+              "Replaying history",
+              "Hammers the publisher",
+              "Self-contained, cheap"
+            ],
+            [
+              "Data seen by the consumer",
+              "Current state at call time",
+              "State at event time"
+            ],
+            [
+              "Message size, schema surface",
+              "Small",
+              "Larger, more to maintain"
+            ],
+            [
+              "Personal data spread",
+              "Low",
+              "Higher, plan for it"
+            ]
+          ],
+          "caption": "Thin versus fat events at a glance."
+        },
+        {
+          "type": "markdown",
+          "text": "### Choosing between them, and the middle path\n\nChoose a thin event when the event is only a trigger, when consumers rarely need details, or when the data is sensitive and must stay in one place. Choose a fat event when many consumers need the same data, when they must keep working without the publisher, or when you want to replay history without load on the source.\n\nThe most useful middle path is the **just-enough event**: include the facts that most consumers need to make a decision (ids, status, total, currency) and leave out bulky or sensitive details, which consumers fetch only when they truly need them. Design the event around the decision it enables. If `shipping-service` cannot act without an address, the address must be reachable without a synchronous call to `order-service`, either inside the event or through a replicated copy.\n\nThe replicated copy is the second form of state transfer: instead of putting reference data into every event, publish the entity itself to a **compacted topic** and let consumers build a local table. ShopStream does this with `customers`, keyed by `customerId`, so `shipping-service` and `notification-service` keep a local `customer_view`. Events say what happened; state topics say what is true now. The chapter on compacted topics covers the topic side. The consumer side is short:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.shipping;\n\nimport com.shopstream.events.Customer;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.springframework.jdbc.core.simple.JdbcClient;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class CustomerViewUpdater {\n\n    private final JdbcClient jdbc;\n\n    public CustomerViewUpdater(JdbcClient jdbc) {\n        this.jdbc = jdbc;\n    }\n\n    @KafkaListener(topics = \"customers\", groupId = \"shipping-service\")\n    public void onCustomer(ConsumerRecord<String, Customer> record) {\n        String customerId = record.key();\n        Customer customer = record.value();\n        if (customer == null) {\n            // a tombstone: the customer was deleted at the source\n            jdbc.sql(\"DELETE FROM customer_view WHERE customer_id = :id\")\n                .param(\"id\", customerId)\n                .update();\n            return;\n        }\n        jdbc.sql(\"\"\"\n                INSERT INTO customer_view (customer_id, name, tier, city)\n                VALUES (:id, :name, :tier, :city)\n                ON CONFLICT (customer_id)\n                DO UPDATE SET name = :name, tier = :tier, city = :city\n                \"\"\")\n            .param(\"id\", customerId)\n            .param(\"name\", customer.name())\n            .param(\"tier\", customer.tier())\n            .param(\"city\", customer.city())\n            .update();\n    }\n}",
+          "title": "CustomerViewUpdater.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the listener takes the whole `ConsumerRecord` because only then can it see a `null` value, which is how Kafka represents a delete. The write is an upsert of the full state, so it is naturally idempotent: processing the same record twice leaves the same row. And because all records of one customer share a key and therefore a partition, they arrive in order, so the last write wins correctly. If state arrives from several sources or partitions, carry a version number or timestamp and apply an update only when it is newer (the chapter on idempotent consumers shows how)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not let consumers depend on fields they were never promised. The more data an event carries, the greater the temptation for a consumer to use a field because it happens to be there. When the publisher later removes or changes it, a team it has never met breaks. Document which fields are part of the contract, and use schema compatibility checks to catch accidents."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between event notification and event-carried state transfer, and when do you use each? A notification event announces that something happened and carries only identifiers; consumers call back for details, which keeps the contract small but couples them to the publisher at run time. Event-carried state transfer puts the needed data into the event so consumers can work autonomously and replay without callbacks, at the price of bigger messages, copies of data and a wider contract. Use notifications as triggers and for sensitive data; use state transfer when many consumers need the data or must survive the publisher being down."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Event notification and state transfer\n\n- Thin events are small and keep one source of truth, but make consumers call back and expose them to races and outages.\n- Fat events make consumers autonomous and replayable, at the cost of bigger contracts and copies of (possibly personal) data.\n- Aim for just-enough events, and replicate shared reference data through compacted state topics instead of repeating it in every event.\n- State-carrying messages keyed by entity id are naturally idempotent: apply the latest state, delete on a tombstone."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-3",
+      "type": "concept",
+      "title": "The Dual-Write Problem and the Transactional Outbox",
+      "subtopicId": "9-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "When a customer places an order, `order-service` has to save the order in its database and publish `OrderCreated` to the `orders` topic. It looks like one step. It is two writes to two systems that do not share a transaction, and in a distributed system anything that can fail between two writes eventually will.\n\n### The problem: two writes, no shared transaction\n\nThis is the code almost everyone writes first:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Transactional\npublic Order placeOrder(PlaceOrderRequest request) {\n    Order order = orders.save(Order.create(request));              // write 1: database\n    kafka.send(\"orders\", order.getId(), OrderCreated.from(order)); // write 2: Kafka\n    return order;\n}",
+          "title": "The dual write (do not do this)"
+        },
+        {
+          "type": "markdown",
+          "text": "Two things go wrong. The `@Transactional` proxy commits after the method returns, so Kafka receives the event before the database commits. If the commit then fails, there is an `OrderCreated` event for an order that does not exist, and `payment-service` may charge a customer for nothing. And `send` only hands the record to the producer's buffer: if the process dies before the batch leaves, or the send fails after the commit, the order exists and nobody ever hears about it.\n\nSwapping the two lines only swaps the failure. Kafka transactions do not help, because they cover only Kafka, which does not take part in two-phase commit (XA) with databases. The way out is to make **one** system the source of truth and derive the other from it, atomically.\n\n### The solution: write the event into the database first\n\nIn the **transactional outbox** pattern the service inserts the event into an `outbox` table in the same database transaction as the business change. Either both rows are committed or neither is. A separate relay then reads the outbox and publishes the events to Kafka, retrying until it succeeds."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 134.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M7.0 102.0 L197.0 102.0 C199.8 102.0 202.0 99.8 202.0 97.0 L202.0 7.0 C202.0 4.2 199.8 2.0 197.0 2.0 L7.0 2.0 C4.2 2.0 2.0 4.2 2.0 7.0 L2.0 97.0 C2.0 99.8 4.2 102.0 7.0 102.0 Z\" fill=\"#1f2932\" stroke=\"#9a9a9a\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M407.0 66.0 L487.0 66.0 L487.0 30.0 L407.0 30.0 Z\" fill=\"#25133f\" stroke=\"#f1eafb\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M190.0 49.0 L257.0 49.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M407.0 66.0 L407.0 30.0\" fill=\"none\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M487.0 66.0 L487.0 30.0\" fill=\"none\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M347.0 49.0 L407.0 49.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M487.0 49.0 L400.9 49.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M17.0 66.0 L93.0 66.0 C94.7 66.0 96.0 64.7 96.0 63.0 L96.0 35.0 C96.0 33.3 94.7 32.0 93.0 32.0 L17.0 32.0 C15.3 32.0 14.0 33.3 14.0 35.0 L14.0 63.0 C14.0 64.7 15.3 66.0 17.0 66.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M111.0 66.0 L187.0 66.0 C188.7 66.0 190.0 64.7 190.0 63.0 L190.0 35.0 C190.0 33.3 188.7 32.0 187.0 32.0 L111.0 32.0 C109.3 32.0 108.0 33.3 108.0 35.0 L108.0 63.0 C108.0 64.7 109.3 66.0 111.0 66.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M260.0 66.0 L344.0 66.0 C345.7 66.0 347.0 64.7 347.0 63.0 L347.0 35.0 C347.0 33.3 345.7 32.0 344.0 32.0 L260.0 32.0 C258.3 32.0 257.0 33.3 257.0 35.0 L257.0 63.0 C257.0 64.7 258.3 66.0 260.0 66.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M257.0 49.0 L251.6 46.4 L251.6 51.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M487.0 66.0 C487.0 63.8 469.1 62.0 447.0 62.0 C424.9 62.0 407.0 63.8 407.0 66.0 C407.0 68.2 424.9 70.0 447.0 70.0 C469.1 70.0 487.0 68.2 487.0 66.0\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M487.0 30.0 C487.0 27.8 469.1 26.0 447.0 26.0 C424.9 26.0 407.0 27.8 407.0 30.0 C407.0 32.2 424.9 34.0 447.0 34.0 C469.1 34.0 487.0 32.2 487.0 30.0\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M407.0 49.0 L401.6 46.4 L401.6 51.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M403.9 66.0 L497.9 66.0 C499.6 66.0 500.9 64.7 500.9 63.0 L500.9 35.0 C500.9 33.3 499.6 32.0 497.9 32.0 L403.9 32.0 C402.2 32.0 400.9 33.3 400.9 35.0 L400.9 63.0 C400.9 64.7 402.2 66.0 403.9 66.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M400.9 49.0 L406.3 51.6 L406.3 46.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"34.1\" y=\"16.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"135.8\" lengthAdjust=\"spacingAndGlyphs\">order-service + one DB transaction</text><text x=\"289.6\" y=\"46.8\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"24.8\" lengthAdjust=\"spacingAndGlyphs\">Relay /</text><text x=\"34.3\" y=\"51.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"41.4\" lengthAdjust=\"spacingAndGlyphs\">orders table</text><text x=\"127.4\" y=\"51.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"43.3\" lengthAdjust=\"spacingAndGlyphs\">outbox table</text><text x=\"427.9\" y=\"50.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"41.7\" lengthAdjust=\"spacingAndGlyphs\">Kcaofknasutompeicrs</text><text x=\"283.8\" y=\"56.8\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"36.3\" lengthAdjust=\"spacingAndGlyphs\">Debezium</text><text x=\"4.6\" y=\"118.0\" font-size=\"7.5\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"194.8\" lengthAdjust=\"spacingAndGlyphs\">business row and event row commit together or not at all</text></svg>",
+          "width": 503,
+          "caption": "The order row and the outbox row are committed in one database transaction; a relay (a polling publisher or Debezium) reads the outbox and publishes to Kafka.",
+          "alt": "order-service + one DB transaction | Relay / | orders table outbox table Kcaofknasutompeicrs | Debezium | business row and event row commit together or not at all"
+        },
+        {
+          "type": "markdown",
+          "text": "The table uses the column names that Debezium's outbox router expects by default, so the same table works with either relay:"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "CREATE TABLE outbox (\n    id            uuid         PRIMARY KEY,      -- the eventId\n    aggregatetype varchar(255) NOT NULL,         -- target topic, for example orders\n    aggregateid   varchar(255) NOT NULL,         -- record key, for example the orderId\n    type          varchar(255) NOT NULL,         -- for example ORDER_CREATED\n    payload       jsonb        NOT NULL,         -- the event JSON\n    created_at    timestamptz  NOT NULL DEFAULT now(),\n    published_at  timestamptz                    -- used by the polling publisher only\n);",
+          "title": "outbox table (PostgreSQL)"
+        },
+        {
+          "type": "markdown",
+          "text": "The service writes both rows in one transaction. `OutboxWriter` is a few lines of `JdbcClient` code (constructor injection of the client and Spring Boot's Jackson 3 `JsonMapper` omitted); its `MANDATORY` propagation makes it fail fast if someone calls it outside a transaction. `DomainEvent` is a one-method interface exposing `eventId()`, which the event records already have as a component."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Transactional\npublic Order placeOrder(PlaceOrderRequest request) {\n    Order order = orders.save(Order.create(request));          // business row\n    outbox.add(\"orders\", order.getId(), \"ORDER_CREATED\",\n            OrderCreated.from(order));                          // outbox row, same transaction\n    return order;\n}\n\n@Transactional(propagation = Propagation.MANDATORY)\npublic void add(String topic, String key, String type, DomainEvent event) {\n    jdbc.sql(\"\"\"\n            INSERT INTO outbox (id, aggregatetype, aggregateid, type, payload)\n            VALUES (:id, :topic, :key, :type, CAST(:payload AS jsonb))\n            \"\"\")\n        .param(\"id\", UUID.fromString(event.eventId()))\n        .param(\"topic\", topic)\n        .param(\"key\", key)\n        .param(\"type\", type)\n        .param(\"payload\", json.writeValueAsString(event))\n        .update();\n}",
+          "title": "OrderService.java and OutboxWriter.java (essential methods)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Getting the rows to Kafka\n\n**Option 1: a polling publisher.** A scheduled job selects unpublished rows, sends them and marks them published. It needs no infrastructure beyond the service itself. Project A in the end-to-end part contains the complete class; the essential method is:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Scheduled(fixedDelay = 500)\n@Transactional\npublic void relay() {\n    List<OutboxRow> batch = jdbc.sql(\"\"\"\n            SELECT id, aggregatetype, aggregateid, type, CAST(payload AS text) AS payload\n            FROM outbox\n            WHERE published_at IS NULL\n            ORDER BY created_at, id\n            LIMIT 100\n            FOR UPDATE SKIP LOCKED\n            \"\"\")\n        .query((rs, n) -> new OutboxRow(rs.getObject(\"id\", UUID.class),\n                rs.getString(\"aggregatetype\"), rs.getString(\"aggregateid\"),\n                rs.getString(\"type\"), rs.getString(\"payload\")))\n        .list();\n\n    List<CompletableFuture<?>> sends = new ArrayList<>();\n    for (OutboxRow row : batch) {\n        var record = new ProducerRecord<>(row.topic(), row.key(), row.payload());\n        record.headers().add(\"event-id\", row.id().toString().getBytes(UTF_8));\n        sends.add(kafka.send(record));\n    }\n    sends.forEach(CompletableFuture::join);       // a failed send throws and rolls back\n\n    batch.forEach(row -> jdbc.sql(\"UPDATE outbox SET published_at = now() WHERE id = :id\")\n            .param(\"id\", row.id()).update());\n}",
+          "title": "OutboxRelay.relay() (the essential method)"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: rows are marked published only after every send was acknowledged, so a crash in between re-sends the batch (at-least-once). `FOR UPDATE SKIP LOCKED` lets several relay instances run without taking the same rows. `OutboxRow` is a small record of the five columns, and `kafka` is a `KafkaTemplate<String, String>`, because the payload is already JSON text. `@EnableScheduling` must be present on a configuration class.\n\n**Option 2: log-based change data capture.** Debezium reads the database's transaction log and turns each inserted outbox row into a Kafka record: no queries against the table and no `published_at` column. It runs as a connector on Kafka Connect, and the Connect and CDC part shows the complete connector. The heart of it is the `EventRouter` transformation, which maps the columns to the record:"
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "transforms=outbox\ntransforms.outbox.type=io.debezium.transforms.outbox.EventRouter\ntransforms.outbox.route.by.field=aggregatetype\ntransforms.outbox.route.topic.replacement=${routedByValue}\ntransforms.outbox.table.expand.json.payload=true\nvalue.converter=org.apache.kafka.connect.json.JsonConverter",
+          "title": "Debezium outbox settings (the essential lines)"
+        },
+        {
+          "type": "markdown",
+          "text": "Each row is routed to the topic named in `aggregatetype` (the default replacement would be `outbox.event.<value>`, so the override yields `orders`), the `aggregateid` becomes the record key, and the `payload` the value. Expanding the JSON payload makes the value real JSON instead of an escaped string. The row's `id` is added to the record headers as `id`, which consumers can use to de-duplicate."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Polling publisher",
+            "Log-based CDC (Debezium)"
+          ],
+          "rows": [
+            [
+              "Infrastructure",
+              "A scheduled job in your service",
+              "Kafka Connect, a connector, database settings (for PostgreSQL `wal_level=logical`)"
+            ],
+            [
+              "Load on the database",
+              "Repeated queries and updates",
+              "Reads the log; the table is never queried"
+            ],
+            [
+              "Ordering",
+              "Needs care with several instances",
+              "Commit order of the log"
+            ],
+            [
+              "Cleanup",
+              "Delete or archive published rows",
+              "Rows can be deleted at once"
+            ],
+            [
+              "Portability",
+              "Any database with row locking",
+              "Needs a connector for the database"
+            ]
+          ],
+          "caption": "Polling publisher versus log-based CDC."
+        },
+        {
+          "type": "markdown",
+          "text": "### Guarantees, ordering and cleanup\n\nThe outbox gives you **atomicity between the business change and the decision to publish**, and **at-least-once** **delivery**. It does not give exactly-once: a relay can crash after Kafka acknowledged a record but before it was marked, and the event goes out twice. Consumers must be idempotent, which is the subject of the next chapter. The same `eventId` on both copies is what lets them recognise the duplicate.\n\n**Ordering** per aggregate holds only if the relay publishes an aggregate's events in the order they were written. With a polling publisher this breaks when two instances run at once, because one may take a later event of an order while the other still holds an earlier one. Run one active relay (with a lock or leader election), or give each instance a fixed share of the aggregate ids. Do not track \"the last id published\" as a cursor: transactions commit out of id order, and a row committed late would be skipped forever. The relay above selects on `published_at IS NULL` for that reason. Log-based capture follows commit order and avoids the problem.\n\n**Cleanup.** A polling relay deletes or archives published rows after a retention period. With Debezium the router ignores `DELETE` events, and the Debezium project's own outbox example inserts each row and removes it again in the same transaction: the log holds both, a connector publishes only the insert, and the table stays empty.\n\nMonitor the age of the oldest unpublished row (or the connector's lag). A growing outbox is the early warning that events are not leaving the building.\n\nSkip the outbox when losing an occasional event is acceptable (metrics, page views), or when a service only transforms Kafka data and Kafka transactions suffice. In event sourcing, the event store plays the part of the outbox."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not \"fix\" the dual write with a try/catch. Catching the exception from `send` and retrying later, or publishing in an `afterCommit` hook, narrows the window but does not close it: a crash between the commit and the publish still loses the event, and nothing records that it was owed. Only a durable record written in the same transaction closes the gap."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the dual-write problem, and how does the transactional outbox solve it? Updating a database and publishing to Kafka are two writes without a shared transaction, so a failure between them leaves the two out of step: a lost event or a ghost event. The outbox writes the event as a row in the same database transaction as the business change, and a relay (a polling job or Debezium reading the log) publishes it to Kafka afterwards. Delivery is at-least-once, so consumers must be idempotent."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "The transactional outbox\n\n- Never update a database and publish to Kafka as two independent steps; one of them will eventually fail alone.\n- Write the event to an `outbox` table in the same transaction as the business data; publish it from there.\n- A relay is either a polling publisher (simple, any database) or log-based CDC with Debezium (no polling, commit order).\n- Delivery is at-least-once with per-aggregate ordering if you take care; consumers de-duplicate on `eventId`.\n- Clean up the table and watch the age of the oldest unpublished row."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-4",
+      "type": "concept",
+      "title": "Idempotent Receivers: Choosing a De-duplication Strategy",
+      "subtopicId": "9-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Strategy\n\nDelivery to a consumer is **at-least-once**. A crash between finishing the work and committing the offset, a rebalance, an outbox relay that resends, a replay of a dead-letter topic: all of them put the same event in front of a handler twice. The consumer cannot prevent that; it must make the second delivery harmless. A handler with that property is **idempotent**. The chapter on idempotent consumers and the inbox pattern in the Spring Kafka production part builds the processed-event table step by step. This chapter is about the decision that comes first: which strategy fits which handler. Kafka's exactly-once features do not remove the question, because they cover only the cycle of reading from Kafka and writing back to Kafka. A database row, an email or a payment call lies outside that transaction.\n\n### Five strategies"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Strategy",
+            "How it works",
+            "Covers",
+            "Weak spot"
+          ],
+          "rows": [
+            [
+              "Natural idempotency",
+              "Set state, upsert the whole entity, delete by key",
+              "Writes of complete state",
+              "\"Add 2\", \"send\", \"charge\" are not idempotent"
+            ],
+            [
+              "Version check",
+              "Apply an event only if its `revision` is newer than the stored one",
+              "Duplicates and out-of-order events",
+              "Needs a revision in events and rows"
+            ],
+            [
+              "Inbox table",
+              "Insert the `eventId` in the same database transaction as the effect",
+              "Effects inside one database",
+              "Table needs cleanup; blind to external calls"
+            ],
+            [
+              "Idempotency key",
+              "Pass a stable key (the `orderId`, the `eventId`) to the system you call",
+              "Calls to external systems",
+              "The target must support it, and remembers it only for a limited time"
+            ],
+            [
+              "Kafka transactions",
+              "Commit output records and consumed offsets atomically; readers use `read_committed`",
+              "Kafka to Kafka",
+              "Not databases or HTTP"
+            ]
+          ],
+          "caption": "Five ways to make a handler idempotent, cheapest first."
+        },
+        {
+          "type": "markdown",
+          "text": "Look for natural idempotency first, because it needs no extra storage. `UPDATE orders SET status = 'CONFIRMED'` `WHERE id = :id` can run ten times. Upserting the full state of a customer, as the earlier chapter on state transfer does, is idempotent. Counters, balances and side effects need one of the other strategies.\n\nThe version check deserves a closer look because it also repairs **ordering**. Within one partition events arrive in order, but after a replay, a retry topic or a merge of several topics they may not. If every event carries the aggregate's `revision` (a counter incremented with each change; an event-sourced service has it for free as the stream version), a single statement applies an update only when it is newer:"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "INSERT INTO order_view (order_id, status, revision)\nVALUES (:orderId, :status, :revision)\nON CONFLICT (order_id) DO UPDATE\nSET status = EXCLUDED.status, revision = EXCLUDED.revision\nWHERE order_view.revision < EXCLUDED.revision;",
+          "title": "Versioned upsert for a read model"
+        },
+        {
+          "type": "markdown",
+          "text": "A duplicate has the same revision and an old event a lower one: in both cases the `WHERE` clause is false, the statement changes nothing, and the update count of zero tells the handler it can move on. The same statement also creates the row when an update arrives before the creation.\n\n### Choosing per handler\n\nThe choice is made per handler, not per application. In ShopStream:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Handler",
+            "Strategy",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`search-indexer` writing an order document",
+              "Natural idempotency",
+              "Writing the whole document under the key `orderId` twice gives the same document"
+            ],
+            [
+              "Order summary projection",
+              "Version check",
+              "Replays and retries may repeat or reorder events; a stale update must lose"
+            ],
+            [
+              "`inventory-service` reserving stock",
+              "Inbox table",
+              "\"Reserve 2 units\" is not idempotent; the dedupe row and the reservation share one transaction"
+            ],
+            [
+              "`payment-service` calling the gateway",
+              "Inbox plus idempotency key",
+              "The gateway call is outside the database; the `orderId` as key lets the gateway recognise a repeat"
+            ],
+            [
+              "`notification-service` sending an email",
+              "Dedupe on `eventId`, accept a rare duplicate",
+              "An email cannot be unsent; decide what a duplicate costs"
+            ]
+          ],
+          "caption": "Strategy per handler."
+        },
+        {
+          "type": "markdown",
+          "text": "Three rules apply whatever you choose. **De-duplicate on the event id, never on the offset:** a duplicate published by the outbox relay has a new offset and the same `eventId`. **Record and act together:** marking an event done in a cache and then writing to the database leaves a gap between the two, so the record and the effect must share a transaction, or the effect must be idempotent by itself. **Keep the memory as long as the danger:** an inbox purged after a day cannot recognise an event replayed from last week."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Kafka offers exactly-once semantics. Why do you still need idempotent consumers? Exactly-once covers reading from Kafka, processing and writing back to Kafka, using the idempotent producer, transactions and `read_committed`. A database update or an HTTP call is outside it, and committing the offset can never be atomic with such a side effect, so after a crash the effect may run again. The handler has to be idempotent: a naturally idempotent operation, a version check, an inbox row in the same transaction, or an idempotency key on the external call."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Idempotent receivers\n\n- Assume every message can arrive twice; design the handler so that the second time changes nothing.\n- Choose per handler: natural idempotency, version check, inbox table, idempotency key or Kafka transactions.\n- A `revision` check handles duplicates and out-of-order events in one statement.\n- De-duplicate on `eventId`, write the record and the effect in one transaction, and size the memory to the longest replay."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-5",
+      "type": "concept",
+      "title": "Retry and Dead-Letter Patterns",
+      "subtopicId": "9-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A consumer that processes records for long enough will meet records it cannot process. The cause matters, because each cause needs a different response. A **transient** failure (a database deadlock, a gateway timeout) will probably succeed if tried again. A **permanent** failure (a malformed message, a business rule that rejects the data) will fail every time. A **not-yet** failure (a payment event that arrives before the order row is visible) will succeed later without any change to the record. Treating all three the same way is the most common mistake: either the consumer retries a poison pill forever, or it throws away a message that a ten-second wait would have saved."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Failure",
+            "Example",
+            "Response"
+          ],
+          "rows": [
+            [
+              "Transient, order matters",
+              "Deadlock, brief network glitch",
+              "Blocking retry with a short back-off, then the dead-letter topic"
+            ],
+            [
+              "Transient, outage of minutes",
+              "Email provider down",
+              "Non-blocking retry topics with growing delays"
+            ],
+            [
+              "Permanent for this record",
+              "Validation error, unknown enum value",
+              "No retry: straight to the dead-letter topic"
+            ],
+            [
+              "Unreadable record",
+              "Malformed JSON",
+              "`ErrorHandlingDeserializer`, then the dead-letter topic"
+            ],
+            [
+              "Not yet",
+              "Event overtakes the data it refers to",
+              "Short retry topics, or park it and re-evaluate"
+            ]
+          ],
+          "caption": "Which response fits which failure."
+        },
+        {
+          "type": "markdown",
+          "text": "### Blocking retry\n\nIn a **blocking retry** the consumer retries the failed record in place before it moves on. Order is preserved and nothing else is needed, but the partition makes no progress while the retries last. In Spring for Apache Kafka the `DefaultErrorHandler` does this, with a back-off policy and an optional recoverer that is called when the attempts run out. Without configuration it makes ten delivery attempts with no pause and then logs the record at `ERROR` and skips it, which is rarely what you want."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Configuration\npublic class ConsumerErrorConfig {\n\n    @Bean\n    DefaultErrorHandler errorHandler(KafkaTemplate<Object, Object> template) {\n        var recoverer = new DeadLetterPublishingRecoverer(template);\n        var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2L));\n        handler.addNotRetryableExceptions(IllegalArgumentException.class);\n        return handler;\n    }\n}",
+          "title": "ConsumerErrorConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "This handler makes three delivery attempts one second apart, then publishes the record to `<topic>-dlt`. `IllegalArgumentException` is declared permanent, so it goes to the dead-letter topic on the first failure; Spring already treats deserialisation and conversion errors that way. Spring Boot attaches a `CommonErrorHandler` bean to the auto-configured listener container factory.\n\nKeep the total back-off short. The default handler simply suspends the consumer thread between attempts, so a long wait can exceed `max.poll.interval.ms` and make the broker side consider the consumer dead. If delays must be longer, Spring offers a back-off handler that pauses the container instead of sleeping, but then you are better off with retry topics.\n\n### Non-blocking retry topics\n\nWhen a failure lasts minutes, blocking the partition for minutes is unacceptable: every other record behind it waits. The **retry topic** pattern moves the failed record out of the way. The consumer publishes it to a retry topic together with the time it is due, and carries on with the next record. A second listener reads the retry topic, waits until the record is due, and calls the same handler again. After the last attempt the record goes to the dead-letter topic. The chapter on non-blocking retries in the Spring part has the flow diagram; the annotation is short:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Component\npublic class NotificationListener {\n\n    private static final Logger log = LoggerFactory.getLogger(NotificationListener.class);\n\n    private final EmailGateway gateway;\n\n    public NotificationListener(EmailGateway gateway) {\n        this.gateway = gateway;\n    }\n\n    @RetryableTopic(attempts = \"4\", backOff = @BackOff(delay = 5000),\n            exclude = IllegalArgumentException.class)\n    @KafkaListener(topics = \"notifications\", groupId = \"notification-service\")\n    public void on(NotificationRequested request) {\n        gateway.send(request);   // a RuntimeException moves the record to the retry topic\n    }\n\n    @DltHandler\n    public void onDead(NotificationRequested request) {\n        log.error(\"Notification {} could not be delivered\", request.eventId());\n    }\n}",
+          "title": "NotificationListener.java (notification-service)"
+        },
+        {
+          "type": "markdown",
+          "text": "With a fixed delay Spring creates one retry topic, `notifications-retry`, and `notifications-dlt`; an exponential back-off creates one topic per delay, such as `notifications-retry-1000` and `notifications-retry-2000`. The price is **ordering**: while record N waits in the retry topic, record N+1 of the same key is processed. Use retry topics only where handlers tolerate that, for example because they are idempotent and versioned (see the previous chapter), and never for a sequence of dependent steps on one key. They are not supported for batch listeners or with container transactions.\n\n### The dead-letter topic is an inbox, not a bin\n\nThe **dead-letter topic** (DLT) holds records that could not be processed. Spring's recoverer publishes the original key and value, the original headers, and extra headers that describe the failure: the exception class and message, the stack trace, and the original topic, partition and offset (the `kafka_dlt-*` headers, with constants such as `KafkaHeaders.DLT_ORIGINAL_TOPIC`). By default the record goes to the same partition number as the original, so give the DLT at least as many partitions as the source topic.\n\nA DLT that nobody watches is a silent data-loss mechanism with extra steps. Treat it as a work queue for humans and automation:\n\n- **Alert** on any record arriving in it, or on its growth, not only on consumer lag.\n- **Retain** records long enough to react, usually longer than the source topic (`retention.ms` on the DLT).\n- **Write a runbook**: who looks, how to decide between fix-and-replay and discard.\n- **Never throw from the handler of the DLT itself.** Persist or alert and move on.\n\n### Reprocessing from the DLT\n\nOnce the cause is fixed (a bug, a missing reference record, a restored dependency), the parked records are replayed into the original topic. A replay tool must restore the original topic, key, value and headers, drop the failure headers, and be repeatable. This sketch starts stopped and is started by an operator, for example through an admin endpoint that calls `KafkaListenerEndpointRegistry#getListenerContainer(\"orders-dlt-replayer\")` and `start()`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Component\npublic class DltReplayer {\n\n    private final KafkaTemplate<String, String> kafka;\n\n    public DltReplayer(KafkaTemplate<String, String> kafka) {\n        this.kafka = kafka;\n    }\n\n    @KafkaListener(id = \"orders-dlt-replayer\", topics = \"orders-dlt\", autoStartup = \"false\")\n    public void replay(ConsumerRecord<String, String> record) {\n        Header origin = record.headers().lastHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC);\n        String topic = new String(origin.value(), StandardCharsets.UTF_8);\n        var out = new ProducerRecord<>(topic, null, record.key(), record.value());\n        for (Header h : record.headers()) {\n            if (!h.key().startsWith(\"kafka_dlt-\")) {\n                out.headers().add(h);              // keeps type headers and the eventId\n            }\n        }\n        kafka.send(out).join();\n    }\n}",
+          "title": "DltReplayer.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The replayer must not interpret the payload, so it needs a listener container factory with string deserialisers. Two properties make a replay safe. The consumer must be idempotent, because some replayed records were partly processed. And its writes should be versioned, because a replayed event is older than events that were processed in the meantime and must not overwrite newer state. If a record fails again it simply returns to the DLT; count the attempts in a header so that a record cannot loop forever.\n\n### Poison pills\n\nA **poison pill** is a record that fails every time, and the worst kind cannot even be deserialised. A plain consumer fails inside `poll()` on the same offset again and again, and the partition is stuck. Wrap the real deserialiser in Spring's `ErrorHandlingDeserializer` (set the real class with `spring.deserializer.value.delegate.class`), so a bad record arrives as a `DeserializationException` that the error handler sends to the DLT and skips. Batch listeners do not route such failures automatically."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Unbounded retries are an outage with a delay. A handler that retries forever, or a retry topic loop that never ends in a DLT, holds resources and hides the failing record while lag grows. Every retry policy needs a limit and a final destination. If a dependency is down for everyone, retries from many consumers arrive at the same moment when it recovers: use growing delays with jitter, and consider pausing consumption altogether rather than failing record after record."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Blocking retries or retry topics: how do you choose? Blocking retries keep order but stall the partition, so they suit short transient errors where order matters. Retry topics keep the partition moving by parking the failed record for a delay, which suits longer outages, but the parked record is processed after later records of the same key, so ordering is lost. Both must end in a dead-letter topic, and permanent errors should skip retries entirely."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Retry and dead-letter patterns\n\n- Classify failures first: transient, permanent, not yet, unreadable. Only the first and last-but-one deserve retries.\n- Blocking retry preserves order and blocks the partition; retry topics unblock the partition and give up ordering.\n- Every retry policy is bounded and ends in a dead-letter topic with the original record and failure headers.\n- Monitor and own the DLT; replay through a tool that restores the original record and relies on idempotent, versioned consumers.\n- Wrap deserialisers in `ErrorHandlingDeserializer` so one bad record cannot stop a partition."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-6",
+      "type": "concept",
+      "title": "Sagas: Choreography and Orchestration",
+      "subtopicId": "9-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Placing an order in ShopStream changes data in three services: `inventory-service` reserves stock, `payment-service` takes the money and `order-service` records the result. Each has its own database, so no single transaction can cover them, and Kafka transactions do not reach into databases. A **saga** gets the same business result without a global transaction. It splits the work into a sequence of local transactions. Each step commits on its own and announces the outcome; if a later step fails, the earlier steps are undone by **compensating transactions**, new transactions that semantically reverse the effect (release the stock, refund the payment).\n\nA saga gives up isolation. Between the steps the world sees intermediate states: an order that is `PENDING` with stock already reserved. The patterns below manage that. There are two ways to coordinate the steps.\n\n### The ShopStream order saga\n\nThe happy path and the failure paths use only the events defined for ShopStream:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Step",
+            "Service reacts to",
+            "Local transaction",
+            "Publishes"
+          ],
+          "rows": [
+            [
+              "1",
+              "HTTP request",
+              "Create the order as `PENDING`",
+              "`OrderCreated` on `orders`"
+            ],
+            [
+              "2",
+              "`OrderCreated`",
+              "Reserve the stock",
+              "`StockReserved` or `StockRejected` on `inventory`"
+            ],
+            [
+              "3",
+              "`StockReserved`",
+              "Authorize the payment",
+              "`PaymentAuthorized` or `PaymentFailed` on `payments`"
+            ],
+            [
+              "4",
+              "`PaymentAuthorized`",
+              "Mark the order `CONFIRMED`",
+              "`OrderConfirmed` on `orders`"
+            ],
+            [
+              "5",
+              "`OrderConfirmed`",
+              "Create the shipment",
+              "`ShipmentCreated` on `shipments`"
+            ],
+            [
+              "Fail",
+              "`StockRejected`",
+              "Mark the order `CANCELLED`",
+              "`OrderCancelled` on `orders`"
+            ],
+            [
+              "Fail",
+              "`PaymentFailed`",
+              "Release the reservation; cancel the order",
+              "`StockReleased` on `inventory`, `OrderCancelled` on `orders`"
+            ]
+          ],
+          "caption": "The order saga, step by step."
+        },
+        {
+          "type": "markdown",
+          "text": "Notice the order of the steps. Reserving stock comes before taking money because releasing a reservation is cheap and invisible, while refunding a customer is slow and visible. Put the steps that are hard to undo as late as possible. The step after which the saga can no longer be rolled back is its **pivot**; the steps behind it must be retried until they succeed rather than compensated.\n\n### Choreography: services react to each other's events\n\nIn a **choreographed** saga there is no coordinator. Each service listens for the events it cares about, does its local work and publishes its own event. The flow above is exactly that, and the services need nothing but the topics:"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 62.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 48.0 L111.7 48.0 C113.4 48.0 114.7 46.7 114.7 45.0 L114.7 5.0 C114.7 3.3 113.4 2.0 111.7 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.7 25.0 L129.7 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M244.4 25.0 L258.4 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M373.2 25.0 L387.2 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M129.7 25.0 L124.3 22.4 L124.3 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M133.7 48.0 L240.4 48.0 C242.1 48.0 243.4 46.7 243.4 45.0 L243.4 5.0 C243.4 3.3 242.1 2.0 240.4 2.0 L133.7 2.0 C132.1 2.0 130.7 3.3 130.7 5.0 L130.7 45.0 C130.7 46.7 132.1 48.0 133.7 48.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M258.4 25.0 L253.0 22.4 L253.0 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.4 48.0 L369.2 48.0 C370.8 48.0 372.2 46.7 372.2 45.0 L372.2 5.0 C372.2 3.3 370.8 2.0 369.2 2.0 L262.4 2.0 C260.8 2.0 259.4 3.3 259.4 5.0 L259.4 45.0 C259.4 46.7 260.8 48.0 262.4 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M387.2 25.0 L381.8 22.4 L381.8 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M391.2 48.0 L497.9 48.0 C499.6 48.0 500.9 46.7 500.9 45.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L391.2 2.0 C389.5 2.0 388.2 3.3 388.2 5.0 L388.2 45.0 C388.2 46.7 389.5 48.0 391.2 48.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"35.7\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"45.3\" lengthAdjust=\"spacingAndGlyphs\">order-service</text><text x=\"158.4\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"57.4\" lengthAdjust=\"spacingAndGlyphs\">payment-service</text><text x=\"286.1\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"59.5\" lengthAdjust=\"spacingAndGlyphs\">inventory-service</text><text x=\"421.9\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"45.3\" lengthAdjust=\"spacingAndGlyphs\">order-service</text><text x=\"35.0\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"46.8\" lengthAdjust=\"spacingAndGlyphs\">OrderCreated</text><text x=\"153.4\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"67.3\" lengthAdjust=\"spacingAndGlyphs\">PaymentAuthorized</text><text x=\"290.3\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"51.1\" lengthAdjust=\"spacingAndGlyphs\">StockReserved</text><text x=\"417.0\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"55.2\" lengthAdjust=\"spacingAndGlyphs\">OrderConfirmed</text><text x=\"117.0\" y=\"56.0\" font-size=\"7.5\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"268.9\" lengthAdjust=\"spacingAndGlyphs\">failure: StockRejected -&gt; PaymentRefunded -&gt; OrderCancelled (compensation)</text></svg>",
+          "width": 503,
+          "caption": "Choreographed order saga: each service reacts to events and publishes the next one; failures travel as events",
+          "alt": "order-service payment-service inventory-service order-service | OrderCreated PaymentAuthorized StockReserved OrderConfirmed | failure: StockRejected -> PaymentRefunded -> OrderCancelled (compensation)"
+        },
+        {
+          "type": "markdown",
+          "text": "*(*`StockRejected`*,* `PaymentFailed`*) and trigger compensations such as* `StockReleased` *and* `OrderCancelled`*.*"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Listens to",
+            "Publishes"
+          ],
+          "rows": [
+            [
+              "`order-service`",
+              "`inventory` (`StockRejected`), `payments` (`PaymentAuthorized`, `PaymentFailed`)",
+              "`orders`"
+            ],
+            [
+              "`inventory-service`",
+              "`orders` (`OrderCreated`), `payments` (`PaymentFailed`)",
+              "`inventory`"
+            ],
+            [
+              "`payment-service`",
+              "`inventory` (`StockReserved`)",
+              "`payments`"
+            ],
+            [
+              "`shipping-service`",
+              "`orders` (`OrderConfirmed`)",
+              "`shipments`"
+            ]
+          ],
+          "caption": "Who listens to what in the choreographed saga."
+        },
+        {
+          "type": "markdown",
+          "text": "The strengths are simplicity and loose coupling: no central component, and a new participant (say a fraud check) just subscribes. The weakness is that the process exists nowhere as a whole. To learn what happens after `OrderCreated` you must read four services, cycles creep in (`order-service` listens to `payments`, `inventory-service` listens to `payments`), and finding out where order `o-1001` is stuck means correlating events across topics. Carry a `correlationId` in every event, trace it, and keep a saga state view, for example the compacted `order-status` topic, which a small consumer maintains from all the topics.\n\n### Orchestration: a coordinator drives the saga\n\nIn an **orchestrated** saga one component, the orchestrator (here a part of `order-service`), owns the process. It sends **commands** to the participants and reacts to their replies. The participants still publish their outcomes as events on `inventory` and `payments`; the commands travel on topics of their own (`inventory-commands`, `payment-commands`, keyed by `orderId`)."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 462.9 112.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 104.0 L138.6 104.0 C140.3 104.0 141.6 102.7 141.6 101.0 L141.6 77.0 C141.6 75.3 140.3 74.0 138.6 74.0 L5.0 74.0 C3.3 74.0 2.0 75.3 2.0 77.0 L2.0 101.0 C2.0 102.7 3.3 104.0 5.0 104.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M196.4 40.0 L63.8 74.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M79.8 74.0 L236.4 40.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M221.4 40.0 L223.4 74.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M239.4 74.0 L261.4 40.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M246.4 40.0 L383.1 74.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M399.1 74.0 L286.4 40.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M63.8 74.0 L69.7 75.2 L68.4 70.1 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M164.6 104.0 L298.3 104.0 C299.9 104.0 301.3 102.7 301.3 101.0 L301.3 77.0 C301.3 75.3 299.9 74.0 298.3 74.0 L164.6 74.0 C163.0 74.0 161.6 75.3 161.6 77.0 L161.6 101.0 C161.6 102.7 163.0 104.0 164.6 104.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M223.4 74.0 L225.7 68.5 L220.5 68.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M324.3 104.0 L457.9 104.0 C459.6 104.0 460.9 102.7 460.9 101.0 L460.9 77.0 C460.9 75.3 459.6 74.0 457.9 74.0 L324.3 74.0 C322.6 74.0 321.3 75.3 321.3 77.0 L321.3 101.0 C321.3 102.7 322.6 104.0 324.3 104.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.1 74.0 L378.5 70.2 L377.2 75.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M189.4 40.0 L293.4 40.0 C295.1 40.0 296.4 38.7 296.4 37.0 L296.4 5.0 C296.4 3.3 295.1 2.0 293.4 2.0 L189.4 2.0 C187.8 2.0 186.4 3.3 186.4 5.0 L186.4 37.0 C186.4 38.7 187.8 40.0 189.4 40.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.4 40.0 L230.6 38.6 L231.7 43.7 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M261.4 40.0 L256.3 43.1 L260.7 46.0 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M286.4 40.0 L290.9 44.1 L292.4 39.1 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"232.5\" y=\"18.8\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"18.0\" lengthAdjust=\"spacingAndGlyphs\">Saga</text><text x=\"324.5\" y=\"20.0\" font-size=\"7.4\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"93.9\" lengthAdjust=\"spacingAndGlyphs\">commands down, replies up</text><text x=\"219.2\" y=\"28.8\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"44.4\" lengthAdjust=\"spacingAndGlyphs\">orchestrator</text><text x=\"43.1\" y=\"91.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"57.4\" lengthAdjust=\"spacingAndGlyphs\">payment-service</text><text x=\"201.7\" y=\"91.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"59.5\" lengthAdjust=\"spacingAndGlyphs\">inventory-service</text><text x=\"363.1\" y=\"91.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"56.0\" lengthAdjust=\"spacingAndGlyphs\">shipping-service</text></svg>",
+          "width": 463,
+          "caption": "Orchestrated order saga: the orchestrator sends commands, receives the replies, stores the saga state and decides about compensation.",
+          "alt": "Saga commands down, replies up | orchestrator | payment-service inventory-service shipping-service"
+        },
+        {
+          "type": "markdown",
+          "text": "The orchestrator is a state machine whose state lives in a database table (one row per order). Every transition and the command it triggers are written in **one** transaction, with the command going through the outbox of the earlier chapter."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Transactional\n@KafkaHandler\npublic void on(StockReserved event) {\n    OrderSaga saga = sagas.require(event.orderId());\n    if (saga.state() != SagaState.AWAITING_STOCK) {\n        return;                                    // duplicate or late event: ignore\n    }\n    saga.moveTo(SagaState.AWAITING_PAYMENT, Instant.now().plus(Duration.ofMinutes(5)));\n    outbox.add(\"payment-commands\", saga.orderId(), \"AUTHORIZE_PAYMENT\",\n            AuthorizePayment.of(saga));\n}",
+          "title": "OrderSagaListener.java (order-service, one transition)"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the state check makes the handler idempotent and robust against events that arrive after the saga has moved on, and the second argument of `moveTo` stores a **deadline** for the next reply. The strengths of orchestration are the explicit flow in one place, one place for timeouts and compensation, and easy monitoring. The costs are an extra moving part, commands that couple the orchestrator to every participant, and the risk that business rules leak into a \"god service\". Keep the orchestrator free of business logic: it decides *which step is next*, not *how* a step is done.\n\n### Concerns every saga must handle\n\n- **Idempotency.** Events are delivered at least once, so every step and every compensation must be idempotent (previous chapters). Releasing a reservation twice must be harmless.\n- **Compensation is not rollback.** You cannot un-send an email or erase that a card was authorised. Compensations are new facts (`StockReleased`, `PaymentRefunded`, `OrderCancelled`) and each step needs one designed in advance, or must be declared the pivot.\n- **Timeouts.** A participant that never answers leaves the saga hanging. Store a deadline per step; a scheduled job (or a Kafka Streams punctuator) finds expired sagas and starts the compensation.\n- **Isolation.** Intermediate states are visible. Use a status as a semantic lock (an order in `PENDING` cannot be modified), re-read data before acting on it, and use version checks.\n- **Ordering and lateness.** Events of one order are ordered per topic, not across topics. Decide what happens when `StockReserved` arrives for an order that was already cancelled: usually the participant must immediately compensate."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Choreography",
+            "Orchestration"
+          ],
+          "rows": [
+            [
+              "Good fit Few steps, one team, linear flow",
+              "Many steps, branches, timeouts, several teams"
+            ],
+            [
+              "Visibility of the flow Spread over services",
+              "One place"
+            ],
+            [
+              "Coupling Via events only",
+              "Orchestrator knows all participants"
+            ],
+            [
+              "Risk Hidden cycles, hard to debug",
+              "Orchestrator becomes a monolith"
+            ]
+          ],
+          "caption": "Choosing a coordination style."
+        },
+        {
+          "type": "markdown",
+          "text": "Do not reach for a saga when one service and one database can do the whole job in a local transaction; merging two services that always change together is a legitimate fix. And do not expect sagas to give consistency at every instant: they give eventual consistency with explicit failure handling."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is a saga, and what is the difference between choreography and orchestration? A saga replaces a distributed transaction by a sequence of local transactions, each publishing an event or command for the next step, with compensating transactions that undo earlier steps when a later one fails. In choreography the services react to each other's events with no central controller; in orchestration a coordinator holds the saga state, sends commands and decides about compensation. Choreography is simpler for short flows but hides the process; orchestration makes it explicit at the cost of a central component."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Sagas\n\n- A saga is a chain of local transactions with compensations; it trades isolation for availability and independence.\n- Order the steps so that the hardest-to-undo step comes last; steps after the pivot are retried, not compensated.\n- Choreography uses only events and suits short flows; orchestration uses commands and a state machine and suits long or branching flows.\n- Make every step and compensation idempotent, give every step a timeout, and carry a correlation id.\n- Write the saga state change and the next message in one transaction (the outbox)."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-7",
+      "type": "concept",
+      "title": "Event Sourcing",
+      "subtopicId": "9-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Most applications store the **current state**: the `orders` table holds the latest status of each order, and every update overwrites the previous value. The history is gone unless you add audit tables by hand. **Event sourcing** turns this around. The source of truth is the sequence of events that happened to each entity (`OrderCreated`, `OrderConfirmed`, `OrderCancelled`), and the current state is derived by replaying them. You get a complete audit trail, the ability to rebuild state at any point in the past, and the freedom to create new read models later from history that was recorded all along. It fits domains where the history is part of the business: ledgers, order lifecycles, anything audited.\n\n### Decide and apply\n\nEvent sourcing separates two steps. A command is first checked against the current state and **decides** which events to emit (or rejects). The events are then **applied** to the state. The apply function is pure: no I/O, no validation, and it never fails, because the event is already a fact."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public sealed interface OrderEvent extends DomainEvent\n        permits OrderCreated, OrderConfirmed, OrderCancelled { }\n\npublic record OrderState(String orderId, String status, BigDecimal total) {\n\n    /** Rebuild the state by folding the history, oldest event first. */\n    public static OrderState replay(List<OrderEvent> history) {\n        OrderState state = null;\n        for (OrderEvent event : history) {\n            state = apply(state, event);\n        }\n        return state;\n    }\n\n    private static OrderState apply(OrderState state, OrderEvent event) {\n        return switch (event) {\n            case OrderCreated e -> new OrderState(e.orderId(), \"PENDING\", e.total());\n            case OrderConfirmed e -> new OrderState(state.orderId(), \"CONFIRMED\", state.total());\n            case OrderCancelled e -> new OrderState(state.orderId(), \"CANCELLED\", state.total());\n        };\n    }\n\n    /** The command: decide which events follow, or reject. */\n    public List<OrderEvent> confirm(Instant now) {\n        if (!\"PENDING\".equals(status)) {\n            throw new IllegalStateException(\"Order \" + orderId + \" is \" + status);\n        }\n        return List.of(new OrderConfirmed(UUID.randomUUID().toString(), orderId, now));\n    }\n}",
+          "title": "OrderEvent.java and OrderState.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the event records implement `OrderEvent`, and because it is sealed the `switch` is checked by the compiler for completeness: add a new event type and every place that must handle it stops compiling. `confirm` returns events instead of changing the object.\n\nAn **event store** needs only two operations: append events for one aggregate, and load them in order. The append carries the version the caller expects, which gives **optimistic concurrency**. With a relational store the primary key does the work:"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "CREATE TABLE event_store (\n    aggregate_id varchar(255) NOT NULL,\n    version      int          NOT NULL,          -- 1, 2, 3 ... per aggregate\n    event_id     uuid         NOT NULL UNIQUE,\n    type         varchar(255) NOT NULL,\n    payload      jsonb        NOT NULL,\n    occurred_at  timestamptz  NOT NULL,\n    PRIMARY KEY (aggregate_id, version)\n);",
+          "title": "event_store table (PostgreSQL)"
+        },
+        {
+          "type": "markdown",
+          "text": "If two commands load the same order at version 3 and both try to append version 4, one insert violates the primary key and fails. That command reloads the order, decides again on fresh state, and retries or gives up.\n\n### Where Kafka fits, and where it does not\n\nKafka is an excellent **distribution** layer for events: durable, ordered per key, replayable by any number of consumers, and able to keep events forever (`retention.ms=-1`). It is a poor **event store database**, for three reasons. It has no conditional append, so you cannot say \"add this event only if the aggregate is still at version 3\". It has no index by key, so loading the history of one order means scanning a partition. And it cannot delete or amend a single record in the middle of a log.\n\nTwo designs work in practice:\n\n- **Database event store plus Kafka.** Events are appended to a table like `event_store` and published through the outbox (with change data capture, the table itself can serve as the outbox). Consistency comes from the database; Kafka feeds read models, other services and replays.\n- **Kafka-native with Kafka Streams.** Commands go to a topic keyed by aggregate id. A Streams application keeps each aggregate's state in a state store, processes the commands of a key one at a time (the partition is the serialisation point, so no version check is needed) and writes the resulting events to an events topic, with exactly-once processing. This removes the second system but makes commands asynchronous and puts the aggregate state in the Streams state stores, which have to be restored after a rebalance.\n\n### Snapshots, evolution and erasure\n\n- **Snapshots.** Replaying thousands of events per command is slow. Store a snapshot of the state every N events together with its version, and load the snapshot plus the events after it. In Kafka a compacted topic keyed by aggregate id is a natural home for snapshots.\n- **Evolving events.** Stored events are immutable and live forever, so every version ever written must remain readable. Keep the `version` field, and use **upcasters**, small functions that convert an old event shape to the current one when it is loaded. Never edit history.\n- **Erasure.** A log of immutable events collides with the right to have personal data erased. Keep personal data out of events where you can (store it elsewhere and reference it by id), or encrypt it with a key per person and destroy the key (**crypto-shredding**). Kafka cannot remove one record from the middle of a partition; compaction removes only older values of a key, and only when the cleaner runs.\n\nEvent sourcing adds real cost: a different way of thinking, harder queries (you query projections, not the events), and event versioning for life. Do not use it for plain CRUD data. Do not confuse it with publishing events: a service can publish events to Kafka without ever storing its state as events."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Is Kafka an event store? Kafka is an excellent durable, replayable log for events, but it lacks what a store of record for aggregates needs: no conditional append for optimistic concurrency, no efficient read of one aggregate's events, and no deletion of single records. Typical designs keep the events in a database with a unique (aggregate, version) key and publish them to Kafka through an outbox, or use Kafka Streams with a state store so that all commands of a key are processed sequentially."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Event sourcing\n\n- State is a fold over events; commands decide events, `apply` is pure and never fails.\n- Concurrency control needs a conditional append (a unique aggregate-and-version key) or single-writer processing per key.\n- Kafka distributes and replays events well; it is not a database for loading aggregates.\n- Plan snapshots, upcasting and erasure (crypto-shredding) before the first event is written."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-8",
+      "type": "concept",
+      "title": "CQRS and Materialised Views",
+      "subtopicId": "9-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "In a service with its own database, one model has to serve two masters. Updates want a normalised structure that protects consistency, one aggregate at a time. Queries want something else entirely: the \"my orders\" screen needs orders with product names and delivery status in one row, the search page needs a text index, and the dashboard needs counts per city. Joins across services are impossible, because each service owns its data. **Command Query** **Responsibility Segregation (CQRS)** gives queries their own model. The write side handles commands and publishes events. **Projections** consume those events and maintain **read models** (also called materialised views), each shaped for the questions it answers."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 62.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 48.0 L86.0 48.0 C87.6 48.0 89.0 46.7 89.0 45.0 L89.0 5.0 C89.0 3.3 87.6 2.0 86.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 25.0 L104.0 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M193.0 25.0 L207.0 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M295.9 25.0 L309.9 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M398.9 25.0 L412.9 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M104.0 25.0 L98.6 22.4 L98.6 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M108.0 48.0 L189.0 48.0 C190.6 48.0 192.0 46.7 192.0 45.0 L192.0 5.0 C192.0 3.3 190.6 2.0 189.0 2.0 L108.0 2.0 C106.3 2.0 105.0 3.3 105.0 5.0 L105.0 45.0 C105.0 46.7 106.3 48.0 108.0 48.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M207.0 25.0 L201.6 22.4 L201.6 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M211.0 48.0 L291.9 48.0 C293.6 48.0 294.9 46.7 294.9 45.0 L294.9 5.0 C294.9 3.3 293.6 2.0 291.9 2.0 L211.0 2.0 C209.3 2.0 208.0 3.3 208.0 5.0 L208.0 45.0 C208.0 46.7 209.3 48.0 211.0 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M309.9 25.0 L304.5 22.4 L304.5 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M313.9 48.0 L394.9 48.0 C396.6 48.0 397.9 46.7 397.9 45.0 L397.9 5.0 C397.9 3.3 396.6 2.0 394.9 2.0 L313.9 2.0 C312.3 2.0 310.9 3.3 310.9 5.0 L310.9 45.0 C310.9 46.7 312.3 48.0 313.9 48.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M412.9 25.0 L407.5 22.4 L407.5 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M416.9 48.0 L497.9 48.0 C499.6 48.0 500.9 46.7 500.9 45.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L416.9 2.0 C415.3 2.0 413.9 3.3 413.9 5.0 L413.9 45.0 C413.9 46.7 415.3 48.0 416.9 48.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"27.9\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"35.1\" lengthAdjust=\"spacingAndGlyphs\">Command</text><text x=\"132.4\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"32.2\" lengthAdjust=\"spacingAndGlyphs\">Event log</text><text x=\"234.4\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"34.1\" lengthAdjust=\"spacingAndGlyphs\">Projection</text><text x=\"334.0\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"41.0\" lengthAdjust=\"spacingAndGlyphs\">Read model</text><text x=\"447.0\" y=\"22.9\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"20.8\" lengthAdjust=\"spacingAndGlyphs\">Query</text><text x=\"23.4\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"44.3\" lengthAdjust=\"spacingAndGlyphs\">(place order)</text><text x=\"126.7\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"43.6\" lengthAdjust=\"spacingAndGlyphs\">(Kafka topic)</text><text x=\"234.5\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"33.9\" lengthAdjust=\"spacingAndGlyphs\">consumer</text><text x=\"333.3\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"42.2\" lengthAdjust=\"spacingAndGlyphs\">(DB / cache)</text><text x=\"452.0\" y=\"32.4\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"10.8\" lengthAdjust=\"spacingAndGlyphs\">API</text></svg>",
+          "width": 503,
+          "caption": "Commands change the write side, which records events; projections consume the events from Kafka and keep read models that serve queries.",
+          "alt": "Command Event log Projection Read model Query | (place order) (Kafka topic) consumer (DB / cache) API"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Read model",
+            "Built by",
+            "Serves"
+          ],
+          "rows": [
+            [
+              "`order_summary` table in a relational database",
+              "A projection in `order-service` or a query service",
+              "The \"my orders\" screen"
+            ],
+            [
+              "Search index",
+              "`search-indexer`",
+              "Product and order search"
+            ],
+            [
+              "`KTable` with interactive queries",
+              "`analytics-app` (Kafka Streams)",
+              "Counts and aggregates"
+            ],
+            [
+              "Compacted topic `order-status`",
+              "A small consumer or Streams",
+              "Latest status for any consumer that needs it"
+            ]
+          ],
+          "caption": "Typical read models in ShopStream."
+        },
+        {
+          "type": "markdown",
+          "text": "### A projection\n\nA projection is a consumer whose handlers turn events into updates of the read model:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@KafkaHandler\npublic void on(OrderCreated event) {\n    jdbc.sql(\"\"\"\n            INSERT INTO order_summary (order_id, customer_id, total, status)\n            VALUES (:id, :customer, :total, 'PENDING')\n            ON CONFLICT (order_id) DO NOTHING\n            \"\"\")\n        .param(\"id\", event.orderId())\n        .param(\"customer\", event.customerId())\n        .param(\"total\", event.total())\n        .update();\n}\n\n@KafkaHandler\npublic void on(OrderConfirmed event) {\n    jdbc.sql(\"UPDATE order_summary SET status = 'CONFIRMED' WHERE order_id = :id\")\n        .param(\"id\", event.orderId())\n        .update();\n}",
+          "title": "OrderSummaryProjection.java (one handler and the helper)"
+        },
+        {
+          "type": "markdown",
+          "text": "The class carries a class-level `@KafkaListener` on `orders` with its own group id, like the listeners in the earlier chapters, and the same rules apply: handlers are idempotent, and events of one order arrive in order because they share a key. A projection that is replayed in order from the start always converges to the same state, which is what makes rebuilding possible.\n\n**Rebuilding.** Because the read model is a function of the event log, a changed or damaged model is rebuilt rather than migrated. Start the projection under a new consumer group with `auto.offset.reset=earliest`, write into a fresh table or index, and switch readers over when it has caught up. This only works if the topic still has the history: decide retention (or a snapshot or compacted topic) when you create it.\n\n**Eventual consistency.** The read model lags the write side by milliseconds or, during an incident, by minutes. The classic symptom: a customer places an order, is redirected to \"my orders\" and does not see it. Design for it instead of hoping:\n\n- Return the created resource in the response to the command and show that, instead of querying again.\n- Return a revision or event id; the query endpoint can wait briefly until the projection has reached it, or read from the write side for that one id.\n- Show an honest state (\"processing\") and update the page by polling or server-sent events.\n- Monitor projection lag as a service-level objective, not only as an operational metric."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Projections must not have side effects. A projection that sends an email or calls a payment API will repeat it on every replay and every rebuild. Side effects belong in handlers that are idempotent and reached through events, never in code that you intend to replay at will."
+        },
+        {
+          "type": "markdown",
+          "text": "CQRS and event sourcing are separate ideas that fit together. You can use CQRS with an ordinary state-based write model and an outbox, and many teams do. Do not use it where simple reads of the write model are enough and the lag of eventual consistency would only hurt."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "CQRS and materialised views\n\n- Give queries their own model, built by projections that consume events; one write model can feed many read models.\n- A deterministic projection can be rebuilt from the log; keep the history it needs.\n- Eventual consistency is a design input: return the new state, use revision tokens, show honest states, watch the lag.\n- Keep projections free of side effects and idempotent."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-9",
+      "type": "concept",
+      "title": "Compacted Topics as Tables",
+      "subtopicId": "9-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Some topics do not hold a stream of facts but a **state**: the latest profile of each customer, the current status of each order. Deleting such a topic by age loses customers who happened not to change for a week, while keeping every update forever wastes space on values nobody will read again. **Log compaction** fits: instead of deleting old records by time, Kafka keeps at least the latest record for every key and a background cleaner removes older records of the same key. The topic behaves like a table that can always be rebuilt by reading it from the start. The compaction figure in the chapter on log internals shows the before and after of a cleaning.\n\n### What compaction guarantees\n\nThe design documentation promises the following:\n\n- A consumer that stays close to the head of the log sees every record that is written.\n- A consumer that reads from the start sees at least the final state of every key.\n- Order is never changed, and a record keeps its offset; compaction only removes records.\n- A record with a key and a `null` value is a **tombstone**: a delete marker for the key. Tombstones are themselves removed after `delete.retention.ms` (default one day), so a consumer that lags by more than that can miss the delete.\n- The active segment is never compacted.\n\nRecords in a compacted topic must have a key. Compaction is also lazy: the cleaner runs when the share of \"dirty\" (not yet cleaned) records passes `min.cleanable.dirty.ratio` (default 0.5), so a consumer may see several records per key, and must tolerate it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --create --topic customers --partitions 3 --replication-factor 1 \\\n    --config cleanup.policy=compact --bootstrap-server localhost:9092\nCreated topic customers.",
+          "title": "Create the compacted customers topic (single local broker)"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Config",
+            "Default",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`cleanup.policy`",
+              "delete",
+              "`compact` enables compaction; `compact,delete` also deletes by age or size"
+            ],
+            [
+              "`min.cleanable.dirty.ratio`",
+              "0.5",
+              "Share of uncleaned log that triggers a cleaning"
+            ],
+            [
+              "`min.compaction.lag.ms`",
+              "0",
+              "A record stays uncompacted at least this long"
+            ],
+            [
+              "`delete.retention.ms`",
+              "86400000",
+              "How long tombstones are kept"
+            ],
+            [
+              "`segment.ms`",
+              "604800000",
+              "Segment roll time; only closed segments are compacted"
+            ]
+          ],
+          "caption": "Settings that shape compaction."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A quiet compacted topic keeps its duplicates for a long time. The active segment is never cleaned, and a segment rolls after `segment.bytes` (1 GiB by default) or `segment.ms` (7 days). On a low-traffic topic like `customers`, old values of a key can stay visible for days. If you need prompt cleaning, lower `segment.ms` for that topic (and understand that smaller segments mean more files)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Using a compacted topic as a table\n\nWriters publish the full state under the entity's id, and publish `null` to delete: `kafka.send(\"customers\", \"c-77\",` `null)`. Readers fall into two groups. A plain consumer builds its own table by applying every record to a local store, as the `CustomerViewUpdater` of the chapter on state transfer does. Kafka Streams turns the topic into a `KTable` (partitioned across the instances of an application) or a `GlobalKTable` (a full copy in every instance, for reference data of modest size) and supports joins between streams and tables, as the next chapter shows.\n\nThe same mechanism appears inside Kafka. `__consumer_offsets` is a compacted topic holding the latest committed offset per group, topic and partition, and Kafka Streams backs its state stores with **changelog topics** that use compaction. In ShopStream, `customers` carries reference data and `order-status` carries the current status of each order for anyone who needs \"where is my order\" without the history.\n\nThree limits to remember. A compacted topic is not a database: there is no lookup by key, only consumers that build one. Never compact an event stream such as `orders`, where each event matters. And the key-to-partition mapping applies as always: adding partitions to a compacted topic moves keys, so a key can end up with old values in one partition and new ones in another, and \"the latest per key\" is no longer well defined."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does log compaction differ from time-based retention, and what is a tombstone? Time-based retention deletes whole segments by age or size regardless of keys. Compaction keeps at least the latest record per key and removes older records with the same key, so the topic can serve as a table. A tombstone is a record with a key and a `null` value; it marks the key as deleted and is itself cleaned up after `delete.retention.ms`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Compacted topics as tables\n\n- Use compaction for state keyed by entity id (`customers`, `order-status`), never for event streams.\n- Guarantee: the latest value per key survives; tombstones delete, and disappear after `delete.retention.ms`.\n- Compaction is lazy and skips the active segment: tune `segment.ms` and the dirty ratio when freshness matters.\n- Do not change the partition count of a compacted topic that is used as a table.\n- Read it as a `KTable` or `GlobalKTable`, or build a local table with a plain consumer."
+        }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,184 @@
 {
   "source": {
     "document": "Redis_Complete_Guide.pdf",
-    "pages": "9-15",
+    "pages": "6-33",
     "planDays": "26"
   },
   "sections": [
+    {
+      "id": "about-this-guide",
+      "type": "introduction",
+      "title": "About this guide",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### How to use this guide\n\n- **Read it in order the first time.** The opening parts build the mental model (what Redis is and why it is fast), then every data structure, how Redis works inside, persistence, replication and Cluster, the Java and Spring Boot implementation, the patterns that matter (caching, locks, rate limiting, queues, leaderboards), the use-case catalogue, complete projects, operations and an interview kit. Use the contents page to jump to what you need.\n- **Every chapter follows the same rhythm:** what it is, why it exists, how it works, how to use it (with commands and code), what goes wrong, and a short key-points box. Coloured boxes mean: NOTE (extra detail), TIP (practical advice), WATCH OUT and GOTCHA (mistakes that cost people days), REAL WORLD (how it appears in production), INTERVIEW ANGLE (what interviewers like to ask).\n- **Labs are hands-on.** A dark box is a terminal session: lines beginning with `$` are shell commands, lines beginning with `127.0.0.1:6379>` are what you type inside `redis-cli`, and the other lines are the output you should see. Output is shown as typical output; timings, IDs and memory numbers on your machine will differ.\n- **About the code.** Every command and listing was written against the official documentation for the versions named on the cover and checked for syntax. They were not executed against a live server while this guide was produced, so treat the first run on your machine as part of the lab: if something behaves differently, the documentation for your exact version is the final word.\n- **Running example.** Most examples use one fictional online shop, *ShopStream*, with a product catalogue, carts, sessions, flash sales and notifications. Seeing the same domain across chapters lets you focus on Redis, not on the business problem.\n- **Conventions.** `monospace` is code, a command or a configuration name. Command names are written in upper case (`SET`) although Redis accepts any case. Key names use colons as separators (`user:42:profile`). Defaults quoted are those of Redis 8 documentation unless stated."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-1",
+      "type": "concept",
+      "title": "The Problem Redis Solves",
+      "subtopicId": "1-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every application that grows past a handful of users meets the same wall. The code is correct, the database schema is sensible, and yet pages that felt instant on a laptop take a second or two under real traffic. Servers are busy, the database CPU is at 90 percent, and adding more application servers makes things worse, not better. Redis exists because of that wall. This chapter explains where the wall comes from, so that when we introduce Redis you already know which problem it is aimed at.\n\n### Where the time goes in a request\n\nTake a request to ShopStream, the online shop we will build throughout this book: a customer opens a product page. The browser asks the gateway, the gateway forwards the call to `catalog-service`, and that service has to produce a JSON document with the product name, price, stock level and a few reviews. A simplified timeline looks like this.\n\n**Where one product-page request spends its time (illustrative numbers)**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Browser ──► Gateway ──► catalog-service ──► Database ──► catalog-service ──► Browser\n  network      routing      business code      SQL query      JSON mapping\n  20-60 ms     1-2 ms       1-3 ms             5-40 ms        1-2 ms\nThe database step is usually the largest slice, and it grows when the database is busy."
+        },
+        {
+          "type": "markdown",
+          "text": "The numbers above are illustrative, not measurements, but the shape is realistic. Your own Java code is rarely the slow part. The slow part is almost always **waiting for something else**: a network hop, a disk read, a query that has to plan, scan an index, lock rows and serialise a result. When the database is idle, 5 ms is typical for a simple indexed lookup. When a few hundred requests arrive at the same moment, every one of them competes for the same connections, the same buffer pool and the same disk, and each query gets slower.\n\n### Latency and throughput are different problems\n\nTwo words come up constantly in this book, so we define them now."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Term",
+            "Meaning",
+            "Question it answers"
+          ],
+          "rows": [
+            [
+              "Latency",
+              "How long one operation takes, from request sent to answer received",
+              "\"How fast does this single page feel?\""
+            ],
+            [
+              "Throughput",
+              "How many operations the system completes per second",
+              "\"How many users can we serve at once?\""
+            ]
+          ],
+          "caption": "Latency and throughput."
+        },
+        {
+          "type": "markdown",
+          "text": "They are related but not the same. A system can answer one request in 2 ms (low latency) and still collapse at 500 requests per second (low throughput) because requests queue behind each other. Redis helps with both: an in-memory lookup is very fast for one caller, and a server that answers each request in microseconds can serve a very large number of callers before a queue builds.\n\n### Read-heavy systems and repeated work\n\nMost web workloads are heavily skewed toward reads, and within the reads a small set of items is requested over and over. A shop has thousands of products, but the home page, the ten best sellers and the current promotion are shown to nearly everyone. If one thousand visitors open the same product page in a minute, the database runs the same query one thousand times and returns the same answer one thousand times. That is **repeated work**, and repeated work is the cheapest thing to remove.\n\nThe standard remedy is a **cache**: a small, fast store that remembers the answer to a question you already paid to compute. The first request goes to the database and stores the result; the following 999 read the stored copy. Even a modest hit rate changes the economics. If 90 percent of reads are answered by the cache, the database sees one tenth of the load.\n\n**Without and with a cache (the arrows show who answers the read)**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Without cache:   App ─────────────────────────────► Database   (every read)\n\nWith cache:      App ──► Cache ── hit ──► answer                (most reads)\n                   │\n                   └── miss ──► Database ──► store in Cache     (a few reads)"
+        },
+        {
+          "type": "markdown",
+          "text": "### A worked example: what a cache does to the database\n\nNumbers make the benefit concrete. Suppose `catalog-service` receives 2,000 product-page requests per second at peak, and each one needs one database query. Suppose the database can comfortably sustain 500 such queries per second before latency climbs. Without a cache, the database is four times over capacity; the service is effectively down.\n\nNow put a cache in front and assume (illustratively) a 95 percent hit ratio. Only 5 percent of requests, 100 per second, reach the database, a fifth of its capacity. The average latency also improves: if a hit takes 1 ms and a miss takes 30 ms including the cache write, the average is 0.95 x 1 + 0.05 x 30 = 2.45 ms, compared with 30 ms before."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "No cache",
+            "95 percent hit ratio",
+            "80 percent hit ratio"
+          ],
+          "rows": [
+            [
+              "Requests per second",
+              "2,000",
+              "2,000",
+              "2,000"
+            ],
+            [
+              "Database queries per second",
+              "2,000",
+              "100",
+              "400"
+            ],
+            [
+              "Average latency",
+              "30 ms",
+              "2.45 ms",
+              "7 ms"
+            ],
+            [
+              "Database load vs 500 q/s capacity",
+              "400%",
+              "20%",
+              "80%"
+            ]
+          ],
+          "caption": "The same traffic with and without a cache (illustrative)."
+        },
+        {
+          "type": "markdown",
+          "text": "Two lessons follow. First, the hit ratio is the number that matters: going from 95 to 80 percent quadruples the database load. Second, a cache protects the database only while it is warm and healthy. If the cache restarts empty, all 2,000 requests per second hit the database at once. That \"cold cache\" and its cousins (stampede, penetration, avalanche) are the subject of the caching failure chapters in the Patterns Part.\n\n### Why not just keep a map in the application?\n\nA natural first idea is a `ConcurrentHashMap` inside the Java process. It is the fastest possible cache, and for a single instance it can be a fine choice. It breaks down as soon as the system is real, for five reasons.\n\n1. **Many instances.** You run four copies of `catalog-service`. Each has its own map, so each pays the cold-start cost separately, and they can disagree about the price of a mug for a few minutes.\n2. **Invalidation.** When a price changes, you must remove the old value from every copy in every instance. A local map offers no way to do that.\n3. **Memory.** The map lives inside the Java heap. A big cache means big garbage collection pauses, and every restart of the service empties it.\n4. **Size and eviction.** You must write the logic for what to throw away when the map is too large. Getting that right is hard work.\n5. **Shared state beyond caching.** Sessions, shopping carts, rate-limit counters and job queues all need state that every instance sees. A per-process map cannot provide that.\n\nWhat we want is a fast, memory-based store that sits **outside** the application, is shared by every instance, understands expiry, and offers useful operations on the data (not just \"get\" and \"put\"). That is the gap Redis fills.\n\n### What Redis brings\n\nIn one sentence: Redis keeps data in memory, in rich data structures, on a server that many applications can talk to over the network, and it answers most commands in well under a millisecond. We will unpack each part of that sentence in the next two chapters. For now it is enough to see the kinds of problems it is used for."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Problem",
+            "ShopStream example",
+            "Redis feature used"
+          ],
+          "rows": [
+            [
+              "Repeated expensive reads",
+              "Product details shown to many users",
+              "Strings or hashes with a TTL (cache)"
+            ],
+            [
+              "State shared by all app instances",
+              "Login sessions, shopping carts",
+              "Hashes with expiry"
+            ],
+            [
+              "Counting very fast",
+              "Page views, API calls per minute",
+              "Atomic `INCR`"
+            ],
+            [
+              "Ranking",
+              "Best-selling products today",
+              "Sorted sets"
+            ],
+            [
+              "Work handed from one service to another",
+              "\"Order placed\" events for the notifier",
+              "Lists or streams"
+            ],
+            [
+              "Protecting a resource",
+              "Limit 100 requests per minute per client",
+              "Counters with expiry, Lua scripts"
+            ],
+            [
+              "Coordination",
+              "Only one worker may process order 1001",
+              "Locks with `SET ... NX`"
+            ]
+          ],
+          "caption": "Problems that shaped Redis usage, with ShopStream examples."
+        },
+        {
+          "type": "markdown",
+          "text": "### Beyond caching\n\nRedis spread from caching to many other jobs because a fast shared store with atomic operations solves coordination problems too. When four instances of `cart-service` must agree on how many requests a client has made in the last minute, they cannot each count locally; they need one place to increment. When `order-service` must tell `notification-service` that an order was placed, they need a shared place to put the message. In both cases the requirement is the one that made caches attractive: **a shared, very fast, in-memory place that everyone can** **reach**. The Patterns Part builds each of these roles carefully.\n\n### Common misconceptions\n\n- **\"Redis is just a cache.\"** It is often used as one, but it is a general data structure server with persistence, replication and messaging.\n- **\"A cache makes the system more reliable.\"** It makes the system faster. It can also make it more fragile, because a system that only survives load thanks to its cache fails when the cache does. Plan for a cold or missing cache.\n- **\"In-memory means data is lost on restart.\"** Only if you configure no persistence. With RDB or AOF a restart reloads the data set from disk (which takes time proportional to its size).\n- **\"Faster hardware solves the database problem.\"** It postpones it. A cache attacks repeated work directly, which scales better than buying a bigger database server.\n- **\"Redis is always sub-millisecond.\"** The command is; your end-to-end call includes the network, queueing behind other commands and your client library."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Redis is not a magic \"make it fast\" switch. A cache adds a second copy of the data, and two copies can disagree. Every use of Redis in front of a database brings the problem of keeping them consistent. Later chapters (the caching chapters in the Patterns Part) are largely about managing exactly that trade-off. Use a cache because you measured a problem, not because caches are fashionable."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why do applications put a cache like Redis in front of a database? To reduce latency and database load for data that is read often and changes rarely. A lookup in memory over a fast network takes a fraction of a millisecond, whereas a database query involves query planning, index access and possibly disk I/O. The cost is a second copy of the data that must be expired or invalidated, so you accept bounded staleness in exchange for speed and lower load."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Request time is dominated by waiting (network, disk, queries), not by your Java code.\n- Latency is how long one operation takes; throughput is how many complete per second. Caching helps both.\n- Read-heavy workloads repeat the same work; a cache removes the repetition.\n- A map inside the JVM cannot be shared, invalidated centrally, or survive a restart; an external store can.\n- A cache is a second copy of the data, so staleness and invalidation become your problem."
+        }
+      ]
+    },
     {
       "id": "ch-1-2",
       "type": "concept",
@@ -30,7 +204,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 445.0 124.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 106.0 L81.0 106.0 C82.7 106.0 84.0 104.7 84.0 103.0 L84.0 81.0 C84.0 79.3 82.7 78.0 81.0 78.0 L5.0 78.0 C3.3 78.0 2.0 79.3 2.0 81.0 L2.0 103.0 C2.0 104.7 3.3 106.0 5.0 106.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M84.0 92.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M298.0 82.0 L348.0 88.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 68.0 L81.0 68.0 C82.7 68.0 84.0 66.7 84.0 65.0 L84.0 43.0 C84.0 41.3 82.7 40.0 81.0 40.0 L5.0 40.0 C3.3 40.0 2.0 41.3 2.0 43.0 L2.0 65.0 C2.0 66.7 3.3 68.0 5.0 68.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L142.7 54.1 L142.5 59.4 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L142.0 57.3 L144.5 61.9 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 102.0 L294.0 102.0 C296.2 102.0 298.0 100.2 298.0 98.0 L298.0 6.0 C298.0 3.8 296.2 2.0 294.0 2.0 L152.0 2.0 C149.8 2.0 148.0 3.8 148.0 6.0 L148.0 98.0 C148.0 100.2 149.8 102.0 152.0 102.0 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M161.0 60.0 L285.0 60.0 C286.7 60.0 288.0 58.7 288.0 57.0 L288.0 35.0 C288.0 33.3 286.7 32.0 285.0 32.0 L161.0 32.0 C159.3 32.0 158.0 33.3 158.0 35.0 L158.0 57.0 C158.0 58.7 159.3 60.0 161.0 60.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M161.0 94.0 L285.0 94.0 C286.7 94.0 288.0 92.7 288.0 91.0 L288.0 69.0 C288.0 67.3 286.7 66.0 285.0 66.0 L161.0 66.0 C159.3 66.0 158.0 67.3 158.0 69.0 L158.0 91.0 C158.0 92.7 159.3 94.0 161.0 94.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M351.0 102.0 L440.0 102.0 C441.7 102.0 443.0 100.7 443.0 99.0 L443.0 77.0 C443.0 75.3 441.7 74.0 440.0 74.0 L351.0 74.0 C349.3 74.0 348.0 75.3 348.0 77.0 L348.0 99.0 C348.0 100.7 349.3 102.0 351.0 102.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M348.0 88.0 L342.9 84.8 L342.3 89.9 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M358.0 48.0 L438.0 48.0 L438.0 20.0 L358.0 20.0 Z\" fill=\"#23282e\" stroke=\"#eef0f3\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M84.0 16.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M84.0 54.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M358.0 48.0 L358.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M438.0 48.0 L438.0 20.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M298.0 37.0 L358.0 34.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 30.0 L81.0 30.0 C82.7 30.0 84.0 28.7 84.0 27.0 L84.0 5.0 C84.0 3.3 82.7 2.0 81.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 27.0 C2.0 28.7 3.3 30.0 5.0 30.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L144.9 51.9 L142.0 56.3 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M438.0 48.0 C438.0 45.8 420.1 44.0 398.0 44.0 C375.9 44.0 358.0 45.8 358.0 48.0 C358.0 50.2 375.9 52.0 398.0 52.0 C420.1 52.0 438.0 50.2 438.0 48.0\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M438.0 20.0 C438.0 17.8 420.1 16.0 398.0 16.0 C375.9 16.0 358.0 17.8 358.0 20.0 C358.0 22.2 375.9 24.0 398.0 24.0 C420.1 24.0 438.0 22.2 438.0 20.0\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M358.0 34.0 L352.5 31.7 L352.7 36.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"211.3\" y=\"13.0\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"23.4\" lengthAdjust=\"spacingAndGlyphs\">Redis</text><text x=\"21.6\" y=\"18.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.9\" lengthAdjust=\"spacingAndGlyphs\">App server A</text><text x=\"359.9\" y=\"36.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"76.2\" lengthAdjust=\"spacingAndGlyphs\">RDB / AOF|files on disk</text><text x=\"205.3\" y=\"43.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"35.4\" lengthAdjust=\"spacingAndGlyphs\">Event loop</text><text x=\"188.5\" y=\"53.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"69.0\" lengthAdjust=\"spacingAndGlyphs\">executes commands</text><text x=\"21.6\" y=\"56.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.9\" lengthAdjust=\"spacingAndGlyphs\">App server B</text><text x=\"194.4\" y=\"77.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"57.2\" lengthAdjust=\"spacingAndGlyphs\">Keyspace in RAM</text><text x=\"201.9\" y=\"87.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.3\" lengthAdjust=\"spacingAndGlyphs\">key -&gt; value</text><text x=\"381.6\" y=\"85.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"27.9\" lengthAdjust=\"spacingAndGlyphs\">Replicas</text><text x=\"29.9\" y=\"94.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.1\" lengthAdjust=\"spacingAndGlyphs\">redis-cli</text><text x=\"382.2\" y=\"95.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.6\" lengthAdjust=\"spacingAndGlyphs\">(copies)</text><text x=\"193.0\" y=\"116.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"60.0\" lengthAdjust=\"spacingAndGlyphs\">TCP, RESP protocol</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 445.0 124.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 106.0 L81.0 106.0 C82.7 106.0 84.0 104.7 84.0 103.0 L84.0 81.0 C84.0 79.3 82.7 78.0 81.0 78.0 L5.0 78.0 C3.3 78.0 2.0 79.3 2.0 81.0 L2.0 103.0 C2.0 104.7 3.3 106.0 5.0 106.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M84.0 92.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M298.0 82.0 L348.0 88.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 68.0 L81.0 68.0 C82.7 68.0 84.0 66.7 84.0 65.0 L84.0 43.0 C84.0 41.3 82.7 40.0 81.0 40.0 L5.0 40.0 C3.3 40.0 2.0 41.3 2.0 43.0 L2.0 65.0 C2.0 66.7 3.3 68.0 5.0 68.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L142.7 54.1 L142.5 59.4 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L142.0 57.3 L144.5 61.9 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 102.0 L294.0 102.0 C296.2 102.0 298.0 100.2 298.0 98.0 L298.0 6.0 C298.0 3.8 296.2 2.0 294.0 2.0 L152.0 2.0 C149.8 2.0 148.0 3.8 148.0 6.0 L148.0 98.0 C148.0 100.2 149.8 102.0 152.0 102.0 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M161.0 60.0 L285.0 60.0 C286.7 60.0 288.0 58.7 288.0 57.0 L288.0 35.0 C288.0 33.3 286.7 32.0 285.0 32.0 L161.0 32.0 C159.3 32.0 158.0 33.3 158.0 35.0 L158.0 57.0 C158.0 58.7 159.3 60.0 161.0 60.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M161.0 94.0 L285.0 94.0 C286.7 94.0 288.0 92.7 288.0 91.0 L288.0 69.0 C288.0 67.3 286.7 66.0 285.0 66.0 L161.0 66.0 C159.3 66.0 158.0 67.3 158.0 69.0 L158.0 91.0 C158.0 92.7 159.3 94.0 161.0 94.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M351.0 102.0 L440.0 102.0 C441.7 102.0 443.0 100.7 443.0 99.0 L443.0 77.0 C443.0 75.3 441.7 74.0 440.0 74.0 L351.0 74.0 C349.3 74.0 348.0 75.3 348.0 77.0 L348.0 99.0 C348.0 100.7 349.3 102.0 351.0 102.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M348.0 88.0 L342.9 84.8 L342.3 89.9 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M358.0 48.0 L438.0 48.0 L438.0 20.0 L358.0 20.0 Z\" fill=\"#23282e\" stroke=\"#eef0f3\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M84.0 16.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M84.0 54.0 L148.0 57.0\" fill=\"none\" stroke=\"#5d95d5\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M358.0 48.0 L358.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M438.0 48.0 L438.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M298.0 37.0 L358.0 34.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 30.0 L81.0 30.0 C82.7 30.0 84.0 28.7 84.0 27.0 L84.0 5.0 C84.0 3.3 82.7 2.0 81.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 27.0 C2.0 28.7 3.3 30.0 5.0 30.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M148.0 57.0 L144.9 51.9 L142.0 56.3 Z\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M438.0 48.0 C438.0 45.8 420.1 44.0 398.0 44.0 C375.9 44.0 358.0 45.8 358.0 48.0 C358.0 50.2 375.9 52.0 398.0 52.0 C420.1 52.0 438.0 50.2 438.0 48.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M438.0 20.0 C438.0 17.8 420.1 16.0 398.0 16.0 C375.9 16.0 358.0 17.8 358.0 20.0 C358.0 22.2 375.9 24.0 398.0 24.0 C420.1 24.0 438.0 22.2 438.0 20.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M358.0 34.0 L352.5 31.7 L352.7 36.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"211.3\" y=\"13.0\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"23.4\" lengthAdjust=\"spacingAndGlyphs\">Redis</text><text x=\"21.6\" y=\"18.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.9\" lengthAdjust=\"spacingAndGlyphs\">App server A</text><text x=\"359.9\" y=\"36.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"76.2\" lengthAdjust=\"spacingAndGlyphs\">RDB / AOF|files on disk</text><text x=\"205.3\" y=\"43.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"35.4\" lengthAdjust=\"spacingAndGlyphs\">Event loop</text><text x=\"188.5\" y=\"53.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"69.0\" lengthAdjust=\"spacingAndGlyphs\">executes commands</text><text x=\"21.6\" y=\"56.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.9\" lengthAdjust=\"spacingAndGlyphs\">App server B</text><text x=\"194.4\" y=\"77.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"57.2\" lengthAdjust=\"spacingAndGlyphs\">Keyspace in RAM</text><text x=\"201.9\" y=\"87.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"42.3\" lengthAdjust=\"spacingAndGlyphs\">key -&gt; value</text><text x=\"381.6\" y=\"85.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"27.9\" lengthAdjust=\"spacingAndGlyphs\">Replicas</text><text x=\"29.9\" y=\"94.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.1\" lengthAdjust=\"spacingAndGlyphs\">redis-cli</text><text x=\"382.2\" y=\"95.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.6\" lengthAdjust=\"spacingAndGlyphs\">(copies)</text><text x=\"193.0\" y=\"116.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"60.0\" lengthAdjust=\"spacingAndGlyphs\">TCP, RESP protocol</text></svg>",
           "width": 445,
           "caption": "Redis in the middle: many clients connect over TCP, send commands, and read replies. Persistence files are written on the side.",
           "alt": "Redis | App server A | RDB / AOF|files on disk | Event loop | executes commands | App server B | Keyspace in RAM | key -> value Replicas | redis-cli (copies) | TCP, RESP protocol"
@@ -185,7 +359,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 82.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M456.6 58.0 L46.3 58.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.00\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M5.0 42.0 L87.6 42.0 C89.2 42.0 90.6 40.7 90.6 39.0 L90.6 5.0 C90.6 3.3 89.2 2.0 87.6 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 39.0 C2.0 40.7 3.3 42.0 5.0 42.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M107.6 42.0 L190.2 42.0 C191.8 42.0 193.2 40.7 193.2 39.0 L193.2 5.0 C193.2 3.3 191.8 2.0 190.2 2.0 L107.6 2.0 C105.9 2.0 104.6 3.3 104.6 5.0 L104.6 39.0 C104.6 40.7 105.9 42.0 107.6 42.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M210.2 42.0 L292.7 42.0 C294.4 42.0 295.7 40.7 295.7 39.0 L295.7 5.0 C295.7 3.3 294.4 2.0 292.7 2.0 L210.2 2.0 C208.5 2.0 207.2 3.3 207.2 5.0 L207.2 39.0 C207.2 40.7 208.5 42.0 210.2 42.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.7 42.0 L395.3 42.0 C397.0 42.0 398.3 40.7 398.3 39.0 L398.3 5.0 C398.3 3.3 397.0 2.0 395.3 2.0 L312.7 2.0 C311.1 2.0 309.7 3.3 309.7 5.0 L309.7 39.0 C309.7 40.7 311.1 42.0 312.7 42.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M415.3 42.0 L497.9 42.0 C499.6 42.0 500.9 40.7 500.9 39.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L415.3 2.0 C413.7 2.0 412.3 3.3 412.3 5.0 L412.3 39.0 C412.3 40.7 413.7 42.0 415.3 42.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.3 43.0 L44.1 47.5 L48.5 47.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M91.6 22.0 L103.6 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M194.2 22.0 L206.2 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M296.7 22.0 L308.7 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M399.3 22.0 L411.3 22.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M103.6 22.0 L98.2 19.4 L98.2 24.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M206.2 22.0 L200.8 19.4 L200.8 24.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M308.7 22.0 L303.3 19.4 L303.3 24.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M411.3 22.0 L405.9 19.4 L405.9 24.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"33.5\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">Wait for</text><text x=\"133.5\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"30.8\" lengthAdjust=\"spacingAndGlyphs\">Read and</text><text x=\"231.3\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"40.2\" lengthAdjust=\"spacingAndGlyphs\">Execute one</text><text x=\"337.0\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"34.0\" lengthAdjust=\"spacingAndGlyphs\">Queue the</text><text x=\"436.0\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"41.2\" lengthAdjust=\"spacingAndGlyphs\">Write replies</text><text x=\"23.7\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"45.2\" lengthAdjust=\"spacingAndGlyphs\">ready sockets</text><text x=\"120.9\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"55.9\" lengthAdjust=\"spacingAndGlyphs\">parse commands</text><text x=\"219.6\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"63.6\" lengthAdjust=\"spacingAndGlyphs\">command at a time</text><text x=\"343.2\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"21.7\" lengthAdjust=\"spacingAndGlyphs\">replies</text><text x=\"440.1\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"33.1\" lengthAdjust=\"spacingAndGlyphs\">to sockets</text><text x=\"115.2\" y=\"72.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"272.6\" lengthAdjust=\"spacingAndGlyphs\">repeat forever: one thread runs commands, so a slow command makes everyone wait</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 82.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M456.6 58.0 L46.3 58.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.00\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M5.0 42.0 L87.6 42.0 C89.2 42.0 90.6 40.7 90.6 39.0 L90.6 5.0 C90.6 3.3 89.2 2.0 87.6 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 39.0 C2.0 40.7 3.3 42.0 5.0 42.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M107.6 42.0 L190.2 42.0 C191.8 42.0 193.2 40.7 193.2 39.0 L193.2 5.0 C193.2 3.3 191.8 2.0 190.2 2.0 L107.6 2.0 C105.9 2.0 104.6 3.3 104.6 5.0 L104.6 39.0 C104.6 40.7 105.9 42.0 107.6 42.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M210.2 42.0 L292.7 42.0 C294.4 42.0 295.7 40.7 295.7 39.0 L295.7 5.0 C295.7 3.3 294.4 2.0 292.7 2.0 L210.2 2.0 C208.5 2.0 207.2 3.3 207.2 5.0 L207.2 39.0 C207.2 40.7 208.5 42.0 210.2 42.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.7 42.0 L395.3 42.0 C397.0 42.0 398.3 40.7 398.3 39.0 L398.3 5.0 C398.3 3.3 397.0 2.0 395.3 2.0 L312.7 2.0 C311.1 2.0 309.7 3.3 309.7 5.0 L309.7 39.0 C309.7 40.7 311.1 42.0 312.7 42.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M415.3 42.0 L497.9 42.0 C499.6 42.0 500.9 40.7 500.9 39.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L415.3 2.0 C413.7 2.0 412.3 3.3 412.3 5.0 L412.3 39.0 C412.3 40.7 413.7 42.0 415.3 42.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M46.3 43.0 L44.1 47.5 L48.5 47.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M91.6 22.0 L103.6 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M194.2 22.0 L206.2 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M296.7 22.0 L308.7 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M399.3 22.0 L411.3 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M103.6 22.0 L98.2 19.4 L98.2 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M206.2 22.0 L200.8 19.4 L200.8 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M308.7 22.0 L303.3 19.4 L303.3 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M411.3 22.0 L405.9 19.4 L405.9 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"33.5\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">Wait for</text><text x=\"133.5\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"30.8\" lengthAdjust=\"spacingAndGlyphs\">Read and</text><text x=\"231.3\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"40.2\" lengthAdjust=\"spacingAndGlyphs\">Execute one</text><text x=\"337.0\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"34.0\" lengthAdjust=\"spacingAndGlyphs\">Queue the</text><text x=\"436.0\" y=\"20.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"41.2\" lengthAdjust=\"spacingAndGlyphs\">Write replies</text><text x=\"23.7\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"45.2\" lengthAdjust=\"spacingAndGlyphs\">ready sockets</text><text x=\"120.9\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"55.9\" lengthAdjust=\"spacingAndGlyphs\">parse commands</text><text x=\"219.6\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"63.6\" lengthAdjust=\"spacingAndGlyphs\">command at a time</text><text x=\"343.2\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"21.7\" lengthAdjust=\"spacingAndGlyphs\">replies</text><text x=\"440.1\" y=\"29.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"33.1\" lengthAdjust=\"spacingAndGlyphs\">to sockets</text><text x=\"115.2\" y=\"72.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"272.6\" lengthAdjust=\"spacingAndGlyphs\">repeat forever: one thread runs commands, so a slow command makes everyone wait</text></svg>",
           "width": 503,
           "caption": "The Redis event loop: wait for ready sockets, read and parse commands, execute each one, queue the replies, write them back.",
           "alt": "Wait for Read and Execute one Queue the Write replies | ready sockets parse commands command at a time replies to sockets | repeat forever: one thread runs commands, so a slow command makes everyone wait"
@@ -338,6 +512,1084 @@
           "variant": "keypoints",
           "title": "Key points",
           "text": "Key points\n\n- Speed comes from RAM, good data structures, a lock-free single execution thread, I/O multiplexing and a lean protocol.\n- Commands execute one at a time, which makes every command atomic and removes locking.\n- I/O threads (optional since 6.0) parallelise socket work, not command execution.\n- Pipelining batches many commands per round trip; it improves throughput but is not atomic.\n- Slow `O(N)` commands, huge values and long scripts hurt all clients. Always check a command's complexity."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-4",
+      "type": "concept",
+      "title": "Keys, Values, Types and Naming",
+      "subtopicId": "1-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Because every operation starts with a key, how you name and organise keys is the first design decision in any Redis system. Bad key design is hard to fix later because keys are scattered through application code, scripts and dashboards. This chapter gives you a practical set of rules.\n\n### What a key is\n\nA key is a **binary-safe string**: any bytes from an empty string up to 512 MB. In practice you want short, readable, ASCII keys. The same applies to values of the string type, which are also limited to 512 MB, although values that large are almost always a mistake (see \"big keys\" in the operations Part).\n\nKeys are **case sensitive** (`User:1` and `user:1` are different keys) and there is no namespace or table concept: all keys in a database sit side by side. You create your own namespaces through naming.\n\n### Naming convention: colon-separated segments\n\nThe community convention, and the one used in this book, is `object-type:id:field`, with colons separating the segments:\n\n**Key naming in ShopStream**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "product:42                 the catalogue entry for product 42 (hash or JSON)\nproduct:42:stock           a counter for the stock of product 42\nsession:9f8a1c             a login session (hash with TTL)\ncart:1001                  the shopping cart of user 1001 (hash)\nrl:203.0.113.7:/api/cart   a rate-limit counter per IP and route\nlb:bestsellers:daily       today's best-seller leaderboard (sorted set)\nstream:orders              the order-event stream\nlock:order:5521            a lock for processing order 5521"
+        },
+        {
+          "type": "markdown",
+          "text": "The colon is a convention, not a feature; Redis treats it as an ordinary character. Its value is that tools, humans and SCAN patterns can group by prefix (`product:*`), that RedisInsight shows keys as a folder tree, and that you avoid collisions between teams. Some practical rules:\n\n- **Be consistent.** Document the key schema like you document a database schema, ideally in one Java class (a `Keys` helper) so the format is written down exactly once.\n- **Put the most general segment first**, then narrow down: `cart:1001`, not `1001:cart`.\n- **Keep keys short but readable.** Every key is stored in memory, and with ten million keys, 20 extra bytes each is 200 MB. Do not go cryptic either: `u:1:n` saves a few bytes and costs hours of debugging.\n- **Do not put unbounded or sensitive data in keys.** Raw user input, email addresses or tokens in keys leak into logs, `MONITOR` output and slow-log entries.\n- **Version keys when the format changes.** For cached JSON, `product:v2:42` lets you deploy a new format without reading stale old-format values.\n\nA Java helper keeps the convention in one place:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.common;\n\npublic final class Keys {\n\n    private Keys() {\n    }\n\n    public static String product(long id) {\n        return \"product:\" + id;\n    }\n\n    public static String cart(long userId) {\n        return \"cart:\" + userId;\n    }\n\n    public static String rateLimit(String ip, String route) {\n        return \"rl:\" + ip + \":\" + route;\n    }\n}",
+          "title": "Keys.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### A worked key design: the product catalogue\n\nSuppose `catalog-service` must cache products, their stock and a \"related products\" list. A sensible first layout:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Type",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`product:{id}`",
+              "Hash",
+              "Name, price, description fields; one key per product, TTL 10 minutes"
+            ],
+            [
+              "`product:{id}:stock`",
+              "String counter",
+              "Changes far more often than the rest, so it is separate and has its own lifetime"
+            ],
+            [
+              "`product:{id}:related`",
+              "List",
+              "Ids of related products; short TTL"
+            ],
+            [
+              "`category:{slug}:products`",
+              "Sorted set",
+              "Product ids ordered by popularity, for category pages"
+            ]
+          ],
+          "caption": "Key design for the catalogue (a draft you could review in a team)."
+        },
+        {
+          "type": "markdown",
+          "text": "Look at the choices. Splitting `stock` out means a stock change does not force you to rewrite or invalidate the whole product. Keeping related products in their own key means a bad recommendation run only affects one key family. Each family gets its own TTL. This is the habit to build: **group data that is read and expired together, separate data** **that changes at different rates.**\n\n### Key size and memory cost\n\nEach key costs memory twice: for its bytes and for the bookkeeping Redis keeps per entry (a few dozen bytes of structure, which varies by version). Ten million keys of the form `product:1234567:stock` use a few hundred megabytes before counting any values. Two practical consequences: prefer fewer, richer keys when the access pattern allows it (one hash holding ten fields costs less than ten string keys), and do not store a million tiny values as separate keys if one hash or a bitmap would do. The memory chapters in the Redis internals Part show how to measure with `MEMORY` `USAGE`.\n\n### A preview: keys and Cluster\n\nIf you later run Redis Cluster, keys decide which shard stores them, through a hash of the key. A multi-key command only works if all its keys live on the same shard. You can force related keys together by putting a **hash tag** in braces: `{user:1001}:cart` and `{user:1001}:session` hash on the text `user:1001` only. You do not need this now, but it is a reason to think of key names as a design asset from the very first day.\n\n### Value types and why they shape keys\n\nChoosing the type is the other half of key design. You can store a product as one string holding JSON, as a hash with a field per attribute, or as a set of separate keys. Each choice has different costs and abilities, and the chapter on choosing the right structure in the data structures Part gives a decision table. The immediate point: **a key has exactly** **one type**, and `TYPE key` tells you which. Writing a different type under an existing key with a command like `SET` replaces it.\n\n### Time to live (TTL) basics\n\nEvery key may carry an **expiry**, after which Redis deletes it automatically. This is the feature that makes Redis a natural fit for caches, sessions and temporary tokens. You set it with `EXPIRE`, with `SET ... EX`, or at the same moment as the write:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:9f8a1c \"user:1001\" EX 1800\nOK\n127.0.0.1:6379> TTL session:9f8a1c\n(integer) 1798\n127.0.0.1:6379> EXPIRE session:9f8a1c 3600\n(integer) 1\n127.0.0.1:6379> PERSIST session:9f8a1c\n(integer) 1\n127.0.0.1:6379> TTL session:9f8a1c\n(integer) -1\n127.0.0.1:6379> TTL no:such:key\n(integer) -2",
+          "title": "Setting and reading a TTL"
+        },
+        {
+          "type": "markdown",
+          "text": "`TTL` returns the remaining seconds, `-1` for a key that exists with no expiry, and `-2` if the key does not exist. A subtle but important fact: **overwriting a key with a plain** `SET` **removes its TTL**, so a session refreshed with a naive `SET` becomes immortal. Use `SET key value EX seconds` again, or `KEEPTTL`, depending on what you want. The expiry chapter in the Redis internals Part explains how Redis actually removes expired keys (lazily and in the background)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Keys without a TTL grow forever. If you use Redis as a cache and forget TTLs, memory usage creeps up until `maxmemory` is reached or the server runs out of RAM. Decide for every key family whether it expires, and write that decision down next to its name."
+        },
+        {
+          "type": "markdown",
+          "text": "### Database numbers: usually leave them alone\n\nRedis offers `SELECT 0` to `SELECT 15`. They look like separate databases but are not isolated: they share one process, one memory budget, one set of persistence files, and a slow command in database 3 blocks database 5. Redis Cluster supports only database 0. Therefore the usual advice is: **use database 0 and separate applications with key** **prefixes or separate Redis instances.** The one place you will use a database number deliberately is tests, where an isolated database makes clean-up easy (and even there a throwaway container is better).\n\n### Environments, tenants and shared servers\n\nTeams often share a Redis server between environments or services. Two sound options exist: separate instances (best isolation, simplest ACLs) or a leading prefix. If you use a prefix, put it first and configure it in one place:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "shopstream:\n  redis:\n    key-prefix: \"shopstream:prod:\"",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "With that, a key is `shopstream:prod:cart:1001`. The prefix also lets an ACL user be restricted to `shopstream:prod:*` keys (covered under security), so a bug in a test environment cannot overwrite production data. Spring's cache support applies its own prefix (the cache name) automatically; a later chapter shows how to configure it.\n\n### Common key-design mistakes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mistake",
+            "Better"
+          ],
+          "rows": [
+            [
+              "Whole user table in one hash key",
+              "One key per user; one huge key is slow to read, expire and delete"
+            ],
+            [
+              "Timestamps or random ids in the middle of a cached key (never reused)",
+              "Use stable ids so the key can be hit again"
+            ],
+            [
+              "Same TTL on millions of keys created at once",
+              "Add random jitter so they do not all expire together"
+            ],
+            [
+              "Keys built from unsanitised input",
+              "Validate and bound the segments"
+            ],
+            [
+              "No documented schema",
+              "Keep a `Keys` class and a table like the one above"
+            ],
+            [
+              "Using a key as a queue of one item",
+              "Use a list or stream"
+            ]
+          ],
+          "caption": "Mistakes seen again and again, and the fix."
+        },
+        {
+          "type": "markdown",
+          "text": "### Listing keys: SCAN, not KEYS\n\nBeginners ask \"how do I list all keys?\" The wrong answer is `KEYS pattern`, which walks the whole key space in one blocking call. The right answer is `SCAN`, which returns a small batch plus a **cursor** you pass back to continue until the cursor returns to 0:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SCAN 0 MATCH product:* COUNT 100\n1) \"0\"\n2) 1) \"product:42\"\n   2) \"product:43\"",
+          "title": "Iterating with SCAN"
+        },
+        {
+          "type": "markdown",
+          "text": "`COUNT` is a hint about the work per call, not a guarantee of the number of keys returned, and `MATCH` filters after the batch is chosen, so a call can legitimately return zero keys with a non-zero cursor. `SCAN` can show a key more than once, so make processing idempotent. The data structures Part has a full chapter on safe iteration."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Inspecting a key quickly: `TYPE key`, `TTL key`, `OBJECT ENCODING key` and `MEMORY USAGE key` answer \"what is this, when does it expire, how is it stored and how big is it?\" in four commands."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How should you design keys in Redis? Use a consistent, readable scheme such as `entity:id:field` with colons, keep keys reasonably short, put a TTL on anything that is not permanent, avoid unbounded user input in keys, and version them when formats change. Avoid multiple database numbers; use prefixes or separate instances. Iterate with `SCAN`, never `KEYS`, in production."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Keys are binary-safe strings up to 512 MB; keep them short, readable and consistent: `entity:id:field`.\n- A key holds exactly one type; commands for the wrong type return `WRONGTYPE`.\n- Give every temporary key a TTL; a plain `SET` over an existing key clears its TTL.\n- Use database 0 and prefixes; the numbered databases share one process and do not exist in Cluster.\n- Iterate with `SCAN`, not `KEYS`."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-5",
+      "type": "concept",
+      "title": "The First Ten Minutes: A Tour of the Types",
+      "subtopicId": "1-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This chapter is a quick, hands-on walk through the main data types, one command at a time, so that the later Parts do not feel abstract. If you have no Redis yet, the next Part (Hands-On Labs) shows how to install it in a few minutes with Docker; you can also read this chapter first and run the commands afterwards. All sessions use `redis-cli`, which prints a prompt of `127.0.0.1:6379>`.\n\n### Strings: values and counters\n\nA string is the simplest type: bytes, text or numbers. If the content looks like an integer, you can do arithmetic on it atomically."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET product:42:name \"Ceramic Mug\"\nOK\n127.0.0.1:6379> GET product:42:name\n\"Ceramic Mug\"\n127.0.0.1:6379> SET product:42:stock 40\nOK\n127.0.0.1:6379> DECRBY product:42:stock 3\n(integer) 37\n127.0.0.1:6379> SET lock:order:5521 worker-1 NX EX 30\nOK\n127.0.0.1:6379> SET lock:order:5521 worker-2 NX EX 30\n(nil)",
+          "title": "Strings"
+        },
+        {
+          "type": "markdown",
+          "text": "`NX` means \"only set if the key does not exist\"; the second call fails with `(nil)`. That one command, with a TTL, is the foundation of simple distributed locks.\n\n### Lists: ordered, pushable at both ends"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LPUSH recent:searches:1001 \"mug\" \"teapot\"\n(integer) 2\n127.0.0.1:6379> LRANGE recent:searches:1001 0 -1\n1) \"teapot\"\n2) \"mug\"\n127.0.0.1:6379> LTRIM recent:searches:1001 0 9\nOK",
+          "title": "Lists"
+        },
+        {
+          "type": "markdown",
+          "text": "`LPUSH` puts new items at the head, `LRANGE 0 -1` reads the whole list, and `LTRIM 0 9` keeps only the first ten: a \"recent searches\" list that cannot grow without bound.\n\n### Hashes: small objects"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:42 name \"Ceramic Mug\" price 1299 stock 40\n(integer) 3\n127.0.0.1:6379> HGET product:42 price\n\"1299\"\n127.0.0.1:6379> HINCRBY product:42 stock -1\n(integer) 39\n127.0.0.1:6379> HGETALL product:42\n1) \"name\"\n2) \"Ceramic Mug\"\n3) \"price\"\n4) \"1299\"\n5) \"stock\"\n6) \"39\"",
+          "title": "Hashes"
+        },
+        {
+          "type": "markdown",
+          "text": "A hash maps field names to values inside one key. It is the natural way to store an object, and you can change one field without rewriting the rest.\n\n### Sets: unique, unordered"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD tags:product:42 kitchen ceramic gift\n(integer) 3\n127.0.0.1:6379> SADD tags:product:42 gift\n(integer) 0\n127.0.0.1:6379> SISMEMBER tags:product:42 ceramic\n(integer) 1",
+          "title": "Sets"
+        },
+        {
+          "type": "markdown",
+          "text": "Adding `gift` again returns `0` because a set keeps each member once. Sets also offer union, intersection and difference across keys.\n\n### Sorted sets: members ranked by score"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:bestsellers:daily 120 sku-1 95 sku-2 40 sku-3\n(integer) 3\n127.0.0.1:6379> ZINCRBY lb:bestsellers:daily 10 sku-2\n\"105\"\n127.0.0.1:6379> ZRANGE lb:bestsellers:daily 0 1 REV WITHSCORES\n1) \"sku-1\"\n2) \"120\"\n3) \"sku-2\"\n4) \"105\"",
+          "title": "Sorted sets"
+        },
+        {
+          "type": "markdown",
+          "text": "Every member has a score and the set stays ordered by it. `REV` reads from the highest score. This is the leaderboard structure.\n\n### Streams, HyperLogLog, geo, bitmaps"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XADD stream:orders * orderId 1001 total 2599\n\"1760000000000-0\"\n127.0.0.1:6379> PFADD uv:2026-10-10 user:1 user:2 user:1\n(integer) 1\n127.0.0.1:6379> PFCOUNT uv:2026-10-10\n(integer) 2\n127.0.0.1:6379> GEOADD geo:stores 77.5946 12.9716 blr-central\n(integer) 1\n127.0.0.1:6379> SETBIT dau:2026-10-10 1001 1\n(integer) 0\n127.0.0.1:6379> BITCOUNT dau:2026-10-10\n(integer) 1",
+          "title": "A taste of the other types"
+        },
+        {
+          "type": "markdown",
+          "text": "The stream returns a generated ID (a millisecond timestamp and a sequence, so yours will differ). The HyperLogLog counts distinct members approximately using a tiny fixed amount of memory; the bitmap stores one bit per user ID.\n\n### Atomicity in practice: a tiny flash sale\n\nBefore the map, one more experiment that shows why Redis is used for counters. Imagine 100 customers click \"buy\" on the last item at the same moment. If the application reads the stock, checks it, and writes it back, two customers can read `1` and both succeed (a **race condition**). With Redis, the decrement itself is atomic, so each caller gets a distinct answer:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET stock:sku-7 1\nOK\n127.0.0.1:6379> DECR stock:sku-7\n(integer) 0\n127.0.0.1:6379> DECR stock:sku-7\n(integer) -1",
+          "title": "Atomic decrement"
+        },
+        {
+          "type": "markdown",
+          "text": "The first caller sees `0` (it got the last item). The second sees `-1` and knows it lost, so it must undo its decrement or the application must avoid going negative. A real flash sale solves this properly with a Lua script that checks and decrements in one step, which the Patterns Part and a project build in full. The point here is that **atomic server-side** **operations remove whole classes of race conditions**.\n\n### Try it yourself\n\nWithout looking back, do these on a throwaway Redis, predicting each reply before pressing Enter.\n\n1. Create `cart:1001` as a hash with two products and quantities, then increase one quantity by 2.\n2. Give the cart a TTL of 7 days and read it back. What does `TTL` return after `PERSIST`?\n3. Add three product ids to a list `recent:viewed:1001`, then keep only the two most recent.\n4. Create a sorted set of three SKUs with sales counts and read the top two.\n5. Call `LPUSH` on a string key and read the error. Which command shows the key's type?\n\n### A one-page map"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Example command",
+            "Typical ShopStream use",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "String",
+              "`SET, GET, INCR`",
+              "Cache entry, counter, lock",
+              "O(1)"
+            ],
+            [
+              "List",
+              "`LPUSH, RPOP, LRANGE`",
+              "Recent searches, simple queue",
+              "O(1) at ends"
+            ],
+            [
+              "Hash",
+              "`HSET, HGET, HINCRBY`",
+              "Product, session, cart",
+              "O(1) per field"
+            ],
+            [
+              "Set",
+              "`SADD, SISMEMBER, SINTER`",
+              "Tags, unique buyers",
+              "O(1) per member"
+            ],
+            [
+              "Sorted set",
+              "`ZADD, ZRANGE, ZINCRBY`",
+              "Best sellers, delay queue",
+              "O(log N)"
+            ],
+            [
+              "Stream",
+              "`XADD, XREADGROUP, XACK`",
+              "Order events with consumer groups",
+              "O(1) append"
+            ],
+            [
+              "HyperLogLog",
+              "`PFADD, PFCOUNT`",
+              "Unique visitors per day",
+              "O(1), 12 KB max"
+            ],
+            [
+              "Geo",
+              "`GEOADD, GEOSEARCH`",
+              "Nearest store",
+              "O(log N)"
+            ],
+            [
+              "Bitmap",
+              "`SETBIT, BITCOUNT`",
+              "Daily active users",
+              "O(1) per bit"
+            ]
+          ],
+          "caption": "One command per type, and its main use."
+        },
+        {
+          "type": "markdown",
+          "text": "### Inspecting what you made"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> TYPE product:42\nhash\n127.0.0.1:6379> OBJECT ENCODING product:42\n\"listpack\"\n127.0.0.1:6379> DEL product:42 tags:product:42\n(integer) 2\n127.0.0.1:6379> DBSIZE\n(integer) 12",
+          "title": "Type, encoding and cleaning up"
+        },
+        {
+          "type": "markdown",
+          "text": "The `OBJECT ENCODING` result shows that a small hash is stored compactly as a listpack; it switches to a hash table when it grows. You will use this command often when studying memory."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "When you meet a command you do not know, `redis-cli` can explain it: type `HELP SET` or `HELP @sorted_set`. The official site documents each command with its complexity and an example."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Each type has its own commands; pick the type by what you need to do with the data.\n- `SET ... NX EX` writes only if absent and attaches a TTL in one atomic step.\n- `LTRIM` after `LPUSH` caps a list; `HINCRBY` and `INCR` are atomic counters.\n- `OBJECT ENCODING`, `TYPE` and `TTL` are your inspection tools.\n- The labs in the next Part let you repeat all of this and go further."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-6",
+      "type": "concept",
+      "title": "Guarantees and Trade-offs",
+      "subtopicId": "1-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every data store makes promises, and every promise has a price. Before you trust Redis with a piece of data you should know exactly what it promises, what it quietly does not, and which settings move the line. This chapter is a map; the later Parts on persistence, replication and clusters fill in the mechanics.\n\n### Atomicity and isolation\n\nRedis gives you strong guarantees at the level of a **single command**. Because one thread executes commands one at a time, every command is atomic and isolated: another client never sees a half-finished `HSET` or loses an `INCR`. The same is true for a whole Lua script and for a `MULTI/EXEC` block, whose commands run back to back with nothing in between.\n\nWhat Redis does **not** do is roll back. If a command inside a `MULTI/EXEC` block fails at run time (say, `INCR` on a non-numeric string), the other commands still run and keep their effects. A script that fails halfway keeps the writes it already made. Design operations so that a partial result is acceptable or detectable. We return to this in the chapters on transactions and scripting.\n\n### Durability: how much can you lose?\n\n**Durability** means that once Redis tells you a write succeeded, the write survives a crash. For Redis this depends entirely on your persistence configuration, and the honest summary is that the default is not what a database person would call durable."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setup",
+            "Data you may lose",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "No persistence",
+              "Everything on restart",
+              "Fine for a pure cache"
+            ],
+            [
+              "RDB snapshots only",
+              "Writes since the last snapshot (minutes)",
+              "Compact files, fast restart"
+            ],
+            [
+              "AOF with `appendfsync` `everysec`",
+              "About the last second of writes",
+              "A common production choice"
+            ],
+            [
+              "AOF with `appendfsync always`",
+              "Almost nothing acknowledged",
+              "Slower; each write waits for fsync"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*What a process crash or power loss can cost (guidance; details in the persistence chapters).*\n\nRedis ships with RDB snapshotting enabled by default and the AOF disabled, so a fresh installation can lose several minutes of writes on a crash. If Redis holds data that you cannot rebuild, enable the AOF and decide the fsync policy deliberately.\n\n### Replication is asynchronous\n\nRedis scales reads and survives machine failure by copying data from a **primary** to one or more **replicas**. That copying is **asynchronous** by default: the primary acknowledges your write to the client first and sends it to replicas afterwards.\n\n**The window in which an acknowledged write can disappear**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Client ── SET x 1 ──► Primary ── \"OK\" ──► Client      (write acknowledged)\n                         │\n                         └── (a moment later) ──► Replica   (not there yet)\n\nIf the primary crashes inside that window and the replica is promoted,\nthe write is gone although the client was told OK."
+        },
+        {
+          "type": "markdown",
+          "text": "Consequences you must plan for:\n\n- A failover (Sentinel or Cluster promoting a replica) can lose the most recent acknowledged writes.\n- A read from a replica can be **stale**: it may not yet show a write you just made on the primary.\n- The `WAIT` command makes a client block until a given number of replicas have acknowledged the write, which narrows the loss window but does not turn Redis into a strongly consistent store, because a failover can still choose a replica that missed the write in some failure scenarios.\n- `min-replicas-to-write` and `min-replicas-max-lag` make a primary refuse writes when too few replicas are reachable, trading availability for a smaller loss window.\n\n### Consistency and the CAP view\n\nThe **CAP theorem** says that when a network partition splits a distributed system, you must choose between **consistency** (every read sees the latest write) and **availability** (every request gets an answer). A single Redis node has no partition problem; it is simply consistent. Once you add replicas, Sentinel or Cluster, you have a distributed system with asynchronous replication, and the documentation is candid that Redis Cluster does not guarantee strong consistency: under partitions it can accept writes on a minority side that will later be discarded. In practice Redis leans toward **availability and speed** over strict consistency, and offers knobs (`WAIT`, `min-replicas-to-write`, cluster settings) that move you part of the way back.\n\nThat is the right default for caches, sessions and counters, where a rare lost write is acceptable. It is the wrong default for a bank ledger.\n\n### Memory is the capacity limit\n\nAll data lives in RAM, so capacity is bounded by memory, and memory costs more per gigabyte than disk. You decide what happens when memory runs out through `maxmemory` and `maxmemory-policy`: by default (`noeviction`) writes start to fail with an error; with an eviction policy, Redis deletes keys to make room. Using Redis as a cache means choosing an eviction policy; using it as a store means making sure it never gets there.\n\n### A worked failover: what is lost?\n\nImagine a primary with one replica, using the default asynchronous replication, and these events within a few milliseconds:\n\n**Timeline of a failover with asynchronous replication**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "t0   Client A: INCR stock:sku-7        → primary replies 37, sends to replica\nt1   Client B: INCR stock:sku-7        → primary replies 38, replication not yet sent\nt2   Primary crashes\nt3   Sentinel promotes the replica; it has applied the t0 write but not t1\nt4   stock:sku-7 on the new primary says 37; Client B was told 38"
+        },
+        {
+          "type": "markdown",
+          "text": "Client B's acknowledged write has vanished and the counter has moved backwards. For a view counter nobody cares. For stock, it can mean overselling by one item. The mitigations are all trade-offs: reconcile with the database after a failover, use `WAIT 1 100` on writes that matter, require replicas with `min-replicas-to-write`, or keep the authoritative number in a durable database. The right choice depends on what a lost write costs.\n\n### Five questions before you store data in Redis\n\n1. If this data disappeared right now, could I rebuild it, and how long would that take?\n2. How much staleness is acceptable (seconds, minutes, never)?\n3. How big will it grow, and does it have a TTL or another bound?\n4. Do I need to find it by something other than its key?\n5. What happens to the application if Redis is unreachable for a minute?\n\n### The guarantees at a glance"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "Guarantee",
+            "Caveat"
+          ],
+          "rows": [
+            [
+              "Single command",
+              "Atomic and isolated",
+              "None"
+            ],
+            [
+              "Lua script / Function",
+              "Atomic and isolated",
+              "A long script blocks all clients; no rollback"
+            ],
+            [
+              "`MULTI/EXEC`",
+              "Commands run together without interleaving",
+              "No rollback; `WATCH` gives optimistic checks"
+            ],
+            [
+              "Pipelining",
+              "Order of replies preserved",
+              "Not atomic"
+            ],
+            [
+              "AOF `everysec`",
+              "At most about a second lost on crash",
+              "Disk stalls can delay it"
+            ],
+            [
+              "Replication",
+              "Eventually consistent copy",
+              "Asynchronous; replicas can be stale"
+            ],
+            [
+              "Pub/Sub",
+              "At-most-once delivery",
+              "No storage; absent subscribers miss messages"
+            ],
+            [
+              "Streams with groups",
+              "At-least-once with acknowledgements",
+              "Consumers must handle duplicates"
+            ],
+            [
+              "Cluster",
+              "Automatic failover and sharding",
+              "Not strongly consistent under partitions"
+            ]
+          ],
+          "caption": "What you can rely on, by feature (defaults; each is tunable)."
+        },
+        {
+          "type": "markdown",
+          "text": "Keep this table in mind; most \"Redis lost my data\" stories are a mismatch between a default and an expectation listed in one of these rows.\n\n### What Redis is not\n\n- **Not a replacement for your system of record by default.** An order, a payment or a customer account belongs in a database with transactions, constraints, point-in-time recovery and years of operational tooling. Redis holds copies, derived data, temporary state and fast counters.\n- **Not a general query engine.** You look data up by key. There are no joins, no ad hoc `WHERE`. The built-in Query Engine (see the data structures Part) adds secondary indexes and search for the data you choose to index, but it does not turn Redis into a relational database.\n- **Not infinite.** Datasets of terabytes are expensive in RAM.\n- **Not a message broker with every feature.** It has lists, Pub/Sub and streams; it does not replace the long retention and ecosystem of Kafka.\n\n### When Redis can be the primary store\n\n\"Not by default\" is not \"never\". Teams do keep authoritative data in Redis when the data set fits in memory, the loss window is acceptable or the AOF with `always` or `everysec` plus replicas and backups is configured, and the access pattern is key-based. Typical cases are session stores, leaderboards, rate-limit state, real-time counters, feature flags and job queues. A good test: **if the Redis data vanished, could you rebuild it or tolerate its loss?** If yes, treat it as a fast cache or working store. If no, either configure persistence and replication seriously and test restores, or keep a durable database as the system of record."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a typical e-commerce platform the order database is the truth. Redis holds the product cache (rebuildable), sessions (loss means a re-login), carts (sometimes copied to a database periodically), and the flash-sale stock counter (initialised from the database before the sale). Each of these has a different answer to \"what happens if Redis loses it?\", and that answer decides how it is configured."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Is Redis durable and consistent? Not by default. Durability depends on persistence: RDB snapshots can lose minutes of data, AOF with `everysec` about a second, AOF with `always` almost nothing at a throughput cost. Replication is asynchronous, so a failover can lose recent acknowledged writes and replicas can serve stale reads; `WAIT` and `min-replicas-to-write` reduce but do not remove that risk. A single command, script or transaction is atomic, but there is no rollback."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Each command, script and `MULTI/EXEC` block is atomic and isolated; there is no rollback.\n- Durability is a configuration choice: none, RDB, AOF everysec or AOF always.\n- Replication is asynchronous: acknowledged writes can be lost on failover and replicas can be stale.\n- Redis favours availability and speed; it offers knobs to tighten consistency but is not a strongly consistent store.\n- Treat Redis as the source of truth only when the data fits in RAM, loss is tolerable or well protected, and access is key-based."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-7",
+      "type": "concept",
+      "title": "Redis versus the Alternatives",
+      "subtopicId": "1-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "\"Which tool should I use?\" is rarely answered by \"the fastest\". This chapter compares Redis with the options you will be asked about, honestly, including the cases where Redis is the wrong choice. The comparisons are about design differences; any product evolves, so check current documentation before a decision, especially for features of commercial and fast-moving projects.\n\n### Redis versus Memcached\n\n**Memcached** is a distributed memory cache. It stores opaque values under keys with a time to live, evicts with an LRU policy, and is multi-threaded. It is simple, mature and fast."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Redis",
+            "Memcached"
+          ],
+          "rows": [
+            [
+              "Value model",
+              "Typed structures (hash, list, set, zset, stream, ...)",
+              "Opaque byte values"
+            ],
+            [
+              "Operations",
+              "Server-side commands, scripts, transactions",
+              "Get, set, delete, increment, a few more"
+            ],
+            [
+              "Persistence",
+              "RDB and AOF",
+              "None"
+            ],
+            [
+              "Replication / HA",
+              "Replicas, Sentinel, Cluster",
+              "Not built in (client-side sharding)"
+            ],
+            [
+              "Threads",
+              "Main thread for commands, optional I/O threads",
+              "Multi-threaded"
+            ],
+            [
+              "Pub/Sub, streams",
+              "Yes",
+              "No"
+            ]
+          ],
+          "caption": "Redis and Memcached."
+        },
+        {
+          "type": "markdown",
+          "text": "Choose Memcached if all you need is a plain, horizontally sharded string cache and you value its simplicity. Choose Redis when you want more than get and set, which is true for most modern systems. Many teams standardise on Redis simply so one technology covers caching, counters, queues and sessions.\n\n### Redis versus a relational database\n\nA relational database (PostgreSQL, MySQL) offers durable storage, SQL, joins, constraints and full ACID transactions. Redis offers speed and structure-specific operations. They are partners, not competitors: the relational database is the system of record, Redis absorbs repeated reads, short-lived state and counters."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Redis",
+            "Relational database"
+          ],
+          "rows": [
+            [
+              "Typical latency",
+              "Sub-millisecond",
+              "Milliseconds and up"
+            ],
+            [
+              "Data model",
+              "Keys and structures",
+              "Tables, rows, relations"
+            ],
+            [
+              "Queries",
+              "By key (plus indexed search if you set it up)",
+              "Arbitrary SQL, joins, aggregations"
+            ],
+            [
+              "Transactions",
+              "Atomic commands, scripts, `MULTI/EXEC`, no rollback",
+              "Full ACID with rollback"
+            ],
+            [
+              "Capacity",
+              "Bounded by RAM",
+              "Bounded by disk"
+            ],
+            [
+              "Durability",
+              "Configurable, weaker by default",
+              "Strong by design"
+            ]
+          ],
+          "caption": "Redis and a relational database."
+        },
+        {
+          "type": "markdown",
+          "text": "### Redis versus Kafka and RabbitMQ\n\nRedis can move messages (lists, Pub/Sub, streams), but message brokers are built for it."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Redis (streams)",
+            "Kafka",
+            "RabbitMQ"
+          ],
+          "rows": [
+            [
+              "Model",
+              "Append-only log in memory, consumer groups",
+              "Partitioned, replicated disk log",
+              "Broker with exchanges and queues"
+            ],
+            [
+              "Retention",
+              "Bounded by memory; you trim",
+              "Long, disk-based; replay",
+              "Until consumed (queues)"
+            ],
+            [
+              "Throughput focus",
+              "Low latency, moderate volume",
+              "Very high volume, durable",
+              "Flexible routing, per-message delivery"
+            ],
+            [
+              "Ecosystem",
+              "Small, simple",
+              "Large (connectors, stream processing)",
+              "Mature routing and protocols"
+            ],
+            [
+              "Operations",
+              "You already run Redis",
+              "A cluster to operate",
+              "A broker to operate"
+            ]
+          ],
+          "caption": "Redis, Kafka and RabbitMQ for messaging."
+        },
+        {
+          "type": "markdown",
+          "text": "Use Redis streams or lists when the volume is moderate, you want low latency, you already run Redis and a bounded history is fine, such as background jobs or notification events in ShopStream. Use Kafka when you need durable long-term retention, replay by many independent consumers and very large throughput. Use RabbitMQ when you want rich routing and per-message acknowledgement semantics from a mature broker. Redis Pub/Sub is different again: it is fire-and-forget with no storage, suitable for ephemeral signals only.\n\n### Redis versus Valkey, KeyDB and Dragonfly\n\nSeveral projects speak the Redis protocol, so existing clients work. They differ in origin and design.\n\n- **Valkey** is a fork of Redis 7.2.4 created in 2024 under the Linux Foundation after Redis changed its license, and kept under the BSD license. It tracks Redis closely in command set and has its own roadmap. Moving between the two is often easy at the command level, though newer features diverge, and the Redis 8 built-in modules (JSON, Search, time series and so on) are Redis features.\n- **KeyDB** is a multi-threaded fork of Redis.\n- **Dragonfly** is a from-scratch, multi-threaded, shared-nothing server that aims to be compatible with the Redis and Memcached protocols and to use many cores in one process.\n\nThe honest view: for most applications the data model and commands matter more than which engine hosts them, and compatibility is high but not total. Verify the commands and modules you rely on before you switch, and check the license terms for your use. This book targets Redis Open Source 8.x.\n\n### Redis versus Hazelcast and other in-memory data grids\n\n**Hazelcast** is a JVM-based in-memory data grid. It can run embedded inside your Java application and distributes data across application nodes, offering distributed maps, locks, and compute. Redis is a separate, non-JVM server shared by clients in any language. The embedded model removes a network hop but couples cache memory and lifecycle to your application (garbage collection, restarts). A standalone Redis is easier to scale and operate separately and is usually the default choice, while a data grid fits teams that want distributed Java data structures in-process.\n\n### Managed services and DynamoDB\n\nYou do not have to operate Redis yourself. Cloud providers offer managed services built on Redis or compatible engines: Amazon ElastiCache and MemoryDB, Azure Cache for Redis and its successors, Google Memorystore, and Redis Cloud from Redis itself. Managed service features and supported versions vary and change; check each vendor's documentation for the version, modules and persistence they provide. A later Part discusses managed services in more detail.\n\n**Amazon DynamoDB** is a durable, serverless key-value and document database with single-digit millisecond latency by design. It is a primary store, not a cache. AWS pairs it with a separate in-memory cache service (DAX) for microsecond reads. In an AWS design you may use DynamoDB as the database and Redis (via ElastiCache) next to it for hot reads, counters and sessions; the two address different needs.\n\n### Three small design reviews\n\n**A. \"We want to show the number of items in stock quickly.\"** Reads dominate, a few seconds of staleness is fine: a Redis counter or cached value with a short TTL, sourced from the database. Redis fits.\n\n**B. \"We want to record every payment.\"** Payments are authoritative, must be durable and auditable, and need transactions and constraints: a relational database. Redis may sit alongside to rate-limit or deduplicate requests, but is not the ledger.\n\n**C. \"We want to send an email whenever an order is placed.\"** The volume is moderate, losing an event is unacceptable, and consumers may crash and retry: a Redis stream with a consumer group is reasonable (acknowledgements and a pending list give at-least-once delivery); a broker such as Kafka or RabbitMQ is equally defensible if the organisation already runs one. Plain Pub/Sub would be wrong because it forgets messages for absent subscribers.\n\nNotice that none of these answers is \"Redis is best\". They are \"Redis is best for this shape of problem\".\n\n### Migrating from Memcached or a local cache\n\nTeams commonly start with a local map or with Memcached and later move to Redis. The mechanics are small: replace `get` and `set` calls with `GET` and `SET ... EX`, and serialise values (JSON or another format) because Redis stores bytes. The deeper change is mental: once the cache is a data structure server, you start moving logic into it (counters, sorted rankings, queues). Do this gradually, one role at a time, and keep the original data source authoritative until you have measured the result. The caching chapters in the Patterns Part and the Spring cache chapter show a migration-friendly layering in which the cache is behind a service interface.\n\n### A quick decision table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "You need",
+            "Reach for"
+          ],
+          "rows": [
+            [
+              "A shared cache with expiry",
+              "Redis (or Memcached for plain strings)"
+            ],
+            [
+              "Sessions, carts, rate limits, leaderboards",
+              "Redis"
+            ],
+            [
+              "Authoritative business data with ACID",
+              "A relational database"
+            ],
+            [
+              "Durable event log with replay and huge volume",
+              "Kafka"
+            ],
+            [
+              "Complex routing, per-message acks",
+              "RabbitMQ"
+            ],
+            [
+              "Simple job queue or notification stream",
+              "Redis lists or streams"
+            ],
+            [
+              "Embedded distributed Java data structures",
+              "A data grid such as Hazelcast"
+            ],
+            [
+              "Hands-off operations",
+              "A managed Redis-compatible service"
+            ]
+          ],
+          "caption": "Which tool for which job."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When would you choose Redis over Memcached, and Redis streams over Kafka? Redis over Memcached when you need structures beyond strings, atomic server-side operations, persistence or replication; Memcached suffices for a plain cache. Redis streams over Kafka when volume is moderate, latency matters, you already operate Redis and bounded retention is acceptable; Kafka when you need durable long retention, replay by many consumers and very high throughput."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Redis pairs with, rather than replaces, a relational database.\n- Versus Memcached: Redis adds structure, persistence, replication and scripting; Memcached is simpler.\n- Redis streams cover moderate-volume queues; Kafka is the choice for large durable logs.\n- Valkey, KeyDB and Dragonfly are protocol-compatible alternatives; check feature and license differences.\n- Managed services remove operations work; check which version and features they support."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-8",
+      "type": "concept",
+      "title": "History, Licensing and the Redis 8 Platform",
+      "subtopicId": "1-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### A short history\n\nRedis was created by Salvatore Sanfilippo (known online as antirez), whose first release came in 2009. He built it to solve a scaling problem in a real-time web analytics tool he was working on, where a relational database could not keep up with the write rate. The idea of exposing in-memory lists and sets through simple commands turned out to be widely useful, and the project grew quickly, with the design values that remain visible today: simplicity, predictable performance and a small, readable code base in C.\n\nMilestones worth knowing (the dates and version numbers are the stable ones; look at the release notes for details):"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Version",
+            "What it brought"
+          ],
+          "rows": [
+            [
+              "2.x",
+              "Replication, Pub/Sub, expiry maturing, the AOF and RDB persistence formats"
+            ],
+            [
+              "2.6",
+              "Lua scripting (`EVAL`)"
+            ],
+            [
+              "2.8",
+              "Partial resynchronisation, Sentinel (first form)"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Version",
+            "What it brought"
+          ],
+          "rows": [
+            [
+              "3.0",
+              "Redis Cluster"
+            ],
+            [
+              "4.0",
+              "Modules API, `MEMORY` commands, lazy freeing"
+            ],
+            [
+              "5.0",
+              "Streams"
+            ],
+            [
+              "6.0",
+              "ACLs, TLS, RESP3, optional I/O threads, client-side caching support"
+            ],
+            [
+              "7.0",
+              "Functions, sharded Pub/Sub, multi-part AOF, ACL selectors"
+            ],
+            [
+              "7.4",
+              "Hash field expiration (`HEXPIRE` and friends)"
+            ],
+            [
+              "8.0",
+              "Redis Stack merged into the core product; new data types and commands; I/O threading rework"
+            ]
+          ],
+          "caption": "Selected Redis milestones."
+        },
+        {
+          "type": "markdown",
+          "text": "Do not try to memorise this. The pattern matters: Redis started as a cache-like key-value server and steadily added the capabilities of a small data platform (persistence, high availability, scaling out, messaging, scripting, security) while keeping the same command model.\n\n### Licensing\n\nThe license is a topic where you should read the current text yourself, but you should know the outline. For many years Redis was released under the permissive BSD license. In March 2024 the project moved to a dual source-available arrangement (RSALv2 and SSPLv1) starting with version 7.4. In 2025, with Redis 8, the project added the **GNU AGPLv3** as a further option, so that Redis Open Source is again available under an OSI-approved open source license. The Linux Foundation fork **Valkey** (from Redis 7.2.4, BSD) exists because of the 2024 change.\n\nFor a developer building an application that simply connects to a Redis server, these terms matter mostly to companies that offer Redis itself as a hosted service or that distribute modified versions. Still: **check the license terms for your** **own use**, and your organisation's policy, rather than relying on a book (including this one).\n\n### Redis 8: one platform\n\nBefore Redis 8, the open source product came in two shapes. **Redis Community Edition** was the core server with the classic data types. **Redis Stack** bundled that core with extra modules: RedisJSON, RediSearch, RedisTimeSeries and RedisBloom, plus the RedisInsight GUI. Developers had to decide which to install, and module commands were not part of the same documentation, security model or release train.\n\nRedis 8.0 (released in 2025) merged these. Redis Open Source 8 includes, in one download:\n\n- **JSON**: a native document type with path-based updates (`JSON.SET`, `JSON.GET`, `JSON.NUMINCRBY`).\n- **The Query Engine** (search and query): secondary indexes over hashes and JSON documents, full-text search, aggregation and vector similarity (`FT.CREATE`, `FT.SEARCH`, `FT.AGGREGATE`).\n- **Time series**: `TS.ADD`, `TS.RANGE` and retention and downsampling rules.\n- **Probabilistic data structures**: Bloom and Cuckoo filters, Count-Min Sketch, Top-K and t-digest.\n- **Vector sets**: a new data type (introduced in beta with 8.0) for storing and searching embedding vectors.\n- Performance work (the release notes quote large gains in command latency and replication efficiency and memory savings), and module commands now belong to the standard ACL categories, so the same permission model controls them.\n\nSubsequent minor releases continue to add features. As of this writing the current line includes 8.2, 8.4 and 8.6. Examples you will meet later in the book:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Version",
+            "Examples"
+          ],
+          "rows": [
+            [
+              "8.0",
+              "`HGETEX`, `HSETEX`, `HGETDEL`; modules built in; vector sets (beta)"
+            ],
+            [
+              "8.2",
+              "`XDELEX` and `XACKDEL` for streams; new `BITOP` operators; `CLUSTER SLOT-STATS`"
+            ],
+            [
+              "8.4",
+              "Atomic slot migration in Cluster; `DELEX`, `DIGEST`, `MSETEX`; hybrid search (`FT.HYBRID`)"
+            ],
+            [
+              "8.6",
+              "Further performance and memory reductions; idempotent `XADD`; `volatile-lrm` and `allkeys-lrm` eviction; `HOTKEYS`"
+            ]
+          ],
+          "caption": "Notable additions in the 8.x line (see the release notes for the full lists)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Editions and tools around Redis\n\nYou will meet several names. **Redis Open Source** is what this book uses: the server you can download and run yourself. Redis the company also sells commercial products (a cloud service and self-managed enterprise software) built on it, with extra operational features such as multi-region replication; these are optional. **RedisInsight** is a free graphical tool for browsing keys, running commands and inspecting memory. It is helpful for beginners and for exploring a data set, although `redis-cli` remains the tool you will use in scripts, containers and production. The Hands-On Labs Part shows how to connect RedisInsight to a local server.\n\nThe ecosystem around the server is large: client libraries in every language, the Spring and Quarkus integrations, monitoring exporters, and managed offerings from the main cloud providers. Because the protocol is shared, a skill learned on one is almost always portable to the others."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Version targeting in this book. Everything here is written for Redis Open Source 8.x. Where a feature needs a recent 8.x release, the text says so. The classic commands (strings, lists, hashes, sets, sorted sets, expiry, replication) behave the same on Redis 6 and 7, so the first Parts remain useful if you are stuck on an older version, but check any 7.4+ or 8.x command against your server's version with `INFO server` before using it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INFO server\n# Server\nredis_version:8.6.6\nredis_mode:standalone\nos:Linux 6.8.0 x86_64",
+          "title": "Check what you are talking to"
+        },
+        {
+          "type": "markdown",
+          "text": "(The output continues with many more fields. Your version and OS lines will differ.)"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What changed in Redis 8? Redis Stack and Community Edition were merged: JSON, the Query Engine, time series and probabilistic structures became part of Redis Open Source, vector sets were added as a new data type, module commands joined the standard ACL categories, and the I/O threading and many commands were optimised. Hash field expiration (from 7.4) gained companion commands such as `HGETEX` and `HSETEX`. The license also gained the AGPLv3 option."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Redis began in 2009 as a fast key-value server and grew into a data platform while keeping its command model.\n- The license changed in 2024 and gained an AGPLv3 option with Redis 8; Valkey is the BSD-licensed fork. Check the terms for your use.\n- Redis 8 merged Redis Stack into the core: JSON, search, time series, probabilistic structures and vector sets.\n- The 8.x line keeps adding commands; verify the version with `INFO server`."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-9",
+      "type": "concept",
+      "title": "Roadmap of This Book and the ShopStream Project",
+      "subtopicId": "1-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### How the book is organised\n\nThe book moves from \"what and why\" to \"build and operate\". Each Part answers one question:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Part",
+            "Question it answers"
+          ],
+          "rows": [
+            [
+              "Fundamentals",
+              "What is Redis, why is it fast, and what does it promise?"
+            ],
+            [
+              "Hands-On Labs",
+              "How do I install it and try every major feature on my machine?"
+            ],
+            [
+              "Data Structures",
+              "Which structure fits which problem, and how do the commands work?"
+            ],
+            [
+              "Redis Inside",
+              "How does the engine, memory, expiry, persistence and scripting work?"
+            ],
+            [
+              "Scaling and High Availability",
+              "How do replication, Sentinel and Cluster keep it available and large?"
+            ],
+            [
+              "Redis from Java",
+              "How do Lettuce, Jedis and Redisson talk to Redis from Java 21?"
+            ],
+            [
+              "Spring Boot and Spring Data Redis",
+              "How do I use Redis cleanly from Spring Boot 4?"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Part",
+            "Question it answers"
+          ],
+          "rows": [
+            [
+              "Patterns",
+              "How do I build caches, locks, rate limiters, queues and leaderboards correctly?"
+            ],
+            [
+              "Where Redis Is Used",
+              "Which real systems use which patterns, and when should I avoid Redis?"
+            ],
+            [
+              "Projects",
+              "Can I build four complete services end to end?"
+            ],
+            [
+              "Operations and Security",
+              "How do I run, monitor, secure, back up and upgrade it?"
+            ],
+            [
+              "Revision Kit and Interview Preparation",
+              "How do I revise quickly and answer interview questions?"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 93.5\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 78.6 L61.7 78.6 C63.4 78.6 64.7 77.2 64.7 75.6 L64.7 35.6 C64.7 33.9 63.4 32.6 61.7 32.6 L5.0 32.6 C3.3 32.6 2.0 33.9 2.0 35.6 L2.0 75.6 C2.0 77.2 3.3 78.6 5.0 78.6 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M65.7 55.6 L73.7 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M138.4 55.6 L146.4 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M211.1 55.6 L219.1 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M283.8 55.6 L291.8 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M356.5 55.6 L364.5 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M429.2 55.6 L437.2 55.6\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M73.7 55.6 L68.3 53.0 L68.3 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M77.7 78.6 L134.4 78.6 C136.1 78.6 137.4 77.2 137.4 75.6 L137.4 35.6 C137.4 33.9 136.1 32.6 134.4 32.6 L77.7 32.6 C76.0 32.6 74.7 33.9 74.7 35.6 L74.7 75.6 C74.7 77.2 76.0 78.6 77.7 78.6 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M146.4 55.6 L141.0 53.0 L141.0 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M150.4 78.6 L207.1 78.6 C208.8 78.6 210.1 77.2 210.1 75.6 L210.1 35.6 C210.1 33.9 208.8 32.6 207.1 32.6 L150.4 32.6 C148.7 32.6 147.4 33.9 147.4 35.6 L147.4 75.6 C147.4 77.2 148.7 78.6 150.4 78.6 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M219.1 55.6 L213.7 53.0 L213.7 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M223.1 78.6 L279.8 78.6 C281.5 78.6 282.8 77.2 282.8 75.6 L282.8 35.6 C282.8 33.9 281.5 32.6 279.8 32.6 L223.1 32.6 C221.4 32.6 220.1 33.9 220.1 35.6 L220.1 75.6 C220.1 77.2 221.4 78.6 223.1 78.6 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M291.8 55.6 L286.4 53.0 L286.4 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M295.8 78.6 L352.5 78.6 C354.2 78.6 355.5 77.2 355.5 75.6 L355.5 35.6 C355.5 33.9 354.2 32.6 352.5 32.6 L295.8 32.6 C294.1 32.6 292.8 33.9 292.8 35.6 L292.8 75.6 C292.8 77.2 294.1 78.6 295.8 78.6 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M364.5 55.6 L359.1 53.0 L359.1 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M368.5 78.6 L425.2 78.6 C426.9 78.6 428.2 77.2 428.2 75.6 L428.2 35.6 C428.2 33.9 426.9 32.6 425.2 32.6 L368.5 32.6 C366.8 32.6 365.5 33.9 365.5 35.6 L365.5 75.6 C365.5 77.2 366.8 78.6 368.5 78.6 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M437.2 55.6 L431.8 53.0 L431.8 58.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M441.2 78.6 L497.9 78.6 C499.6 78.6 500.9 77.2 500.9 75.6 L500.9 35.6 C500.9 33.9 499.6 32.6 497.9 32.6 L441.2 32.6 C439.5 32.6 438.2 33.9 438.2 35.6 L438.2 75.6 C438.2 77.2 439.5 78.6 441.2 78.6 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"145.8\" y=\"7.1\" font-size=\"8.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"211.4\" lengthAdjust=\"spacingAndGlyphs\">The Parts of this book and the question each one answers.</text><text x=\"19.1\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"28.5\" lengthAdjust=\"spacingAndGlyphs\">Concepts</text><text x=\"98.7\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"14.6\" lengthAdjust=\"spacingAndGlyphs\">Data</text><text x=\"165.3\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"26.9\" lengthAdjust=\"spacingAndGlyphs\">Internals</text><text x=\"240.4\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.2\" lengthAdjust=\"spacingAndGlyphs\">Scaling</text><text x=\"311.0\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"26.4\" lengthAdjust=\"spacingAndGlyphs\">Java and</text><text x=\"384.1\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.6\" lengthAdjust=\"spacingAndGlyphs\">Patterns</text><text x=\"452.7\" y=\"53.7\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"33.6\" lengthAdjust=\"spacingAndGlyphs\">Operations</text><text x=\"20.4\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"26.0\" lengthAdjust=\"spacingAndGlyphs\">and labs</text><text x=\"90.5\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"31.1\" lengthAdjust=\"spacingAndGlyphs\">structures</text><text x=\"154.3\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"48.9\" lengthAdjust=\"spacingAndGlyphs\">and persistence</text><text x=\"240.3\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"22.2\" lengthAdjust=\"spacingAndGlyphs\">and HA</text><text x=\"306.3\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"35.8\" lengthAdjust=\"spacingAndGlyphs\">Spring Boot</text><text x=\"377.8\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"38.0\" lengthAdjust=\"spacingAndGlyphs\">and projects</text><text x=\"447.1\" y=\"62.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"45.0\" lengthAdjust=\"spacingAndGlyphs\">and interviews</text></svg>",
+          "width": 503,
+          "caption": "A suggested learning path. The first three Parts give you the working vocabulary; the rest you can take in the order that matches your goals.",
+          "alt": "The Parts of this book and the question each one answers. | Concepts Data Internals Scaling Java and Patterns Operations | and labs structures and persistence and HA Spring Boot and projects and interviews"
+        },
+        {
+          "type": "markdown",
+          "text": "### Three ways to read it\n\n- **Straight through** if you are new to Redis. Do the labs when you reach them; typing the commands is how the model sticks.\n- **Interview preparation**: read Fundamentals, skim Data Structures and Redis Inside, then work through the Revision Kit and the interview questions, returning to chapters when an answer feels thin.\n- **Building an application**: read Fundamentals, do the install lab, jump to the Spring Boot Part and the Patterns you need, then follow one of the Projects.\n\nEach chapter ends with a **Key points** box you can use for revision. Boxes labelled Warn and Gotcha mark mistakes that cost real time; Interview boxes contain a question and a crisp answer; Real boxes describe how things look in production.\n\n### Tools and versions\n\nAll examples assume the following. You do not need to match them exactly, but the Spring chapters in particular depend on the library versions."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Component",
+            "Version / note"
+          ],
+          "rows": [
+            [
+              "Redis",
+              "Redis Open Source 8.x (Docker image `redis:8`)"
+            ],
+            [
+              "Java",
+              "21"
+            ],
+            [
+              "Spring Boot",
+              "4.1.x with Spring Data Redis 4.1.x (Lettuce by default)"
+            ],
+            [
+              "Build tool",
+              "Maven"
+            ],
+            [
+              "Tests",
+              "JUnit 5 with Testcontainers"
+            ],
+            [
+              "Command line",
+              "`redis-cli` (ships with Redis)"
+            ]
+          ],
+          "caption": "Environment used in this book."
+        },
+        {
+          "type": "markdown",
+          "text": "### The running example: ShopStream\n\nTo keep the examples connected, nearly everything uses one fictional product, **ShopStream**, an online store built from small Spring Boot services behind a gateway. It is deliberately ordinary, because the problems it has (slow product pages, shared logins, flash sales, notifications) are the ones real teams meet."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Responsibility"
+          ],
+          "rows": [
+            [
+              "`gateway`",
+              "Entry point, authentication, rate limiting"
+            ],
+            [
+              "`catalog-service`",
+              "Product catalogue and search"
+            ],
+            [
+              "`cart-service`",
+              "Shopping carts"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Responsibility"
+          ],
+          "rows": [
+            [
+              "`order-service`",
+              "Placing and tracking orders"
+            ],
+            [
+              "`inventory-service`",
+              "Stock levels, flash-sale reservations"
+            ],
+            [
+              "`notification-service`",
+              "Emails and push messages triggered by order events"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 242.8\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M262.0 233.9 C262.0 231.7 239.6 229.9 212.0 229.9 C184.4 229.9 162.0 231.7 162.0 233.9 C162.0 236.1 184.4 237.9 212.0 237.9 C239.6 237.9 262.0 236.1 262.0 233.9\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 233.9 L262.0 233.9 L262.0 217.9 L162.0 217.9 Z\" fill=\"#23282e\" stroke=\"#eef0f3\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M306.0 231.9 L496.9 231.9 C499.1 231.9 500.9 230.1 500.9 227.9 L500.9 59.9 C500.9 57.7 499.1 55.9 496.9 55.9 L306.0 55.9 C303.8 55.9 302.0 57.7 302.0 59.9 L302.0 227.9 C302.0 230.1 303.8 231.9 306.0 231.9 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 221.9 L487.9 221.9 C489.6 221.9 490.9 220.5 490.9 218.9 L490.9 204.9 C490.9 203.2 489.6 201.9 487.9 201.9 L315.0 201.9 C313.3 201.9 312.0 203.2 312.0 204.9 L312.0 218.9 C312.0 220.5 313.3 221.9 315.0 221.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.0 217.9 C262.0 215.7 239.6 213.9 212.0 213.9 C184.4 213.9 162.0 215.7 162.0 217.9 C162.0 220.1 184.4 221.9 212.0 221.9 C239.6 221.9 262.0 220.1 262.0 217.9\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M58.0 144.9 L76.0 144.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M132.0 144.9 L162.0 70.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 70.9 L302.0 144.9\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 144.9 L162.0 100.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 100.9 L302.0 144.9\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 144.9 L162.0 130.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 130.9 L302.0 144.9\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 144.9 L162.0 160.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 160.9 L302.0 144.9\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 144.9 L162.0 190.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 190.9 L302.0 144.9\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M5.0 161.9 L55.0 161.9 C56.7 161.9 58.0 160.5 58.0 158.9 L58.0 130.9 C58.0 129.2 56.7 127.9 55.0 127.9 L5.0 127.9 C3.3 127.9 2.0 129.2 2.0 130.9 L2.0 158.9 C2.0 160.5 3.3 161.9 5.0 161.9 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M79.0 161.9 L129.0 161.9 C130.7 161.9 132.0 160.5 132.0 158.9 L132.0 130.9 C132.0 129.2 130.7 127.9 129.0 127.9 L79.0 127.9 C77.3 127.9 76.0 129.2 76.0 130.9 L76.0 158.9 C76.0 160.5 77.3 161.9 79.0 161.9 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M76.0 144.9 L70.6 142.3 L70.6 147.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 83.9 L259.0 83.9 C260.7 83.9 262.0 82.5 262.0 80.9 L262.0 60.9 C262.0 59.2 260.7 57.9 259.0 57.9 L165.0 57.9 C163.3 57.9 162.0 59.2 162.0 60.9 L162.0 80.9 C162.0 82.5 163.3 83.9 165.0 83.9 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 70.9 L158.3 74.2 L162.3 75.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 144.9 L301.8 139.9 L297.9 142.0 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 113.9 L259.0 113.9 C260.7 113.9 262.0 112.5 262.0 110.9 L262.0 90.9 C262.0 89.2 260.7 87.9 259.0 87.9 L165.0 87.9 C163.3 87.9 162.0 89.2 162.0 90.9 L162.0 110.9 C162.0 112.5 163.3 113.9 165.0 113.9 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 100.9 L157.7 103.4 L161.3 105.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 144.9 L300.6 140.1 L297.4 143.0 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 143.9 L259.0 143.9 C260.7 143.9 262.0 142.5 262.0 140.9 L262.0 120.9 C262.0 119.2 260.7 117.9 259.0 117.9 L165.0 117.9 C163.3 117.9 162.0 119.2 162.0 120.9 L162.0 140.9 C162.0 142.5 163.3 143.9 165.0 143.9 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 130.9 L157.0 130.8 L158.8 134.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 144.9 L298.5 141.3 L297.0 145.4 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 173.9 L259.0 173.9 C260.7 173.9 262.0 172.5 262.0 170.9 L262.0 150.9 C262.0 149.2 260.7 147.9 259.0 147.9 L165.0 147.9 C163.3 147.9 162.0 149.2 162.0 150.9 L162.0 170.9 C162.0 172.5 163.3 173.9 165.0 173.9 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 160.9 L159.1 156.8 L157.0 160.7 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 144.9 L297.0 144.5 L298.6 148.6 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 203.9 L259.0 203.9 C260.7 203.9 262.0 202.5 262.0 200.9 L262.0 180.9 C262.0 179.2 260.7 177.9 259.0 177.9 L165.0 177.9 C163.3 177.9 162.0 179.2 162.0 180.9 L162.0 200.9 C162.0 202.5 163.3 203.9 165.0 203.9 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 190.9 L161.4 185.9 L157.7 188.3 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 144.9 L297.4 146.8 L300.7 149.7 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 101.9 L487.9 101.9 C489.6 101.9 490.9 100.5 490.9 98.9 L490.9 84.9 C490.9 83.2 489.6 81.9 487.9 81.9 L315.0 81.9 C313.3 81.9 312.0 83.2 312.0 84.9 L312.0 98.9 C312.0 100.5 313.3 101.9 315.0 101.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 125.9 L487.9 125.9 C489.6 125.9 490.9 124.5 490.9 122.9 L490.9 108.9 C490.9 107.2 489.6 105.9 487.9 105.9 L315.0 105.9 C313.3 105.9 312.0 107.2 312.0 108.9 L312.0 122.9 C312.0 124.5 313.3 125.9 315.0 125.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 149.9 L487.9 149.9 C489.6 149.9 490.9 148.5 490.9 146.9 L490.9 132.9 C490.9 131.2 489.6 129.9 487.9 129.9 L315.0 129.9 C313.3 129.9 312.0 131.2 312.0 132.9 L312.0 146.9 C312.0 148.5 313.3 149.9 315.0 149.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 173.9 L487.9 173.9 C489.6 173.9 490.9 172.5 490.9 170.9 L490.9 156.9 C490.9 155.2 489.6 153.9 487.9 153.9 L315.0 153.9 C313.3 153.9 312.0 155.2 312.0 156.9 L312.0 170.9 C312.0 172.5 313.3 173.9 315.0 173.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 197.9 L487.9 197.9 C489.6 197.9 490.9 196.5 490.9 194.9 L490.9 180.9 C490.9 179.2 489.6 177.9 487.9 177.9 L315.0 177.9 C313.3 177.9 312.0 179.2 312.0 180.9 L312.0 194.9 C312.0 196.5 313.3 197.9 315.0 197.9 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"212.2\" y=\"7.1\" font-size=\"8.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"78.4\" lengthAdjust=\"spacingAndGlyphs\">ShopStream services.</text><text x=\"8.0\" y=\"26.6\" font-size=\"9.0\" fill=\"#e7e9f3\" textLength=\"472.0\" lengthAdjust=\"spacingAndGlyphs\">The services use Redis in the roles below, and the book builds each one at the point where the matching theory has</text><text x=\"8.0\" y=\"39.0\" font-size=\"9.0\" fill=\"#e7e9f3\" textLength=\"52.1\" lengthAdjust=\"spacingAndGlyphs\">been taught.</text><text x=\"374.4\" y=\"66.9\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"54.1\" lengthAdjust=\"spacingAndGlyphs\">Redis (roles)</text><text x=\"188.0\" y=\"73.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.1\" lengthAdjust=\"spacingAndGlyphs\">catalog-service</text><text x=\"371.9\" y=\"94.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"59.2\" lengthAdjust=\"spacingAndGlyphs\">product:{id} cache</text><text x=\"193.4\" y=\"103.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"37.2\" lengthAdjust=\"spacingAndGlyphs\">cart-service</text><text x=\"363.2\" y=\"118.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"76.5\" lengthAdjust=\"spacingAndGlyphs\">session:{sid}, cart:{uid}</text><text x=\"191.1\" y=\"133.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"41.7\" lengthAdjust=\"spacingAndGlyphs\">order-service</text><text x=\"14.7\" y=\"142.8\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"30.6\" lengthAdjust=\"spacingAndGlyphs\">Browsers</text><text x=\"89.3\" y=\"142.8\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"29.4\" lengthAdjust=\"spacingAndGlyphs\">Gateway</text><text x=\"373.1\" y=\"142.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"56.7\" lengthAdjust=\"spacingAndGlyphs\">stock:{sku} + Lua</text><text x=\"14.7\" y=\"152.1\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"30.6\" lengthAdjust=\"spacingAndGlyphs\">and apps</text><text x=\"87.1\" y=\"152.1\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"33.7\" lengthAdjust=\"spacingAndGlyphs\">rate limits</text><text x=\"184.6\" y=\"163.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"54.8\" lengthAdjust=\"spacingAndGlyphs\">inventory-service</text><text x=\"376.7\" y=\"166.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"49.4\" lengthAdjust=\"spacingAndGlyphs\">rl:{ip} rate limit</text><text x=\"373.8\" y=\"190.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"55.2\" lengthAdjust=\"spacingAndGlyphs\">lb:bestsellers zset</text><text x=\"181.9\" y=\"193.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"60.2\" lengthAdjust=\"spacingAndGlyphs\">notification-service</text><text x=\"366.4\" y=\"214.2\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"70.2\" lengthAdjust=\"spacingAndGlyphs\">stream:orders + group</text><text x=\"55.1\" y=\"229.9\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"53.7\" lengthAdjust=\"spacingAndGlyphs\">system of record:</text><text x=\"190.2\" y=\"228.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"43.7\" lengthAdjust=\"spacingAndGlyphs\">SQL database</text></svg>",
+          "width": 503,
+          "caption": "ShopStream and the jobs Redis does in it. The database stays the system of record; Redis serves the fast, shared, short-lived parts.",
+          "alt": "ShopStream services. | The services use Redis in the roles below, and the book builds each one at the point where the matching theory has | been taught. | Redis (roles) | catalog-service | product:{id} cache | cart-service | session:{sid}, cart:{uid} | order-service | Browsers Gateway stock:{sku} + Lua | and apps rate limits | inventory-service | rl:{ip} rate limit | lb:bestsellers zset | notification-service | stream:orders + group | system of record: SQL database"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key pattern",
+            "Structure",
+            "Role"
+          ],
+          "rows": [
+            [
+              "`product:{id}`",
+              "Hash or JSON",
+              "Catalogue cache (cache-aside)"
+            ],
+            [
+              "`session:{sid}`",
+              "Hash with TTL",
+              "Login sessions"
+            ],
+            [
+              "`cart:{userId}`",
+              "Hash",
+              "Shopping cart"
+            ],
+            [
+              "`stock:{sku}`",
+              "String counter plus Lua",
+              "Flash-sale stock"
+            ],
+            [
+              "`rl:{ip}:{route}`",
+              "String counter",
+              "Rate limits"
+            ],
+            [
+              "`lb:bestsellers:daily`",
+              "Sorted set",
+              "Best-seller leaderboard"
+            ],
+            [
+              "`stream:orders`",
+              "Stream",
+              "Order events for the notifier"
+            ],
+            [
+              "`uv:{date}`",
+              "HyperLogLog",
+              "Unique visitors per day"
+            ],
+            [
+              "`geo:stores`",
+              "Geo index",
+              "Store locator"
+            ],
+            [
+              "`idem:{key}`",
+              "String with TTL",
+              "Idempotency keys"
+            ],
+            [
+              "`lock:order:{id}`",
+              "String with TTL",
+              "Locks"
+            ],
+            [
+              "`ff:{name}`",
+              "String or hash",
+              "Feature flags"
+            ]
+          ],
+          "caption": "Redis roles in ShopStream and their keys."
+        },
+        {
+          "type": "markdown",
+          "text": "All Java code lives under the package root `com.shopstream`. The Projects Part assembles four of these roles into complete, tested services that you can run on your own machine.\n\n### What you need to start\n\nYou should be comfortable reading Java 21, understand what a Spring Boot service with a REST controller and a service class looks like, and know basic SQL. You do not need prior distributed-systems knowledge; terms such as replication, sharding and consistency are defined where they first matter. Docker is the easiest way to run Redis, and the Hands-On Labs Part has the installation steps for Docker, Linux, macOS and Windows.\n\nA realistic pace is one chapter per sitting of 30 to 60 minutes, with commands typed rather than read. The Revision Kit at the end contains a 30-day plan for those who prefer a schedule.\n\n### Conventions in the text\n\n- `Monospace` marks commands, keys, class names and configuration keys.\n- A terminal box starting with `127.0.0.1:6379>` is a `redis-cli` session; lines starting with `$` are shell commands. Output shown is typical output; yours may differ in IDs, timings and version.\n- Numbers described as illustrative are for building intuition, not measurements. Measure your own system.\n- Cross-references are by chapter name, because numbering can change between editions."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "A good habit while reading: keep a `redis-cli` window open and run every command you see. Predict the output before you press Enter. Wrong predictions are where the learning happens."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- The book goes from fundamentals and labs, through data structures and internals, to scaling, Java and Spring, patterns, projects, operations and revision.\n- Pick a reading path: straight through, interview-focused, or build-focused.\n- ShopStream is the running example; its Redis roles map to the Parts that teach them.\n- Target: Redis Open Source 8.x, Java 21, Spring Boot 4.1.x."
         }
       ]
     }

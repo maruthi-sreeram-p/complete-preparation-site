@@ -1,0 +1,1274 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "411-443"
+  },
+  "sections": [
+    {
+      "id": "ch-10-1",
+      "type": "concept",
+      "title": "Reflection and Annotations",
+      "subtopicId": "10-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Most Java code knows its types at compile time: you write `account.deposit(50)` and the compiler checks that `deposit` exists. Frameworks cannot work that way. Spring must create your `@Service` classes, JUnit must find your `@Test` methods, and Jackson must read the fields of a class it has never seen. They all rely on **reflection**: the ability of a running program to inspect classes, fields, methods and constructors as objects, and to use them without naming them in source code.\n\nReflection is the foundation of almost every Java framework, so a backend developer meets it constantly, usually hidden behind an annotation. This chapter shows the API, what it costs, how modules restrict it, and how to write your own annotation and a reader for it.\n\n### The Class object and its members\n\nEvery loaded type has exactly one `java.lang.Class` object per class loader. You obtain it in three ways: the literal `Account.class`, the call `obj.getClass()`, or by name with `Class.forName(\"com.example.Account\")`, which loads and initializes the class at run time. From a `Class` you can ask for its fields, methods, constructors, annotations, superclass, interfaces and modifiers.\n\nThere are two families of accessors, and confusing them is the most common beginner error:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Returns",
+            "Includes inherited?"
+          ],
+          "rows": [
+            [
+              "`getMethods() /` `getFields()`",
+              "public members only",
+              "yes, from superclasses and interfaces"
+            ],
+            [
+              "`getDeclaredMethods() /` `getDeclaredFields()`",
+              "all members declared in this class, any access level",
+              "no"
+            ],
+            [
+              "`getMethod(name, types)`",
+              "one public method",
+              "yes"
+            ],
+            [
+              "`getDeclaredMethod(name,` `types)`",
+              "one method of this class, any access",
+              "no"
+            ]
+          ],
+          "caption": "The two families of reflective lookups."
+        },
+        {
+          "type": "markdown",
+          "text": "The listing inspects a small class, creates an instance through its constructor, calls a public and a private method, and overwrites a `private final` field."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.*;\nimport java.util.*;\n\npublic class Inspect {\n    static class Account {\n        private final String id;\n        private long balance;\n        public Account(String id, long balance) { this.id = id; this.balance = balance; }\n        public long balance() { return balance; }\n        public void deposit(long amount) { balance += amount; }\n        private void audit(String msg) { System.out.println(\"audit: \" + msg); }\n        @Override public String toString() { return id + \":\" + balance; }\n    }\n\n    public static void main(String[] args) throws Exception {\n        Class<?> c = Account.class;\n        System.out.println(\"name      = \" + c.getName());\n        System.out.println(\"simple    = \" + c.getSimpleName());\n        System.out.println(\"modifiers = \" + Modifier.toString(c.getModifiers()));\n        System.out.println(\"super     = \" + c.getSuperclass().getName());\n\n        System.out.println(\"-- fields\");\n        for (Field f : c.getDeclaredFields())\n            System.out.println(Modifier.toString(f.getModifiers()) + \" \"\n                    + f.getType().getSimpleName() + \" \" + f.getName());\n        System.out.println(\"-- methods\");\n        Arrays.stream(c.getDeclaredMethods()).map(Method::getName).sorted()\n              .forEach(n -> System.out.println(n));\n\n        Constructor<?> k = c.getDeclaredConstructor(String.class, long.class);\n        Object acc = k.newInstance(\"A-1\", 100L);\n        Method dep = c.getMethod(\"deposit\", long.class);\n        dep.invoke(acc, 50L);\n        System.out.println(acc);\n\n        Method audit = c.getDeclaredMethod(\"audit\", String.class);\n        audit.setAccessible(true);\n        audit.invoke(acc, \"hello\");\n\n        Field id = c.getDeclaredField(\"id\");\n        id.setAccessible(true);\n        id.set(acc, \"HACKED\");\n        System.out.println(acc);\n\n        try {\n            c.getMethod(\"nope\");\n        } catch (NoSuchMethodException e) {\n            System.out.println(\"NoSuchMethodException: \" + e.getMessage());\n        }\n        try {\n            Method m = c.getMethod(\"deposit\", long.class);\n            m.invoke(acc, \"text\");\n        } catch (IllegalArgumentException e) {\n            System.out.println(\"IllegalArgumentException: \" + e.getMessage());\n        }\n        Method boom = Inspect.class.getDeclaredMethod(\"boom\");\n        try { boom.invoke(null); } catch (InvocationTargetException e) {\n            System.out.println(\"wrapped: \" + e + \" cause=\" + e.getCause());\n        }\n    }\n    static void boom() { throw new IllegalStateException(\"inside\"); }\n}",
+          "title": "Inspect.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Inspect.java\nname      = Inspect$Account\nsimple    = Account\nmodifiers = static\nsuper     = java.lang.Object\n-- fields\nprivate final String id\nprivate long balance\n-- methods\naudit\nbalance\ndeposit\ntoString\nA-1:150\naudit: hello\nHACKED:150\nNoSuchMethodException: Inspect$Account.nope()\nIllegalArgumentException: argument type mismatch\nwrapped: java.lang.reflect.InvocationTargetException cause=java.lang.IllegalStateException: inside",
+          "title": "Output of Inspect.java on JDK 21"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** `getName()` of a nested class uses `$`. `getDeclaredMethods()` returns methods in no guaranteed order, so the demo sorts them. Primitive parameter types are looked up with `long.class`, not `Long.class`; `getMethod(\"deposit\", Long.class)` would throw `NoSuchMethodException`. `Method.invoke` boxes arguments and results. And when the called method throws, you do not see the exception directly: reflection wraps it in an `InvocationTargetException`, and the real exception is `getCause()`. Frameworks always unwrap it, as the proxy example in the next chapter does.\n\n### Breaking encapsulation: setAccessible and modules\n\n`setAccessible(true)` switches off the access check for that one `Method`, `Field` or `Constructor` object. That is how serialization libraries fill private fields and how Hibernate sets an entity's `id`. In the listing it even rewrote a `final` field. That works for ordinary instance fields; it does not work for `static final` fields, and it never works for record components or hidden classes.\n\nSince Java 9 there is a second gate: **modules**. A package in a named module is reachable by reflection on private members only if the module declares the package as `opens` (the module chapter later in this Part explains the syntax). The JDK's own modules do not open their internals. Java 16 made this strict by default, so code that used to poke into `java.lang` now fails:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.Field;\npublic class Hack {\n    public static void main(String[] args) throws Exception {\n        Field f = String.class.getDeclaredField(\"value\");\n        try { f.setAccessible(true); System.out.println(\"opened\"); }\n        catch (Exception e) { System.out.println(e.getClass().getName() + \": \" + e.getMessage()); }\n        System.out.println(Hack.class.getModule() + \" / \" + String.class.getModule());\n    }\n}",
+          "title": "Hack.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Hack.java\njava.lang.reflect.InaccessibleObjectException: Unable to make field private final byte[]\n  java.lang.String.value accessible: module java.base does not \"opens java.lang\"\n  to unnamed module @1a052a00\nunnamed module @1a052a00 / module java.base\n$ java --add-opens java.base/java.lang=ALL-UNNAMED Hack.java\nopened\nunnamed module @145eaa29 / module java.base",
+          "title": "Strong encapsulation of the JDK, and the escape hatch"
+        },
+        {
+          "type": "markdown",
+          "text": "(The module hash after `@` changes from run to run, and the error message is a single long line in reality; it is wrapped here.) The flag `--add-opens module/package=target` is the supported escape hatch. You will see it in the JVM arguments of older libraries on a modern JDK. Treat each one as technical debt: it means some library still depends on JDK internals."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The error `InaccessibleObjectException ... does not \"opens ...\" to unnamed module` after upgrading the JDK is not a bug in your code. A library you depend on is reflecting into a JDK or module-private package. First upgrade the library. Add `--add-opens` only as a stopgap, and keep the list short."
+        },
+        {
+          "type": "markdown",
+          "text": "### What reflection costs\n\nReflection is slower than a direct call for three reasons: the JVM must look up and check the member, arguments are boxed into an `Object[]`, and the JIT compiler cannot easily inline through a `Method` it does not know statically. Since Java 18 (JEP 416) `Method.invoke` is implemented on top of method handles instead of the old native accessors, which simplified the JDK internals and kept reflection about as fast as before. On the build machine a reflective call to a tiny `inc()` method took roughly 50 ns in a hot loop (typical), many times slower than a JIT-inlined direct call, which can cost well under a nanosecond. Two practical rules follow. First, do the expensive work (`getDeclaredMethod`, `setAccessible`) once and cache the `Method` object; every framework keeps a cache of its reflection metadata. Second, in hot paths prefer a `MethodHandle` stored in a `static final` field (next chapter), or generated code, or no reflection at all. For a request handler that runs a few thousand times per second, the cost is invisible; in an inner loop over millions of items it is not."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is reflection, and what are its drawbacks? Reflection lets a program examine and modify its own structure at run time: load classes by name, list members, create objects and invoke methods without compile-time references. Drawbacks: slower than direct calls, no compile-time type checking (errors become run-time exceptions), it can break encapsulation via `setAccessible`, and it is restricted by the module system. Use it in framework and infrastructure code, not in ordinary business logic."
+        },
+        {
+          "type": "markdown",
+          "text": "### Annotations\n\nAn **annotation** is structured metadata attached to a program element. It does nothing by itself; some other piece of code (the compiler, a build-time tool, or a runtime library) reads it and acts. You declare one with `@interface`. Two meta-annotations control it:\n\n- `@Retention` decides how long it survives: `SOURCE` (discarded by the compiler, like `@Override`), `CLASS` (kept in the `.class` file but not loaded by the JVM; the default), or `RUNTIME` (readable through reflection).\n- `@Target` restricts where it may appear: `TYPE`, `FIELD`, `METHOD`, `PARAMETER`, `CONSTRUCTOR` and so on.\n\nElements of an annotation look like methods and may have defaults. Allowed types are primitives, `String`, `Class`, enums, other annotations, and arrays of those. Only `RUNTIME` annotations can be read by the code below, which implements a miniature version of what Bean Validation does."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.annotation.*;\nimport java.lang.reflect.*;\nimport java.util.*;\n\npublic class MiniValidator {\n    @Retention(RetentionPolicy.RUNTIME)\n    @Target(ElementType.FIELD)\n    @interface NotBlank { String message() default \"must not be blank\"; }\n\n    @Retention(RetentionPolicy.RUNTIME)\n    @Target(ElementType.FIELD)\n    @interface Range { int min() default 0; int max() default Integer.MAX_VALUE; }\n\n    @Retention(RetentionPolicy.SOURCE)\n    @interface OnlyInSource {}\n\n    static class Student {\n        @NotBlank String name;\n        @Range(min = 16, max = 100) int age;\n        @OnlyInSource String note = \"x\";\n        Student(String name, int age) { this.name = name; this.age = age; }\n    }\n\n    static List<String> validate(Object o) throws IllegalAccessException {\n        List<String> errors = new ArrayList<>();\n        for (Field f : o.getClass().getDeclaredFields()) {\n            f.setAccessible(true);\n            Object v = f.get(o);\n            NotBlank nb = f.getAnnotation(NotBlank.class);\n            if (nb != null && (v == null || v.toString().isBlank()))\n                errors.add(f.getName() + \": \" + nb.message());\n            Range r = f.getAnnotation(Range.class);\n            if (r != null) {\n                int n = (Integer) v;\n                if (n < r.min() || n > r.max())\n                    errors.add(f.getName() + \": \" + n + \" not in [\"\n                            + r.min() + \", \" + r.max() + \"]\");\n            }\n            System.out.println(f.getName() + \" annotations = \"\n                    + Arrays.toString(f.getAnnotations()));\n        }\n        return errors;\n    }\n    public static void main(String[] args) throws Exception {\n        System.out.println(validate(new Student(\"Asha\", 20)));\n        System.out.println(validate(new Student(\" \", 12)));\n    }\n}",
+          "title": "MiniValidator.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java MiniValidator.java\nname annotations = [@MiniValidator.NotBlank(message=\"must not be blank\")]\nage annotations = [@MiniValidator.Range(max=100, min=16)]\nnote annotations = []\n[]\nname annotations = [@MiniValidator.NotBlank(message=\"must not be blank\")]\nage annotations = [@MiniValidator.Range(max=100, min=16)]\nnote annotations = []\n[name: must not be blank, age: 12 not in [16, 100]]",
+          "title": "Output of MiniValidator.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The `SOURCE`-retention annotation on `note` is invisible at run time: its list is empty. The order of elements printed in `Range(max=100, min=16)` is not guaranteed. The pattern is the same in every framework: iterate over members, call `getAnnotation(X.class)`, branch on the result. Spring's `@Autowired`, JUnit's `@Test`, and JPA's `@Entity` are all read this way, usually once at start-up and cached.\n\n#### Annotation processing at compile time\n\nAnnotations with `SOURCE` or `CLASS` retention can be consumed by an **annotation processor**: a class implementing `javax.annotation.processing.Processor`, discovered by the compiler (through `ServiceLoader`, see the class loader chapter) and run during `javac`. Processors can report errors and generate new source files, but cannot change existing ones. Lombok (which does change them, by using compiler internals), MapStruct and Dagger work this way. The benefit over run-time reflection is that the work happens at build time, so there is no start-up cost and no reflection at run time. That is why frameworks aiming at fast start-up and native images (Quarkus, Micronaut, Spring AOT) prefer build-time processing."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a Spring Boot application, component scanning reads class-file annotations at start-up, creates beans by reflection through constructors, and injects dependencies into fields or constructor parameters. Slow start-up of large Spring apps is largely the cost of this reflective discovery, which Spring AOT moves to build time."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Annotations on interfaces are not inherited by implementing classes, and annotations on a method are not inherited by an override. Only class-level annotations marked with `@Inherited` pass from a superclass to a subclass. Frameworks like Spring add their own search logic on top (`AnnotatedElementUtils`) to hide this."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Reflection turns classes, methods and fields into objects you can inspect and call at run time; it powers every major framework.\n\n- `getX` returns public members including inherited ones; `getDeclaredX` returns every member of that class only.\n- `setAccessible(true)` bypasses access checks, but modules can still forbid it unless the package is `opens` or `--add-opens` is given.\n- Cache `Method` and `Field` objects; unwrap `InvocationTargetException` to find the real error.\n- An annotation is only readable at run time if it has `RUNTIME` retention; processors read `SOURCE`/`CLASS` annotations at compile time."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-2",
+      "type": "concept",
+      "title": "Dynamic Proxies and Method Handles",
+      "subtopicId": "10-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A **proxy** is an object that stands in for another object and intercepts calls to it. Logging every call to a service, opening a transaction around a method, checking permissions, caching results, and recording calls for a mock are all the same idea: do something before and after the real call, without editing the real class. Writing such a wrapper by hand for each interface is tedious, so Java can generate it at run time. This chapter covers `java.lang.reflect.Proxy`, then the lower-level and faster tools that the modern JVM uses internally: `MethodHandle` and `VarHandle`.\n\n### java.lang.reflect.Proxy\n\n`Proxy.newProxyInstance(loader, interfaces, handler)` builds a class at run time that implements the given interfaces. Every method of those interfaces is routed to one method of your `InvocationHandler`: `invoke(Object` `proxy, Method method, Object[] args)`. You decide what happens: call the real object, return something else, throw."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.*;\nimport java.util.*;\n\npublic class Proxies {\n    interface AccountService {\n        long balance(String id);\n        void deposit(String id, long amount);\n    }\n    static class RealService implements AccountService {\n        private final Map<String, Long> data = new HashMap<>(Map.of(\"A-1\", 100L));\n        public long balance(String id) { return data.get(id); }\n        public void deposit(String id, long amount) {\n            if (amount <= 0) throw new IllegalArgumentException(\"amount must be positive\");\n            data.merge(id, amount, Long::sum);\n        }\n    }\n    static class TimingHandler implements InvocationHandler {\n        private final Object target;\n        TimingHandler(Object target) { this.target = target; }\n        @Override\n        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {\n            System.out.println(\"-> \" + method.getName() + Arrays.toString(args));\n            try {\n                Object result = method.invoke(target, args);\n                System.out.println(\"<- \" + method.getName() + \" = \" + result);\n                return result;\n            } catch (InvocationTargetException e) {\n                System.out.println(\"!! \" + method.getName() + \" threw \" + e.getCause());\n                throw e.getCause();\n            }\n        }\n    }\n    @SuppressWarnings(\"unchecked\")\n    static <T> T logged(T target, Class<T> iface) {\n        return (T) Proxy.newProxyInstance(iface.getClassLoader(),\n                new Class<?>[]{iface}, new TimingHandler(target));\n    }\n    public static void main(String[] args) {\n        AccountService svc = logged(new RealService(), AccountService.class);\n        svc.deposit(\"A-1\", 25);\n        System.out.println(svc.balance(\"A-1\"));\n        try { svc.deposit(\"A-1\", -5); }\n        catch (IllegalArgumentException e) { System.out.println(\"caught \" + e.getMessage()); }\n        System.out.println(svc.getClass().getName()\n                + \" isProxy=\" + Proxy.isProxyClass(svc.getClass()));\n        System.out.println(svc.getClass().getSuperclass().getName());\n        System.out.println(svc.getClass().getInterfaces()[0].getSimpleName());\n    }\n}",
+          "title": "Proxies.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Proxies.java\n-> deposit[A-1, 25]\n<- deposit = null\n-> balance[A-1]\n<- balance = 125\n125\n-> deposit[A-1, -5]\n!! deposit threw java.lang.IllegalArgumentException: amount must be positive\ncaught amount must be positive\n$Proxy0 isProxy=true\njava.lang.reflect.Proxy\nAccountService",
+          "title": "Output of Proxies.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The caller holds an `AccountService` and cannot tell it is talking to a proxy. The handler unwraps `InvocationTargetException` and rethrows the cause, so callers see the business exception, not a reflection wrapper. The generated class is named `$Proxy0`, extends `Proxy`, and implements only the interfaces you listed. That is the key limitation: **JDK proxies work on interfaces only**. You cannot proxy a concrete class this way, and you cannot cast the proxy to `RealService`.\n\n#### Proxies in frameworks\n\n- **Spring AOP** wraps beans in proxies to apply `@Transactional`, `@Cacheable`, `@Async` and security advice. If the bean implements an interface, Spring may use a JDK proxy; otherwise it generates a subclass at run time with a bytecode library (CGLIB, now repackaged inside Spring). Spring Boot defaults to subclass proxies. That explains two famous surprises: a `private` or `final` method is not advised (a subclass cannot override it), and **self-invocation** (`this.other()` inside the same bean) bypasses the proxy, so `@Transactional` on `other()` is silently ignored.\n- **Mockito** creates mocks by generating subclasses (ByteBuddy) and routing calls to a recording handler: the same interception idea.\n- **JPA/Hibernate** returns proxy objects for lazy associations; the first call on one triggers the database query.\n- **Retrofit and Spring Data repositories** turn an interface with no implementation into a working client or DAO through a proxy."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A call from inside the target object to its own method does not go through the proxy, because `this` refers to the real object, not the wrapper. If you need the advice to apply, call through the injected proxy (another bean) or restructure the code so that the annotated method lives in a different bean."
+        },
+        {
+          "type": "markdown",
+          "text": "### Method handles\n\nA **MethodHandle** (`java.lang.invoke`) is a typed, directly executable reference to a method, constructor or field accessor. Unlike `Method`, the access check happens once, when you look the handle up with a `MethodHandles.Lookup`, not on each call. Because the JVM knows the exact signature, the JIT compiler can treat a handle held in a `static` `final` field like a direct call and inline it. The handle's type is a `MethodType`: return type plus parameter types."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.invoke.*;\n\npublic class Handles {\n    static class Box {\n        volatile int count;\n        String name = \"box\";\n        String hello(String who) { return name + \" greets \" + who; }\n    }\n    public static void main(String[] args) throws Throwable {\n        MethodHandles.Lookup lookup = MethodHandles.lookup();\n        MethodHandle concat = lookup.findVirtual(String.class, \"concat\",\n                MethodType.methodType(String.class, String.class));\n        String s = (String) concat.invokeExact(\"Java\", \"Handle\");\n        System.out.println(s);\n        MethodHandle hello = lookup.findVirtual(Box.class, \"hello\",\n                MethodType.methodType(String.class, String.class));\n        System.out.println((String) hello.invokeExact(new Box(), \"Asha\"));\n        MethodHandle bound = hello.bindTo(new Box());\n        System.out.println((String) bound.invokeExact(\"Ravi\"));\n        MethodHandle max = lookup.findStatic(Math.class, \"max\",\n                MethodType.methodType(int.class, int.class, int.class));\n        MethodHandle max10 = MethodHandles.insertArguments(max, 0, 10);\n        System.out.println((int) max10.invokeExact(3) + \" \" + (int) max10.invokeExact(42));\n        System.out.println(hello.type());\n        try { Object o = concat.invokeExact((Object) \"a\", (Object) \"b\"); }\n        catch (WrongMethodTypeException e) {\n            System.out.println(\"WrongMethodTypeException: \" + e.getMessage());\n        }\n\n        VarHandle COUNT = MethodHandles.lookup().findVarHandle(Box.class, \"count\", int.class);\n        Box b = new Box();\n        COUNT.set(b, 5);\n        boolean ok = COUNT.compareAndSet(b, 5, 6);\n        boolean bad = COUNT.compareAndSet(b, 5, 7);\n        int prev = (int) COUNT.getAndAdd(b, 10);\n        System.out.println(ok + \" \" + bad + \" prev=\" + prev + \" now=\" + (int) COUNT.getVolatile(b));\n        VarHandle ARR = MethodHandles.arrayElementVarHandle(long[].class);\n        long[] arr = new long[3];\n        ARR.setRelease(arr, 1, 99L);\n        System.out.println((long) ARR.getAcquire(arr, 1));\n    }\n}",
+          "title": "Handles.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Handles.java\nJavaHandle\nbox greets Asha\nbox greets Ravi\n10 42\n(Box,String)String\nWrongMethodTypeException: handle's method type (String,String)String but found (Object,Object)Object\ntrue false prev=6 now=16\n99",
+          "title": "Output of Handles.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.**\n\n- A virtual method handle takes the receiver as its first parameter: the type of `hello` is `(Box,String)String`.\n- `invokeExact` demands that the call site's static types match the handle's type exactly, including the cast of the result. A mismatch fails at run time with `WrongMethodTypeException`. `invoke` is lenient and adapts types (boxing, widening) at some cost.\n- Handles compose: `bindTo` fixes the receiver, `insertArguments` fixes arguments. The same building blocks implement lambdas (the `invokedynamic` instruction that you met in the Part on the JVM) and string concatenation.\n- The compiler derives the call-site type from the static types of the arguments and from the cast on the result, so `Object o = h.invokeExact(...)` on a handle that returns `String` fails; write `(String) h.invokeExact(...)`.\n\nCompared to reflection, handles are faster when cached in `static final` fields, but harder to write and with fewer conveniences (no `getDeclaredMethods`). Use reflection for discovery, handles for fast invocation once discovered.\n\n### VarHandle\n\nA **VarHandle** (Java 9) is a typed reference to a variable: a field, an array element or a byte-buffer slot. It replaced `sun.misc.Unsafe` for most uses. It offers access *modes* with precisely defined memory semantics, which is what the concurrency Part describes as the Java memory model's building blocks: plain `get/set`, `getVolatile/setVolatile`, `getAcquire/setRelease` (cheaper ordering), `getOpaque/setOpaque`, and atomic read-modify-write operations `compareAndSet`, `getAndAdd`, `getAndSet`.\n\nIn the listing, `compareAndSet(b, 5, 6)` succeeds because the current value is 5; the second attempt with the stale expected value fails and returns `false`; `getAndAdd` returns the previous value (6) and leaves 16. This is exactly what `AtomicInteger` does internally, but without allocating a wrapper object per counter: `ConcurrentHashMap`, `AtomicReferenceArray` and `ConcurrentLinkedQueue` use VarHandles on their own fields. In application code you should normally use `AtomicInteger`, `LongAdder` or a lock; reach for a `VarHandle` only when writing a lock-free data structure."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Reflection vs. method handles vs. dynamic proxies: how do they differ? Reflection (`Method`) inspects and calls members, checking access on each call and boxing arguments. A `MethodHandle` is a typed, pre-resolved callable that the JIT can inline when held in a `static final`. A dynamic proxy is a generated class implementing interfaces whose methods all delegate to an `InvocationHandler`, used to intercept calls. Proxies often use reflection or handles internally to reach the real target."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A dynamic proxy is a run-time generated implementation of interfaces whose calls all go to an `InvocationHandler`.\n\n- JDK proxies need interfaces; class proxies (Spring, Mockito) generate subclasses, so `final` and `private` methods and self-invocation escape them.\n- Always unwrap `InvocationTargetException` in handlers.\n- `MethodHandle` is a typed, access-checked-once callable the JIT can inline; `invokeExact` requires exact static types.\n- `VarHandle` gives typed access to fields and array elements with explicit memory-ordering modes and atomic operations."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-3",
+      "type": "concept",
+      "title": "Class Loaders and ServiceLoader",
+      "subtopicId": "10-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The Part on the JVM introduced class loading as the first stage of a class's life: the JVM finds the bytes, defines a `Class`, links and initializes it. This chapter goes one level deeper. You will see that a class is identified by its name **and** the loader that defined it, write a custom loader, use `ServiceLoader` to discover implementations without hard-coding them, and understand why application servers and plugin systems depend on all this.\n\n### The loaders and the delegation rule\n\nSince Java 9 a running JVM has three built-in loaders arranged as a chain:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Loader",
+            "Loads",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "Bootstrap",
+              "`java.base` and other core modules",
+              "native code; `getClassLoader()` returns `null`"
+            ],
+            [
+              "Platform",
+              "other JDK modules (`java.sql`, `java.net.http`, ...)",
+              "parent is bootstrap"
+            ],
+            [
+              "Application (system)",
+              "your class path and module path",
+              "parent is platform"
+            ]
+          ],
+          "caption": "Built-in class loaders (Java 9 and later)."
+        },
+        {
+          "type": "markdown",
+          "text": "Before Java 9 the middle one was the extension loader (`lib/ext`), which was removed. The rule that makes the system predictable is **parent delegation**: when asked to load a class, a loader first asks its parent, and only if the parent cannot find it does the loader try itself. The consequence is that `java.lang.String` always comes from the bootstrap loader, even if a jar on your class path contains its own `java/lang/String.class`. Nobody can replace core classes by putting a look-alike on the class path."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "loadClass(\"com.example.Order\")                       AppClassLoader\n   1. already loaded? no                                  |\n   2. ask parent  ------------------------------->  PlatformClassLoader\n                                                          |  ask parent\n                                                          v\n                                                    Bootstrap  -> not found\n                                                          |\n                                         platform: not in my modules -> not found\n   3. parent failed -> findClass(): search class path -> define the class"
+        },
+        {
+          "type": "markdown",
+          "text": "The identity rule is the part interviewers like: **a class is identified by its fully qualified name plus its defining** **loader**. Two loaders can each load `Plugin` from the same bytes and the result is two unrelated `Class` objects with separate static state; an instance of one cannot be cast to the other.\n\n### Writing a custom class loader\n\nYou rarely need your own loader, but writing one once makes the model concrete. To write one, extend `ClassLoader` and override `findClass(String name)`: read the bytes, call `defineClass`. That keeps parent-first delegation. The demo overrides `loadClass` to be **child-first** (try my own directory first), which is what servlet containers do for web applications, so that each app can bring its own library versions. Names starting with `java.` must still go to the parent: `defineClass` refuses to define classes in `java.*`.\n\nThe setup uses two directories so that the `Plugin` class is compiled on its own:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ mkdir plugin-src app\n$ # Plugin.java goes to plugin-src, LoaderDemo.java to app\n$ javac -d plugins plugin-src/Plugin.java\n$ javac -cp plugins -d out app/LoaderDemo.java",
+          "title": "Build and run the loader demo"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Plugin {\n    public String hello() {\n        return \"Plugin loaded by \" + getClass().getClassLoader().getClass().getSimpleName();\n    }\n}",
+          "title": "plugin-src/Plugin.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.IOException;\nimport java.lang.ref.WeakReference;\nimport java.nio.file.*;\n\npublic class LoaderDemo {\n    /** Child-first loader: tries one directory before asking its parent. */\n    static class DirLoader extends ClassLoader {\n        private final Path dir;\n        DirLoader(Path dir, ClassLoader parent) {\n            super(\"dir-loader\", parent);\n            this.dir = dir;\n        }\n\n        @Override\n        protected Class<?> loadClass(String name, boolean resolve)\n                throws ClassNotFoundException {\n            synchronized (getClassLoadingLock(name)) {\n                if (name.startsWith(\"java.\")) return super.loadClass(name, resolve);\n                Class<?> c = findLoadedClass(name);\n                if (c == null) {\n                    try { c = findClass(name); }\n                    catch (ClassNotFoundException e) { return super.loadClass(name, resolve); }\n                }\n                if (resolve) resolveClass(c);\n                return c;\n            }\n        }\n\n        @Override\n        protected Class<?> findClass(String name) throws ClassNotFoundException {\n            Path file = dir.resolve(name.replace('.', '/') + \".class\");\n            try {\n                byte[] bytes = Files.readAllBytes(file);\n                return defineClass(name, bytes, 0, bytes.length);\n            } catch (IOException e) {\n                throw new ClassNotFoundException(name);\n            }\n        }\n    }\n\n    public static void main(String[] args) throws Exception {\n        System.out.println(\"-- loader chain of this class\");\n        for (ClassLoader l = LoaderDemo.class.getClassLoader(); l != null; l = l.getParent())\n            System.out.println(l.getName() + \" : \" + l.getClass().getName());\n        System.out.println(\"String loader = \" + String.class.getClassLoader());\n\n        Path dir = Path.of(\"plugins\");\n        DirLoader loader = new DirLoader(dir, LoaderDemo.class.getClassLoader());\n        Class<?> c1 = loader.loadClass(\"Plugin\");\n        Object p = c1.getDeclaredConstructor().newInstance();\n        System.out.println(c1.getMethod(\"hello\").invoke(p));\n        Class<?> c2 = new DirLoader(dir, null).loadClass(\"Plugin\");\n        System.out.println(\"same name, same Class? \" + (c1 == c2));\n        System.out.println(c1.getClassLoader().getName());\n\n        try {\n            Plugin direct = (Plugin) p;\n        } catch (ClassCastException e) {\n            System.out.println(\"ClassCastException: \" + e.getMessage().substring(0, 70) + \"...\");\n        }\n\n        WeakReference<ClassLoader> ref = new WeakReference<>(loader);\n        loader = null; c1 = null; p = null;\n        for (int i = 0; i < 5 && ref.get() != null; i++) { System.gc(); Thread.sleep(100); }\n        System.out.println(\"loader collected? \" + (ref.get() == null));\n    }\n}",
+          "title": "app/LoaderDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -cp out:plugins LoaderDemo\n-- loader chain of this class\napp : jdk.internal.loader.ClassLoaders$AppClassLoader\nplatform : jdk.internal.loader.ClassLoaders$PlatformClassLoader\nString loader = null\nPlugin loaded by DirLoader\nsame name, same Class? false\ndir-loader\nClassCastException: class Plugin cannot be cast to class Plugin (Plugin is in unnamed modu...\nloader collected? true",
+          "title": "Output (typical; the last line depends on the collector having run)"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.**\n\n- The chain stops at the platform loader: the bootstrap loader is represented by `null`, and `String.class.getClassLoader()` is `null`.\n- `Plugin` is on the class path too (`-cp out:plugins`), so the *application* loader could load it. Our child-first loader loaded its own copy, so casting to `Plugin` in `main` (which the application loader resolved) fails with the famous message *class X cannot be cast to class X*. When you see this message in a server, the same class has been loaded by two loaders.\n- Dropping the loader, its classes and its instances made the loader collectable. This is how **class unloading** works: classes are unloaded only when their defining loader becomes unreachable, never individually. A static field, a thread, a `ThreadLocal` value or a registered shutdown hook that still points into the loader keeps all of its classes alive. That is the classic **Metaspace leak** on redeploys of web applications: after ten redeploys you have ten copies of every class."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`Thread.getContextClassLoader()` is a different thing from the defining loader of a class. Frameworks (JNDI, JDBC drivers, ServiceLoader, logging) that sit in a shared parent loader use the context loader to find classes of the application that called them. If that fails in a thread pool or a custom thread, the symptom is `ClassNotFoundException` for a class that is plainly on the class path."
+        },
+        {
+          "type": "markdown",
+          "text": "### ServiceLoader and plugin architecture\n\nHow do you let someone else add an implementation of your interface without your code naming it? `java.util.ServiceLoader` is the JDK's answer: you define a **service interface**; each provider jar declares its implementation; the application asks `ServiceLoader.load(Service.class)` and iterates over what it finds. JDBC drivers, `javax.script` engines, charsets providers and logging backends use this mechanism.\n\nOn the class path a provider jar declares itself in a text file named after the interface: `META-INF/services/<fully.qualified.InterfaceName>`, one implementation class per line. On the module path the declaration is in `module-info.java`: `provides com.example.spi.Greeter with com.example.impl.EnglishGreeter;` in the provider module and `uses com.example.spi.Greeter;` in the consumer. Providers need a public no-argument constructor (or a public static `provider()` method in modules)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example;\n\nimport com.example.spi.Greeter;\nimport java.util.ServiceLoader;\n\npublic class Main {\n    public static void main(String[] args) {\n        ServiceLoader<Greeter> loader = ServiceLoader.load(Greeter.class);\n        for (Greeter g : loader) {\n            System.out.println(g.language() + \" -> \" + g.greet(\"Asha\")\n                    + \"  [\" + g.getClass().getName() + \"]\");\n        }\n        System.out.println(\"found: \" + loader.stream().count());\n    }\n}",
+          "title": "com/example/Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "With `Greeter` (an interface with `language()` and `greet(String)`) in `com.example.spi`, two implementations `EnglishGreeter` and `HindiGreeter` in `com.example.impl`, and the services file below, the result is:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ cat out/META-INF/services/com.example.spi.Greeter\ncom.example.impl.EnglishGreeter\ncom.example.impl.HindiGreeter\n$ javac -d out $(find src -name '*.java')\n$ java -cp out com.example.Main\nen -> Hello, Asha  [com.example.impl.EnglishGreeter]\nhi -> Namaste, Asha  [com.example.impl.HindiGreeter]\nfound: 2",
+          "title": "Using META-INF/services (class path)"
+        },
+        {
+          "type": "markdown",
+          "text": "Providers are instantiated **lazily**, one per loop iteration; `stream()` lets you inspect provider types without instantiating them, and `findFirst()` returns the first one. `ServiceLoader` is not thread-safe, and the iterator caches what it has found. Since the services file is just a resource, adding a jar to the class path is enough to add a plugin: no recompiling, no registration code. Spring Boot's auto-configuration uses the same idea with its own file (`META-INF/spring/...AutoConfiguration.imports`)."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "A plugin architecture for a backend product (payment gateways, report exporters, storage backends) is typically: an `api` module with the service interface, one jar per provider, and the host loading providers either with `ServiceLoader` on the class path or each in its own `URLClassLoader`. The second option isolates dependency versions between plugins and lets you unload a plugin by dropping its loader; the first is simpler and is enough for most apps."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Can the same class be loaded twice in one JVM? What is the parent delegation model and why does it exist? Yes: a class is identified by name plus defining loader, so two loaders produce two distinct `Class` objects (and `ClassCastException` between them). Parent delegation makes a loader ask its parent first, which guarantees that core classes always come from the bootstrap loader and cannot be spoofed, and that a shared class is loaded once at the highest level. Containers deliberately break it (child-first) for web applications."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "A class's identity is its name plus its defining class loader; delegation to the parent first keeps core classes trustworthy.\n\n- Loaders form a chain: application, platform, bootstrap (shown as `null`); a custom loader overrides `findClass` (parent-first) or `loadClass` (child-first).\n- \"X cannot be cast to X\" means two loaders loaded X.\n- Classes are unloaded only together with their loader; anything that still references it causes a Metaspace leak.\n- `ServiceLoader` discovers implementations of an interface from `META-INF/services` files or `provides ... with` in `module-info.java`."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-4",
+      "type": "concept",
+      "title": "The Module System (JPMS)",
+      "subtopicId": "10-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Before Java 9 every public class on the class path was visible to every other class. Libraries had to put internal helpers in public classes just so other packages in the same jar could use them, and then users depended on them. The JDK itself suffered most: `sun.misc.Unsafe` and thousands of internal classes were public, so a JDK upgrade broke applications. The Java Platform Module System (JPMS, Project Jigsaw, Java 9) fixes this at the language level with two ideas: **reliable configuration** (a module says what it needs, and the JVM checks at start-up that everything is present) and **strong encapsulation** (a module says what it exposes; everything else is inaccessible, even via reflection)."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 414.0 128.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M145.0 118.0 L269.0 118.0 C270.7 118.0 272.0 116.7 272.0 115.0 L272.0 97.0 C272.0 95.3 270.7 94.0 269.0 94.0 L145.0 94.0 C143.3 94.0 142.0 95.3 142.0 97.0 L142.0 115.0 C142.0 116.7 143.3 118.0 145.0 118.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M62.0 72.0 L172.0 94.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M352.0 72.0 L242.0 94.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M172.0 94.0 L167.2 90.4 L166.2 95.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M242.0 94.0 L247.8 95.5 L246.8 90.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 72.0 L119.0 72.0 C120.7 72.0 122.0 70.7 122.0 69.0 L122.0 51.0 C122.0 49.3 120.7 48.0 119.0 48.0 L5.0 48.0 C3.3 48.0 2.0 49.3 2.0 51.0 L2.0 69.0 C2.0 70.7 3.3 72.0 5.0 72.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M295.0 72.0 L409.0 72.0 C410.7 72.0 412.0 70.7 412.0 69.0 L412.0 51.0 C412.0 49.3 410.7 48.0 409.0 48.0 L295.0 48.0 C293.3 48.0 292.0 49.3 292.0 51.0 L292.0 69.0 C292.0 70.7 293.3 72.0 295.0 72.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M145.0 70.0 L269.0 70.0 C270.7 70.0 272.0 68.7 272.0 67.0 L272.0 53.0 C272.0 51.3 270.7 50.0 269.0 50.0 L145.0 50.0 C143.3 50.0 142.0 51.3 142.0 53.0 L142.0 67.0 C142.0 68.7 143.3 70.0 145.0 70.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M182.0 26.0 L82.0 48.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M232.0 26.0 L342.0 48.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M82.0 48.0 L87.8 49.4 L86.7 44.3 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M342.0 48.0 L337.2 44.4 L336.2 49.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M145.0 26.0 L269.0 26.0 C270.7 26.0 272.0 24.7 272.0 23.0 L272.0 5.0 C272.0 3.3 270.7 2.0 269.0 2.0 L145.0 2.0 C143.3 2.0 142.0 3.3 142.0 5.0 L142.0 23.0 C142.0 24.7 143.3 26.0 145.0 26.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"186.6\" y=\"16.5\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"40.9\" lengthAdjust=\"spacingAndGlyphs\">app (main)</text><text x=\"43.3\" y=\"62.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"37.5\" lengthAdjust=\"spacingAndGlyphs\">app.service</text><text x=\"178.5\" y=\"62.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"57.1\" lengthAdjust=\"spacingAndGlyphs\">java.base (always)</text><text x=\"338.2\" y=\"62.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"27.7\" lengthAdjust=\"spacingAndGlyphs\">app.web</text><text x=\"191.2\" y=\"104.1\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"31.6\" lengthAdjust=\"spacingAndGlyphs\">app.model</text><text x=\"312.0\" y=\"106.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"51.4\" lengthAdjust=\"spacingAndGlyphs\">arrows: requires</text><text x=\"172.1\" y=\"112.4\" font-size=\"6.6\" fill=\"#e7e9f3\" textLength=\"69.9\" lengthAdjust=\"spacingAndGlyphs\">exports model package</text></svg>",
+          "width": 414,
+          "caption": "The module graph of a modular application: arrows are requires edges; only the exported packages of a module are visible to the modules that read it.",
+          "alt": "app (main) | app.service java.base (always) app.web | app.model arrows: requires | exports model package"
+        },
+        {
+          "type": "markdown",
+          "text": "### module-info.java\n\nA **module** is a named group of packages described by a file `module-info.java` at the root of the source tree. These are the directives you need:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Directive",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`requires m;`",
+              "this module reads module `m`; compile and run need it"
+            ],
+            [
+              "`requires transitive m;`",
+              "anyone who reads me also reads `m` (used when `m`'s types appear in my API)"
+            ],
+            [
+              "`exports p;`",
+              "public types of package `p` are accessible to all modules"
+            ],
+            [
+              "`exports p to a, b;`",
+              "accessible only to the named modules (qualified export)"
+            ],
+            [
+              "`opens p;`",
+              "allows deep reflection (private members) into `p` at run time"
+            ],
+            [
+              "`provides S with I;`",
+              "this module supplies implementation `I` of service `S`"
+            ],
+            [
+              "`uses S;`",
+              "this module consumes `ServiceLoader.load(S.class)`"
+            ]
+          ],
+          "caption": "Core module directives."
+        },
+        {
+          "type": "markdown",
+          "text": "Every module implicitly requires `java.base`, which holds `java.lang`, `java.util`, `java.io`, `java.nio` and friends. Other JDK modules are named, for example `java.sql`, `java.net.http`, `java.logging`; `java --list-modules` shows them all. Note that *accessible* needs both a `requires` and an `exports`: reading a module does not give you its non-exported packages, and `public` on a class inside a non-exported package means \"public within the module only\".\n\n### A tiny modular application\n\nThe demo has two modules. `com.example.greet` exports one package and keeps another, `internal`, hidden. `com.example.app` requires it."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "mod/\n  greeter/module-info.java\n  greeter/com/example/greet/Greeter.java\n  greeter/com/example/greet/internal/Templates.java\n  app/module-info.java\n  app/com/example/app/Main.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "module com.example.greet {\n    exports com.example.greet;\n}",
+          "title": "greeter/module-info.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.greet;\n\nimport com.example.greet.internal.Templates;\n\npublic class Greeter {\n    public String greet(String name) {\n        return Templates.HELLO.formatted(name);\n    }\n}",
+          "title": "greeter/com/example/greet/Greeter.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.greet.internal;\n\npublic final class Templates {\n    private Templates() {}\n    public static final String HELLO = \"Hello, %s!\";\n}",
+          "title": "greeter/com/example/greet/internal/Templates.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "module com.example.app {\n    requires com.example.greet;\n}",
+          "title": "app/module-info.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.app;\n\nimport com.example.greet.Greeter;\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        System.out.println(new Greeter().greet(\"Asha\"));\n        Module m = Greeter.class.getModule();\n        System.out.println(m + \" exports greet? \" + m.isExported(\"com.example.greet\"));\n        System.out.println(\"exports internal? \" + m.isExported(\"com.example.greet.internal\"));\n        Class<?> t = Class.forName(\"com.example.greet.internal.Templates\");\n        try {\n            System.out.println(t.getField(\"HELLO\").get(null));\n        } catch (IllegalAccessException e) {\n            System.out.println(\"IllegalAccessException: \" + e.getMessage());\n        }\n    }\n}",
+          "title": "app/com/example/app/Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Compile each module into its own output directory, using `-p` (`--module-path`) to tell `javac` where required modules are, then run with `-m module/mainclass`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d out/greet $(find greeter -name '*.java')\n$ javac -p out/greet -d out/app $(find app -name '*.java')\n$ java -p out/greet:out/app -m com.example.app/com.example.app.Main\nHello, Asha!\nmodule com.example.greet exports greet? true\nexports internal? false\nIllegalAccessException: class com.example.app.Main (in module com.example.app) cannot access\n class com.example.greet.internal.Templates (in module com.example.greet) because module\n com.example.greet does not export com.example.greet.internal to module com.example.app\n$ java --describe-module com.example.greet -p out/greet\ncom.example.greet file:///tmp/w13/mod/out/greet/\nexports com.example.greet\nrequires java.base mandated\ncontains com.example.greet.internal",
+          "title": "Compile and run a modular app (JDK 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "(The `IllegalAccessException` message is a single long line in reality; it is wrapped here.) **What to notice.** Reflection saw the class (`Class.forName` works: it is a loading question) but could not read its field, because the package is not exported. If you import `com.example.greet.internal.Templates` directly in `Main`, the compile fails with \"package com.example.greet.internal is not visible\". The `contains` line in `--describe-module` is a package that exists but is not exported. A deliberate escape hatch exists for the tests of legacy libraries: `--add-opens` `com.example.greet/com.example.greet.internal=com.example.app` made the same run print `Hello, %s!`. Other things the module system checks at start-up: a missing `requires` fails immediately with `FindException: Module` `X not found`, rather than a `NoClassDefFoundError` an hour later; **two modules exporting the same package** (a split package) are rejected; and cyclic requires are illegal.\n\n### Unnamed and automatic modules: the migration story\n\nCode on the class path lives in the **unnamed module**, which reads every module and exports everything. A plain jar placed on the *module path* becomes an **automatic module**: its name is derived from the `Automatic-Module-Name` manifest entry or the file name, it exports and opens all packages, and it reads all modules. These two rules let a modular application use non-modular libraries and let you migrate one jar at a time. A good library at least sets `Automatic-Module-Name` in its manifest.\n\n### jlink: a trimmed runtime\n\nBecause modules declare their dependencies, tools can compute exactly which JDK modules an application needs. `jdeps --print-module-deps app.jar` lists them, and `jlink` builds a custom runtime image containing only those modules plus your own:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jar --create --file mlib/greet.jar -C out/greet .\n$ jar --create --file mlib/app.jar --main-class com.example.app.Main -C out/app .\n$ jdeps --module-path mlib --print-module-deps mlib/app.jar\ncom.example.greet,java.base\n$ jlink --module-path mlib --add-modules com.example.app --output image \\\n    --strip-debug --compress zip-6 --no-header-files --no-man-pages\n$ image/bin/java --list-modules\ncom.example.app\ncom.example.greet\njava.base@21.0.12.1\n$ du -sh image\n39M     image\n$ image/bin/java -m com.example.app/com.example.app.Main\nHello, Asha!\nmodule com.example.greet exports greet? true",
+          "title": "jlink on the demo (sizes typical)"
+        },
+        {
+          "type": "markdown",
+          "text": "The image (39 MB here, against about 286 MB for the full JDK directory on this machine) is a self-contained runtime you can copy to a container without installing a JDK. `jlink` needs the `jmods` directory of the JDK, which not every distribution ships. The `--compress zip-6` option compresses the image; check `jlink --help` for the exact syntax of your JDK version. `jpackage` goes one step further and wraps an image into an installer; the tooling Part covers packaging.\n\n### Why most applications still use the class path\n\nJPMS is used heavily inside the JDK, but most backend applications are not modular. Reasons that are worth stating honestly: the Spring ecosystem, Hibernate and most libraries rely on deep reflection, which requires `opens` everywhere or automatic modules; build tools and IDEs add friction; split packages and `Automatic-Module-Name` gaps make mixed graphs fragile; and a Spring Boot fat jar already gives you a runnable artifact. What every Java developer does feel from JPMS is its consequences: the `--add-opens` errors from the reflection chapter, `jlink`/`jdeps`, the slimmed JDK, and the end of `sun.misc.Unsafe` abuse. Modularity is most valuable for libraries with a clear public API and for runtime images."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What do `exports` and `opens` mean, and how do they differ? `exports p` makes the public types of package `p` available at compile time and run time to other modules. `opens p` additionally permits reflection on all members of `p`, including private ones, at run time only. An `exports` without `opens` lets you call public API but not reflect into private fields; frameworks like Hibernate or Jackson need `opens` (or the module declared `open module`)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "JPMS adds named modules whose `module-info.java` declares dependencies (`requires`) and what they expose (`exports`, `opens`).\n\n- Strong encapsulation: public no longer means visible; only exported packages are accessible, also to reflection unless `opens`.\n- `java -p dir -m module/Main` runs a modular app; missing modules fail at start-up, not later.\n- Class-path code is in the unnamed module; plain jars on the module path are automatic modules; both ease migration.\n- `jdeps` and `jlink` build minimal runtime images; most Spring-style applications still run on the class path."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-5",
+      "type": "concept",
+      "title": "Calling Native Code: JNI and the Foreign Function and Memory API",
+      "subtopicId": "10-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Memory API\n\nJava runs inside the JVM, but real systems sometimes need things Java does not provide: a C library for image processing or compression, an operating-system call, a GPU driver, or memory laid out exactly as a native struct. Crossing from Java to native code (and back) has been possible since Java 1.1 through the Java Native Interface. Since Java 22 there is a modern replacement, the Foreign Function and Memory (FFM) API, which this chapter focuses on. You will probably rarely write either, but you should know why they exist, what they cost, and why the old way is being phased out.\n\n### JNI: the old way\n\nWith **JNI** you declare a method `native` in Java, generate a C header with `javac -h`, implement the function in C or C++ following a naming convention (`Java_com_example_Foo_bar`), compile it into a shared library (`.so`, `.dll`, `.dylib`), and load it with `System.loadLibrary(\"foo\")`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Checksum {\n    static { System.loadLibrary(\"checksum\"); }   // finds libchecksum.so / checksum.dll\n    public static native long crc(byte[] data);  // implemented in C\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "JNI works and is used inside the JDK itself, but it has real costs: you must write and build C code for every platform; mistakes in native code (a bad pointer, a forgotten `DeleteLocalRef`) crash the whole JVM with a segmentation fault instead of throwing an exception; data must be copied between Java arrays and native memory or pinned; and the glue code is boilerplate. These are the reasons the platform needed something better.\n\n### The FFM API\n\nThe FFM API (package `java.lang.foreign`) lets pure Java code do two things:\n\n- **Call native functions** (\"downcalls\") in libraries already on the machine, without writing any C or JNI glue.\n- **Allocate, read and write native memory** safely, outside the Java heap, with bounds checks and a defined lifetime.\n\nIt was incubated in Java 14 to 18, previewed in 19 to 21, and became final and permanent in **Java 22** (JEP 454). The main types:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Role"
+          ],
+          "rows": [
+            [
+              "`Linker`",
+              "links Java to native code; `Linker.nativeLinker()` is the platform's C ABI"
+            ],
+            [
+              "`SymbolLookup`",
+              "finds a function address by name; `linker.defaultLookup()` covers the C standard library"
+            ],
+            [
+              "`FunctionDescriptor`",
+              "the C signature: return layout and parameter layouts"
+            ],
+            [
+              "`ValueLayout`",
+              "describes primitive and pointer shapes: `JAVA_INT`, `JAVA_LONG`, `ADDRESS`"
+            ],
+            [
+              "`MemorySegment`",
+              "a contiguous region of memory (native or heap) with a size, so every access is bounds-checked"
+            ],
+            [
+              "`Arena`",
+              "owns segments and decides their lifetime; closing the arena frees them"
+            ]
+          ],
+          "caption": "Main types of the FFM API."
+        },
+        {
+          "type": "markdown",
+          "text": "A downcall is a `MethodHandle` (see the earlier chapter on dynamic proxies and method handles). You build it once from a symbol and a descriptor, then call it with `invokeExact`.\n\n### Running it on JDK 21\n\nOn JDK 21 the API is still a preview (third preview, JEP 442), so the program below needs `--enable-preview`. The shape of the code is the same as in Java 22+; only some method names changed (see the box after the output). The program calls `strlen` and `getpid` from the C library, fills a native `int` array, and shows what happens when a segment outlives its arena."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.foreign.*;\nimport java.lang.invoke.MethodHandle;\n\npublic class NativeDemo {\n    public static void main(String[] args) throws Throwable {\n        Linker linker = Linker.nativeLinker();\n        SymbolLookup stdlib = linker.defaultLookup();\n\n        MethodHandle strlen = linker.downcallHandle(\n                stdlib.find(\"strlen\").orElseThrow(),\n                FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS));\n        MethodHandle getpid = linker.downcallHandle(\n                stdlib.find(\"getpid\").orElseThrow(),\n                FunctionDescriptor.of(ValueLayout.JAVA_INT));\n\n        try (Arena arena = Arena.ofConfined()) {\n            MemorySegment cString = arena.allocateUtf8String(\"Hello, native world\");\n            long len = (long) strlen.invokeExact(cString);\n            System.out.println(\"strlen = \" + len);\n\n            MemorySegment ints = arena.allocateArray(ValueLayout.JAVA_INT, 5);\n            for (int i = 0; i < 5; i++) ints.setAtIndex(ValueLayout.JAVA_INT, i, i * i);\n            int sum = 0;\n            for (int i = 0; i < 5; i++) sum += ints.getAtIndex(ValueLayout.JAVA_INT, i);\n            System.out.println(\"sum of squares = \" + sum + \", segment bytes = \" + ints.byteSize());\n        }\n        int pid = (int) getpid.invokeExact();\n        System.out.println(\"same pid as ProcessHandle? \" + (pid == ProcessHandle.current().pid()));\n\n        MemorySegment leaked;\n        try (Arena a = Arena.ofConfined()) { leaked = a.allocate(8); }\n        try { leaked.get(ValueLayout.JAVA_BYTE, 0); }\n        catch (IllegalStateException e) { System.out.println(\"after close: \" + e.getMessage()); }\n    }\n}",
+          "title": "NativeDemo.java (preview API of JDK 21)"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java --enable-preview --source 21 --enable-native-access=ALL-UNNAMED NativeDemo.java\nNote: NativeDemo.java uses preview features of Java SE 21.\nNote: Recompile with -Xlint:preview for details.\nstrlen = 19\nsum of squares = 30, segment bytes = 20\nsame pid as ProcessHandle? true\nafter close: Already closed",
+          "title": "Run on JDK 21 (Linux)"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.**\n\n- `strlen` takes a C `char *`, so the descriptor says `ADDRESS`; the Java `MemorySegment` holding a NUL-terminated UTF-8 string is passed directly. No copying, no C code.\n- The `try (Arena ...)` block is the lifetime: when it ends, the native memory is freed. A `confined` arena may be used only by the thread that created it. Use `Arena.ofShared()` for several threads, and `Arena.global()` for memory that is never freed.\n- The last test is the safety story. In C, reading freed memory is undefined behaviour and may crash or silently succeed. With FFM the access throws `IllegalStateException` (\"Already closed\"); out-of-range offsets throw `IndexOutOfBoundsException`. Native memory is still outside the garbage collector, but its lifetime is explicit and checked.\n- Without `--enable-native-access` the JVM prints a warning, because calling native code can crash the process: it is a *restricted* operation. Libraries should be granted it per module (`--enable-native-access=my.module`), applications on the class path use `ALL-UNNAMED`."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "In Java 22 and later (final API, not run here since only JDK 21 is installed), the same program drops `--enable-preview` and renames a few methods: `arena.allocateUtf8String(s)` becomes `arena.allocateFrom(s)`, and `arena.allocateArray(layout, n)` becomes `arena.allocate(layout, n)`. Everything else (`Linker`, `FunctionDescriptor`, `ValueLayout`, `downcallHandle`, `invokeExact`) keeps its shape. Check the Javadoc of your JDK when porting."
+        },
+        {
+          "type": "markdown",
+          "text": "### Tooling, struct layouts and upcalls\n\nWriting descriptors by hand is fine for one function and miserable for a library with hundreds. The **jextract** tool (distributed separately from the JDK) reads a C header and generates Java classes with the descriptors, struct layouts and method wrappers. For C structs you build a `MemoryLayout.structLayout(...)` and read fields through a `VarHandle` obtained from it (the same `VarHandle` type from the earlier chapter). The reverse direction, native code calling back into Java (a comparator for `qsort`, say), is an **upcall stub** created with `linker.upcallStub(...)` from a method handle.\n\n### When to use what\n\n- **Pure Java first.** Many things people reach for native code for (compression, HTTP, JSON, crypto, regex) have fast Java libraries. Native calls cost more than a Java method call, and crossing the boundary blocks some JIT optimizations.\n- **FFM** for new work: calling an existing C library, talking to OS facilities, or managing large off-heap data (caches, memory-mapped structures bigger than the heap) with deterministic freeing. It replaces JNI and most uses of `sun.misc.Unsafe` and direct `ByteBuffer` for this purpose.\n- **JNI** only for existing code. The platform is moving to treat JNI like FFM, as a restricted capability that must be explicitly enabled, so expect warnings from libraries that still use it on newer JDKs."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Backend developers meet this indirectly: Netty and some database drivers use native libraries for TLS and compression. Off-heap storage engines (caches, embedded databases) are the typical reason application teams adopt FFM directly."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Native memory that is not owned by an arena you close is invisible to heap tools. A process whose `-Xmx` is 2 GB but whose resident memory keeps growing past 4 GB probably leaks native memory (see the diagnostics chapters for `jcmd` `VM.native_memory`)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Native code is for existing libraries, OS access and off-heap data; prefer pure Java when it is fast enough.\n\n- JNI needs C glue code, platform-specific builds, and can crash the JVM.\n- The FFM API (final in Java 22; preview on 21) calls C functions through `Linker`, `FunctionDescriptor` and `MethodHandle`, with no C code.\n- `MemorySegment` plus `Arena` give bounds-checked off-heap memory with an explicit, enforced lifetime.\n- Native access is a restricted operation; enable it deliberately with `--enable-native-access`."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-6",
+      "type": "concept",
+      "title": "Troubleshooting Playbook",
+      "subtopicId": "10-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The previous chapter introduced the tools one by one. In an incident you do not want a tour; you want a procedure. This chapter is organised by symptom. For each one: how to confirm it, which tool to reach for, how to read the result, and the usual fix. All of the commands and outputs referred to here come from the demo program in the diagnostics chapter.\n\n### The general method\n\nWhatever the symptom, the same five steps apply, and skipping the first two is the usual reason people chase the wrong problem.\n\n1. **Measure before you guess.** What exactly is slow, how slow, since when, for which requests? A graph of CPU, heap and GC time beats an opinion.\n2. **Capture evidence before restarting.** A restart destroys the only copy of the broken state. Take a thread dump (three, seconds apart), `jstat`, and if memory is involved a heap dump, then restart if you must.\n3. **Form one hypothesis** from the evidence, using the table below.\n4. **Change one thing**, and check that the measurement moved.\n5. **Write down the cause** and add the metric or alert that would have caught it earlier."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "First look",
+            "Then"
+          ],
+          "rows": [
+            [
+              "CPU at 100%",
+              "top -H, then jstack (or JFR hot-methods)",
+              "GC share via jstat; read the hot thread's stack"
+            ],
+            [
+              "Requests hang, CPU idle",
+              "three jstack dumps",
+              "deadlock report, threads waiting on a pool, DB or socket"
+            ],
+            [
+              "Heap grows until OutOfMemoryError",
+              "jstat -gcutil, jmap -histo:live",
+              "heap dump, dominator tree, path to GC roots"
+            ],
+            [
+              "Long pauses, latency spikes",
+              "GC log or jfr view gc",
+              "pause cause, heap sizing, collector choice"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "First look",
+            "Then"
+          ],
+          "rows": [
+            [
+              "Slow startup",
+              "-Xlog:class+load count, JFR from start",
+              "class loading, static initialisers, scanning, AOT/CDS"
+            ],
+            [
+              "Thread count keeps rising",
+              "jstack, then count threads by name",
+              "who creates them; missing shutdown or unbounded pool"
+            ],
+            [
+              "Process killed by the OS or container",
+              "container memory limit, native memory",
+              "Native Memory Tracking, direct buffers, thread stacks"
+            ]
+          ],
+          "caption": "Symptom to first tool."
+        },
+        {
+          "type": "markdown",
+          "text": "### Symptom: one core pinned at 100% CPU\n\n**Confirm.** `top -H -p <pid>` shows one row per thread. In the patient, the thread burning CPU is obvious:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ top -H -b -n1 -p 2902 | head -12 | tail -6\n  PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND\n 2952 root      20   0 2877116 122804  24364 R  18.2   1.5   0:08.36 cpu-spinn+\n 2902 root      20   0 2877116 122804  24364 S   0.0   1.5   0:00.00 java\n 2904 root      20   0 2877116 122804  24364 S   0.0   1.5   0:00.36 java\n 2905 root      20   0 2877116 122804  24364 S   0.0   1.5   0:00.04 GC Thread+\n 2906 root      20   0 2877116 122804  24364 S   0.0   1.5   0:00.00 G1 Main M+",
+          "title": "Per-thread CPU"
+        },
+        {
+          "type": "markdown",
+          "text": "(The %CPU was only 18% because the build machine was shared with other jobs; on a quiet machine a spinning thread shows close to 100%. Look at the first row: it is the thread with by far the largest CPU time.) Linux shows thread names, so the name alone (`cpu-spinn...`, truncated) often answers the question.\n\n**Read.** The thread id from `top` (2952) is the `nid` in a `jstack` dump. The JDK 21 build used here prints the id in decimal (`[2952]` and `nid=2952`); many JDK builds print `nid` in hex, in which case convert with `printf '%x\\n' 2952`, which gives `b88`, and search for `nid=0xb88`. The stack of that thread shows the code:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jstack 2902 | grep -A4 '\"cpu-spinner\"'\n\"cpu-spinner\" #25 [2952] daemon prio=5 os_prio=0 cpu=5587.43ms elapsed=18.10s ...\n   java.lang.Thread.State: RUNNABLE\n        at Victim.lambda$main$0(Victim.java:16)\n        at java.lang.Thread.run(java.base@21.0.12.1/Thread.java:1583)",
+          "title": "Hot thread in the dump"
+        },
+        {
+          "type": "markdown",
+          "text": "If you have no shell on the box, a JFR recording gives the same answer, with statistics. The earlier `jfr view` `hot-methods` listing put 100% of samples in that lambda.\n\n**If the hot threads are named** `GC Thread`**,** `G1 Conc` **or similar,** the problem is not your code but memory pressure: the collector is running constantly. Check `jstat -gcutil <pid> 1000` for a high and growing `GCT` and an old generation that stays near 100%, then go to the memory section below.\n\n**Typical fixes.** An accidental infinite or busy loop (a `while (!flag)` poll without sleeping, a retry loop with no back-off), a catastrophic regular expression, a hash table whose `hashCode` is broken so lookups degrade to scans, or a missing `break`. Fix the code; do not add CPUs."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A `RUNNABLE` thread is not necessarily using CPU. Threads parked inside native socket or file reads are `RUNNABLE` too. Trust the `cpu=` figure in the header (compare it between two dumps) or the `top -H` numbers, not the state alone."
+        },
+        {
+          "type": "markdown",
+          "text": "### Symptom: requests hang and CPU is idle\n\nAn idle but unresponsive JVM is waiting for something. Take three thread dumps, five seconds apart, and compare.\n\n- **A \"Found one Java-level deadlock\" section** is a deadlock. The report names each thread, the lock it waits for and the thread that holds it, with line numbers (see the deadlock listing in the diagnostics chapter). Fix: acquire locks in one global order, or hold only one lock at a time, or use `tryLock` with a timeout. `ThreadMXBean.findDeadlockedThreads()` lets your own health endpoint detect it.\n- **Many threads** `WAITING` **or** `TIMED_WAITING` **on the same pool or queue**, for instance every request thread parked in `HikariPool.getConnection` or `LinkedBlockingQueue.take`: a resource is exhausted. A connection pool of 10 with a leaked connection per failed request will do this after a while. The fix is to close resources in `try-with-resources` and to size and time-limit the pool.\n- **Many threads** `RUNNABLE` **in** `SocketInputStream.socketRead0` **or** `NioSocketImpl.read` with the same remote host: a downstream service is slow and there is no read timeout. Set connect and read timeouts on every client.\n- **Many threads** `BLOCKED` **on the same monitor, with one thread holding it:** lock contention. Read what the lock holder is doing; if it is doing I/O inside `synchronized`, move the I/O out. JFR's `jdk.JavaMonitorEnter` events quantify this.\n\nA deadlock involving `ReentrantLock` is also reported by `jstack` (it lists \"ownable synchronizers\") when you use `jstack` `-l <pid>`; the default output reports only monitor deadlocks in the summary line."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "If the JVM does not respond to `jstack` at all (the attach times out), the JVM itself may be stuck in a long safepoint or out of memory. Try `kill -3 <pid>`: it asks the JVM to print the thread dump to its own standard output, which usually ends up in your log file. Unlike most signals it does not terminate the process; it only triggers the dump."
+        },
+        {
+          "type": "markdown",
+          "text": "### Symptom: memory climbs, then OutOfMemoryError\n\n**Confirm.** Watch the old generation after collections, not the instantaneous heap. In the patient, young collections happen constantly and that is healthy; the question is whether the post-collection floor rises."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jstat -gcutil 2902 1000 5\n  S0     S1     E      O      M     CCS    YGC     YGCT     FGC    FGCT     CGC    CGCT       GCT\n     - 100.00  57.89  54.76  96.65  87.45      5     0.074     0     0.000     0     0.000     0.074\n     ...",
+          "title": "Is the floor rising?"
+        },
+        {
+          "type": "markdown",
+          "text": "(Our patient clears its list once it holds more than 300 arrays, so it does not climb forever. A true leak shows `O` rising each cycle, and `FGC` rising as the collector fights a full heap.) Also useful: the \"GC overhead limit exceeded\" message, which means the JVM spent most of its time collecting while freeing almost nothing.\n\n**Narrow.** `jmap -histo:live <pid>` names the class that is growing. Take it twice, a few minutes apart, and compare the counts; the class whose instance count only goes up is the suspect.\n\n**Prove.** Take a heap dump (`jcmd <pid> GC.heap_dump /path/x.hprof`), open it in Eclipse MAT, and use the dominator tree and the \"path to GC roots, excluding weak references\" on a sample object. The path ends at the owner, which in practice is one of the leak patterns from the memory chapters: a static collection (our `Victim.retained`), an unbounded cache, listeners never deregistered, a `ThreadLocal` on a pooled thread, or an unclosed resource.\n\n**Fix.** Bound the structure (maximum size or time-to-live), unregister listeners, call `ThreadLocal.remove()` in a `finally`, close resources. Raising `-Xmx` only delays the failure and makes the eventual heap dump bigger.\n\n**Not the Java heap?** If the OutOfMemoryError message says something else, the cause is elsewhere:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Message",
+            "Meaning",
+            "Look at"
+          ],
+          "rows": [
+            [
+              "Java heap space",
+              "live objects exceed -Xmx",
+              "heap dump, histogram"
+            ],
+            [
+              "GC overhead limit exceeded",
+              "nearly all time in GC, little freed",
+              "same as heap space"
+            ],
+            [
+              "Metaspace",
+              "too many classes or class loaders",
+              "jcmd VM.classloader\\_stats, redeploy leaks"
+            ],
+            [
+              "unable to create native thread",
+              "OS refused another thread",
+              "thread count, ulimit -u, container limits"
+            ],
+            [
+              "Direct buffer memory",
+              "off-heap NIO buffers exhausted",
+              "-XX:MaxDirectMemorySize, buffer pooling"
+            ]
+          ],
+          "caption": "OutOfMemoryError messages and where to look."
+        },
+        {
+          "type": "markdown",
+          "text": "The process may also be killed by the operating system or the container runtime with no Java exception at all, because the JVM's total footprint (heap plus Metaspace, thread stacks, code cache, direct buffers) exceeded the memory limit. Start the JVM with `-XX:NativeMemoryTracking=summary` and then `jcmd <pid> VM.native_memory summary` to see the non-heap categories. Without that flag the command reports \"Native memory tracking is not enabled\", as we saw on the patient.\n\n### Symptom: latency spikes and long pauses\n\nCheck whether the pauses are GC pauses before anything else. Two quick ways: `jfr view gc` on a recording, or the GC log enabled with `-Xlog:gc*:file=gc.log`. In the patient's recording, young pauses were 6.18 ms, 48.2 ms and 6.02 ms. A 48 ms pause among 6 ms ones is worth a look; a pause of seconds is a problem.\n\n- **Frequent young pauses that are long:** too much live data being copied each time, or too few CPUs for the GC threads. Reduce allocation in the hot path, or look at the young generation sizing.\n- **Full collections or very long pauses:** the old generation is full (a leak, or a heap that is too small), or the collector cannot keep up with the allocation rate. Check `FGC` in `jstat`.\n- **Pauses that are not in the GC log:** time to safepoint (a thread in a long counted loop delaying the stop), or the machine itself is paused (CPU throttling in containers, swapping, a noisy neighbour). Check `-Xlog:safepoint` and the container's CPU throttling statistics.\n\nIf the pause target matters more than throughput, the collector choice (G1 with `-XX:MaxGCPauseMillis`, or ZGC) is the lever; see the collectors chapter. Do not tune flags before you have a log that shows the cause.\n\n### Symptom: slow startup\n\nStartup time is mostly class loading and initialisation, plus the interpreter running cold code before the JIT warms it up. To see what is happening:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xlog:class+load:file=classes.log -jar app.jar\n$ wc -l classes.log",
+          "title": "Count loaded classes during startup"
+        },
+        {
+          "type": "markdown",
+          "text": "A framework application may load many thousands of classes. Start a JFR recording from the first instant (`-XX:StartFlightRecording=filename=start.jfr,settings=profile`) and look at the hot methods and at the time between `main` and readiness. Typical culprits are classpath scanning, reflection-heavy configuration (reflection and annotation processing chapters), a slow connection at start-up (database, remote configuration), and static initialisers that do real work. Remedies include lazy initialisation, narrowing component scans, Class Data Sharing archives and, on newer JDKs, the AOT cache (see the JVM start-up discussion in the JIT chapter), and for short-lived command-line tools a native image. Measure the effect of each change on startup, not on a long-running benchmark.\n\n### Symptom: the thread count keeps rising\n\nCount threads from outside, over time:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jcmd 2902 Thread.print | grep -c '^\"'\n$ jcmd 2902 Thread.print | grep '^\"' | sed 's/[0-9]*\" .*//' | sort | uniq -c | sort -rn | head",
+          "title": "Count and group threads"
+        },
+        {
+          "type": "markdown",
+          "text": "The second command groups by name prefix, so `pool-7-thread-` repeated 3000 times points at an executor created per request and never shut down. The usual causes are `Executors.newCachedThreadPool()` under a burst of slow tasks, a new `ExecutorService` per call without `shutdown()`, and `new Thread(...)` in a loop whose threads block forever. The fix is one shared, bounded pool with named threads (give a `ThreadFactory` that sets a meaningful name), or virtual threads for blocking I/O work, which are cheap enough that \"one per task\" is acceptable. In code, `ManagementFactory.getThreadMXBean().getThreadCount()` is the number to export as a metric; we printed it in the `Watchdog` program.\n\nWhen the operating system refuses a thread, the JVM throws `OutOfMemoryError: unable to create native thread`. That is a limit on processes (`ulimit -u`, the container's `pids` limit) or on address space for stacks, not a shortage of heap.\n\n### A worked incident: from alert to fix\n\nSuppose the order service's latency alert fires at 02:10 and the health check starts failing intermittently. The sequence below is the one an experienced engineer follows. Each step is a command from this chapter.\n\n1. `jcmd` finds the pid; `jcmd <pid> VM.uptime` says the process has been up 3 days, so this is not a start-up problem.\n2. Metrics show CPU low, so the process is waiting, not computing. `jstack <pid> > t1.txt`, twice more at 5-second intervals.\n3. In all three dumps, 180 of 200 request threads are `WAITING` at `HikariPool.getConnection`. The database connection pool is exhausted.\n4. The dumps show the remaining 20 threads each holding a connection while in `HttpClient.send`: a downstream payment service is slow, and there is no timeout, so connections are held for minutes.\n5. Short-term mitigation: restart the payment service or fail fast; the pool recovers. Fix: add connect and read timeouts, release the connection before making the remote call, and alert on pool wait time.\n6. Follow-up: add a metric for threads waiting on the pool, so the next occurrence is visible before customers notice.\n\nNothing in that story needed a profiler or a heap dump; three thread dumps were enough. Many incidents end this way, which is why thread dumps are the first tool to reach for."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot services the same data is exposed by Actuator (`/actuator/threaddump`, `/actuator/metrics/jvm.threads.live`, `/actuator/metrics/hikaricp.connections.pending`) and by Micrometer to Prometheus. Know the manual `jcmd` route anyway: when the web layer is the thing that is stuck, the HTTP endpoints stuck with it."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Your Java service's heap usage keeps growing and it eventually dies with OutOfMemoryError. Walk me through diagnosing it. Confirm with GC data that the post-collection old-generation floor rises (`jstat -gcutil` or GC logs). Take a class histogram twice to see which class grows. Capture a heap dump (ideally automatically via `-XX:+HeapDumpOnOutOfMemoryError`), open it in Eclipse MAT, and inspect the dominator tree and the path to GC roots of a sample object to find the holder: usually a static collection, cache, listener or ThreadLocal. Fix the holder (bound, evict, deregister, remove), then verify that the floor is flat."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Work from symptom to tool: per-thread CPU to a thread dump, idle hangs to repeated dumps, growth to `jstat`, histogram and heap dump, pauses to the GC log or JFR.\n\n- Capture evidence (three thread dumps, `jstat`, a heap dump if memory is involved) before restarting anything.\n- A deadlock is reported by `jstack`; a hung service with idle CPU is usually waiting on an exhausted pool, a missing timeout or a contended lock.\n- A leak is proved by a rising post-GC floor and a GC-root path in a heap dump; raising `-Xmx` only hides it.\n- Memory outside the heap (Metaspace, thread stacks, direct buffers) causes container kills and different OutOfMemoryError messages; use Native Memory Tracking.\n- Build the habit: name your threads, set timeouts, bound your pools and caches, and enable heap-dump-on-OOM before you need it."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-7",
+      "type": "concept",
+      "title": "The Diagnostics Toolbox",
+      "subtopicId": "10-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Sooner or later a Java program in production does something you did not intend: it burns a whole CPU core, stops responding, or grows until the container is killed. The JDK ships with a set of small command-line tools that can look inside a running JVM without stopping it, without a debugger, and usually without a restart. Learning them is the difference between \"restart it and hope\" and \"find the cause in ten minutes\".\n\nThis chapter walks through the tools against one live program, so every output you see is real. The next chapter turns them into a playbook: symptom, tool, how to read it, fix.\n\n### The demo patient\n\nTo practise, we need a JVM that misbehaves in three ways at once: one thread spins on the CPU, two threads deadlock, and one thread allocates 100 KB arrays and keeps up to 300 of them alive. The program is deliberately ugly; never write production code like this."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Victim {\n    static final Object LOCK_A = new Object();\n    static final Object LOCK_B = new Object();\n    static final List<byte[]> retained = new ArrayList<>();\n\n    static void sleep(long ms) {\n        try { Thread.sleep(ms); } catch (InterruptedException e) { return; }\n    }\n\n    public static void main(String[] args) {\n        Thread spin = new Thread(() -> {\n            long x = 0;\n            while (true) { x += Math.sqrt(x + 1); if (x < 0) x = 0; }\n        }, \"cpu-spinner\");\n        spin.setDaemon(true);\n        spin.start();\n\n        Thread t1 = new Thread(() -> {\n            synchronized (LOCK_A) { sleep(300); synchronized (LOCK_B) { } }\n        }, \"worker-1\");\n        Thread t2 = new Thread(() -> {\n            synchronized (LOCK_B) { sleep(300); synchronized (LOCK_A) { } }\n        }, \"worker-2\");\n        t1.setDaemon(true); t2.setDaemon(true);\n        t1.start(); t2.start();\n\n        Thread leaker = new Thread(() -> {\n            while (true) {\n                retained.add(new byte[100_000]);\n                sleep(20);\n                if (retained.size() > 300) retained.clear();\n            }\n        }, \"leaker\");\n        leaker.setDaemon(true);\n        leaker.start();\n\n        System.out.println(\"Victim running, pid \" + ProcessHandle.current().pid());\n        sleep(120_000);\n    }\n}",
+          "title": "Victim.java"
+        },
+        {
+          "type": "markdown",
+          "text": "We start it with a 256 MB heap and ask the JVM to record a 20-second Flight Recording from the very first moment (more on that later):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Victim.java\n$ java -XX:StartFlightRecording=filename=boot.jfr,duration=20s -Xmx256m Victim\n[2.141s][info][jfr,startup] Started recording 1. The result will be written to:\n[2.141s][info][jfr,startup]\n[2.141s][info][jfr,startup] /work/boot.jfr\nVictim running, pid 2902",
+          "title": "Start the patient"
+        },
+        {
+          "type": "markdown",
+          "text": "The process id (pid) will differ on your machine. Everything below was run against pid 2902 on JDK 21.0.12."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The diagnostic tools print `Picked up JAVA_TOOL_OPTIONS: ...` on stderr if that environment variable is set (common in containers). It is harmless, and we remove it from the listings below to keep them readable."
+        },
+        {
+          "type": "markdown",
+          "text": "### Finding and inspecting the process: jps, jcmd, jinfo\n\nEvery other tool needs a pid. `jps` lists JVMs owned by your user; `jcmd` with no arguments does the same job and also shows the main class."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jps -l\n2902 Victim\n$ jcmd\n2902 Victim",
+          "title": "Find the JVM"
+        },
+        {
+          "type": "markdown",
+          "text": "(`jps -l` on a launcher-started program such as `java Foo.java` shows `jdk.compiler/com.sun.tools.javac.launcher.Main` instead of your class, which is why we compiled `Victim` first.)\n\n`jcmd` is the Swiss army knife. It sends a named command to the target JVM over a local attach mechanism, and the JVM executes it. `jcmd <pid> help` lists what that particular JVM supports; on JDK 21 the list includes (trimmed):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jcmd 2902 help\n2902:\nThe following commands are available:\nCompiler.codecache\nCompiler.queue\nGC.class_histogram\nGC.heap_dump\nGC.heap_info\nGC.run\nJFR.check\nJFR.dump\nJFR.start\nJFR.stop\nJFR.view\nThread.dump_to_file\nThread.print\nVM.classloader_stats\nVM.flags\nVM.native_memory\nVM.system_properties\nVM.uptime\nVM.version\n...",
+          "title": "What can jcmd do?"
+        },
+        {
+          "type": "markdown",
+          "text": "Start with the cheap, read-only questions: which JVM is this, which flags is it really running with, and how long has it been up?"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jcmd 2902 VM.version\nOpenJDK 64-Bit Server VM version 21.0.12.1+1-1-24.04.4-Ubuntu\nJDK 21.0.12.1\n$ jcmd 2902 VM.flags\n-XX:CICompilerCount=2 -XX:ConcGCThreads=1 -XX:G1HeapRegionSize=1048576\n-XX:InitialHeapSize=98566144 -XX:MaxHeapSize=268435456 -XX:+UseCompressedOops\n-XX:+UseG1GC ...\n$ jcmd 2902 VM.uptime\n54.072 s",
+          "title": "Identity, flags, uptime"
+        },
+        {
+          "type": "markdown",
+          "text": "`VM.flags` shows the flags that differ from the built-in defaults, including values the JVM computed for itself (`G1HeapRegionSize`, `InitialHeapSize`). Here we see our `-Xmx256m` as `MaxHeapSize=268435456` and that the collector is G1 (the build machine has 2 CPUs and enough memory for a \"server-class\" machine; see the chapter on collector choice in the garbage collection Part).\n\n`jinfo` reads, and for a few \"manageable\" flags even changes, a single flag on a live JVM:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jinfo -flag MaxHeapSize 2902\n-XX:MaxHeapSize=268435456\n$ jinfo -flag UseG1GC 2902\n-XX:+UseG1GC",
+          "title": "jinfo"
+        },
+        {
+          "type": "markdown",
+          "text": "Most flags are read-only once the JVM runs; `jinfo -flag +HeapDumpOnOutOfMemoryError <pid>` is a useful exception because it is manageable, so you can arm the heap-dump-on-OOM safety net on a process that was started without it. Use `jcmd <pid> VM.system_properties` for the system properties.\n\n### Threads: jstack and Thread.print\n\n`jstack <pid>` (or the equivalent `jcmd <pid> Thread.print`) prints a thread dump: the name, state, and stack trace of every thread at one instant. It is the single most useful diagnostic for \"the application is stuck\" and \"the application is busy\". A dump of our patient, trimmed to the interesting threads:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jstack 2902\n\"cpu-spinner\" #25 [2952] daemon prio=5 os_prio=0 cpu=5587.43ms elapsed=18.10s \\\n    tid=0x00007f9b041be3a0 nid=2952 runnable  [0x00007f9adc7de000]\n   java.lang.Thread.State: RUNNABLE\n        at Victim.lambda$main$0(Victim.java:16)\n        at java.lang.Thread.run(java.base@21.0.12.1/Thread.java:1583)\n\n\"worker-1\" #26 [2953] daemon prio=5 os_prio=0 cpu=0.55ms elapsed=18.08s \\\n    tid=0x00007f9b041bfb80 nid=2953 waiting for monitor entry  [0x00007f9adc6df000]\n   java.lang.Thread.State: BLOCKED (on object monitor)\n\n\"leaker\" #28 [2955] daemon prio=5 os_prio=0 cpu=68.85ms elapsed=18.88s \\\n    tid=0x00007f9b041c1eb0 nid=2955 sleeping [0x00007f9adc4df000]\n   java.lang.Thread.State: TIMED_WAITING (sleeping)\n        at java.lang.Thread.sleep0(java.base@21.0.12.1/Native Method)\n        at Victim.sleep(Victim.java:10)\n        at Victim.lambda$main$3(Victim.java:33)",
+          "title": "Thread dump (trimmed)"
+        },
+        {
+          "type": "markdown",
+          "text": "(The `\\` line continuation is only for this book's page width; in the real dump each header is one line.) Read each header like this:\n\n- The quoted name is `Thread.getName()`. Name your threads; `Thread-17` tells you nothing, `order-sync-3` tells you where to look.\n- `cpu=5587.43ms elapsed=18.10s` is CPU time consumed versus wall time since the thread started. The spinner used 5.6 s of CPU in 18 s of life; the leaker used 69 ms. This pair is the quickest way to spot a hot thread in a dump.\n- `nid=2952` is the operating-system thread id. This JDK 21 build prints it in decimal, so it matches what `top -H` shows directly; many JDK builds print `nid` in hex (`nid=0xb88`), and then you convert with `printf '%x' 2952`.\n- `Thread.State` is the Java state (`RUNNABLE`, `BLOCKED`, `WAITING`, `TIMED_WAITING`), covered in the concurrency Part. `RUNNABLE` also includes threads blocked in native I/O, so \"runnable\" does not always mean \"using CPU\".\n\n#### Deadlock detection comes free\n\nWhen the dump contains a cycle of threads waiting on each other's monitors, `jstack` says so at the end of the output:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jstack 2902\n...\nFound one Java-level deadlock:\n=============================\n\"worker-1\":\n  waiting to lock monitor 0x00007f9ad40041d0 (object 0x00000000f25005f8, a java.lang.Object),\n  which is held by \"worker-2\"\n\n\"worker-2\":\n  waiting to lock monitor 0x00007f9ad00040a0 (object 0x00000000f2500608, a java.lang.Object),\n  which is held by \"worker-1\"\n\nJava stack information for the threads listed above:\n===================================================\n\"worker-1\":\n        at Victim.lambda$main$1(Victim.java:22)\n        - waiting to lock <0x00000000f25005f8> (a java.lang.Object)\n        - locked <0x00000000f2500608> (a java.lang.Object)\n\"worker-2\":\n        at Victim.lambda$main$2(Victim.java:25)\n        - waiting to lock <0x00000000f2500608> (a java.lang.Object)\n        - locked <0x00000000f25005f8> (a java.lang.Object)",
+          "title": "Deadlock section of jstack"
+        },
+        {
+          "type": "markdown",
+          "text": "Read it as a picture: worker-1 holds lock `...608` and wants `...5f8`; worker-2 holds `...5f8` and wants `...608`. The `Victim.java:22` and `:25` line numbers point at the inner `synchronized` blocks. The fix is to make both threads acquire locks in the same order (or use `ReentrantLock.tryLock` with a timeout). The same detection is available in code through `ThreadMXBean.findDeadlockedThreads()`, which is how health-check endpoints and watchdogs report deadlocks without anyone running `jstack`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.management.ManagementFactory;\nimport java.lang.management.ThreadInfo;\nimport java.lang.management.ThreadMXBean;\n\npublic class Watchdog {\n    static final Object A = new Object();\n    static final Object B = new Object();\n\n    static void pause() {\n        try { Thread.sleep(200); } catch (InterruptedException e) { return; }\n    }\n\n    public static void main(String[] args) throws Exception {\n        Thread t1 = new Thread(() -> {\n            synchronized (A) { pause(); synchronized (B) { } }\n        }, \"worker-1\");\n        Thread t2 = new Thread(() -> {\n            synchronized (B) { pause(); synchronized (A) { } }\n        }, \"worker-2\");\n        t1.setDaemon(true); t2.setDaemon(true);\n        t1.start(); t2.start();\n        Thread.sleep(600);\n        ThreadMXBean mx = ManagementFactory.getThreadMXBean();\n        long[] ids = mx.findDeadlockedThreads();\n        System.out.println(\"deadlocked threads: \" + (ids == null ? 0 : ids.length));\n        for (ThreadInfo info : mx.getThreadInfo(ids)) {\n            System.out.println(info.getThreadName() + \" is \" + info.getThreadState()\n                + \" waiting for \" + info.getLockName() + \" held by \" + info.getLockOwnerName());\n        }\n        System.out.println(\"live threads: \" + mx.getThreadCount());\n    }\n}",
+          "title": "Watchdog.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Watchdog.java\ndeadlocked threads: 2\nworker-1 is BLOCKED waiting for java.lang.Object@1d119efb held by worker-2\nworker-2 is BLOCKED waiting for java.lang.Object@4b5d6a01 held by worker-1\nlive threads: 8",
+          "title": "Run it (typical output; the object hash codes vary)"
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Take thread dumps in a series: three dumps, five seconds apart. One dump is a photograph; three show which threads are moving and which are stuck at the same line every time. Redirect each to a file (`jstack <pid> > dump1.txt`)."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Applications that use virtual threads create far too many threads for a plain dump. `jcmd <pid> Thread.dump_to_file` `-format=json <file>` writes a structured dump that includes virtual threads (added in JDK 21), and we created one this way on the patient. The older `jstack` and `Thread.print` show platform threads only."
+        },
+        {
+          "type": "markdown",
+          "text": "### Memory: jstat, jmap and heap dumps\n\n`jstat` samples the garbage collector's counters from outside, cheaply, at a fixed interval. `jstat -gcutil <pid> 500 4` prints four samples, 500 ms apart, as percentages of each space:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jstat -gcutil 2902 500 4\n  S0     S1     E      O      M     CCS    YGC     YGCT     FGC    FGCT     CGC    CGCT       GCT\n     - 100.00  57.89  54.76  96.65  87.45      5     0.074     0     0.000     0     0.000     0.074\n     - 100.00  68.42  54.76  96.65  87.45      5     0.074     0     0.000     0     0.000     0.074\n     - 100.00   0.00  70.37  97.02  91.52      6     0.079     0     0.000     0     0.000     0.079\n     - 100.00   8.33  70.37  97.02  91.52      6     0.079     0     0.000     0     0.000     0.079",
+          "title": "jstat -gcutil"
+        },
+        {
+          "type": "markdown",
+          "text": "The columns: `S0`, `S1`, `E`, `O` are survivor, eden and old-generation occupancy in percent; `M` and `CCS` are Metaspace and compressed class space; `YGC`/`YGCT` count and total time (seconds) of young collections; `FGC`/`FGCT` the same for full collections; `CGC`/`CGCT` for concurrent G1 cycles; `GCT` is total GC time. Between rows 2 and 3 the young count went from 5 to 6 and eden dropped back to 0.00: that is one young collection. Watch two things over minutes: does `O` (old) keep climbing after each collection, and does `FGC` increase? A staircase in `O` that never comes down is the signature of a leak.\n\n`jcmd <pid> GC.heap_info` gives a one-shot summary of the heap as the collector sees it:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jcmd 2902 GC.heap_info\n garbage-first heap   total 61440K, used 21731K [0x00000000f0000000, 0x0000000100000000)\n  region size 1024K, 5 young (5120K), 0 survivors (0K)\n Metaspace       used 4346K, committed 4480K, reserved 1114112K\n  class space    used 410K, committed 448K, reserved 1048576K",
+          "title": "GC.heap_info"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Class histogram: who owns the memory?\n\n`jmap -histo:live <pid>` (or `jcmd <pid> GC.class_histogram`) lists instance counts and shallow bytes per class. The `:live` option forces a full collection first so that only reachable objects are counted; that pauses the application, so use it with care on a busy production system."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jmap -histo:live 2902\n num     #instances         #bytes  class name (module)\n-------------------------------------------------------\n   1:         16279       14602984  [B (java.base@21.0.12.1)\n   2:            45         632472  [Ljdk.internal.vm.FillerElement; (java.base@21.0.12.1)\n   3:         15140         363360  java.lang.String (java.base@21.0.12.1)\n   4:          2205         270168  java.lang.Class (java.base@21.0.12.1)",
+          "title": "Class histogram (top rows)"
+        },
+        {
+          "type": "markdown",
+          "text": "`[B` is the JVM's name for `byte[]` (`[I` is `int[]`, `[Ljava.lang.Object;` is `Object[]`). Here `byte[]` dominates at about 14.6 MB, which matches the leaker holding up to 300 arrays of 100 KB. A histogram answers \"what kind of object is piling up\" but not \"who is holding it\". For that you need a heap dump.\n\n#### Heap dumps\n\nA heap dump is a snapshot of every live object and the references between them, written to an `.hprof` file:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jcmd 2902 GC.heap_dump /work/v.hprof\n2902:\nDumping heap to /work/v.hprof ...\nHeap dump file created [35246298 bytes in 0.037 secs]\n$ jmap -dump:live,format=b,file=/work/v2.hprof 2902",
+          "title": "Take a heap dump"
+        },
+        {
+          "type": "markdown",
+          "text": "Both forms do the same job. Expect the dump to be roughly the size of the used heap and the JVM to pause while it is written; for multi-gigabyte heaps that can be many seconds. The file may contain passwords, tokens and personal data that were in memory, so treat it as sensitive and never attach it to a public ticket.\n\nYou do not read an `.hprof` file by hand. Open it in Eclipse MAT (Memory Analyzer), VisualVM or IntelliJ's profiler. The views that matter are the same in all of them:\n\n- **Dominator tree**: objects ordered by retained size, the memory that would be freed if that object died. A leak almost always shows up as one object with a huge retained size.\n- **Path to GC roots** for a suspicious object: the chain of references (a static field, a thread-local, a listener list) that keeps it alive. That chain is the bug.\n- **Histogram** by class, as above, but with retained sizes.\n\nIn our dump, selecting a `byte[]` and asking for its path to GC roots ends at `Victim.retained`, a static `ArrayList`: the classic \"static collection that only grows\" pattern from the memory leak chapter."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`-XX:+HeapDumpOnOutOfMemoryError` and `-XX:HeapDumpPath=/dumps/` should be on every production JVM. The dump you want is the one from the moment of failure, and you cannot ask the process to go back in time. Make sure the path has enough disk space for a dump the size of `-Xmx`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Flight Recorder: the always-on profiler\n\nJava Flight Recorder (JFR) is an event recorder built into the JVM. It continuously records low-overhead events (sampled stack traces, allocations, GC pauses, lock contention, file and socket I/O, CPU load) into a ring buffer and can write them to a `.jfr` file. It was a commercial feature in Oracle JDK 8 and has been open source and free in OpenJDK since JDK 11. Its overhead is low enough to leave on in production with the default settings; the `profile` setting records more and costs a bit more, so use it for focused investigations.\n\nThere are three ways to start a recording:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "# at JVM start\n$ java -XX:StartFlightRecording=filename=boot.jfr,duration=20s -Xmx256m Victim\n# on a running JVM\n$ jcmd 2902 JFR.start name=live settings=profile duration=5s filename=/work/live.jfr\nStarted recording 2. The result will be written to:\n\n/work/live.jfr\n# write what is in the buffer now, then keep recording\n$ jcmd 2902 JFR.dump name=live filename=/work/now.jfr",
+          "title": "Starting JFR"
+        },
+        {
+          "type": "markdown",
+          "text": "Two further options matter in production: `maxage=6h` and `maxsize=500m` keep a rolling window, and `-XX:StartFlightRecording=...,dumponexit=true` writes the file when the JVM exits (including a crash caused by OutOfMemoryError with the right flags). Use `jcmd <pid> JFR.check` to list active recordings.\n\n#### Reading a recording\n\nThe `jfr` tool reads `.jfr` files. `jfr summary` shows what the file contains:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jfr summary boot.jfr\n\n Version: 2.1\n Chunks: 1\n Start: 2026-10-11 03:48:35 (UTC)\n Duration: 20 s\n Event Type                              Count  Size (bytes)\n=============================================================\n jdk.ThreadSleep                           841         15387\n jdk.ObjectAllocationSample                621          8748\n jdk.ExecutionSample                       564          5777\n jdk.GCPhaseParallel                       256          6790\n jdk.OldObjectSample                       206          6969\n ...\n jdk.CPULoad                                20           386",
+          "title": "jfr summary (trimmed)"
+        },
+        {
+          "type": "markdown",
+          "text": "`jfr view` (JDK 21) renders ready-made views as text tables. The hot-methods view answers \"where is the CPU going?\" using the execution samples:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jfr view hot-methods boot.jfr\n                      Java Methods that Executes the Most\n\nMethod                                                          Samples Percent\n--------------------------------------------------------------- ------- -------\nVictim.lambda$main$0()                                              564 100.00%",
+          "title": "jfr view hot-methods"
+        },
+        {
+          "type": "markdown",
+          "text": "All 564 samples landed in the lambda at the heart of `cpu-spinner`. On a real service you would see a spread, and the top few entries are your optimisation candidates. The `gc` view lists each collection with its pause:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jfr view gc boot.jfr\n                                Garbage Collections\n\nStart    GC ID Type                     Heap Before GC Heap After GC Longest Pause\n-------- ----- ------------------------ -------------- ------------- -------------\n09:18:36     2 Young Garbage Collection        17.4 MB        8.4 MB       6.18 ms\n09:18:49     3 Young Garbage Collection        61.4 MB       36.0 MB       48.2 ms\n09:18:53     4 Young Garbage Collection        50.0 MB       43.5 MB       6.02 ms",
+          "title": "jfr view gc"
+        },
+        {
+          "type": "markdown",
+          "text": "(The timestamps in the views are shown in the machine's local zone, which differs from the UTC time in `jfr summary`.) And `allocation-by-class` shows what is producing garbage:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jfr view allocation-by-class boot.jfr\n                              Allocation by Class\n\nObject Type                                                 Allocation Pressure\n----------------------------------------------------------- -------------------\nbyte[]                                                                   78.97%\njava.util.HashMap$KeyIterator                                            20.33%\njava.util.concurrent.ConcurrentHashMap$Node[]                             0.25%",
+          "title": "jfr view allocation-by-class"
+        },
+        {
+          "type": "markdown",
+          "text": "For raw events use `jfr print`, optionally filtered by event name and stack depth:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jfr print --events jdk.ExecutionSample --stack-depth 3 boot.jfr\njdk.ExecutionSample {\n  startTime = 09:18:35.655 (2026-10-11)\n  sampledThread = \"cpu-spinner\" (javaThreadId = 25)\n  state = \"STATE_RUNNABLE\"\n  stackTrace = [\n    Victim.lambda$main$0() line: 16\n    java.lang.Thread.run() line: 1583\n  ]\n}\n...",
+          "title": "jfr print"
+        },
+        {
+          "type": "markdown",
+          "text": "For a graphical view, open the file in JDK Mission Control (a separate download, no longer bundled with the JDK) or in IntelliJ IDEA. Its flame graph and \"Memory\" and \"Lock instances\" pages are built on exactly these events. Events worth knowing by name: `jdk.ExecutionSample` (CPU sampling), `jdk.JavaMonitorEnter` (lock contention), `jdk.GarbageCollection`, `jdk.ObjectAllocationSample`, `jdk.OldObjectSample` (candidate leaks, with optional reference chains), `jdk.FileRead`, `jdk.SocketRead`, `jdk.CPULoad`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "JFR's sampler records Java threads at a safe-ish moment roughly every 10 or 20 ms (the exact period depends on the setting). It is a statistical profile: good for finding the top few hot methods, not for timing one particular call."
+        },
+        {
+          "type": "markdown",
+          "text": "### GUI tools and the remote story\n\n`jconsole` and VisualVM (a separate download) connect to a JVM, locally or over JMX, and show live graphs of heap, threads, classes and CPU, let you invoke a thread dump or heap dump with a button, and browse MBeans. They are good for exploring a development or staging process. For remote production processes, the common pattern is different: expose metrics through Micrometer or the platform MXBeans to Prometheus and Grafana, and keep the command-line tools for the moment you are on the box (or in the container, via `kubectl exec`)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not open JMX remote access (`-Dcom.sun.management.jmxremote.port=...`) without authentication and TLS. An open JMX port is remote code execution for anyone who can reach it. The local attach used by `jcmd` and `jstack` requires the same operating-system user as the target process, which is why `jcmd` says \"Permission denied\" if you run it as a different user from the application."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In containers the JVM's pid is often 1 and the image may have only a JRE-like runtime without the tools. Either use a JDK-based image (so `jcmd` exists), or add JFR flags to the startup command and copy the `.jfr` out afterwards. Spring Boot Actuator exposes `/actuator/threaddump` and `/actuator/heapdump` for the same purposes; restrict those endpoints, they leak internals."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you find out why a Java process is using 100% CPU? Find the hot thread: `top -H -p <pid>` shows per-thread CPU. Match that thread id to the `nid` in a `jstack` dump (converting to hex if your JDK prints it that way), then read its stack. Take several dumps to confirm it is always in the same place, or record a JFR and look at the hot-methods view. Check GC activity with `jstat -gcutil` as well, since GC threads can be the cause."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "The JDK diagnostic tools attach to a running JVM; start with `jcmd <pid> help`, `Thread.print`, `GC.heap_info` and `JFR.start`.\n\n- A thread dump shows what every thread is doing now; three dumps a few seconds apart show who is stuck; deadlocks are reported automatically.\n- `jstat -gcutil` plus `jmap -histo:live` tell you whether memory is leaking and which class is piling up; a heap dump with a dominator tree and GC-root path tells you who holds it.\n- JFR is a low-overhead, always-available recorder; read it with `jfr summary`, `jfr view` and `jfr print`, or with Mission Control.\n- Heap dumps and JMX ports are security-sensitive: protect both, and arm `HeapDumpOnOutOfMemoryError` before you need it."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Reflection and Annotations"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which call returns a private method declared in the class itself: `getMethod` or `getDeclaredMethod`? Which one also finds inherited public methods?",
+              "answer": "`getDeclaredMethod` finds a private method of that class. `getMethod` finds public methods only, but includes inherited ones."
+            },
+            {
+              "question": "What does this print? `Method m = String.class.getMethod(\"length\");` `System.out.println(m.invoke(\"hello\"));`",
+              "answer": "It prints `5`: the result is boxed to `Integer`, printed by `println(Object)`."
+            },
+            {
+              "question": "A method called through `Method.invoke` throws `IllegalStateException`. What exception does the caller of `invoke` see, and how do you get the original?",
+              "answer": "An `InvocationTargetException`; call `getCause()` to get the `IllegalStateException`."
+            },
+            {
+              "question": "Your custom annotation is never found by `field.getAnnotation(...)` although it is clearly present in the source. What is the most likely cause?",
+              "answer": "The annotation lacks `@Retention(RetentionPolicy.RUNTIME)`. The default is `CLASS`, which is not visible to reflection."
+            },
+            {
+              "question": "After moving to a newer JDK a library fails with `InaccessibleObjectException`. Name two ways to deal with it.",
+              "answer": "Upgrade the library to a version that does not reflect into JDK internals, or add `--add-opens` `module/package=ALL-UNNAMED` as a temporary workaround."
+            },
+            {
+              "question": "Why do build-time annotation processors give faster start-up than reflection-based scanning?",
+              "answer": "The metadata is processed and code generated during compilation, so at start-up there is nothing to scan or look up reflectively."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Dynamic Proxies and Method Handles"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Can `Proxy.newProxyInstance` create a proxy of the concrete class `ArrayList`? Why or why not?",
+              "answer": "No. JDK proxies can only implement interfaces; for classes you need a subclass-generating library such as CGLIB or ByteBuddy."
+            },
+            {
+              "question": "In a Spring bean, method `a()` calls `this.b()`, and `b()` is annotated `@Transactional`. Is a transaction started for `b()`? Why?",
+              "answer": "No. The call is made on `this`, the raw target, so it bypasses the proxy that applies the transaction advice."
+            },
+            {
+              "question": "What does this do? `MethodHandle h = lookup.findVirtual(String.class, \"length\",` `MethodType.methodType(int.class)); Object o = h.invokeExact(\"abc\");`",
+              "answer": "It throws `WrongMethodTypeException` at run time: the call site's type is `(String)Object` but the handle is `(String)int`. Cast the result: `int n = (int) h.invokeExact(\"abc\");`."
+            },
+            {
+              "question": "Which exception type should a proxy handler rethrow after `method.invoke(target, args)` fails with `InvocationTargetException`?",
+              "answer": "The cause (`e.getCause()`), so the caller sees the original business exception instead of a reflection wrapper."
+            },
+            {
+              "question": "Name the VarHandle operation that atomically changes a value only if it still equals an expected one.",
+              "answer": "`compareAndSet(...)` (or `weakCompareAndSet`, `compareAndExchange`)."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Class Loaders and ServiceLoader"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does `String.class.getClassLoader()` return, and why?",
+              "answer": "`null`: the bootstrap loader is implemented in native code and has no `ClassLoader` object."
+            },
+            {
+              "question": "Two class loaders each load class `Plugin` from the same `.class` file. Is `c1 == c2`? Can an instance of one be assigned to a variable of the other's type?",
+              "answer": "`c1 != c2`. The instance cannot be assigned or cast; the result is a `ClassCastException` saying class `Plugin` cannot be cast to class `Plugin`."
+            },
+            {
+              "question": "What is wrong here? The class `Config` has `static final Map<String, Object> CACHE`, is loaded by a web-app loader, and a daemon thread started by a library inside that app keeps running after undeploy.",
+              "answer": "The running thread references the loader (through its classes), so the loader and all its classes, including `Config.CACHE`, can never be unloaded: a Metaspace leak on every redeploy. Stop threads on undeploy."
+            },
+            {
+              "question": "Where does a provider jar declare its implementation of `com.example.spi.Greeter` on the class path?",
+              "answer": "In a resource file `META-INF/services/com.example.spi.Greeter` listing the fully qualified class names, one per line."
+            },
+            {
+              "question": "Why does `defineClass` for a name starting with `java.` fail even in a custom loader?",
+              "answer": "The JVM prohibits user-defined loaders from defining classes in `java.*` packages (`SecurityException:` `Prohibited package name: java.lang`); core classes must come from the bootstrap loader."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### The Module System (JPMS)"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which module is required by every module without being declared?",
+              "answer": "`java.base`."
+            },
+            {
+              "question": "A class is `public` but lives in a package the module does not export. Who can use it?",
+              "answer": "Only code inside the same module. Other modules cannot compile against it, and reflection into it is also refused."
+            },
+            {
+              "question": "What is the difference between `requires` and `requires transitive`?",
+              "answer": "With `requires transitive m`, any module that requires mine automatically reads `m` too. Use it when `m`'s types appear in your public signatures."
+            },
+            {
+              "question": "What is a split package, and what does the module system do about it?",
+              "answer": "The same package name exported by two different modules. The module system refuses to start (or compile) such a configuration to avoid ambiguity."
+            },
+            {
+              "question": "What does this print when run on the class path (no `module-info`): `System.out.println(Main.class.getModule().isNamed());`?",
+              "answer": "`false`: class-path code is in the unnamed module."
+            },
+            {
+              "question": "Why can a `jlink` image be much smaller than a JDK installation?",
+              "answer": "It contains only the modules your application (transitively) requires, found with `jdeps`, instead of all ~70 JDK modules (69 on this JDK 21 build)."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Calling Native Code: JNI and the Foreign Function and Memory API"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Name two reasons a JNI bug is more dangerous than a Java bug.",
+              "answer": "A native error can crash the entire JVM (segmentation fault) instead of throwing an exception, and native code is unchecked: no bounds checking, no garbage collection, manual memory management."
+            },
+            {
+              "question": "In which Java version did the FFM API become final, and what was it before?",
+              "answer": "Java 22 (JEP 454). Before that it was a preview API in Java 19 to 21 and an incubator API in 14 to 18."
+            },
+            {
+              "question": "What does this do after the `try` block ends? `MemorySegment s; try (Arena a = Arena.ofConfined()) { s =` `a.allocate(8); } s.get(ValueLayout.JAVA_BYTE, 0);`",
+              "answer": "It throws `IllegalStateException` (\"Already closed\"): the arena freed the memory and the segment is no longer accessible."
+            },
+            {
+              "question": "Which class holds the C function signature, and which finds a function by name?",
+              "answer": "`FunctionDescriptor` describes the signature; `SymbolLookup` (for example `linker.defaultLookup()`) finds the symbol."
+            },
+            {
+              "question": "What does a `ValueLayout.ADDRESS` parameter in a `FunctionDescriptor` correspond to in C?",
+              "answer": "A pointer (`void *`, `char *`, `struct *`)."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Troubleshooting Playbook"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "A Java process shows `%CPU` near 100 for a single thread in `top -H` with id 2952. How do you find the Java code responsible? What can differ between JDK builds?",
+              "answer": "Search the `jstack` dump for `nid=2952` and read that thread's stack, or use a JFR hot-methods view. Many JDK builds print `nid` in hex, so if the decimal search finds nothing, search for `nid=0xb88` (`printf '%x' 2952`)."
+            },
+            {
+              "question": "What does this thread-dump excerpt tell you? Three dumps in a row show `\"http-nio-8080-exec-1\"` through `-exec-200` all `WAITING` in `HikariPool.getConnection`, and CPU is 3%.",
+              "answer": "The database connection pool is exhausted: all request threads wait for a connection while nobody computes. Look for threads holding connections (leaked or stuck on a slow call) and fix timeouts and resource closing."
+            },
+            {
+              "question": "Why is raising `-Xmx` not a fix for a leak?",
+              "answer": "A leak grows without bound, so a bigger heap only delays the failure and makes the dump bigger. Fix what holds the objects."
+            },
+            {
+              "question": "`OutOfMemoryError: unable to create native thread` appears while `jstat` shows the heap is only 40% used. Name two possible causes.",
+              "answer": "The OS or container refused another thread (process or pid limit), or there is not enough native memory left for thread stacks. Too many threads is the underlying cause, usually an unbounded executor or a thread-per-task loop."
+            },
+            {
+              "question": "What is wrong with taking `jmap -histo:live` every second on a busy production server?",
+              "answer": "`:live` forces a full collection every time, pausing the application and adding GC load. Sample rarely, and prefer a recording or a single dump."
+            },
+            {
+              "question": "The JVM was killed with exit code 137 in a container and there was no Java stack trace. Which memory is not covered by `-Xmx`, and which tool shows it?",
+              "answer": "Exit code 137 means the process received SIGKILL, typically from the out-of-memory killer. Metaspace, thread stacks, the code cache and direct buffers are outside the heap. Native Memory Tracking (`-XX:NativeMemoryTracking=summary` plus `jcmd <pid> VM.native_memory`) breaks them down."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### The Diagnostics Toolbox"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which tool gives you a thread dump, and which line at the end of the dump tells you about a deadlock?",
+              "answer": "`jstack <pid>` or `jcmd <pid> Thread.print`. If a cycle of monitors exists, the dump ends with \"Found one Java-level deadlock\", followed by who holds and who waits for each lock."
+            },
+            {
+              "question": "In `jstat -gcutil` output, the `O` column climbs after every collection and `FGC` keeps increasing. What does it suggest, and what do you take next?",
+              "answer": "Objects are surviving every collection and the old generation fills: a probable leak or an undersized heap. Take a `jmap -histo:live` to see which class grows, then a heap dump and look at the dominator tree and path to GC roots."
+            },
+            {
+              "question": "Why does `jmap -histo:live` pause the application, and what does `[B` mean in its output?",
+              "answer": "`:live` triggers a full collection first, which stops the application threads. `[B` is the internal name of `byte[]`."
+            },
+            {
+              "question": "What is wrong with this startup line for a production service? `java -Dcom.sun.management.jmxremote.port=9010` `-jar app.jar`",
+              "answer": "The JMX port is open with no authentication and no TLS (these are off by default when only the port property is set), so anyone who can reach port 9010 can control the JVM. Add `authenticate=true`, `ssl=true` or bind it to localhost and tunnel."
+            },
+            {
+              "question": "You need a profile of a service that is already running and was started without any JFR flags. Give the command.",
+              "answer": "`jcmd <pid> JFR.start name=live settings=profile duration=60s filename=/tmp/live.jfr`, then read it with `jfr view hot-methods /tmp/live.jfr` or Mission Control."
+            },
+            {
+              "question": "A heap dump shows 2 GB retained by one `HashMap` held in a static field. Which view in MAT finds this, and what do you do with the answer?",
+              "answer": "The dominator tree (sorted by retained size) finds it; \"path to GC roots\" shows the static field. The fix is to bound or evict the map (size limit, TTL, a cache library) or to stop adding to it."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

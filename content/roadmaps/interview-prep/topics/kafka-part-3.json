@@ -1,10 +1,385 @@
 {
   "source": {
     "document": "Kafka_Complete_Guide.pdf",
-    "pages": "49-52",
+    "pages": "40-59",
     "planDays": "42"
   },
   "sections": [
+    {
+      "id": "ch-3-1",
+      "type": "concept",
+      "title": "The Producer at a Glance",
+      "subtopicId": "3-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every event in Kafka was put there by a producer. In ShopStream, when a customer presses \"Place order\", the order-service saves the order in its database and then publishes an `OrderCreated` event to the `orders` topic. The object that does the publishing is a `KafkaProducer`, the producer class of the `kafka-clients` library. In this chapter you create a project, write the smallest useful producer, run it against your local broker and watch the record arrive.\n\nA `KafkaProducer` is not a connection and it is not a message. It is a small engine that lives inside your JVM. It keeps a memory buffer of records that are waiting to be sent, runs a background thread that groups them into batches and ships the batches to the right brokers, and takes care of retries and cluster metadata. You create it once, share it between all threads of the application, and close it when the application stops.\n\n### Project setup\n\nYou need Java 21 (the client library itself runs on Java 11 or newer), Maven, and a broker on `localhost:9092`; the hands-on Part showed how to start one. The `kafka-clients` jar contains the producer, the consumer and the admin client. The clients write their logs through SLF4J, so the project also needs a logging backend. `slf4j-simple` is the smallest one. Without any backend you see no client logs at all, which makes problems hard to diagnose."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<properties>\n  <maven.compiler.release>21</maven.compiler.release>\n</properties>\n\n<dependencies>\n  <dependency>\n    <groupId>org.apache.kafka</groupId>\n    <artifactId>kafka-clients</artifactId>\n    <version>4.3.1</version>\n  </dependency>\n  <dependency>\n    <groupId>org.slf4j</groupId>\n    <artifactId>slf4j-api</artifactId>\n    <version>2.0.17</version>\n  </dependency>\n  <dependency>\n    <groupId>org.slf4j</groupId>\n    <artifactId>slf4j-simple</artifactId>\n    <version>2.0.17</version>\n  </dependency>\n</dependencies>",
+          "title": "pom.xml (the parts that matter)"
+        },
+        {
+          "type": "markdown",
+          "text": "Two details. Client and broker versions do not have to match exactly, but with Kafka 4.x neither side may be older than 2.1. And `slf4j-api` is declared explicitly so that its version always matches `slf4j-simple`; a mismatch between the two makes SLF4J fall back to a silent no-operation logger.\n\n### Your first producer\n\nThree settings have no default and must be supplied. `bootstrap.servers` is a list of `host:port` addresses used to find the cluster. `key.serializer` and `value.serializer` name the classes that turn the key and the value into bytes, because Kafka stores and transmits only bytes. We use `StringSerializer` for both and send the event as a JSON string. Part 6 covers richer formats."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.producer;\n\nimport java.util.Properties;\nimport org.apache.kafka.clients.producer.KafkaProducer;\nimport org.apache.kafka.clients.producer.ProducerConfig;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.apache.kafka.common.serialization.StringSerializer;\n\npublic class FirstProducer {\n\n    public static void main(String[] args) {\n        Properties props = new Properties();\n        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());\n        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());\n\n        String orderId = \"o-1001\";\n        String json = \"\"\"\n                {\"eventId\":\"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\",\"type\":\"ORDER_CREATED\",\\\n                \"occurredAt\":\"2026-10-08T10:15:30Z\",\"orderId\":\"%s\",\"customerId\":\"c-77\",\\\n                \"lines\":[{\"sku\":\"SKU-RED-SHOE-42\",\"qty\":2,\"unitPrice\":499.00}],\\\n                \"total\":998.00,\"currency\":\"INR\"}\"\"\".formatted(orderId);\n\n        try (KafkaProducer<String, String> producer = new KafkaProducer<>(props)) {\n            ProducerRecord<String, String> record =\n                    new ProducerRecord<>(\"orders\", orderId, json);\n\n            producer.send(record, (metadata, exception) -> {\n                if (exception != null) {\n                    exception.printStackTrace();\n                } else {\n                    System.out.printf(\"Sent %s to %s-%d at offset %d%n\",\n                            orderId, metadata.topic(), metadata.partition(), metadata.offset());\n                }\n            });\n        } // close() blocks until every buffered record has been sent\n    }\n}",
+          "title": "FirstProducer.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The constants in `ProducerConfig` (such as `BOOTSTRAP_SERVERS_CONFIG`) are just the string names, `\"bootstrap.servers\"` and so on. Prefer them: a misspelled constant does not compile, while a misspelled string key is only reported as one `WARN` line in the log (\"These configurations ... were supplied but are not used yet\") and the setting is silently ignored.\n- The record has a topic, a key and a value. The key is the `orderId`, so every event of one order lands in the same partition and stays in order.\n- `send()` returns immediately. The lambda is a `Callback`: Kafka calls it later, on the producer's background thread, with either a `RecordMetadata` (where the record landed) or an exception.\n- The try-with-resources block calls `close()` at the end. `close()` waits until all buffered records have been transmitted and their callbacks have run. Without it this short program could exit before anything is sent.\n\n### Run it and look at the result\n\nCreate the topic with three partitions if it does not exist yet (the command is harmless if it does), then run the program. The partition and offset in the output are examples: yours depend on the key hash and on what the topic already contains."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --create --if-not-exists --topic orders --partitions 3 \\\n    --bootstrap-server localhost:9092\nCreated topic orders.\n$ mvn -q compile exec:java -Dexec.mainClass=com.shopstream.producer.FirstProducer\n[main] INFO org.apache.kafka.clients.producer.ProducerConfig - ProducerConfig values:\n# (about a hundred lines with every setting and its value are skipped here)\n[main] INFO org.apache.kafka.common.utils.AppInfoParser - Kafka version: 4.3.1\n# (a few more startup messages are skipped here)\nSent o-1001 to orders-1 at offset 0",
+          "title": "Create the topic and run the producer"
+        },
+        {
+          "type": "markdown",
+          "text": "The client prints its complete configuration at INFO level when it starts. It is long, but worth reading once: it shows every default, including those you never set. Now read the record back with the console consumer. The `cut` at the end only trims the long JSON line for display; `--max-messages 1` makes the consumer exit after one record."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-console-consumer.sh --topic orders --from-beginning --max-messages 1 \\\n    --formatter-property print.key=true --bootstrap-server localhost:9092 | cut -c1-90\no-1001  {\"eventId\":\"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\",\"type\":\"ORDER_CREATED\",\"occurredA",
+          "title": "Read the record with the console consumer"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Console tool options changed in Kafka 4.2 Kafka 4.2 renamed several options of the command-line tools to make them consistent (KIP-1147). The console consumer now uses `--formatter-property` where older versions used `--property`, `--command-property` instead of `--consumer-property`, and `--command-config` instead of `--consumer.config`. The old spellings still work in 4.2 but print a deprecation message, and they will be removed in the next major release. This book uses the new spellings; if you run an older broker distribution, switch back to the old ones."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "The program hangs for a minute, then prints a TimeoutException If `bootstrap.servers` is wrong or the broker is down, `send()` does not fail at once. The producer keeps trying to fetch metadata for the topic and gives up after `max.block.ms` (60 seconds). The error then arrives through the callback, not as an exception thrown by `send()`: `org.apache.kafka.common.errors.TimeoutException: Topic orders not present in metadata after 60000 ms.` The same message appears when the topic does not exist and the broker does not auto-create topics."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A typo in the topic name creates a new topic Brokers default to `auto.create.topics.enable=true`, and a producer asking for the metadata of an unknown topic is enough to trigger creation, with the broker defaults (one partition, replication factor one). A producer that writes to `order` instead of `orders` therefore \"works\", and the data sits in the wrong place. Production clusters usually turn auto-creation off and create topics on purpose."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Exiting without close() or flush() can lose the last records `send()` only places the record in a memory buffer. If the JVM exits before the background thread has transmitted the batch, the record is gone and nothing reports an error. Close the producer in try-with-resources or a `finally` block, and call `flush()` when you want to wait for everything sent so far without closing."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Is KafkaProducer thread-safe? How many instances should an application have? Yes, `KafkaProducer` is thread-safe, and the Javadoc says that sharing one instance across threads is generally faster than having several. Most applications need one producer per distinct configuration (for example one for ordinary events and one transactional producer). Creating a producer per message is a classic mistake: every instance allocates a buffer, starts a network thread, opens connections and fetches metadata, and nothing gets batched."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A `KafkaProducer` is a long-lived, thread-safe client: create one, share it, close it when the application stops.\n- `bootstrap.servers`, `key.serializer` and `value.serializer` are mandatory; use the `ProducerConfig` constants to avoid typos.\n- `send()` is asynchronous. The outcome arrives in a callback (or the returned `Future`), usually on the producer's background thread.\n- Always `close()` (or `flush()`): records still in the buffer are lost if the JVM exits.\n- Use a key such as `orderId` so related events share a partition and keep their order."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-2",
+      "type": "concept",
+      "title": "What Happens Inside send()",
+      "subtopicId": "3-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A common first picture is that `send()` makes a network call to a broker. It does not, and the difference explains most of the producer's behaviour: why it is fast, why a record can wait a few milliseconds before leaving, why a slow broker eventually blocks your code, and why records can vanish when you forget `close()`. This chapter follows one record from the moment you call `send()` until the broker has acknowledged it."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 62.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 48.0 L68.8 48.0 C70.5 48.0 71.8 46.7 71.8 45.0 L71.8 5.0 C71.8 3.3 70.5 2.0 68.8 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.8 25.0 L86.8 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M158.6 25.0 L172.6 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M244.4 25.0 L258.4 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M330.3 25.0 L344.3 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M416.1 25.0 L430.1 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M86.8 25.0 L81.4 22.4 L81.4 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.8 48.0 L154.6 48.0 C156.3 48.0 157.6 46.7 157.6 45.0 L157.6 5.0 C157.6 3.3 156.3 2.0 154.6 2.0 L90.8 2.0 C89.2 2.0 87.8 3.3 87.8 5.0 L87.8 45.0 C87.8 46.7 89.2 48.0 90.8 48.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.6 25.0 L167.2 22.4 L167.2 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M176.6 48.0 L240.4 48.0 C242.1 48.0 243.4 46.7 243.4 45.0 L243.4 5.0 C243.4 3.3 242.1 2.0 240.4 2.0 L176.6 2.0 C175.0 2.0 173.6 3.3 173.6 5.0 L173.6 45.0 C173.6 46.7 175.0 48.0 176.6 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M258.4 25.0 L253.0 22.4 L253.0 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.4 48.0 L326.3 48.0 C327.9 48.0 329.3 46.7 329.3 45.0 L329.3 5.0 C329.3 3.3 327.9 2.0 326.3 2.0 L262.4 2.0 C260.8 2.0 259.4 3.3 259.4 5.0 L259.4 45.0 C259.4 46.7 260.8 48.0 262.4 48.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.3 25.0 L338.9 22.4 L338.9 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M348.3 48.0 L412.1 48.0 C413.7 48.0 415.1 46.7 415.1 45.0 L415.1 5.0 C415.1 3.3 413.7 2.0 412.1 2.0 L348.3 2.0 C346.6 2.0 345.3 3.3 345.3 5.0 L345.3 45.0 C345.3 46.7 346.6 48.0 348.3 48.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M430.1 25.0 L424.7 22.4 L424.7 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M434.1 48.0 L497.9 48.0 C499.6 48.0 500.9 46.7 500.9 45.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L434.1 2.0 C432.4 2.0 431.1 3.3 431.1 5.0 L431.1 45.0 C431.1 46.7 432.4 48.0 434.1 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"283.3\" y=\"18.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"22.2\" lengthAdjust=\"spacingAndGlyphs\">Record</text><text x=\"369.0\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"22.3\" lengthAdjust=\"spacingAndGlyphs\">Sender</text><text x=\"455.6\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"20.9\" lengthAdjust=\"spacingAndGlyphs\">Broker</text><text x=\"26.9\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"20.1\" lengthAdjust=\"spacingAndGlyphs\">send()</text><text x=\"108.1\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"29.3\" lengthAdjust=\"spacingAndGlyphs\">Serializer</text><text x=\"192.0\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Partitioner</text><text x=\"274.6\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"39.4\" lengthAdjust=\"spacingAndGlyphs\">accumulator</text><text x=\"369.8\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"20.8\" lengthAdjust=\"spacingAndGlyphs\">thread</text><text x=\"456.0\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"19.9\" lengthAdjust=\"spacingAndGlyphs\">leader</text><text x=\"279.4\" y=\"36.2\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"29.9\" lengthAdjust=\"spacingAndGlyphs\">(batches)</text></svg>",
+          "width": 503,
+          "caption": "Everything up to the accumulator runs on the thread that calls send(). A separate sender thread drains full or lingering batches and talks to the brokers.",
+          "alt": "Record | Sender Broker | send() Serializer Partitioner accumulator | thread leader | (batches)"
+        },
+        {
+          "type": "markdown",
+          "text": "### The journey of one record\n\nThe numbers below match the figure. Steps 1 to 4 run on your own thread inside `send()`; steps 5 to 7 run on the producer's sender thread.\n\n1. **Metadata.** The producer must know how many partitions the topic has and which broker leads each partition. If it does not have this yet (the first send to a topic) it asks a broker and waits, for at most `max.block.ms`.\n2. **Serialization.** The key and the value go through the configured serializers and become byte arrays.\n3. **Partitioning.** The partitioner picks the partition number (next section).\n4. **Accumulation.** The record is appended to a batch in the record accumulator, which keeps one queue of batches per partition. Batch memory comes from a pool of `buffer.memory` bytes. `send()` now returns a `Future<RecordMetadata>`; no network traffic has happened yet.\n5. **Draining.** The sender thread, a background thread that each producer starts, repeatedly checks which batches are ready. It collects the ready batches of all partitions led by the same broker into a single produce request.\n6. **Sending.** The request goes out over a connection to that broker. The sender does not wait for the answer before sending the next request: up to `max.in.flight.requests.per.connection` (5) requests may be outstanding on one connection.\n7. **Completion.** On success the futures of all records in the batch complete and their callbacks run. On a retriable error the batch is put back in the queue and tried again until `delivery.timeout.ms` (2 minutes) is used up; then the records fail with a `TimeoutException`.\n\n### Choosing the partition\n\nThe partition decides which log the record joins, and therefore its ordering neighbours and which consumer will read it. The producer applies these rules in order:\n\n1. If the `ProducerRecord` names a partition explicitly, that partition is used.\n2. Otherwise, if you configured `partitioner.class`, your partitioner decides (see the chapter on partitioning in practice).\n3. Otherwise, if the record has a key (and `partitioner.ignore.keys` is `false`, the default), the partition is the murmur2 hash of the serialized key bytes, made positive, modulo the number of partitions.\n4. Otherwise the built-in logic for keyless records applies.\n\nRule 3 is what gives you per-key ordering. The table shows real results of that formula for a topic with three partitions; the same key always gives the same partition as long as the partition count does not change."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Partition",
+            "Note"
+          ],
+          "rows": [
+            [
+              "`o-1001`",
+              "`1`",
+              "OrderCreated, OrderConfirmed of this order go here"
+            ],
+            [
+              "`o-1002`",
+              "`1`",
+              "different order, same partition by chance"
+            ],
+            [
+              "`o-1003`",
+              "`2`",
+              "a different order"
+            ],
+            [
+              "`o-1004`",
+              "`2`",
+              "partition 2 now holds two orders"
+            ],
+            [
+              "`c-77`",
+              "`1`",
+              "a customerId key (notifications topic)"
+            ],
+            [
+              "`c-78`",
+              "`0`",
+              "another customer"
+            ]
+          ],
+          "caption": "Partition chosen for ShopStream keys by the default hash, topic with 3 partitions."
+        },
+        {
+          "type": "markdown",
+          "text": "For records without a key, older clients spread records round-robin, one record at a time, which produced many tiny batches. Today's built-in logic is \"sticky\": it keeps writing to one partition until roughly one `batch.size` of data has gone there, then switches to another. Batches are full, requests are fewer and larger, and over time every partition gets a similar share. With `partitioner.adaptive.partitioning.enable=true` (the default) the producer also favours partitions on brokers that are answering faster. `partitioner.availability.timeout.ms` can additionally mark a partition unavailable when its broker makes no progress (the default 0 disables this)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "The hash is computed on bytes, not on your object Partitioning uses the serialized key. If one service writes the key `42` with `StringSerializer` and another writes the integer 42 with `IntegerSerializer`, the byte arrays differ, so the \"same\" key lands in different partitions. Agree on one key format per topic, and treat it like part of the topic's contract."
+        },
+        {
+          "type": "markdown",
+          "text": "### Batches, linger and memory\n\nKafka is fast because it moves data in batches, and the accumulator is where batches are made. A batch holds records for one partition, up to `batch.size` bytes (16384 by default). That is an upper bound in bytes, not a count of records and not something the producer waits for. A record larger than `batch.size` simply gets a batch of its own.\n\nThe sender sends a batch as soon as one of these is true: the batch is full; it has waited `linger.ms` since its first record (5 ms by default since Kafka 4.0; it was 0 before); someone called `flush()` or `close()`; or the producer is short of buffer memory and needs to free some. Even with `linger.ms=0` batches form under load, because records pile up while the previous request is still in flight. A small delay such as 5 ms costs almost nothing in latency and usually raises throughput noticeably because batches are fuller and compress better.\n\n### Metadata, connections and advertised addresses\n\n`bootstrap.servers` is only used for the first contact. The producer asks one of those brokers for the cluster metadata (all brokers, all partitions of the topic, the leader of each partition) and from then on connects directly to the leader of the partition it is writing to. The metadata is refreshed when the producer meets an error such as `NOT_LEADER_OR_FOLLOWER` after a leader election, and in any case every `metadata.max.age.ms` (5 minutes). Metadata of topics that have not been used for `metadata.max.idle.ms` (5 minutes) is dropped.\n\nGive the producer a meaningful `client.id` such as `order-service`: it shows up in log lines, thread names and metrics (if you leave it empty the producer is called `producer-1`, `producer-2`, and so on). Two more practical consequences. List two or three brokers in `bootstrap.servers` so that one outage does not stop a restart. And remember that the producer must be able to reach every broker at the address the broker advertises, not only the bootstrap address. If the first connection works and the second times out, the cause is nearly always the broker's `advertised.listeners` setting, which is common with Docker and cloud networks. Part 14 returns to this.\n\n### When the broker is slower than your code\n\nIf your application produces faster than the network or the brokers accept, batches pile up in the accumulator until the `buffer.memory` pool (32 MB by default) is empty. From then on `send()` blocks the calling thread, waiting for memory, for at most `max.block.ms` (60 seconds). After that the record fails with a `BufferExhaustedException`, a subclass of `TimeoutException`. This is back-pressure. It is a feature, because an unbounded buffer would end in an `OutOfMemoryError` instead.\n\nYour options when it happens are to slow the source down (a bounded queue in front of the producer, or pausing the consumer that feeds it), to send less data per record (compression, smaller events), or to add capacity (more partitions and brokers). Raising `buffer.memory` only postpones the problem if the brokers are the bottleneck.\n\nThe following settings govern the stages above. All values are the Kafka 4.x defaults."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "Stage / effect"
+          ],
+          "rows": [
+            [
+              "`max.block.ms`",
+              "60000",
+              "How long send(), partitionsFor() and the transaction calls may block (metadata, buffer space)"
+            ],
+            [
+              "`buffer.memory`",
+              "33554432",
+              "Total memory for unsent batches"
+            ],
+            [
+              "`batch.size`",
+              "16384",
+              "Upper bound in bytes of one batch per partition"
+            ],
+            [
+              "`linger.ms`",
+              "5",
+              "Wait time for a partly filled batch"
+            ],
+            [
+              "`max.in.flight.requests.per.connection`",
+              "5",
+              "Outstanding requests per broker connection"
+            ],
+            [
+              "`retry.backoff.ms` `retry.backoff.max.ms`",
+              "100 1000",
+              "Wait between retries; grows from the first to the second value"
+            ],
+            [
+              "`delivery.timeout.ms`",
+              "120000",
+              "Upper bound for the whole send, including retries"
+            ],
+            [
+              "`metadata.max.age.ms`",
+              "300000",
+              "Forced metadata refresh interval"
+            ]
+          ],
+          "caption": "Producer settings by pipeline stage."
+        },
+        {
+          "type": "markdown",
+          "text": "### Which thread does what\n\nBecause the work is split between two kinds of threads, some code runs where you might not expect. Serializers, the partitioner and interceptors run on your thread, so a slow custom serializer slows your caller. Network I/O, retries and callbacks run on the sender thread. The `send()` Javadoc says callbacks \"will generally execute in the I/O thread of the producer and so should be reasonably fast or they will delay the sending of messages from other threads\". The chapter on sending patterns returns to this.\n\n**Who does what**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "your thread                                      sender thread (one per producer)\n-----------                                      --------------------------------\nsend(record)\n  1 wait for metadata (max.block.ms)\n  2 serialize key and value\n  3 choose the partition\n  4 append to a batch ──► accumulator ──►          5 drain ready batches (one request per broker)\nreturns a Future                                   6 send, wait for the broker's response\n                                                   7 retry, or complete the Future and run\n                                                     the callback"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Walk me through what happens between producer.send() and the broker acknowledging the write. `send()` fetches topic metadata if needed, serializes the key and value, picks a partition (explicit partition, custom partitioner, murmur2 hash of the key, or sticky logic for keyless records) and appends the record to a per-partition batch in the record accumulator, then returns a Future. A background sender thread sends ready batches (full, or older than `linger.ms`) to the partition leaders, one request per broker, with up to five requests in flight per connection. The leader appends the batch to its log, waits for the replicas required by `acks`, and answers. The sender then completes the futures and runs callbacks, or retries retriable errors until `delivery.timeout.ms` expires."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `send()` does only in-memory work on your thread (metadata check, serialization, partitioning, append); a separate sender thread does all network I/O.\n- Partition choice: explicit partition, then custom partitioner, then murmur2 of the key bytes, then sticky logic for keyless records.\n- Batches are bounded by `batch.size` and released by fullness, `linger.ms`, `flush()` or memory pressure; batching is the main source of throughput.\n- A full buffer blocks `send()` for up to `max.block.ms`, then fails; this is back-pressure, not a bug.\n- Metadata is cached and refreshed on errors and every 5 minutes; every broker's advertised address must be reachable from the client."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-3",
+      "type": "concept",
+      "title": "Sending Records: Patterns and the ProducerRecord",
+      "subtopicId": "3-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Calling `send()` is easy. Deciding what to do with the answer is the real design question. Do you wait for the broker, ignore the outcome, or react later? The choice decides your throughput and also what happens to an order event when something goes wrong. This chapter shows the three patterns, what a `ProducerRecord` can carry, and the one rule about callbacks that you must not break.\n\n### Anatomy of a ProducerRecord\n\nA `ProducerRecord<K,V>` is the unit you hand to the producer. It has six parts, and only the topic is required. There are six constructors for the combinations; the most common one is `new ProducerRecord<>(topic, key, value)`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Part",
+            "Type",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`topic`",
+              "String",
+              "Destination topic. Required."
+            ],
+            [
+              "`partition`",
+              "Integer",
+              "Optional. If set, the record goes to exactly this partition and the partitioner is skipped."
+            ],
+            [
+              "`timestamp`",
+              "Long",
+              "Optional, epoch milliseconds. If not set, the producer stamps the record with its current time."
+            ],
+            [
+              "`key`",
+              "K",
+              "Optional. Drives the partition choice and is the identity of the record in compacted topics."
+            ],
+            [
+              "`value`",
+              "V",
+              "Optional. A null value is a tombstone: in a compacted topic it deletes the key."
+            ],
+            [
+              "`headers`",
+              "Headers",
+              "Optional list of name and byte-array pairs: metadata that travels with the record but is not part of key or value."
+            ]
+          ],
+          "caption": "The parts of a ProducerRecord."
+        },
+        {
+          "type": "markdown",
+          "text": "Three details deserve attention. First, the timestamp: by default it is the time the producer created the record (`CreateTime`). The topic setting `message.timestamp.type` decides whether the broker keeps it or overwrites it with its own append time. If you set an explicit timestamp, for example the event time when you re-import historical orders, note that since Kafka 4.0 the broker rejects timestamps more than one hour in the future by default (`message.timestamp.after.max.ms`).\n\nSecond, headers: use them for technical metadata such as a trace id, the event type or a schema version, so consumers can route or log without parsing the value. Add them with `record.headers().add(name, bytes)`. Headers become read-only once the record has been passed to `send()`; adding one afterwards throws `IllegalStateException`.\n\nThird, an explicit partition: it works, but it couples your code to the partition count. If you later add partitions, your hand-made mapping is no longer what the hash would give, and nothing warns you. Prefer a key and let the partitioner decide.\n\n### Three ways to send\n\nThe class below wraps one shared producer and shows all patterns side by side. It depends on the `Producer` interface instead of `KafkaProducer`, which makes it easy to test with `MockProducer` later in this Part."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.producer;\n\nimport java.nio.charset.StandardCharsets;\nimport java.time.Instant;\nimport java.util.concurrent.ExecutionException;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.TimeoutException;\nimport org.apache.kafka.clients.producer.Callback;\nimport org.apache.kafka.clients.producer.Producer;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.apache.kafka.clients.producer.RecordMetadata;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\npublic class OrderEventPublisher {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderEventPublisher.class);\n    private static final String TOPIC = \"orders\";\n\n    private final Producer<String, String> producer;\n\n    public OrderEventPublisher(Producer<String, String> producer) {\n        this.producer = producer;\n    }\n\n    /** 1. Fire and forget: nobody looks at the result, so failures go unnoticed. */\n    public void fireAndForget(String orderId, String json) {\n        producer.send(new ProducerRecord<>(TOPIC, orderId, json));\n    }\n\n    /** 2. Synchronous: wait for the broker's answer. Safe, but one round trip per record. */\n    public RecordMetadata sendAndWait(String orderId, String json)\n            throws InterruptedException, ExecutionException, TimeoutException {\n        return producer.send(new ProducerRecord<>(TOPIC, orderId, json))\n                .get(30, TimeUnit.SECONDS);\n    }\n\n    /** 3. Asynchronous with a callback: fast, and every failure is still seen. */\n    public void sendAsync(String orderId, String json) {\n        producer.send(new ProducerRecord<>(TOPIC, orderId, json), callbackFor(orderId));\n    }\n\n    /** 4. Full control: explicit event time and headers. */\n    public void sendWithHeaders(String orderId, String json, String traceId, Instant occurredAt) {\n        ProducerRecord<String, String> record =\n                new ProducerRecord<>(TOPIC, null, occurredAt.toEpochMilli(), orderId, json);\n        record.headers().add(\"traceId\", traceId.getBytes(StandardCharsets.UTF_8));\n        record.headers().add(\"eventType\", \"ORDER_CREATED\".getBytes(StandardCharsets.UTF_8));\n        producer.send(record, callbackFor(orderId));\n    }\n\n    private Callback callbackFor(String orderId) {\n        return (metadata, exception) -> {\n            if (exception != null) {\n                log.error(\"Order {} was not published\", orderId, exception);\n                // keep it short: hand over to a retry queue, an outbox table or an alert\n            } else {\n                log.debug(\"Order {} stored at {}-{} offset {}\",\n                        orderId, metadata.topic(), metadata.partition(), metadata.offset());\n            }\n        };\n    }\n}",
+          "title": "OrderEventPublisher.java"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "Call",
+            "Learn the result",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "Fire and forget",
+              "`send(record)`",
+              "never",
+              "Data you can afford to lose, such as best-effort metrics"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "Call",
+            "Learn the result",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "Synchronous",
+              "`send(record).ge` `t()`",
+              "before the next line",
+              "Rare: scripts, tests, very low volume where the caller must know"
+            ],
+            [
+              "Asynchronous",
+              "`send(record,` `callback)`",
+              "in the callback",
+              "The default for services"
+            ]
+          ],
+          "caption": "The three patterns compared."
+        },
+        {
+          "type": "markdown",
+          "text": "Be careful with the middle row. A loop of `send(...).get()` is slow by construction. Every iteration waits for a full network round trip plus replication, and because only one record is outstanding, the producer can never build a batch. As an illustration: if one round trip takes 5 ms, one thread cannot exceed about 200 records per second, however fast the broker is. The asynchronous pattern lets thousands of records share batches and requests.\n\nIn the fire-and-forget row, \"forget\" refers to your code only. The producer still retries according to its settings; you just never learn that the record finally failed.\n\n### Handling the result\n\nBoth the `Future` and the `Callback` deliver the same two things: a `RecordMetadata` on success (topic, partition, offset, timestamp) or an exception. With the future, `get()` wraps the Kafka exception in an `ExecutionException`; read `getCause()` to see the real one. Mind the name clash: `Future.get(timeout, unit)` throws `java.util.concurrent.TimeoutException`, which is a different class from Kafka's `org.apache.kafka.common.errors.TimeoutException`.\n\nIn a callback, exactly one of the two arguments is meaningful. On success `exception` is `null`. On failure the exception is set, and `metadata` is not null but its offset and other numeric fields are `-1` (the partition is `-1` too if none had been chosen yet). Always test `exception` first. Failures may also be thrown by `send()` itself, for example a `SerializationException` when the value does not fit the serializer; the chapter on reliability sorts the errors into those that are retried for you and those you must handle.\n\nThe producer guarantees that callbacks for records sent to the same partition run in the order the records were sent. There is no ordering guarantee between partitions."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never block inside a callback Callbacks run on the producer's single sender thread, the same thread that sends every batch for every partition. If a callback does slow work (a database call, an HTTP request) all sending of all threads stalls behind it. If a callback waits for another `send(...).get()`, it waits for the very thread it is running on and deadlocks. Keep callbacks to a few microseconds: log, increment a counter, or put the failed record on a queue that another thread processes."
+        },
+        {
+          "type": "markdown",
+          "text": "### Sending many records and waiting for them\n\nFor batch jobs you rarely want a result per record, but you do want to know when everything has been handled. `flush()` does that: it makes all buffered records ready to send immediately, even if `linger.ms` has not elapsed, and blocks until every request is complete. Note what \"complete\" means: `flush()` returns once all earlier sends have finished, successfully or not. It does not throw because of a failed record, so count failures in the callback and check the counter afterwards."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "AtomicInteger failures = new AtomicInteger();\nfor (OrderCreated event : events) {\n    ProducerRecord<String, String> record =\n            new ProducerRecord<>(\"orders\", event.orderId(), toJson(event));\n    producer.send(record, (metadata, exception) -> {\n        if (exception != null) {\n            failures.incrementAndGet();\n        }\n    });\n}\nproducer.flush();   // every callback above has run when this returns\nif (failures.get() > 0) {\n    throw new IllegalStateException(failures.get() + \" events were not published\");\n}",
+          "title": "Publish a batch, then check the outcome"
+        },
+        {
+          "type": "markdown",
+          "text": "This is the producer half of a very common pattern in consumer applications: read a batch, produce results, `flush()`, check, and only then commit the consumer offsets. Never call `flush()` from inside a callback: it would wait for the very thread it is running on. Since Kafka 4.1 the producer detects this potential deadlock and prohibits the call."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is send().get() in a loop slow, and what do you do instead? Each `get()` blocks the thread for a full request round trip (network, leader append, replication for `acks=all`) and keeps at most one record in flight, so batching and pipelining are lost. Use the asynchronous `send(record, callback)`, let the producer batch with `linger.ms` and `batch.size`, collect failures in the callback, and call `flush()` at a natural boundary such as the end of a job or before committing consumer offsets."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A `ProducerRecord` has topic, optional partition, timestamp, key, value and headers; a null value is a tombstone.\n- Prefer a key over an explicit partition; use headers for technical metadata, not business data.\n- Fire-and-forget loses failures silently, synchronous `get()` costs throughput, and the asynchronous callback is the default for services.\n- `get()` wraps the real exception in `ExecutionException`; in a callback test `exception` first.\n- Callbacks run on the sender thread: never block in them and never wait for another `send()` there.\n- `flush()` waits for completion, not for success; count failures in the callback."
+        }
+      ]
+    },
     {
       "id": "ch-3-4",
       "type": "concept",
@@ -255,6 +630,398 @@
           "variant": "keypoints",
           "title": "Key points",
           "text": "- `acks=all` plus topic `min.insync.replicas=2` and replication factor 3 is the durable combination; `acks=all` alone depends on the current ISR size.\n- The producer retries retriable errors until `delivery.timeout.ms` (2 minutes); keep `delivery.timeout.ms` at least `linger.ms + request.timeout.ms`.\n- The idempotent producer (on by default) removes duplicates caused by its own retries through producer id and sequence numbers, and keeps order for up to five requests in flight.\n- Idempotence does not cover duplicate `send()` calls by your code, producer restarts, or multi-partition atomicity.\n- After a `TimeoutException` the outcome is unknown; non-retriable errors such as `RecordTooLargeException` will fail every time."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-5",
+      "type": "concept",
+      "title": "Throughput and Latency Tuning",
+      "subtopicId": "3-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Two goals pull in opposite directions. Throughput is how many records or bytes per second you can push through. Latency is how long a single record takes from `send()` to acknowledgement. Almost every producer setting trades one against the other, and the exchange rate is batching. Every request has a fixed cost: a network round trip, request handling on the broker, a log append. Putting many records into one request spreads that cost and raises throughput, but collecting them takes time and adds latency.\n\n### The levers"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "How it raises throughput",
+            "What it costs"
+          ],
+          "rows": [
+            [
+              "`linger.ms`",
+              "`5`",
+              "Waiting lets batches fill up before they are sent",
+              "Up to this much added latency per record"
+            ],
+            [
+              "`batch.size`",
+              "`16384`",
+              "Allows bigger batches when records arrive quickly",
+              "Memory for each partition that has an open batch"
+            ],
+            [
+              "`compression.type`",
+              "`none`",
+              "Fewer bytes on the network and on disk; bigger batches compress better",
+              "CPU on the producer, and on every consumer that decompresses"
+            ],
+            [
+              "`buffer.memory`",
+              "`33554432`",
+              "Absorbs bursts without blocking `send()`",
+              "Heap memory"
+            ],
+            [
+              "`acks`",
+              "`all`",
+              "`1` does not wait for followers",
+              "Records can be lost when a leader fails"
+            ]
+          ],
+          "caption": "The main tuning settings (Kafka 4.x defaults)."
+        },
+        {
+          "type": "markdown",
+          "text": "Begin with batching. A batch is sent when it is full (`batch.size`) or when it has waited `linger.ms`, whichever happens first, so the useful knob depends on how fast records arrive. A worked example, with illustrative numbers: records of about 1 KB arrive at one partition every 0.5 ms. A 16 KB batch needs roughly 15 records, so it would take about 7.5 ms to fill. With `linger.ms=5` the timer fires first and each request carries about 10 records. Raising `linger.ms` to 10 would let batches fill completely, at the price of up to 7.5 ms extra delay. If instead records arrive so fast that batches are already full, `linger.ms` changes nothing and `batch.size` is the knob to raise."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A big batch.size multiplies by the number of partitions The producer keeps one open batch per partition that currently receives data, and allocates a buffer of `batch.size` for it in anticipation of more records. A producer that writes to 500 partitions with `batch.size=131072` can hold more than 62 MiB in open batches, which is already more than the default `buffer.memory` of 32 MiB. Then `send()` starts to block for memory even though the brokers are fine. Size `buffer.memory` as at least the number of active partitions times `batch.size`, plus headroom."
+        },
+        {
+          "type": "markdown",
+          "text": "### Compression\n\nThe producer compresses a whole batch at once and the broker stores it that way, so compression saves network traffic, disk space and replication traffic together. Because a bigger batch contains more repetition, more batching usually means a better compression ratio. JSON events compress well since field names repeat in every record; payloads that are already compressed or encrypted (images, encrypted blobs) do not."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "compression. type",
+            "Compression ratio",
+            "CPU cost",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`none`",
+              "none",
+              "none",
+              "Right for tiny records or already compressed data."
+            ],
+            [
+              "`gzip`",
+              "Highest of the four",
+              "Highest",
+              "Rarely worth it unless bandwidth is very expensive. Level: compression.gzip.level."
+            ],
+            [
+              "`snappy`",
+              "Moderate",
+              "Low",
+              "Fast, established choice."
+            ],
+            [
+              "`lz4`",
+              "Moderate",
+              "Lowest",
+              "Very fast; good when latency matters. Level: compression.lz4.level."
+            ],
+            [
+              "`zstd`",
+              "High, close to gzip",
+              "Moderate",
+              "Good all-round choice for bulk data. Level: compression.zstd.level (default 3)."
+            ]
+          ],
+          "caption": "Compression codecs, relative to each other. Always measure with your own data."
+        },
+        {
+          "type": "markdown",
+          "text": "On the broker side, the topic setting `compression.type` defaults to `producer`, which means \"keep the batch exactly as the producer compressed it\". The broker then spends no CPU on it. If you set a specific codec on the topic that differs from the producer's, the broker has to decompress and recompress every batch, which costs CPU for no benefit in most cases.\n\n### LAB 3.1 · Measure batching and compression with the performance test\n\nKafka ships a load generator, `kafka-producer-perf-test.sh`. It needs a topic, a record count, a record size and a target rate (`-1` means \"as fast as possible\"). The commands assume the single local broker from the hands-on Part. Create a topic first."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --create --topic perf-test --partitions 3 --bootstrap-server localhost:9092\nCreated topic perf-test.",
+          "title": "Create the test topic"
+        },
+        {
+          "type": "markdown",
+          "text": "Run 1 uses the defaults. The tool prints a progress line every few seconds and a summary line at the end; we keep only the last line and split it at the commas so it fits the page."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-producer-perf-test.sh --topic perf-test --num-records 1000000 \\\n    --record-size 1024 --throughput -1 --bootstrap-server localhost:9092 | tail -1 | tr ',' '\\n'\n1000000 records sent\n 61236.5 records/sec (59.80 MB/sec)\n 9.18 ms avg latency\n 412.00 ms max latency\n 5 ms 50th\n 24 ms 95th\n 96 ms 99th\n 301 ms 99.9th.",
+          "title": "Run 1: defaults"
+        },
+        {
+          "type": "markdown",
+          "text": "Run 2 changes three settings. Put them in a file and pass it with `--command-config`."
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "linger.ms=50\nbatch.size=131072\ncompression.type=lz4",
+          "title": "tuned.properties"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-producer-perf-test.sh --topic perf-test --num-records 1000000 \\\n    --record-size 1024 --throughput -1 --bootstrap-server localhost:9092 \\\n    --command-config tuned.properties | tail -1 | tr ',' '\\n'\n1000000 records sent\n 118623.9 records/sec (115.84 MB/sec)\n 31.45 ms avg latency\n 529.00 ms max latency\n 22 ms 50th\n 71 ms 95th\n 190 ms 99th\n 402 ms 99.9th.",
+          "title": "Run 2: larger batches, longer linger, lz4"
+        },
+        {
+          "type": "markdown",
+          "text": "The numbers above are illustrative of the typical direction, not a measurement; yours will differ with hardware, record content and broker settings. What to look at: throughput (records/sec) roughly doubles in this example, while the average latency and the percentiles rise because each record now waits in a bigger batch. Whether that trade is good depends on the use case, which is the point of the next section. Two cautions. The tool fills records with random letters, so compression ratios on real data will differ (use `--payload-file` with sample events for a realistic test). And a one-broker laptop cluster says nothing about production capacity: compare settings against each other, not against an absolute number."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Older option names In Kafka 4.2 `--producer.config` became `--command-config`, `--producer-props` became `--command-property`, and `--bootstrap-server` and `--reporting-interval` were added to the producer performance test (KIP-1147). Before 4.2 you pass the bootstrap address as `--producer-props bootstrap.servers=localhost:9092`. The old names still work in 4.x but are deprecated and will be removed in Kafka 5.0."
+        },
+        {
+          "type": "markdown",
+          "text": "### Let the producer's own metrics tell you what to change\n\nThe producer publishes metrics through JMX and through `producer.metrics()`. A handful of them show how batching behaves right now. All of them belong to the group `producer-metrics`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "Meaning",
+            "How to use it"
+          ],
+          "rows": [
+            [
+              "`batch-size-avg`",
+              "Average bytes sent per partition per request",
+              "Close to batch.size: batches are full, raise batch.size. Far below: they leave early, raise linger.ms."
+            ],
+            [
+              "`records-per-request-avg`",
+              "Average records per request",
+              "A value near 1 means no real batching is happening."
+            ],
+            [
+              "`compression-rate-avg`",
+              "Average ratio of compressed to uncompressed batch size",
+              "Lower is better; a value near 1.0 means compression gains nothing."
+            ],
+            [
+              "`record-queue-time-avg`",
+              "Average time in ms that batches spend in the buffer",
+              "Roughly what lingering costs you in latency."
+            ],
+            [
+              "`request-latency-avg`",
+              "Average request latency in ms",
+              "Broker and network time per request."
+            ],
+            [
+              "`bufferpool-wait-ratio` `waiting-threads`",
+              "Share of time appenders wait for buffer memory; number of threads blocked for memory",
+              "Above zero means `send()` is blocking: raise buffer.memory or slow the source down."
+            ]
+          ],
+          "caption": "Producer metrics for tuning."
+        },
+        {
+          "type": "markdown",
+          "text": "### A tuning method, and two ShopStream profiles\n\nTune by measurement, one change at a time. Decide whether you optimise throughput or latency. Record a baseline with realistic payloads. Change one setting (batching first, then compression), repeat the test, and read the metrics above to see why the result changed. Settings belong to a producer instance, so a service with two kinds of traffic can simply create two producers with different settings."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "payments (latency-critical)",
+            "page-views (bulk clickstream)"
+          ],
+          "rows": [
+            [
+              "Goal",
+              "Fast confirmation for each customer",
+              "Maximum records per second at low cost"
+            ],
+            [
+              "linger.ms",
+              "0 to 5",
+              "20 to 100"
+            ],
+            [
+              "batch.size",
+              "default",
+              "64 KiB to 128 KiB"
+            ],
+            [
+              "compression.type",
+              "none or lz4",
+              "lz4 or zstd"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "payments (latency-critical)",
+            "page-views (bulk clickstream)"
+          ],
+          "rows": [
+            [
+              "acks",
+              "all",
+              "all (use 1 only if losing some clicks is accepted)"
+            ]
+          ],
+          "caption": "Two profiles in ShopStream."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you increase the throughput of a Kafka producer? Send asynchronously and share one producer. Increase batching: raise `linger.ms` and `batch.size` so that requests carry more records. Enable compression (`lz4` or `zstd`) to cut network and disk volume; it works best with big batches. Make sure `buffer.memory` is large enough for the number of active partitions, and add partitions or brokers if one partition leader is the bottleneck. Weaken `acks` only if losing data is acceptable. Measure with `kafka-producer-perf-test.sh` and the producer metrics, and expect latency to rise as batches grow."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Batching is the main lever: a batch leaves when it is full (`batch.size`) or has waited `linger.ms`.\n- Compression works per batch and is most effective with big batches; the broker keeps the producer's compression when the topic uses `compression.type=producer`.\n- Open batches cost memory: partitions times `batch.size` must fit in `buffer.memory`.\n- Measure with `kafka-producer-perf-test.sh`, compare runs against each other, and read `batch-size-avg`, `compression-rate-avg` and `record-queue-time-avg` to understand why.\n- Use separate producer instances for latency-critical and bulk traffic."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-6",
+      "type": "concept",
+      "title": "Partitioning in Practice",
+      "subtopicId": "3-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Which partition a record lands in decides three things at once: the order in which consumers see it (Kafka orders records only within a partition), how much work each consumer gets (parallelism is limited by the number of partitions), and how evenly the brokers are loaded. The earlier chapter on `send()` showed the mechanics. This chapter is about the decisions: which key to choose, what goes wrong with hot partitions, why adding partitions is dangerous for keyed topics, and when (rarely) to write your own partitioner.\n\n### Choosing the key\n\nThe key is the unit of ordering. Pick the entity whose events must be processed in the order they happened, and use its id as the key. In ShopStream every event of one order, `OrderCreated`, then `PaymentAuthorized`, then `StockReserved`, must be seen in that sequence, so the topics `orders`, `payments`, `inventory` and `shipments` are keyed by `orderId`. The `notifications` topic is keyed by `customerId`, because messages to one customer should not overtake each other, and `page-views` by `sessionId`.\n\nA good key has four properties. It identifies the thing whose order matters. It has many distinct values (high cardinality), so the hash can spread the load. Its traffic is reasonably even across values. And it is stable: the same entity must always produce the same key bytes. If order does not matter, send records without a key; the built-in sticky logic then gives the best batching and balance.\n\nTwo things to remember about order. First, it exists only per partition: two keys in different partitions have no relative order. Second, order within a partition is the order in which records reach the producer's accumulator. If two threads send events for the same order concurrently, the producer cannot know which came \"first\". Let one thread (or one queue) own the events of a key, or sequence the sends. The ordering guarantee under retries comes from idempotence (on by default, see the reliability chapter), not from `max.in.flight.requests.per.connection=1`.\n\n### Hot partitions\n\nA hot partition receives far more traffic than its siblings. Its leader broker works harder, its consumer falls behind while the others idle, and adding consumers does not help, because one partition can be read by only one consumer of a group. The usual causes are skewed keys (one very large customer or seller), a default key for \"unknown\" values (everything with the key `unknown` or an empty string lands together), and a key with too few distinct values (such as a country code with a handful of values).\n\nNotice that adding partitions does not fix a hot key. A single key always hashes to a single partition: if one customer produces 30 percent of all events, the partition that owns that customer receives at least 30 percent of the traffic, whatever the partition count. Detect the problem by comparing the end offsets of the partitions, or the lag per partition of your consumer group (a later chapter shows how)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic orders\norders:0:48210\norders:1:51377\norders:2:301954",
+          "title": "Compare how much data each partition received"
+        },
+        {
+          "type": "markdown",
+          "text": "In this example (output is illustrative: the format is `topic:partition:end-offset`) partition 2 holds about six times as many records as each of the others. The remedies, in order of preference: choose a better key (a more fine-grained entity, or a composite such as `customerId` plus an order number when strict per-customer order is not required); split the hot entity across several keys by adding a suffix (\"salting\", for example `c-corp-1#0` to `c-corp-1#3`), at the price of losing order between the pieces; or give the hot entity its own topic.\n\n### Adding partitions changes where keys go\n\nKafka lets you increase the number of partitions of an existing topic, but never decrease it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --alter --topic orders --partitions 6 --bootstrap-server localhost:9092",
+          "title": "Increase the partition count"
+        },
+        {
+          "type": "markdown",
+          "text": "The command succeeds quietly, and the danger starts with the next record. The default partitioner computes the hash modulo the number of partitions, so a different count means a different result for most keys. The table shows real results of the default hash (murmur2 of the UTF-8 key bytes) for the same keys at different partition counts."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "3 partitions",
+            "4 partitions",
+            "6 partitions",
+            "12 partitions"
+          ],
+          "rows": [
+            [
+              "o-1001",
+              "1",
+              "1",
+              "1",
+              "1"
+            ],
+            [
+              "o-1002",
+              "1",
+              "3",
+              "1",
+              "7"
+            ],
+            [
+              "o-1003",
+              "2",
+              "3",
+              "5",
+              "11"
+            ],
+            [
+              "o-1004",
+              "2",
+              "1",
+              "5",
+              "5"
+            ],
+            [
+              "c-77",
+              "1",
+              "2",
+              "4",
+              "10"
+            ],
+            [
+              "c-78",
+              "0",
+              "1",
+              "3",
+              "9"
+            ]
+          ],
+          "caption": "Partition chosen by the default hash for the same key, at different partition counts."
+        },
+        {
+          "type": "markdown",
+          "text": "Suppose `orders` grows from 3 to 4 partitions. Order `o-1002` was in partition 1, and from now on its new events go to partition 3. A consumer that reads partition 3 may see `OrderConfirmed` before the consumer of partition 1 has finished with `OrderCreated`: per-key order is broken at the boundary. Kafka Streams state, caches keyed by partition, and compacted topics (where one key now lives in two partitions) have similar problems. When the partition count doubles, each key either stays or moves to its old partition plus the old count (1 becomes 1 or 4, 2 becomes 2 or 5), which is neat but does not preserve order for the keys that move.\n\nSo plan the partition count for the future: estimate the growth, choose a number with many divisors (for example 6 or 12) that also exceeds the maximum number of consumers you expect to run, and avoid needing to change it. If you must grow a keyed topic, the safer route is to create a new topic with more partitions, copy the data, and move producers and consumers over together. For topics without keys the change is harmless."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Check the partition count before relying on key order A keyed topic keeps its per-key ordering only while the partition count stays the same. Anyone with `kafka-topics.sh --alter` access can change it, and nothing in the producer or the broker warns you. Treat the partition count of a keyed topic as part of its contract and restrict who may alter it."
+        },
+        {
+          "type": "markdown",
+          "text": "### Writing a custom partitioner\n\nYou almost never need one. The built-in logic is good, and many reasons to customise are better solved otherwise. A reserved lane for urgent traffic is usually cleaner as a separate topic (own retention, own consumers, own access rules), and a fixed partition can be named in the `ProducerRecord`. A custom partitioner is justified when the rule must apply to every record of a producer, for example to line up with the partitioning of another system. To show the mechanics, here is an express-lane partitioner for the `notifications` topic. Keys that start with `urgent:` always go to partition 0, so a dedicated consumer can read that partition with low delay; all other records are spread over the remaining partitions. Ordering between the urgent and the normal lane is given up on purpose."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.producer;\n\nimport java.nio.charset.StandardCharsets;\nimport java.util.Arrays;\nimport java.util.Map;\nimport java.util.concurrent.ThreadLocalRandom;\nimport org.apache.kafka.clients.producer.Partitioner;\nimport org.apache.kafka.common.Cluster;\n\n/** Keys that start with \"urgent:\" go to partition 0; everything else to partitions 1..n-1. */\npublic class ExpressLanePartitioner implements Partitioner {\n\n    private static final byte[] URGENT = \"urgent:\".getBytes(StandardCharsets.UTF_8);\n\n    @Override\n    public void configure(Map<String, ?> configs) {\n        // nothing to configure in this example\n    }\n\n    @Override\n    public int partition(String topic, Object key, byte[] keyBytes,\n                         Object value, byte[] valueBytes, Cluster cluster) {\n        int partitions = cluster.partitionsForTopic(topic).size();\n        if (partitions == 1) {\n            return 0;\n        }\n        if (keyBytes == null) {\n            return ThreadLocalRandom.current().nextInt(1, partitions);\n        }\n        if (keyBytes.length >= URGENT.length\n                && Arrays.equals(keyBytes, 0, URGENT.length, URGENT, 0, URGENT.length)) {\n            return 0;\n        }\n        return 1 + Math.floorMod(Arrays.hashCode(keyBytes), partitions - 1);\n    }\n\n    @Override\n    public void close() {\n        // nothing to release\n    }\n}",
+          "title": "ExpressLanePartitioner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Register it with `props.put(ProducerConfig.PARTITIONER_CLASS_CONFIG,` `ExpressLanePartitioner.class.getName());`. The producer creates one instance and calls `configure` once, so the settings of the producer are visible there.\n\n#### What to notice\n\n- `partition()` receives both the original `key` and `value` objects and their serialized bytes, plus a `Cluster` snapshot. Compute the partition count on every call, because it can change after a metadata refresh.\n- The result must be between 0 and the partition count minus one. A negative number is rejected immediately, and a number that is too large makes the send fail.\n- One instance serves all threads that call `send()`, and it runs on the calling thread for every single record. It must be thread-safe, fast and free of blocking calls.\n- Once you set `partitioner.class`, your code decides for keyless records too: the built-in sticky and adaptive logic is gone, and `partitioner.ignore.keys`, `partitioner.adaptive.partitioning.enable` and `partitioner.availability.timeout.ms` have no effect. That is why keyless records are picked at random here, which batches worse than sticky.\n- `Arrays.hashCode` is not the default murmur2 hash. That is fine on a topic where every producer uses this partitioner. Mixing partitioners on one topic splits one key over several partitions."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Other client libraries may hash differently The Java producer hashes with murmur2. Producers written with other libraries may default to another function (the C client librdkafka, for example, defaults to a CRC32 based one and offers a murmur2 mode for compatibility with Java). If a Java service and a non-Java service both write keyed records to one topic, check that they place the same key in the same partition, or per-key ordering silently breaks."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What happens to ordering if you add partitions to a topic that uses keys? The default partitioner takes the key hash modulo the partition count. With a new count, many keys map to different partitions. New events for such a key go to a new partition while its older events remain in the old one, so consumers can see them out of order, and stateful consumers (caches, Kafka Streams state) are invalidated. Avoid it by choosing the partition count with growth in mind, or by migrating to a new topic. Kafka cannot reduce the number of partitions."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The key defines the unit of ordering; choose the entity whose events must stay in order (`orderId`, `customerId`, `sessionId`).\n- A hot key makes a hot partition, and more partitions do not help: one key always maps to one partition.\n- Adding partitions changes the hash-to-partition mapping for most keys and breaks per-key order across the change; plan the count up front.\n- A custom `Partitioner` replaces all built-in logic including keyless handling, must be fast and thread-safe, and must agree with every other producer of the topic.\n- Prefer simpler options first: a better key, an explicit partition, or a separate topic."
         }
       ]
     }

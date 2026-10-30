@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, Copy } from 'lucide-react'
 import { highlightLines, plainLines } from '@/lib/content/highlight.js'
 import { parseLineSpec } from '@/lib/content/normalize.js'
@@ -14,13 +14,25 @@ export default function CodeBlock({ code, language, title, highlight, walkthroug
   const [lines, setLines] = useState(() => plainLines(source))
   const [step, setStep] = useState(0)
   const [copied, setCopied] = useState(false)
+  const rootRef = useRef(null)
 
+  // Highlight only when the block comes near the screen: long chapters hold dozens of listings.
   useEffect(() => {
     let alive = true
     setLines(plainLines(source))
-    highlightLines(source, language).then((result) => alive && setLines(result))
+    const node = rootRef.current
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return
+        observer.disconnect()
+        highlightLines(source, language).then((result) => alive && setLines(result))
+      },
+      { rootMargin: '600px 0px' },
+    )
+    observer.observe(node)
     return () => {
       alive = false
+      observer.disconnect()
     }
   }, [source, language])
 
@@ -43,7 +55,7 @@ export default function CodeBlock({ code, language, title, highlight, walkthroug
   }
 
   return (
-    <figure className="overflow-hidden rounded-xl border border-line bg-panel">
+    <figure ref={rootRef} className="overflow-hidden rounded-xl border border-line bg-panel">
       <figcaption className="flex items-center justify-between border-b border-line bg-panel-2 px-3 py-1.5 text-xs text-muted">
         <span className="truncate">{title || language || 'code'}</span>
         <span className="flex items-center gap-2">

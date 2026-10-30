@@ -1,0 +1,965 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "132-146"
+  },
+  "sections": [
+    {
+      "id": "ch-8-1",
+      "type": "concept",
+      "title": "Why Kafka Connect",
+      "subtopicId": "8-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Almost every Kafka deployment needs the same plumbing sooner or later. Orders sit in a PostgreSQL database and must reach Kafka. Events in Kafka must end up in a search index, a data warehouse or an object store. Each of these jobs is a small program: read from one side, write to the other, remember how far you got, retry on failure, scale out when the data grows, and tell an operator when something breaks. Writing that program once is easy. Writing it ten times, with correct offset handling and sane restart behaviour, is not.\n\n**Kafka Connect** is the framework inside Apache Kafka that does the generic part of this work for you. You pick a ready-made **connector**, which is a plugin that knows how to talk to one particular system, give it a configuration and submit it to a Connect cluster. The framework runs it, tracks its progress, spreads the work over several machines and restarts it after a failure. You write no Java at all unless nobody has built a connector for your system yet.\n\n### The building blocks\n\nConnect has a small vocabulary. Learn these six words and the rest of this Part reads easily."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Term",
+            "What it is",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`Connector`",
+              "The logical job, such as \"copy this table into Kafka\". A plugin class plus a configuration. It decides how to split the job into tasks.",
+              "`PostgresConnector`"
+            ],
+            [
+              "`Task`",
+              "The unit of work. A source task reads from an external system, a sink task writes to one. Tasks run as threads inside a worker.",
+              "3 tasks copying 3 tables"
+            ],
+            [
+              "`Worker`",
+              "A JVM process that hosts connectors and tasks. Several workers with the same `group.id` form a Connect cluster.",
+              "`connect-distributed.sh`"
+            ],
+            [
+              "`Converter`",
+              "Turns Connect's internal data (a schema plus values) into bytes for Kafka, and back. Set with `key.converter` and `value.converter`.",
+              "`JsonConverter`"
+            ],
+            [
+              "`Transform`",
+              "A Single Message Transform (SMT): a small step that changes each record in flight, for example dropping a field or renaming the topic.",
+              "`MaskField`"
+            ],
+            [
+              "`Dead letter` `queue`",
+              "An optional topic where a sink connector parks records it could not process, instead of failing.",
+              "`orders-sink-dlq`"
+            ]
+          ],
+          "caption": "The vocabulary of Kafka Connect."
+        },
+        {
+          "type": "markdown",
+          "text": "A connector is only a manager. When you start it, the framework asks it for a list of task configurations, then hands those to workers. The setting `tasks.max` is an upper bound: the Kafka documentation says the connector \"may create fewer tasks if it cannot achieve this level of parallelism\". A JDBC source that reads one table cannot use more than one task however large you set `tasks.max`, while a sink reading a topic with 12 partitions can use up to 12.\n\n### How a record travels\n\nThe order of the steps differs between the two directions. In a **source** connector the data starts outside Kafka and the converter is the last step before the producer. In a **sink** connector the converter is the first step after the consumer.\n\n**Data path through a Connect task**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SOURCE  external system → SourceTask.poll() → transforms → converter → Kafka topic\nSINK    Kafka topic → converter → transforms → SinkTask.put() → external system"
+        },
+        {
+          "type": "markdown",
+          "text": "Behind the scenes a source task owns a normal Kafka producer and a sink task owns a normal Kafka consumer. That is why many producer and consumer settings can be tuned for Connect (a later chapter shows how), and why everything you learned about batching, partitions and consumer groups still applies."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 72.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 58.0 L86.0 58.0 C87.6 58.0 89.0 56.7 89.0 55.0 L89.0 5.0 C89.0 3.3 87.6 2.0 86.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 55.0 C2.0 56.7 3.3 58.0 5.0 58.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 30.0 L104.0 30.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M193.0 30.0 L207.0 30.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M295.9 30.0 L309.9 30.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M398.9 30.0 L412.9 30.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M104.0 30.0 L98.6 27.4 L98.6 32.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M108.0 58.0 L189.0 58.0 C190.6 58.0 192.0 56.7 192.0 55.0 L192.0 5.0 C192.0 3.3 190.6 2.0 189.0 2.0 L108.0 2.0 C106.3 2.0 105.0 3.3 105.0 5.0 L105.0 55.0 C105.0 56.7 106.3 58.0 108.0 58.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M207.0 30.0 L201.6 27.4 L201.6 32.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M211.0 58.0 L291.9 58.0 C293.6 58.0 294.9 56.7 294.9 55.0 L294.9 5.0 C294.9 3.3 293.6 2.0 291.9 2.0 L211.0 2.0 C209.3 2.0 208.0 3.3 208.0 5.0 L208.0 55.0 C208.0 56.7 209.3 58.0 211.0 58.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M309.9 30.0 L304.5 27.4 L304.5 32.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M313.9 58.0 L394.9 58.0 C396.6 58.0 397.9 56.7 397.9 55.0 L397.9 5.0 C397.9 3.3 396.6 2.0 394.9 2.0 L313.9 2.0 C312.3 2.0 310.9 3.3 310.9 5.0 L310.9 55.0 C310.9 56.7 312.3 58.0 313.9 58.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M412.9 30.0 L407.5 27.4 L407.5 32.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M416.9 58.0 L497.9 58.0 C499.6 58.0 500.9 56.7 500.9 55.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L416.9 2.0 C415.3 2.0 413.9 3.3 413.9 5.0 L413.9 55.0 C413.9 56.7 415.3 58.0 416.9 58.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"137.6\" y=\"23.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.8\" lengthAdjust=\"spacingAndGlyphs\">Source</text><text x=\"347.7\" y=\"23.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"13.4\" lengthAdjust=\"spacingAndGlyphs\">Sink</text><text x=\"28.8\" y=\"28.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"33.3\" lengthAdjust=\"spacingAndGlyphs\">Databases</text><text x=\"242.6\" y=\"28.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"17.7\" lengthAdjust=\"spacingAndGlyphs\">Kafka</text><text x=\"445.5\" y=\"28.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"23.9\" lengthAdjust=\"spacingAndGlyphs\">Targets</text><text x=\"131.1\" y=\"32.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"34.8\" lengthAdjust=\"spacingAndGlyphs\">connectors</text><text x=\"337.0\" y=\"32.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"34.8\" lengthAdjust=\"spacingAndGlyphs\">connectors</text><text x=\"30.4\" y=\"36.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"30.1\" lengthAdjust=\"spacingAndGlyphs\">files, APIs</text><text x=\"242.0\" y=\"36.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"18.8\" lengthAdjust=\"spacingAndGlyphs\">topics</text><text x=\"431.0\" y=\"36.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"52.9\" lengthAdjust=\"spacingAndGlyphs\">search, S3, DWH</text><text x=\"137.7\" y=\"41.2\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.5\" lengthAdjust=\"spacingAndGlyphs\">(tasks)</text><text x=\"343.7\" y=\"41.2\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.5\" lengthAdjust=\"spacingAndGlyphs\">(tasks)</text></svg>",
+          "width": 503,
+          "caption": "A Connect cluster is a set of workers. Connectors are split into tasks, and the workers share the tasks between them; source tasks write to Kafka and sink tasks read from it.",
+          "alt": "Source Sink | Databases Kafka Targets | connectors connectors | files, APIs topics search, S3, DWH | (tasks) (tasks)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Offsets: how Connect remembers where it is\n\nA sink connector is the easy case. Its tasks are consumers in one consumer group named `connect-` followed by the connector name, and the offsets are committed to `__consumer_offsets` like any other group. You can look at a sink connector's lag with `kafka-consumer-groups.sh --describe --group connect-demo-file-sink`.\n\nA source connector has a harder problem, because \"position\" means something different for every system: a byte offset in a file, a log sequence number in a database, a page token in a REST API. So each source task attaches a small **source partition** map and a **source offset** map to every record it produces. The framework stores the latest offsets in an internal Kafka topic (the file `offset.storage.file.filename` in standalone mode) and gives them back to the task when it restarts. Offsets are flushed on a timer, `offset.flush.interval.ms`, which defaults to 60000 (one minute)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "By default Connect gives you at-least-once, not exactly-once. A source task writes its records to Kafka first and its offsets later. If the worker dies between the two, the task restarts from the older offset and re-sends some records. Sinks behave the same way: offsets are committed after the data is written, so a crash can replay a batch. Design sinks to be idempotent (an upsert by primary key is the classic example). Kafka does offer exactly-once for source connectors on request; a later chapter in this Part covers it and its limits."
+        },
+        {
+          "type": "markdown",
+          "text": "### Standalone and distributed mode\n\nA worker can run in two modes. **Standalone** mode is one process that reads its connector configurations from files on the command line and keeps offsets in a local file. It suits development, demos and the occasional single-machine job. **Distributed** mode runs any number of workers that coordinate through Kafka itself: connector configurations, offsets and status live in three internal topics, and you manage connectors through a REST API. Distributed mode is what you run in production, even with a single worker, because its state survives the machine."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Standalone",
+            "Distributed"
+          ],
+          "rows": [
+            [
+              "Start command",
+              "`bin/connect-standalone.sh` `worker.properties connector.properties`",
+              "`bin/connect-distributed.sh` `worker.properties`"
+            ],
+            [
+              "Connectors defined by",
+              "Property files given at start-up",
+              "REST calls with JSON bodies"
+            ],
+            [
+              "Offsets stored in",
+              "A local file",
+              "The offsets topic in Kafka"
+            ],
+            [
+              "Worker fails",
+              "Work stops until you restart it",
+              "The other workers take over its tasks"
+            ],
+            [
+              "Scale out",
+              "Not possible",
+              "Start more workers with the same `group.id`"
+            ],
+            [
+              "Exactly-once for sources",
+              "Not available",
+              "Available"
+            ]
+          ],
+          "caption": "Standalone versus distributed mode."
+        },
+        {
+          "type": "markdown",
+          "text": "### When to use Connect, and when not to\n\nConnect shines when the job is \"copy data between Kafka and system X, continuously, reliably\". It is the wrong tool when the job needs real business logic."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Job",
+            "Reach for",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Continuously copy the `orders` table into Kafka",
+              "Connect with Debezium",
+              "CDC connectors already exist and handle snapshots and restarts"
+            ],
+            [
+              "Load the `orders` topic into a search index or S3",
+              "Connect sink",
+              "No code, scalable, offsets handled"
+            ],
+            [
+              "Send an email when `PaymentFailed` arrives",
+              "A consumer (Spring Kafka)",
+              "Business logic and side effects"
+            ],
+            [
+              "Join orders with customers, count per minute",
+              "Kafka Streams",
+              "Stateful processing"
+            ],
+            [
+              "One-off import of a small CSV file",
+              "A script",
+              "Not worth an always-on cluster"
+            ]
+          ],
+          "caption": "Choosing between Connect, your own consumer and Kafka Streams."
+        },
+        {
+          "type": "markdown",
+          "text": "Two honest warnings. First, connector quality varies a lot. The connector for a popular database is usually solid, a niche one may be a weekend project, so check the project's activity, its licence and its delivery guarantees before you depend on it. Second, Connect is infrastructure you must operate: a cluster, internal topics, plugins to upgrade, a REST API to secure. If you need one trivial sink and no connector exists, a 60-line consumer is often the cheaper answer."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What problem does Kafka Connect solve, and how is a connector different from a task? Connect is a framework for streaming data between Kafka and other systems without custom code: it handles offsets, retries, scaling, failover, serialization and a management API. A connector is the logical job and its configuration; it decides how to divide the work. A task is the thread that actually moves data, and the tasks of one connector are spread across the workers. Parallelism is bounded by `tasks.max` and by what the system allows (for example, topic partitions for a sink)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Connect is part of Apache Kafka and moves data between Kafka and external systems using ready-made connectors.\n- Connector = logical job; task = unit of parallel work; worker = JVM process; converter = bytes translation; SMT = per-record change.\n- Source offsets are stored by Connect in an internal topic; sink offsets are an ordinary consumer group named `connect-<connector name>`.\n- The default guarantee is at-least-once; make sinks idempotent.\n- Use distributed mode for anything beyond experiments.\n- Connect is for data movement, not for business logic or stream processing."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-2",
+      "type": "concept",
+      "title": "Running Connect: Workers and the REST API",
+      "subtopicId": "8-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A Connect cluster is nothing more than worker processes that share a `group.id`. This chapter starts one, explains the worker settings that matter, shows the three internal topics, and then walks through the REST API that you will use every day. The demo connectors are the two file connectors that ship with Kafka; the next chapter explains them in detail.\n\n### Standalone mode in one minute\n\nStandalone mode is the quickest way to see Connect work. The Kafka quickstart does exactly this: it appends the file connector JAR to the worker's `plugin.path` and starts a worker with two connector property files."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ echo \"plugin.path=libs/connect-file-4.3.1.jar\" >> config/connect-standalone.properties\n$ echo -e \"foo\\nbar\" > test.txt\n$ bin/connect-standalone.sh config/connect-standalone.properties \\\n    config/connect-file-source.properties config/connect-file-sink.properties\n# ... log output; stop the worker with Ctrl+C\n$ more test.sink.txt\nfoo\nbar",
+          "title": "Standalone worker with a file source and a file sink (from the Kafka quickstart, version 4.3.1)"
+        },
+        {
+          "type": "markdown",
+          "text": "The sample worker file keeps offsets in a local file (`offset.storage.file.filename`). Everything else in this chapter is about distributed mode.\n\n### A distributed worker\n\nHere is a worker configuration for the ShopStream development cluster. Save it as `config/shopstream-connect.properties` inside the Kafka installation directory."
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "# Which Kafka cluster to use, and which Connect cluster this worker joins\nbootstrap.servers=localhost:9092\ngroup.id=shopstream-connect\n\n# Default converters; a connector may override them\nkey.converter=org.apache.kafka.connect.storage.StringConverter\nvalue.converter=org.apache.kafka.connect.json.JsonConverter\nvalue.converter.schemas.enable=false\n\n# Internal topics (replication factor 1 only because the dev cluster has one broker)\nconfig.storage.topic=shopstream-connect-configs\noffset.storage.topic=shopstream-connect-offsets\nstatus.storage.topic=shopstream-connect-status\nconfig.storage.replication.factor=1\noffset.storage.replication.factor=1\nstatus.storage.replication.factor=1\n\n# REST API (0.0.0.0 = all interfaces) and the address other workers use to reach us\nlisteners=http://0.0.0.0:8083\nrest.advertised.host.name=localhost\n\n# Plugins: the file connectors that ship with Kafka, plus our own plugin directory\nplugin.path=libs/connect-file-4.3.1.jar,/opt/connect-plugins",
+          "title": "shopstream-connect.properties"
+        },
+        {
+          "type": "markdown",
+          "text": "The table below lists the worker settings you will touch most often. Defaults are from the Kafka 4.2 configuration reference."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`group.id`",
+              "none",
+              "Names the Connect cluster. Workers with the same value form one cluster."
+            ],
+            [
+              "`config.storage.topic`",
+              "none",
+              "Stores connector configurations. One partition, compacted."
+            ],
+            [
+              "`offset.storage.topic`",
+              "none",
+              "Stores source connector offsets. Many partitions, compacted."
+            ],
+            [
+              "`status.storage.topic`",
+              "none",
+              "Stores connector and task status. Compacted."
+            ],
+            [
+              "`config/offset/status.storage.` `replication.factor`",
+              "3",
+              "Used when Connect creates the topics. Fails on a one-broker cluster."
+            ],
+            [
+              "`offset.storage.partitions,` `status.storage.partitions`",
+              "25, 5",
+              "Partition counts when Connect creates the topics."
+            ],
+            [
+              "`plugin.path`",
+              "null",
+              "Comma-separated paths that contain connectors, converters and transformations."
+            ],
+            [
+              "`listeners`",
+              "http://:8083",
+              "URIs of the REST API."
+            ],
+            [
+              "`rest.advertised.host.name,` `rest.advertised.port,` `rest.advertised.listener`",
+              "null",
+              "The address given to other workers; needed in containers."
+            ],
+            [
+              "`offset.flush.interval.ms`",
+              "60000",
+              "How often source offsets are committed."
+            ],
+            [
+              "`exactly.once.source.support`",
+              "disabled",
+              "Transactional source connectors (see the chapter on exactly-once)."
+            ],
+            [
+              "`connector.client.config.overr` `ide.policy`",
+              "All",
+              "Which producer, consumer and admin settings a connector may override."
+            ]
+          ],
+          "caption": "Important worker settings."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Older articles configure the REST port with `rest.port` and `rest.host.name`. The Kafka 4.2 worker configuration reference lists neither. The REST endpoint is set with `listeners`, and the address advertised to other workers with `rest.advertised.host.name`, `rest.advertised.port` and `rest.advertised.listener`. If an old tutorial's `rest.port=8084` seems to have no effect, this is why: use `listeners=http://0.0.0.0:8084` instead."
+        },
+        {
+          "type": "markdown",
+          "text": "### The three internal topics\n\nA distributed worker keeps all shared state in Kafka. The Kafka documentation describes the three topics like this: the config topic \"should have a single partition, be replicated, and be configured for compaction\"; the offsets topic should have many partitions; the status topic can have several. If the topics do not exist, Connect creates them with its own defaults, and the documentation recommends that you create them yourself."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Topic setting",
+            "Content",
+            "Shape"
+          ],
+          "rows": [
+            [
+              "`config.storage.topic`",
+              "One record per connector config and per task config, plus commit markers",
+              "1 partition, compacted"
+            ],
+            [
+              "`offset.storage.topic`",
+              "The latest source offsets, keyed by connector and source partition",
+              "Many partitions, compacted"
+            ],
+            [
+              "`status.storage.topic`",
+              "State of every connector and task (running, failed, ...)",
+              "A few partitions, compacted"
+            ]
+          ],
+          "caption": "What each internal topic holds."
+        },
+        {
+          "type": "markdown",
+          "text": "For production, create them before the first start:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \\\n    --topic shopstream-connect-configs --partitions 1 \\\n    --replication-factor 1 --config cleanup.policy=compact\nCreated topic shopstream-connect-configs.\n$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \\\n    --topic shopstream-connect-offsets --partitions 25 \\\n    --replication-factor 1 --config cleanup.policy=compact\nCreated topic shopstream-connect-offsets.\n$ bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \\\n    --topic shopstream-connect-status --partitions 5 \\\n    --replication-factor 1 --config cleanup.policy=compact\nCreated topic shopstream-connect-status.",
+          "title": "Create the internal topics (development sizes; use replication factor 3 in production)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The default replication factor of the internal topics is 3. On a single-broker development cluster the worker fails at start-up while creating the topics, with an error saying the replication factor is larger than the number of available brokers. Set the three `*.storage.replication.factor` settings to 1 for development, and keep them at 3 (with `min.insync.replicas=2` on the topics) in production. Never share one set of internal topics between two Connect clusters: the `group.id` and the three topic names must be unique per cluster."
+        },
+        {
+          "type": "markdown",
+          "text": "Now start the worker and check that it answers:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/connect-distributed.sh config/shopstream-connect.properties\n# ... in a second terminal:\n$ curl -s http://localhost:8083/ | jq .\n{\n  \"version\": \"4.3.1\",\n  \"commit\": \"a1b2c3d4e5f6a7b8\",\n  \"kafka_cluster_id\": \"MkU3OEVBNTcwNTJENDM2Qg\"\n}",
+          "title": "Start a distributed worker and ask it who it is"
+        },
+        {
+          "type": "markdown",
+          "text": "The commit hash and cluster ID above are examples. Starting a second worker on another machine with the same `group.id` is all it takes to scale out.\n\n### Plugins and secrets\n\nConnect finds connectors, converters and transformations in the paths listed in `plugin.path`. Each entry is either a directory that contains one sub-directory per plugin (with the plugin's JARs and its dependencies), or a single self-contained JAR. Every plugin gets its own class loader, so two connectors can use different versions of the same library without clashing.\n\n**A plugin directory**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "/opt/connect-plugins/\n├── debezium-connector-postgres/      one folder per plugin, with its JARs\n└── jdbc-sink/                        and all dependency JARs (such as the JDBC driver)"
+        },
+        {
+          "type": "markdown",
+          "text": "Plugins are scanned when the worker starts, so after adding a plugin you must restart the workers (one at a time in a cluster). `GET /connector-plugins` shows what a worker has found. Version 4.x also has a `plugin.discovery` setting (default `hybrid_warn`); leave it alone unless a connector vendor tells you otherwise.\n\nConnector configurations are visible to anyone who can call `GET /connectors/{name}/config`, so database passwords do not belong in them. Use a **config provider** instead: declare it once in the worker file, and reference secrets in the connector JSON with `${provider:path:key}` placeholders. The REST API returns the placeholder, never the secret."
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "config.providers=file\nconfig.providers.file.class=org.apache.kafka.common.config.provider.FileConfigProvider",
+          "title": "Worker file: enable the file config provider"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"database.user\": \"${file:/etc/connect-secrets/shop-db.properties:user}\",\n  \"database.password\": \"${file:/etc/connect-secrets/shop-db.properties:password}\"\n}",
+          "title": "Connector config fragment using the provider"
+        },
+        {
+          "type": "markdown",
+          "text": "### The REST API\n\nEvery worker serves the REST API on its `listeners` port (8083 by default), and any worker can answer any call. Reads are answered from the worker's own copy of the cluster state. Calls that change a configuration are forwarded to the cluster's leader worker, which is why `rest.advertised.host.name` must be an address the other workers can reach. The table is the cheat sheet; all paths are from the Kafka 4.2 user guide."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Path",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "GET",
+              "`/connectors`",
+              "List connector names; add `?expand=status` or `?expand=info` for details"
+            ],
+            [
+              "POST",
+              "`/connectors`",
+              "Create a connector from a JSON body with `name` and `config`"
+            ],
+            [
+              "GET",
+              "`/connectors/{name}`",
+              "Connector info: config, tasks, type"
+            ],
+            [
+              "GET",
+              "`/connectors/{name}/config`",
+              "The configuration only"
+            ],
+            [
+              "PUT",
+              "`/connectors/{name}/config`",
+              "Create or replace a connector from a flat config map (idempotent)"
+            ],
+            [
+              "PATCH",
+              "`/connectors/{name}/config`",
+              "Change only the keys you send (listed in the 4.2 documentation)"
+            ],
+            [
+              "GET",
+              "`/connectors/{name}/status`",
+              "State of the connector and each task"
+            ],
+            [
+              "PUT",
+              "`/connectors/{name}/pause`",
+              "Pause processing, keep tasks allocated"
+            ],
+            [
+              "PUT",
+              "`/connectors/{name}/resume`",
+              "Resume a paused connector"
+            ],
+            [
+              "PUT",
+              "`/connectors/{name}/stop`",
+              "Stop and shut down the tasks, freeing resources"
+            ],
+            [
+              "POST",
+              "`/connectors/{name}/restart`",
+              "Restart; `?includeTasks=true&onlyFailed=true` restarts failed tasks too"
+            ],
+            [
+              "POST",
+              "`/connectors/{name}/tasks/{id}/restart`",
+              "Restart one task"
+            ],
+            [
+              "DELETE",
+              "`/connectors/{name}`",
+              "Delete the connector"
+            ],
+            [
+              "GET",
+              "`/connectors/{name}/tasks`",
+              "The task configurations"
+            ],
+            [
+              "GET",
+              "`/connectors/{name}/topics`",
+              "Topics the connector has used"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Path",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "GET, PATCH, DELETE",
+              "`/connectors/{name}/offsets`",
+              "Read, alter or reset offsets (connector must be stopped to alter or reset)"
+            ],
+            [
+              "GET",
+              "`/connector-plugins`",
+              "Plugins installed on this worker"
+            ],
+            [
+              "PUT",
+              "`/connector-plugins/{class}/config/vali` `date`",
+              "Validate a config without creating anything"
+            ],
+            [
+              "GET, PUT",
+              "`/admin/loggers/{logger}`",
+              "Read or change a log level at run time"
+            ]
+          ],
+          "caption": "REST API cheat sheet. The name is the connector name."
+        },
+        {
+          "type": "markdown",
+          "text": "Older Connect versions also had `GET /connectors/{name}/tasks-config`. It was removed in 4.x; use `GET` `/connectors/{name}/tasks` instead.\n\nLet us create a source connector that reads a text file into a topic. The JSON body goes in a file, which is easier to edit and to keep in Git than a long command line."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"name\": \"demo-file-source\",\n  \"config\": {\n    \"connector.class\": \"org.apache.kafka.connect.file.FileStreamSourceConnector\",\n    \"tasks.max\": \"1\",\n    \"file\": \"/tmp/demo-in.txt\",\n    \"topic\": \"connect-demo\"\n  }\n}",
+          "title": "demo-file-source.json"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X POST -H \"Content-Type: application/json\" \\\n    --data @demo-file-source.json http://localhost:8083/connectors | jq '{name, tasks, type}'\n{\n  \"name\": \"demo-file-source\",\n  \"tasks\": [],\n  \"type\": \"source\"\n}\n$ curl -s http://localhost:8083/connectors\n[\"demo-file-source\"]\n$ curl -s http://localhost:8083/connectors/demo-file-source/status | jq .\n{\n  \"name\": \"demo-file-source\",\n  \"connector\": { \"state\": \"RUNNING\", \"worker_id\": \"localhost:8083\" },\n  \"tasks\": [ { \"id\": 0, \"state\": \"RUNNING\", \"worker_id\": \"localhost:8083\" } ],\n  \"type\": \"source\"\n}\n$ curl -s -X PUT http://localhost:8083/connectors/demo-file-source/pause\n$ curl -s -X PUT http://localhost:8083/connectors/demo-file-source/resume\n$ curl -s -X POST \\\n    \"http://localhost:8083/connectors/demo-file-source/restart?includeTasks=true&onlyFailed=true\"\n$ curl -s -X DELETE http://localhost:8083/connectors/demo-file-source",
+          "title": "The connector lifecycle with curl"
+        },
+        {
+          "type": "markdown",
+          "text": "Pause and resume return an empty body with status 202 (accepted): the change is applied asynchronously, so call `/status` to see it take effect. For automation, prefer `PUT /connectors/{name}/config`, because running it twice with the same body gives the same result, which is what a deployment script wants. If the connector does not exist yet, `PUT` creates it.\n\nBefore you create a connector, you can ask the worker whether the configuration is valid. The call needs the full class name in the path and in the body; in the response, look at `error_count` and at the `errors` of each entry in `configs`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ PLUGIN=org.apache.kafka.connect.file.FileStreamSourceConnector\n$ curl -s -X PUT -H \"Content-Type: application/json\" \\\n    --data \"{\\\"connector.class\\\":\\\"$PLUGIN\\\"}\" \\\n    \"http://localhost:8083/connector-plugins/$PLUGIN/config/validate\" | jq '.error_count'\n1",
+          "title": "Validate a configuration without creating the connector"
+        },
+        {
+          "type": "markdown",
+          "text": "Here the single error is the missing `topic`. Finally, `GET /connector-plugins` tells you whether the plugin you copied into `plugin.path` was actually found:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s http://localhost:8083/connector-plugins | jq -r '.[].class'\norg.apache.kafka.connect.file.FileStreamSinkConnector\norg.apache.kafka.connect.file.FileStreamSourceConnector\norg.apache.kafka.connect.mirror.MirrorCheckpointConnector\norg.apache.kafka.connect.mirror.MirrorHeartbeatConnector\norg.apache.kafka.connect.mirror.MirrorSourceConnector",
+          "title": "List the connector plugins this worker knows"
+        },
+        {
+          "type": "markdown",
+          "text": "The three MirrorMaker 2 connectors ship with Kafka; a later chapter in this Part uses them."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The REST API has no authentication unless you add it. Anyone who can reach port 8083 can create a connector that reads files from the worker, opens database connections with stored credentials or deletes your pipelines. Keep the port on an internal network, put a reverse proxy with authentication in front of it, or use the worker's HTTPS listeners and REST extensions (see the worker configuration reference, `rest.extension.classes`). Never expose it to the internet."
+        },
+        {
+          "type": "markdown",
+          "text": "### Running a worker in a container\n\nThe `apache/kafka` image contains the whole Kafka distribution, so a simple way to get a Connect worker is to build your own image from it and add the worker file and your plugins. Treat this as a sketch to adapt, not a tested recipe."
+        },
+        {
+          "type": "code",
+          "language": "dockerfile",
+          "code": "FROM apache/kafka:4.3.1\nCOPY connect-worker.properties /opt/kafka/config/connect-worker.properties\nCOPY plugins/ /opt/connect-plugins/\nCMD [\"/opt/kafka/bin/connect-distributed.sh\", \"/opt/kafka/config/connect-worker.properties\"]",
+          "title": "Dockerfile"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  connect:\n    build: ./connect\n    ports:\n      - \"8083:8083\"\n    depends_on:\n      - kafka",
+          "title": "docker-compose.yml (the connect service only)"
+        },
+        {
+          "type": "markdown",
+          "text": "In `connect-worker.properties`, set `bootstrap.servers=kafka:9092` (a listener the broker advertises to other containers), `rest.advertised.host.name=connect` (the service name, so other workers can reach this one) and `plugin.path=/opt/connect-plugins`. The CDC lab later in this Part uses the Debezium project's own Connect image instead, which already contains the Debezium plugins."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Where does a distributed Connect cluster keep its state, and what happens when a worker dies? State lives in Kafka: connector and task configurations in the config topic, source offsets in the offsets topic, status in the status topic, sink offsets in ordinary consumer-group offsets. Workers are stateless. When one dies, the group rebalances and its tasks are assigned to the surviving workers, which resume from the stored offsets. Because of at-least-once delivery, a few records may be processed twice."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- A Connect cluster is workers sharing a `group.id`; add capacity by starting more workers.\n- Create the three internal topics yourself: config (1 partition), offsets (many) and status, all compacted; lower their replication factor only on a one-broker dev cluster.\n- The REST API is the control plane (`/connectors`, `/status`, `pause`, `resume`, `restart`, `/connector-plugins`); prefer `PUT` `.../config` in scripts.\n- `rest.port` is gone from current docs; use `listeners` and the `rest.advertised.*` settings.\n- Plugins are found through `plugin.path` and loaded at start-up; keep secrets out of connector configs with a config provider.\n- Secure the REST API; it has no authentication by default."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-3",
+      "type": "concept",
+      "title": "Connectors in Practice",
+      "subtopicId": "8-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "You now have a running Connect cluster. This chapter puts real connectors on it: the file connectors that ship with Kafka (for learning), a JDBC source and sink (for relational data), and an object-storage sink (for archives and data lakes). It also gives you a checklist for judging any connector you find on the internet.\n\n### The file connectors that ship with Kafka\n\nApache Kafka includes two small example connectors in the `connect-file` JAR. `FileStreamSourceConnector` reads a text file line by line and keeps reading as new lines are appended. `FileStreamSinkConnector` writes each record it receives as a line in a file. They are meant for learning and testing, not for production. The user guide notes that they are \"not included by default to the `CLASSPATH` or the `plugin.path`\", which is why the worker file in the previous chapter added `libs/connect-file-4.3.1.jar` to `plugin.path` by hand.\n\n### LAB 8.1 · File pipeline: from a text file through Kafka to another text file\n\nThe worker from the previous chapter must be running. We use the same two connectors as before, this time with a per-connector converter override: both read and write plain strings, so the worker's JSON default does not apply. `PUT` `.../config` creates the connector or updates it if it exists."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"connector.class\": \"org.apache.kafka.connect.file.FileStreamSourceConnector\",\n  \"tasks.max\": \"1\",\n  \"file\": \"/tmp/demo-in.txt\",\n  \"topic\": \"connect-demo\",\n  \"value.converter\": \"org.apache.kafka.connect.storage.StringConverter\"\n}",
+          "title": "demo-file-source-config.json"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"connector.class\": \"org.apache.kafka.connect.file.FileStreamSinkConnector\",\n  \"tasks.max\": \"1\",\n  \"file\": \"/tmp/demo-out.txt\",\n  \"topics\": \"connect-demo\",\n  \"value.converter\": \"org.apache.kafka.connect.storage.StringConverter\"\n}",
+          "title": "demo-file-sink-config.json"
+        },
+        {
+          "type": "markdown",
+          "text": "Note the difference in the topic setting: a source names the single topic it writes to (`topic`), a sink lists the topics it reads (`topics`). Now create both and feed the source some ShopStream-flavoured lines."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X PUT -H \"Content-Type: application/json\" \\\n    --data @demo-file-source-config.json \\\n    http://localhost:8083/connectors/demo-file-source/config | jq .name\n\"demo-file-source\"\n$ curl -s -X PUT -H \"Content-Type: application/json\" \\\n    --data @demo-file-sink-config.json \\\n    http://localhost:8083/connectors/demo-file-sink/config | jq .name\n\"demo-file-sink\"\n$ echo \"o-1001,c-77,998.00\" >> /tmp/demo-in.txt\n$ echo \"o-1002,c-12,250.00\" >> /tmp/demo-in.txt\n$ echo \"o-1003,c-77,1499.50\" >> /tmp/demo-in.txt",
+          "title": "Create the connectors and append three lines"
+        },
+        {
+          "type": "markdown",
+          "text": "Within a few seconds the lines travel through Kafka and appear in the output file. Check both ends:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \\\n    --topic connect-demo --from-beginning\no-1001,c-77,998.00\no-1002,c-12,250.00\no-1003,c-77,1499.50\n^C\n$ cat /tmp/demo-out.txt\no-1001,c-77,998.00\no-1002,c-12,250.00\no-1003,c-77,1499.50",
+          "title": "Look at the topic and at the sink file"
+        },
+        {
+          "type": "markdown",
+          "text": "The sink's progress is a normal consumer group, so `bin/kafka-consumer-groups.sh --bootstrap-server` `localhost:9092 --describe --group connect-demo-file-sink` shows its lag. The source's progress is a source offset, which the REST API can show you:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s http://localhost:8083/connectors/demo-file-source/offsets | jq -c .\n{\"offsets\":[{\"partition\":{\"filename\":\"/tmp/demo-in.txt\"},\"offset\":{\"position\":58}}]}\n$ curl -s -X PUT http://localhost:8083/connectors/demo-file-source/stop\n$ curl -s -X DELETE http://localhost:8083/connectors/demo-file-source/offsets\n$ curl -s -X PUT http://localhost:8083/connectors/demo-file-source/resume",
+          "title": "Read, then reset, the source offsets"
+        },
+        {
+          "type": "markdown",
+          "text": "The offset is the byte position in the file (the three lines above add up to 58 bytes). After the reset the source forgets it ever read the file, starts at byte 0 and publishes the three lines again, so the topic now holds each line twice. That is a small demonstration of two facts from the first chapter of this Part: offsets are just data that you can inspect and change (the connector must be stopped first), and a rewind produces duplicates unless the sink is idempotent.\n\n### A JDBC source and sink\n\nRelational databases are the most common thing people want to connect to Kafka. The generic way is a **JDBC** **connector**, which talks to the database through a JDBC driver and plain SQL. JDBC connectors are not part of Apache Kafka. The best-known pair is the Confluent JDBC source and sink (`io.confluent.connect.jdbc.JdbcSourceConnector` and `JdbcSinkConnector`); several forks and alternatives exist. The configuration keys below were checked against the Confluent documentation, but connector-specific keys differ between projects, so **check your connector's docs** before copying them.\n\nA JDBC source works by polling. Every `poll.interval.ms` (default 5000) it runs a query and publishes the rows it has not seen yet. How it recognises \"not seen yet\" is the `mode`:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "mode",
+            "How it finds new data"
+          ],
+          "rows": [
+            [
+              "`bulk`",
+              "Copies the whole table on every poll. Simple, but every poll re-sends everything."
+            ],
+            [
+              "`incrementing`",
+              "Uses a strictly increasing column (`incrementing.column.name`). Finds new rows only; updates to old rows are missed."
+            ],
+            [
+              "`timestamp`",
+              "Uses a \"last modified\" column (`timestamp.column.name`). Finds inserts and updates, but rows sharing a timestamp at the boundary need care."
+            ],
+            [
+              "`timestamp+incrementing`",
+              "Uses both columns. The most reliable polling mode for inserts and updates."
+            ]
+          ],
+          "caption": "Modes of the JDBC source connector (key names: check your connector's docs)."
+        },
+        {
+          "type": "markdown",
+          "text": "Here is a source for the ShopStream `orders` table. The table has a numeric `id` and an `updated_at` timestamp, so `timestamp+incrementing` fits. The connector names the topic by joining `topic.prefix` and the table name, so this one writes to `jdbc-orders`."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"name\": \"orders-jdbc-source\",\n  \"config\": {\n    \"connector.class\": \"io.confluent.connect.jdbc.JdbcSourceConnector\",\n    \"tasks.max\": \"1\",\n    \"connection.url\": \"jdbc:postgresql://postgres:5432/shop\",\n    \"connection.user\": \"${file:/etc/connect-secrets/shop-db.properties:user}\",\n    \"connection.password\": \"${file:/etc/connect-secrets/shop-db.properties:password}\",\n    \"mode\": \"timestamp+incrementing\",\n    \"incrementing.column.name\": \"id\",\n    \"timestamp.column.name\": \"updated_at\",\n    \"table.whitelist\": \"orders\",\n    \"topic.prefix\": \"jdbc-\",\n    \"poll.interval.ms\": \"5000\"\n  }\n}",
+          "title": "orders-jdbc-source.json"
+        },
+        {
+          "type": "markdown",
+          "text": "The sink side is the mirror image. It turns each record into an `INSERT` or an upsert. The setting that matters most is `insert.mode`: with `upsert` and a primary key, replays after a crash overwrite the same row instead of creating a duplicate, which is what makes an at-least-once pipeline safe."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"name\": \"orders-jdbc-sink\",\n  \"config\": {\n    \"connector.class\": \"io.confluent.connect.jdbc.JdbcSinkConnector\",\n    \"tasks.max\": \"3\",\n    \"topics\": \"orders\",\n    \"connection.url\": \"jdbc:postgresql://warehouse:5432/analytics\",\n    \"connection.user\": \"${file:/etc/connect-secrets/wh-db.properties:user}\",\n    \"connection.password\": \"${file:/etc/connect-secrets/wh-db.properties:password}\",\n    \"insert.mode\": \"upsert\",\n    \"pk.mode\": \"record_key\",\n    \"pk.fields\": \"order_id\",\n    \"auto.create\": \"true\",\n    \"auto.evolve\": \"false\"\n  }\n}",
+          "title": "orders-jdbc-sink.json"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `pk.mode=record_key` takes the primary key from the Kafka record key, and `pk.fields` names the column that receives it. `auto.create=true` lets the sink create the target table; production teams usually prefer `false` and manage tables with migrations. And one requirement is easy to miss: this sink needs to know the **schema** of each record, so the topic must carry Avro, JSON Schema, Protobuf, or JSON with an embedded schema. ShopStream's plain JSON topics would be rejected; the chapter on Schema Registry in Part 6 shows how to produce a schema-aware version of the topic."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A polling source can never see a deleted row, and it can miss updates. The query only returns rows that exist now. A row deleted between two polls leaves no trace in Kafka, and two updates to the same row between polls arrive as one. The poll also puts load on the database, and latency can be no better than `poll.interval.ms`. If you need deletes, every change in order, or low database load, use log-based change data capture with Debezium, covered later in this Part."
+        },
+        {
+          "type": "markdown",
+          "text": "### Object storage: archives and data lakes\n\nThe most common sink in analytics is an object store such as Amazon S3. The usual reasons: a cheap long-term copy of a topic beyond its retention, input for a data lake or warehouse, and a replayable audit trail. The Confluent S3 sink (`io.confluent.connect.s3.S3SinkConnector`) is the best-known example. The idea is the same for every object-store sink: it buffers records per topic partition, writes a file when a threshold is reached, and commits the Kafka offsets only after the upload succeeded."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`s3.bucket.name, s3.region`",
+              "Where the files go."
+            ],
+            [
+              "`format.class`",
+              "File format: JSON, Avro or Parquet implementations (for example `io.confluent.connect.s3.format.json.JsonFormat`)."
+            ],
+            [
+              "`flush.size`",
+              "Number of records per file. Has no default; you must set it."
+            ],
+            [
+              "`rotate.interval.ms`",
+              "Also close a file after this much time (default -1, disabled)."
+            ],
+            [
+              "`partitioner.class`",
+              "How files are laid out in the bucket: by Kafka partition (default), by record field, or by time."
+            ]
+          ],
+          "caption": "Core settings of the Confluent S3 sink (check your connector's docs for your version)."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"name\": \"orders-s3-sink\",\n  \"config\": {\n    \"connector.class\": \"io.confluent.connect.s3.S3SinkConnector\",\n    \"tasks.max\": \"3\",\n    \"topics\": \"orders\",\n    \"s3.bucket.name\": \"shopstream-archive\",\n    \"s3.region\": \"ap-south-1\",\n    \"storage.class\": \"io.confluent.connect.s3.storage.S3Storage\",\n    \"format.class\": \"io.confluent.connect.s3.format.json.JsonFormat\",\n    \"flush.size\": \"1000\",\n    \"value.converter\": \"org.apache.kafka.connect.json.JsonConverter\",\n    \"value.converter.schemas.enable\": \"false\"\n  }\n}",
+          "title": "orders-s3-sink.json"
+        },
+        {
+          "type": "markdown",
+          "text": "By default the sink writes objects whose names contain the topic, the Kafka partition and the offset of the first record in the file. A replay after a crash then produces an object with the same name and the same content, which overwrites the earlier attempt instead of duplicating it. The exact guarantee depends on the partitioner and on time-based rotation, so read the delivery-guarantee section of the connector's documentation before you rely on it.\n\n### Judging a connector before you depend on it\n\nConnect connectors come from the Kafka project, from vendors, and from individuals. Before you adopt one, answer these questions:\n\n- **Maintenance and licence.** Is it released regularly, does it support your Kafka and Java versions, and does its licence allow your use?\n- **Source type.** Is a source connector polling (JDBC style) or log-based (Debezium style)? This decides whether deletes and updates are visible.\n- **Delivery guarantee.** At-least-once, effectively-once through idempotent writes, or exactly-once? Which settings does that depend on?\n- **Data format.** Which converters does it support, does it need schemas, and how does it map types such as decimals and timestamps?\n- **Operations.** Does it support `tasks.max` scaling, SMTs, the dead letter queue, and clean restarts after failures? Does it expose metrics?\n- **Installation.** Download, unpack into a directory under `plugin.path`, restart the workers, confirm with `GET` `/connector-plugins`, validate with the `validate` endpoint, then create."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- The Kafka distribution contains only example file connectors (not on the plugin path by default) and the MirrorMaker 2 connectors; everything else is a separate plugin.\n- Sources name one `topic` (or a prefix), sinks list `topics` or a `topics.regex`.\n- A JDBC source polls: it cannot see deletes and can miss intermediate updates. A JDBC sink should use `insert.mode=upsert` so replays are harmless, and it needs schema-aware records.\n- Object-store sinks batch records into files by size or time and commit offsets after the upload.\n- Source offsets can be read, altered and reset through the REST API, but only while the connector is stopped.\n- Connector-specific keys differ between projects: always read the connector's own documentation."
+        }
+      ]
+    },
+    {
+      "id": "ch-8-4",
+      "type": "concept",
+      "title": "Converters and Single Message Transforms",
+      "subtopicId": "8-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Two small pieces of Connect decide what your data looks like on the way in and out of Kafka. **Converters** choose the byte format on the topic. **Single Message Transforms** (SMTs) make light changes to each record. Both are configured, not coded, and both are the source of a large share of Connect's day-to-day support questions.\n\n### Converters: the translation layer\n\nConnectors work with Connect's own data model: a record has a key, a value and headers, and each part carries an optional schema plus a value (a `Struct`, a `Map`, a string, a number and so on). The converter turns that model into bytes before the producer sends it, and back into the model after the consumer receives it. Because the connector never sees the bytes, the same JDBC connector can write JSON today and Avro tomorrow by changing one line.\n\nYou set converters on the worker (`key.converter`, `value.converter`, `header.converter`) and may override the key and value converter inside any connector configuration. Settings for a converter are prefixed with the converter's role, for example `value.converter.schemas.enable`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "Format on the topic",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`org.apache.kafka.connect.storage.StringC` `onverter`",
+              "UTF-8 text",
+              "Keys such as `orderId`, raw text lines"
+            ],
+            [
+              "`org.apache.kafka.connect.json.JsonConver` `ter`",
+              "JSON",
+              "Human-readable topics; the ShopStream default"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "Format on the topic",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`org.apache.kafka.connect.converters.Byte` `ArrayConverter`",
+              "Unchanged bytes",
+              "Copying data you do not want to interpret"
+            ],
+            [
+              "`io.confluent.connect.avro.AvroConverter`",
+              "Avro plus Schema Registry id",
+              "Governed schemas (needs `value.converter.schema.registry.url`)"
+            ]
+          ],
+          "caption": "Common converters."
+        },
+        {
+          "type": "markdown",
+          "text": "JSON and Avro converters for JSON Schema and Protobuf exist too, from the same vendor; the Schema Registry chapter in Part 6 explains the wire format and compatibility rules, so we do not repeat them here.\n\n### The schemas.enable trap\n\n`JsonConverter` has a setting that surprises almost everybody: `schemas.enable`. When it is `true`, every message is wrapped in an envelope that carries the schema next to the data. The Kafka quickstart shows the effect for a plain string:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\"schema\":{\"type\":\"string\",\"optional\":false},\"payload\":\"foo\"}",
+          "title": "schemas.enable=true: the schema travels with every message"
+        },
+        {
+          "type": "markdown",
+          "text": "With `schemas.enable=false` the same record is just `\"foo\"`, and a structured record is just its JSON object, for example `{\"orderId\":\"o-1001\",\"total\":998.00}`. The sample worker configuration in the Kafka distribution enables schemas, because some connectors (the JDBC sink among them) need them. The ShopStream worker from the previous chapter disables them, because our topics hold plain JSON.\n\nThe two settings must match on both sides of a topic. The most frequent failures are mirror images of each other:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "What you see",
+            "Cause",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "`DataException: JsonConverter with` `schemas.enable requires \"schema\"` `and \"payload\" fields ...`",
+              "The topic holds plain JSON but the connector's converter has `schemas.enable=true`",
+              "Set `value.converter.schemas.enable` `=false`"
+            ],
+            [
+              "`SerializationException: Unknown` `magic byte!`",
+              "The connector uses the Avro converter on a topic that does not hold Avro with Schema Registry framing",
+              "Use the converter that matches the topic"
+            ],
+            [
+              "A sink fails with \"requires records with a non-null Struct value and schema\"",
+              "The sink needs schemas but the topic is schemaless JSON",
+              "Produce schema-aware data (Avro, or JSON with `schemas.enable=true`)"
+            ]
+          ],
+          "caption": "Typical converter mismatches."
+        },
+        {
+          "type": "markdown",
+          "text": "One more JSON detail matters for money. The Connect data model has a logical type `Decimal`, which database connectors use for `NUMERIC` columns. `JsonConverter` writes it as a Base64 string by default, so `998.00` shows up as something like `\"AYag\"`. Set `value.converter.decimal.format=NUMERIC` to get a JSON number instead; the CDC chapter returns to this.\n\n### Single Message Transforms\n\nAn SMT is a small function applied to every record that passes through a connector. You list the transformations by alias in `transforms`, and Connect applies them in exactly that order. Each alias gets a `type` (the class) and its own options. In a source connector they run after the connector produced the record and before the converter; in a sink connector they run after the converter and before the connector's `put`.\n\nKafka ships with these in the package `org.apache.kafka.connect.transforms` (class names and options from the 4.2 user guide). Those that exist as key and value variants are used as `ClassName$Key` or `ClassName$Value`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "What it does (main options)"
+          ],
+          "rows": [
+            [
+              "`InsertField$Value`",
+              "Adds a field: a static value, or the topic, partition, offset (sinks only) or timestamp (`static.field`, `static.value`, `topic.field`, `timestamp.field`)"
+            ],
+            [
+              "`ReplaceField$Value`",
+              "Keeps or drops fields and renames them (`include`, `exclude`, `renames`)"
+            ],
+            [
+              "`MaskField$Value`",
+              "Replaces field values with a null-like value or a fixed one (`fields`, `replacement`)"
+            ],
+            [
+              "`ExtractField$Key, ExtractField$Value`",
+              "Replaces the whole key or value with one of its fields (`field`)"
+            ],
+            [
+              "`HoistField$Value`",
+              "Wraps the whole value in a one-field structure (`field`)"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Class",
+            "What it does (main options)"
+          ],
+          "rows": [
+            [
+              "`Flatten$Value`",
+              "Flattens nested structures into one level (`delimiter`, default `.`)"
+            ],
+            [
+              "`Cast$Value`",
+              "Converts field types (`spec`)"
+            ],
+            [
+              "`TimestampConverter$Value`",
+              "Converts timestamps between formats (`target.type`, `field`, `format`)"
+            ],
+            [
+              "`ValueToKey`",
+              "Builds the key from fields of the value (`fields`)"
+            ],
+            [
+              "`RegexRouter`",
+              "Renames the topic with a regular expression (`regex`, `replacement`)"
+            ],
+            [
+              "`TimestampRouter`",
+              "Appends a date to the topic name (`topic.format`, `timestamp.format`)"
+            ],
+            [
+              "`HeaderFrom$Value, InsertHeader,` `DropHeaders`",
+              "Create, add or remove record headers"
+            ],
+            [
+              "`Filter`",
+              "Drops the record; used together with a predicate"
+            ]
+          ],
+          "caption": "Built-in transformations."
+        },
+        {
+          "type": "markdown",
+          "text": "Three recipes cover most real needs. First, ShopStream's JDBC source writes to `jdbc-orders` with a structured key. We want the topic `orders` and a plain string key `order_id`. That takes a router and two key steps (`ValueToKey` builds a key structure, `ExtractField$Key` unwraps the one field):"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"transforms\": \"route,createKey,extractKey\",\n  \"transforms.route.type\": \"org.apache.kafka.connect.transforms.RegexRouter\",\n  \"transforms.route.regex\": \"jdbc-(.*)\",\n  \"transforms.route.replacement\": \"$1\",\n  \"transforms.createKey.type\": \"org.apache.kafka.connect.transforms.ValueToKey\",\n  \"transforms.createKey.fields\": \"order_id\",\n  \"transforms.extractKey.type\": \"org.apache.kafka.connect.transforms.ExtractField$Key\",\n  \"transforms.extractKey.field\": \"order_id\"\n}",
+          "title": "SMT chain for a source connector (fragment)"
+        },
+        {
+          "type": "markdown",
+          "text": "Second, before data leaves for a third-party system you may need to hide personal data. `MaskField` replaces the listed fields (the field names here are illustrative):"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"transforms\": \"mask\",\n  \"transforms.mask.type\": \"org.apache.kafka.connect.transforms.MaskField$Value\",\n  \"transforms.mask.fields\": \"email,phone\"\n}",
+          "title": "Masking fields in a sink connector (fragment)"
+        },
+        {
+          "type": "markdown",
+          "text": "Third, **predicates** make a transformation conditional. A predicate is declared once with `predicates` and attached to a transformation through its implicit `predicate` option; `negate=true` inverts it. Kafka provides `TopicNameMatches` (option `pattern`), `HasHeaderKey` (option `name`) and `RecordIsTombstone`, all in `org.apache.kafka.connect.transforms.predicates`. This example makes a sink ignore tombstones (records with a null value):"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"transforms\": \"dropTombstones\",\n  \"transforms.dropTombstones.type\": \"org.apache.kafka.connect.transforms.Filter\",\n  \"transforms.dropTombstones.predicate\": \"isTombstone\",\n  \"predicates\": \"isTombstone\",\n  \"predicates.isTombstone.type\": \"org.apache.kafka.connect.transforms.predicates.RecordIsTombstone\"\n}",
+          "title": "Dropping tombstones with Filter and a predicate (fragment)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "The dollar sign in `InsertField$Value` is also a shell character. Inside a double-quoted shell string, `$Value` expands to nothing, and Connect then reports an unknown class. Put the JSON in a file and send it with `--data @file.json`, or use single quotes. The same goes for the `$1` in a `RegexRouter` replacement."
+        },
+        {
+          "type": "markdown",
+          "text": "### What SMTs are not for\n\nSMTs are deliberately limited: they see one record at a time, keep no state, and cannot join with another topic. A chain of five or six transformations is already hard to read and harder to debug, because a failure shows up as a generic error in the connector rather than in your code. Use SMTs for routing, renaming, masking, key selection and simple filtering. For aggregations, joins, enrichment from another system or any real business rule, process the data with Kafka Streams or a consumer first and let Connect move the result."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is a Single Message Transform, and when would you not use one? An SMT is a stateless per-record function configured on a connector: it runs between the connector and the converter (before the converter for sources, after it for sinks) and can rename, drop, mask, route or re-key records. Do not use it for stateful or multi-record logic (joins, aggregations, lookups); that belongs in Kafka Streams or an application, where it can be tested and debugged properly."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Converters set the byte format on Kafka (`StringConverter`, `JsonConverter`, `ByteArrayConverter`, Avro and others); the connector never sees the bytes.\n- Set defaults on the worker, override per connector, and prefix converter settings with `key.converter.` or `value.converter.`.\n- `JsonConverter` with `schemas.enable=true` wraps every message in a schema envelope; both sides of a topic must agree.\n- Decimals appear as Base64 in JSON unless you set `decimal.format=NUMERIC`.\n- SMTs run in the order listed in `transforms`; use `$Key` or `$Value` classes, and predicates with `Filter` or `negate` for conditional logic.\n- Keep SMTs simple: routing, masking, renaming and key selection. Heavy logic belongs elsewhere."
+        }
+      ]
+    }
+  ]
+}

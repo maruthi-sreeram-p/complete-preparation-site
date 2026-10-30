@@ -45,7 +45,10 @@ pip install pdfplumber pypdf
 python -I tools/build_roadmap.py <folder>                      # roadmap.json from the plan + PDF bookmarks
 python -I tools/extract_topic.py <folder> <roadmap.json> --doc <Guide.pdf> <topics dir> [--force]
 python -I tools/build_plan_topics.py <folder>                  # pages for the plan-only days
+python -I tools/build_frontend_topics.py                       # pages for the frontend stage (not from a PDF)
 ```
+
+The order of the learning path lives in `tools/learning_path.json`.
 
 The extractor keeps code (with indentation), tables, callouts and check-yourself questions, and carries each
 figure over as a dark-themed SVG redrawn from the PDF's own vector drawing (a few figures without a drawing

@@ -1,0 +1,635 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "111-131"
+  },
+  "sections": [
+    {
+      "id": "ch-7-1",
+      "type": "concept",
+      "title": "Stream Processing Concepts",
+      "subtopicId": "7-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The producer and consumer APIs hand you one record at a time. Most questions a business asks are about many records at once: how many orders were placed in the last minute, which tier does the customer who placed this order belong to, which shopping sessions ended without a checkout, have we seen this payment event before? Answering them with a plain consumer means building a lot of machinery yourself: counts kept in memory, a way to save that memory so a crash does not lose it, a way to route every record of one customer to the same instance, a definition of \"the last minute\" when events arrive late, and all of it running on several machines at once.\n\nKafka Streams is the stream processing library that ships with Apache Kafka, and it exists to solve exactly these problems. You describe the computation with a fluent Java DSL (filter, map, group, count, window, join), and Kafka Streams turns it into tasks that consume, process and produce records, keep their state in local stores that are backed up to Kafka, and spread themselves over as many application instances as you start. This chapter gives you the vocabulary; the rest of the Part turns each idea into working code for ShopStream's `analytics-app`.\n\n### Streams and tables\n\nA **stream** is an unbounded, ordered sequence of immutable facts. Every record stands on its own: if a shopper views the same product page twice, that is two page views and both count. In Kafka Streams a stream is a `KStream<K, V>`.\n\nA **table** holds the current state for each key. A new record for a key replaces the previous value (an upsert), and a record with a `null` value deletes the key (a tombstone). When order `o-1001` moves from `CREATED` to `CONFIRMED`, the table keeps one row for `o-1001` holding the latest status. In Kafka Streams a table is a `KTable<K, V>`.\n\nThe two are views of the same data, an idea called the **stream-table duality**. Replay a stream of changes from the beginning, keep the latest value per key, and you get a table: that is what a database does with its write-ahead log and what a compacted Kafka topic stores. Record every change made to a table and you get a stream, the table's **changelog**."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 106.0\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 85.1 L159.0 85.1 C160.7 85.1 162.0 83.7 162.0 82.1 L162.0 68.1 C162.0 66.4 160.7 65.1 159.0 65.1 L5.0 65.1 C3.3 65.1 2.0 66.4 2.0 68.1 L2.0 82.1 C2.0 83.7 3.3 85.1 5.0 85.1 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.0 53.1 L252.0 53.1\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 61.1 L159.0 61.1 C160.7 61.1 162.0 59.7 162.0 58.1 L162.0 44.1 C162.0 42.4 160.7 41.1 159.0 41.1 L5.0 41.1 C3.3 41.1 2.0 42.4 2.0 44.1 L2.0 58.1 C2.0 59.7 3.3 61.1 5.0 61.1 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 53.1 L246.6 50.5 L246.6 55.7 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M285.0 61.1 L439.0 61.1 C440.7 61.1 442.0 59.7 442.0 58.1 L442.0 44.1 C442.0 42.4 440.7 41.1 439.0 41.1 L285.0 41.1 C283.3 41.1 282.0 42.4 282.0 44.1 L282.0 58.1 C282.0 59.7 283.3 61.1 285.0 61.1 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 37.1 L159.0 37.1 C160.7 37.1 162.0 35.7 162.0 34.1 L162.0 20.1 C162.0 18.4 160.7 17.1 159.0 17.1 L5.0 17.1 C3.3 17.1 2.0 18.4 2.0 20.1 L2.0 34.1 C2.0 35.7 3.3 37.1 5.0 37.1 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M285.0 37.1 L439.0 37.1 C440.7 37.1 442.0 35.7 442.0 34.1 L442.0 20.1 C442.0 18.4 440.7 17.1 439.0 17.1 L285.0 17.1 C283.3 17.1 282.0 18.4 282.0 20.1 L282.0 34.1 C282.0 35.7 283.3 37.1 285.0 37.1 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"41.8\" y=\"7.1\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"80.5\" lengthAdjust=\"spacingAndGlyphs\">Stream (changelog)</text><text x=\"319.7\" y=\"7.1\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"84.7\" lengthAdjust=\"spacingAndGlyphs\">Table (current state)</text><text x=\"64.3\" y=\"29.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"35.4\" lengthAdjust=\"spacingAndGlyphs\">c1 -&gt; Gold</text><text x=\"337.3\" y=\"29.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"49.4\" lengthAdjust=\"spacingAndGlyphs\">c1 -&gt; Platinum</text><text x=\"190.3\" y=\"47.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"43.4\" lengthAdjust=\"spacingAndGlyphs\">latest per key</text><text x=\"62.6\" y=\"53.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"38.8\" lengthAdjust=\"spacingAndGlyphs\">c2 -&gt; Silver</text><text x=\"342.6\" y=\"53.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"38.8\" lengthAdjust=\"spacingAndGlyphs\">c2 -&gt; Silver</text><text x=\"57.3\" y=\"77.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"49.4\" lengthAdjust=\"spacingAndGlyphs\">c1 -&gt; Platinum</text></svg>",
+          "width": 444,
+          "caption": "Stream-table duality: replaying the changelog stream materialises the table, and every update to the table is a new record in its changelog.",
+          "alt": "Stream (changelog) Table (current state) | c1 -> Gold c1 -> Platinum | latest per key | c2 -> Silver c2 -> Silver | c1 -> Platinum"
+        },
+        {
+          "type": "markdown",
+          "text": "The same three records read both ways: **One topic, two interpretations**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "offset  key      value       read as a KStream (facts)    read as a KTable (state after it)\n0       o-1001   CREATED     \"o-1001 was created\"         o-1001=CREATED\n1       o-1002   CREATED     \"o-1002 was created\"         o-1001=CREATED, o-1002=CREATED\n2       o-1001   CONFIRMED   \"o-1001 was confirmed\"       o-1001=CONFIRMED, o-1002=CREATED"
+        },
+        {
+          "type": "markdown",
+          "text": "Which reading is right depends on what the data means, not on the topic. `page-views` is naturally a stream; `customers` (the latest name, tier and city of each customer) is naturally a table and is stored in a compacted topic so Kafka can discard superseded values. Kafka Streams has a third abstraction for small reference data: a `GlobalKTable<K, V>` is a table of which every application instance holds a complete copy, so it can be looked up by any key without moving data around."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"What is the difference between a KStream and a KTable?\" A `KStream` is a record stream: each record is an independent event, like an INSERT into an append-only log, so two records with the same key both count. A `KTable` is a changelog stream: each record is an UPDATE of the value for its key and a `null` value is a DELETE, so only the latest value per key matters. Aggregating a stream produces a table, and `toStream()` turns a table's updates back into a stream. A `GlobalKTable` is a table fully replicated to every application instance."
+        },
+        {
+          "type": "markdown",
+          "text": "### Event time, processing time and stream time\n\nEvery Kafka record carries a timestamp. Depending on the topic setting `message.timestamp.type`, the producer sets it when it creates the record (`CreateTime`, the default) or the broker sets it when it appends the record (`LogAppendTime`). Stream processing distinguishes three kinds of time:\n\n- **Event time**: when the event happened in the real world, for example the moment the shopper clicked. Usually the producer's record timestamp, or a field inside the payload that you extract with a timestamp extractor.\n- **Ingestion time**: when the broker stored the record (`LogAppendTime`).\n- **Processing time**: when your application gets around to processing the record, which can be milliseconds later or, when you reprocess history, days later.\n\nKafka Streams works with record timestamps, so by default it works in event time. That is what makes results reproducible: reprocess last week's page views today and \"views between 10:15 and 10:16\" still means the same events.\n\nInside a running application, time advances as **stream time**: for each task, the largest record timestamp seen so far. Stream time only moves when records arrive. A window closes, and a \"final\" windowed result is emitted, when stream time passes the window end plus the grace period, not when the wall clock does. One consequence surprises nearly everybody once: if traffic stops at 10:16:40, the window for 10:16 stays open until a newer record arrives.\n\nEvents also arrive **out of order**. A phone that was offline in a tunnel uploads its page views a minute late; a producer retry lands a record after newer ones. Windowed operations accept late records for a configurable **grace period** and drop records that arrive later than that. The chapter on windows and time shows how to choose it.\n\n### Stateless and stateful processing\n\nA **stateless** operation looks at one record at a time and needs nothing else: drop bot traffic (`filter`), parse a JSON payload (`mapValues`), send checkout page views to their own topic. Stateless steps are cheap, need no storage and can run on any instance.\n\nA **stateful** operation must remember earlier records: counting, summing, deduplicating, windowing, joining. Kafka Streams keeps that memory in **state stores**, local key-value, window or session stores, held in RocksDB on local disk by default or in memory. Each store is backed up to a compacted **changelog topic** in Kafka, so when an instance dies another instance rebuilds the store by replaying the changelog. You never call a remote database for state: it lives next to the code that uses it, sharded exactly like the input partitions.\n\n### A library, not a cluster\n\nKafka Streams is a dependency (`org.apache.kafka:kafka-streams`) inside an ordinary Java application. There is no processing cluster to install and no special job format: you package the app like any other service (a jar, a container image) and run as many copies as you need. All instances with the same `application.id` cooperate: they form one group (the `application.id` doubles as the group id), split the input partitions between them, and take over each other's work when one of them fails. Kafka is the only infrastructure.\n\nThis design has two consequences. Adoption is easy: a Spring Boot service can host a topology next to its REST controllers. And Kafka Streams reads from Kafka and writes to Kafka only; to bring data in from a database or push results to a search index you pair it with Kafka Connect (see the Part on Kafka Connect and Change Data Capture). Apache Flink and Spark Structured Streaming take the opposite approach, a separate processing cluster that talks to many systems; the last chapter of this Part compares the options.\n\n### Topologies, tasks and threads\n\nThe processing logic of a Streams application is a **topology**: a directed acyclic graph of nodes. **Source** nodes read topics, **processor** nodes transform records and **sink** nodes write topics. When the logic needs data re-keyed (group by another field, join on another key), Kafka Streams writes the records to an internal **repartition topic** and reads them back, which cuts the graph into **sub-topologies** that are connected only through Kafka topics.\n\nKafka Streams scales a topology by splitting it into **tasks**. For each sub-topology it creates one task per input partition: a sub-topology reading the 6-partition `page-views` topic gets six tasks named `0_0` to `0_5` (sub-topology 0, partitions 0 to 5). A task is the unit of work and of state: it owns the records of its partitions and its shard of every state store in that sub-topology. Tasks are distributed over **stream threads**, `num.stream.threads` per instance (default 1), across every running instance.\n\n**Six tasks spread over two instances with two stream threads each**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "page-views (6 partitions)          analytics-app instance A       analytics-app instance B\n┌────┬────┬────┬────┬────┬────┐    ┌──────────────────────────┐   ┌──────────────────────────┐\n│ p0 │ p1 │ p2 │ p3 │ p4 │ p5 │    │ thread A-1: tasks 0_0 0_3│   │ thread B-1: tasks 0_1 0_4│\n└────┴────┴────┴────┴────┴────┘    │ thread A-2: task  0_2    │   │ thread B-2: task  0_5    │\n  one task per partition  ──────►  └──────────────────────────┘   └──────────────────────────┘\nstart instance C: some tasks (with their state) move to C; the topology itself is unchanged"
+        },
+        {
+          "type": "markdown",
+          "text": "The number of input partitions is therefore the ceiling on parallelism. Six partitions keep at most six threads busy; an eighth thread across the fleet would sit idle as a hot spare. Choose partition counts for input topics with growth in mind, because adding partitions later moves keys to different partitions (and therefore to different state store shards)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A `KStream` is a sequence of independent facts; a `KTable` is the latest value per key. Aggregating a stream yields a table, and a table's updates form a stream.\n- Kafka Streams works in event time: windows close when stream time (the largest timestamp seen by a task) passes window end plus grace, not when the wall clock does.\n- Stateful operators keep local state stores backed up to compacted changelog topics, so state survives crashes and moves with its task.\n- Kafka Streams is a library inside your application; instances with the same `application.id` share the work.\n- One task per input partition per sub-topology: partition counts cap the parallelism."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-2",
+      "type": "concept",
+      "title": "Your First Kafka Streams Application",
+      "subtopicId": "7-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Word count is the \"hello world\" of stream processing, and for good reason: in twenty lines it exercises a stateless step, a re-key, a repartition topic, a stateful aggregation, a state store with a changelog and an output table. Build it once, end to end, and every later chapter is a variation on the same pieces.\n\n### Project setup\n\nKafka Streams needs only one dependency. It pulls in the Kafka client library, a compatible RocksDB JNI build and the SLF4J API. Add a logging backend of your choice (for example `org.slf4j:slf4j-simple`) to see its log output, and the test utilities for the chapter on testing."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<dependencies>\n  <dependency>\n    <groupId>org.apache.kafka</groupId>\n    <artifactId>kafka-streams</artifactId>\n    <version>4.3.1</version>\n  </dependency>\n  <dependency>\n    <groupId>org.apache.kafka</groupId>\n    <artifactId>kafka-streams-test-utils</artifactId>\n    <version>4.3.1</version>\n    <scope>test</scope>\n  </dependency>\n</dependencies>",
+          "title": "pom.xml (dependencies)"
+        },
+        {
+          "type": "markdown",
+          "text": "### The word count topology\n\nThe application reads lines of text from `streams-plaintext-input`, splits them into words, counts each word and writes the running count to `streams-wordcount-output`. The topic names match the official Kafka Streams quickstart, so you can compare your results with it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport java.time.Duration;\nimport java.util.Arrays;\nimport java.util.Locale;\nimport java.util.Properties;\nimport java.util.concurrent.CountDownLatch;\n\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.KafkaStreams;\nimport org.apache.kafka.streams.StreamsBuilder;\nimport org.apache.kafka.streams.StreamsConfig;\nimport org.apache.kafka.streams.Topology;\nimport org.apache.kafka.streams.kstream.Consumed;\nimport org.apache.kafka.streams.kstream.Grouped;\nimport org.apache.kafka.streams.kstream.Materialized;\nimport org.apache.kafka.streams.kstream.Produced;\n\npublic class WordCountApp {\n\n    static final String INPUT = \"streams-plaintext-input\";\n    static final String OUTPUT = \"streams-wordcount-output\";\n\n    public static Topology buildTopology() {\n        StreamsBuilder builder = new StreamsBuilder();\n        builder.stream(INPUT, Consumed.with(Serdes.String(), Serdes.String()))\n               .flatMapValues(line -> Arrays.asList(line.toLowerCase(Locale.ROOT).split(\"\\\\W+\")))\n               .filter((key, word) -> !word.isBlank())\n               .groupBy((key, word) -> word, Grouped.with(Serdes.String(), Serdes.String()))\n               .count(Materialized.as(\"counts-store\"))\n               .toStream()\n               .to(OUTPUT, Produced.with(Serdes.String(), Serdes.Long()));\n        return builder.build();\n    }\n\n    public static void main(String[] args) throws InterruptedException {\n        Properties props = new Properties();\n        props.put(StreamsConfig.APPLICATION_ID_CONFIG, \"wordcount-demo\");\n        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        props.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, 1000);   // demo only: faster output\n\n        Topology topology = buildTopology();\n        System.out.println(topology.describe());\n\n        KafkaStreams streams = new KafkaStreams(topology, props);\n        CountDownLatch latch = new CountDownLatch(1);\n        Runtime.getRuntime().addShutdownHook(new Thread(() -> {\n            streams.close(Duration.ofSeconds(10));\n            latch.countDown();\n        }, \"streams-shutdown\"));\n\n        streams.start();\n        latch.await();\n    }\n}",
+          "title": "WordCountApp.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `application.id` is the identity of the application. It is the group id that all instances share, the prefix of every internal topic (`wordcount-demo-counts-store-changelog`) and the name of the sub-directory under `state.dir` where local state lives. Change it and Kafka Streams treats the result as a brand-new application that starts from scratch.\n- **Serdes** (serializer/deserializer pairs) are given explicitly where data enters (`Consumed`), is re-keyed (`Grouped`) and leaves (`Produced`). The count's store needs no serde here: `count` uses the grouping serde for keys and a `Long` serde for values. Explicit serdes at every boundary beat global defaults (`default.key.serde`, `default.value.serde`), which silently apply to every operator you forget to configure.\n- `flatMapValues` turns one line into zero or more words and keeps the key, so it never forces a repartition.\n- `groupBy` changes the key from the (empty) line key to the word. All records for one word must end up in the same task, so Kafka Streams inserts a repartition topic before the count.\n- `count(Materialized.as(\"counts-store\"))` keeps the counts in a named state store with a changelog topic. Naming it gives stable internal topic names and makes the store queryable (see the chapter on interactive queries).\n- `toStream().to(...)` turns the `KTable<String, Long>` of counts into a stream of updates and writes them out.\n\nThe `main` method shows the life cycle of a `KafkaStreams` instance. The constructor only validates the topology and configuration; `start()` launches the stream threads, which join the group, receive tasks and start processing in the background. The shutdown hook calls `close(Duration)` when the JVM receives a termination signal, so the threads commit their progress and leave the group cleanly, and the latch keeps `main` alive until then."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "\"I typed a line and nothing came out\" Aggregation results pass through a record cache that is flushed on commit, every `commit.interval.ms` (30 seconds by default with at-least-once) or when the cache (`statestore.cache.max.bytes`, 10 MB by default) fills up. With default settings the counts appear up to 30 seconds after you type. The demo lowers the commit interval to one second; production applications usually keep the defaults, because the cache collapses many updates of a hot key into one downstream record. The chapter on aggregations explains the trade-off."
+        },
+        {
+          "type": "markdown",
+          "text": "### LAB 7.1 · Run word count against a local broker\n\nStart a broker as shown in the Part on installation (`localhost:9092`). Create the input topic and a compacted output topic: the output holds the latest count per word, which is table data."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --create --topic streams-plaintext-input --partitions 3 \\\n    --bootstrap-server localhost:9092\nCreated topic streams-plaintext-input.\n$ bin/kafka-topics.sh --create --topic streams-wordcount-output --partitions 3 \\\n    --config cleanup.policy=compact --bootstrap-server localhost:9092\nCreated topic streams-wordcount-output.",
+          "title": "Create the topics"
+        },
+        {
+          "type": "markdown",
+          "text": "Run `WordCountApp` from your IDE (or with `mvn compile exec:java` `-Dexec.mainClass=com.shopstream.analytics.WordCountApp`). In a second terminal, type a few lines into the input topic:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-console-producer.sh --topic streams-plaintext-input --bootstrap-server localhost:9092\n>kafka streams makes stream processing simple\n>streams of orders and streams of clicks",
+          "title": "Produce some text"
+        },
+        {
+          "type": "markdown",
+          "text": "In a third terminal, read the output. The values are 8-byte longs, so tell the console consumer how to deserialize them:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \\\n    --topic streams-wordcount-output --from-beginning \\\n    --formatter-property print.key=true \\\n    --formatter-property key.deserializer=org.apache.kafka.common.serialization.StringDeserializer \\\n    --formatter-property value.deserializer=org.apache.kafka.common.serialization.LongDeserializer\nkafka       1\nmakes       1\nstream      1\nstreams     1\nprocessing  1\nsimple      1\nof          2\norders      1\nstreams     3\nand         1\nclicks      1",
+          "title": "Read the running counts"
+        },
+        {
+          "type": "markdown",
+          "text": "Each output record is an update to the table of counts: `streams` first appears with 1 and later with 3. Because the output is spread over three partitions, the order of words in your terminal will differ. The update `streams 2` never appears: both occurrences in the second line were counted within one commit interval, and the cache forwarded only the latest value. Finally, list the topics to see what Kafka Streams created for you:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ bin/kafka-topics.sh --list --bootstrap-server localhost:9092\n__consumer_offsets\nstreams-plaintext-input\nstreams-wordcount-output\nwordcount-demo-counts-store-changelog\nwordcount-demo-counts-store-repartition",
+          "title": "Internal topics created by the application"
+        },
+        {
+          "type": "markdown",
+          "text": "### Reading the topology\n\n`topology.describe()` returns a `TopologyDescription` whose `toString()` prints the graph. It is the first thing to look at when an application behaves unexpectedly or creates topics you did not expect. For word count it prints (typical output):\n\n**Output of System.out.println(topology.describe())**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Topologies:\n   Sub-topology: 0\n    Source: KSTREAM-SOURCE-0000000000 (topics: [streams-plaintext-input])\n      --> KSTREAM-FLATMAPVALUES-0000000001\n    Processor: KSTREAM-FLATMAPVALUES-0000000001 (stores: [])\n      --> KSTREAM-FILTER-0000000002\n      <-- KSTREAM-SOURCE-0000000000\n    Processor: KSTREAM-FILTER-0000000002 (stores: [])\n      --> KSTREAM-KEY-SELECT-0000000003\n      <-- KSTREAM-FLATMAPVALUES-0000000001\n    Processor: KSTREAM-KEY-SELECT-0000000003 (stores: [])\n      --> counts-store-repartition-filter\n      <-- KSTREAM-FILTER-0000000002\n    Processor: counts-store-repartition-filter (stores: [])\n      --> counts-store-repartition-sink\n      <-- KSTREAM-KEY-SELECT-0000000003\n    Sink: counts-store-repartition-sink (topic: counts-store-repartition)\n      <-- counts-store-repartition-filter\n\n  Sub-topology: 1\n    Source: counts-store-repartition-source (topics: [counts-store-repartition])\n      --> KSTREAM-AGGREGATE-0000000004\n    Processor: KSTREAM-AGGREGATE-0000000004 (stores: [counts-store])\n      --> KTABLE-TOSTREAM-0000000008\n      <-- counts-store-repartition-source\n    Processor: KTABLE-TOSTREAM-0000000008 (stores: [])\n      --> KSTREAM-SINK-0000000009\n      <-- KSTREAM-AGGREGATE-0000000004\n    Sink: KSTREAM-SINK-0000000009 (topic: streams-wordcount-output)\n      <-- KTABLE-TOSTREAM-0000000008"
+        },
+        {
+          "type": "markdown",
+          "text": "Read it top to bottom. Sub-topology 0 reads the input, splits and filters words, sets the word as the key (`KEY-SELECT`), drops records with a `null` key (the `repartition-filter`, since a null key cannot be partitioned) and writes to the repartition topic. Sub-topology 1 reads the repartition topic, so every occurrence of a word arrives at the same task, counts in the `counts-store` state store and writes each changed count to the output topic. With three input partitions this application runs six tasks: `0_0` to `0_2` and `1_0` to `1_2`. In the internal topic names, Kafka Streams adds the `application.id` prefix that the description leaves out."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 68.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 54.0 L86.0 54.0 C87.6 54.0 89.0 52.7 89.0 51.0 L89.0 5.0 C89.0 3.3 87.6 2.0 86.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 51.0 C2.0 52.7 3.3 54.0 5.0 54.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.0 28.0 L104.0 28.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M193.0 28.0 L207.0 28.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M295.9 28.0 L309.9 28.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M398.9 28.0 L412.9 28.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M104.0 28.0 L98.6 25.4 L98.6 30.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M108.0 54.0 L189.0 54.0 C190.6 54.0 192.0 52.7 192.0 51.0 L192.0 5.0 C192.0 3.3 190.6 2.0 189.0 2.0 L108.0 2.0 C106.3 2.0 105.0 3.3 105.0 5.0 L105.0 51.0 C105.0 52.7 106.3 54.0 108.0 54.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M207.0 28.0 L201.6 25.4 L201.6 30.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M211.0 54.0 L291.9 54.0 C293.6 54.0 294.9 52.7 294.9 51.0 L294.9 5.0 C294.9 3.3 293.6 2.0 291.9 2.0 L211.0 2.0 C209.3 2.0 208.0 3.3 208.0 5.0 L208.0 51.0 C208.0 52.7 209.3 54.0 211.0 54.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M309.9 28.0 L304.5 25.4 L304.5 30.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M313.9 54.0 L394.9 54.0 C396.6 54.0 397.9 52.7 397.9 51.0 L397.9 5.0 C397.9 3.3 396.6 2.0 394.9 2.0 L313.9 2.0 C312.3 2.0 310.9 3.3 310.9 5.0 L310.9 51.0 C310.9 52.7 312.3 54.0 313.9 54.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M412.9 28.0 L407.5 25.4 L407.5 30.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M416.9 54.0 L497.9 54.0 C499.6 54.0 500.9 52.7 500.9 51.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L416.9 2.0 C415.3 2.0 413.9 3.3 413.9 5.0 L413.9 51.0 C413.9 52.7 415.3 54.0 416.9 54.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"338.2\" y=\"21.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"32.5\" lengthAdjust=\"spacingAndGlyphs\">aggregate</text><text x=\"34.6\" y=\"26.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"21.8\" lengthAdjust=\"spacingAndGlyphs\">Source</text><text x=\"139.1\" y=\"26.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"18.8\" lengthAdjust=\"spacingAndGlyphs\">filter /</text><text x=\"238.2\" y=\"26.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"26.5\" lengthAdjust=\"spacingAndGlyphs\">groupBy</text><text x=\"450.7\" y=\"26.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"13.4\" lengthAdjust=\"spacingAndGlyphs\">Sink</text><text x=\"333.8\" y=\"30.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"41.3\" lengthAdjust=\"spacingAndGlyphs\">state store +</text><text x=\"27.6\" y=\"34.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"35.8\" lengthAdjust=\"spacingAndGlyphs\">page-views</text><text x=\"141.5\" y=\"34.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.0\" lengthAdjust=\"spacingAndGlyphs\">map</text><text x=\"232.4\" y=\"34.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.1\" lengthAdjust=\"spacingAndGlyphs\">(repartition)</text><text x=\"438.1\" y=\"34.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.6\" lengthAdjust=\"spacingAndGlyphs\">counts topic</text><text x=\"338.0\" y=\"39.2\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"32.8\" lengthAdjust=\"spacingAndGlyphs\">changelog</text></svg>",
+          "width": 503,
+          "caption": "The general shape of a stateful topology: stateless steps, a repartition topic created by a re-key, an aggregation backed by a state store and its changelog topic, and a sink.",
+          "alt": "aggregate | Source filter / groupBy Sink | state store + | page-views map (repartition) counts topic | changelog"
+        },
+        {
+          "type": "markdown",
+          "text": "The generated names (`KSTREAM-AGGREGATE-0000000004`) contain a counter that depends on the position of the operator in the program. Insert a `peek` near the top and the numbers shift. For processor names that only hurts readability, but for stores and internal topics it breaks compatibility (see the chapter on aggregations). Name stateful operators explicitly, as this example does for the store."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Defaults that are fine on a laptop and wrong in production\n\n- `state.dir` defaults to `${java.io.tmpdir}`, which many systems clean on reboot. Point it at a persistent volume.\n- `replication.factor` for internal topics defaults to `-1` (use the broker's `default.replication.factor`, which is 1 unless changed). Set it to 3 so changelog and repartition topics survive a broker failure.\n- Every instance of the application must use the same `application.id` and the same topology; a different topology under the same id corrupts the meaning of the existing internal topics."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"What does application.id do in Kafka Streams?\" It identifies the application across all its instances: it is used as the group id for partition assignment and offset commits, as the prefix of every internal topic (`<application.id>-<name>-changelog`, `<application.id>-<name>-repartition`) and as the state directory name. Two deployments with the same id are one application sharing work; a new id means a new application that reprocesses its input according to its offset reset policy."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A Streams app is: build a `Topology` with `StreamsBuilder`, configure `application.id` and `bootstrap.servers`, create `KafkaStreams`, `start()` it, and `close()` it from a shutdown hook.\n- Give serdes explicitly at the boundaries: `Consumed`, `Grouped`, `Produced`, `Materialized`.\n- Re-keying before a stateful operation creates a repartition topic and a new sub-topology; stateful operators create changelog topics.\n- `topology.describe()` shows sources, processors, stores and sinks: use it to understand and debug every topology.\n- Results of aggregations are cached and flushed on commit, so output frequency depends on `commit.interval.ms` and the cache size."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-3",
+      "type": "concept",
+      "title": "Stateless Operations: Filter, Map, Branch and Merge",
+      "subtopicId": "7-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Before you count or join anything, most streaming applications spend their first few operators cleaning data: dropping records nobody needs, reshaping the rest and sending different kinds of records to different places. These are **stateless** operations. They look at one record at a time, keep nothing between records, use no state store and (with one exception, re-keying, explained below) need no extra topics. They are cheap and scale exactly with the number of partitions. This chapter builds a small router for ShopStream's `page-views` clickstream and introduces the tools every topology uses: serdes, the stateless operators and branching.\n\n### Serdes: turning bytes into objects and back\n\nA Kafka record is a pair of byte arrays, while the DSL works with Java objects. Kafka Streams therefore needs a **serde** (a serializer and deserializer pair, `org.apache.kafka.common.serialization.Serde<T>`) at every point where data crosses a boundary: when records enter the topology (`Consumed`), leave it (`Produced`), travel through a repartition topic (`Grouped`, `Repartitioned`, `Joined`, `StreamJoined`) or are written to a state store (`Materialized`). The class `Serdes` offers ready-made serdes for the basic types: `Serdes.String()`, `Serdes.Long()`, `Serdes.Integer()`, `Serdes.Double()` and `Serdes.ByteArray()`.\n\nIf you pass no serde, Kafka Streams falls back to `default.key.serde` and `default.value.serde`. Both are `null` unless you set them, so the application then fails as soon as an operator needs one. Setting defaults looks convenient, but it hides mistakes (see the gotcha below), which is why this book passes serdes explicitly.\n\nFor your own types you need a JSON serde. The page views arrive as JSON objects written by the web front end, and the `PageView` record of the running example maps onto them directly. The class below is a complete, small JSON serde on top of Jackson 3 (add the dependency `tools.jackson.core:jackson-databind`). It keeps `null` as `null`, which matters for tombstones and records without a value."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport org.apache.kafka.common.serialization.Deserializer;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.common.serialization.Serializer;\nimport tools.jackson.databind.json.JsonMapper;\n\n/** Minimal JSON serde for records such as PageView; null stays null. */\npublic final class JsonSerde {\n\n    private static final JsonMapper MAPPER = JsonMapper.builder().build();\n\n    private JsonSerde() {\n    }\n\n    public static <T> Serde<T> of(Class<T> type) {\n        Serializer<T> serializer =\n            (topic, value) -> value == null ? null : MAPPER.writeValueAsBytes(value);\n        Deserializer<T> deserializer =\n            (topic, bytes) -> bytes == null ? null : MAPPER.readValue(bytes, type);\n        return Serdes.serdeFrom(serializer, deserializer);\n    }\n}",
+          "title": "JsonSerde.java"
+        },
+        {
+          "type": "markdown",
+          "text": "A record that cannot be parsed makes `readValue` throw. Kafka Streams catches the exception and passes it to the **deserialization exception handler**, which by default stops the application; the chapter on fault tolerance shows how to skip such \"poison pill\" records or send them to a dead-letter topic instead. If your project already uses Spring for Apache Kafka, `new JacksonJsonSerde<>(PageView.class)` is a ready-made equivalent, and the Schema Registry serdes from the Part on serialization plug into the same places."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Serdes do not follow your generics Java erases generic types at run time, so Kafka Streams cannot work out the serde of a stream after `mapValues` has changed its value type. An operator that needs a serde and does not get one uses the configured default, whatever the type of the data. With a `String` default, writing a `Long` stream with a plain `to(\"topic\")` fails at run time with a `ClassCastException` complaining that the serializer is not compatible with the actual type, not at compile time. Pass `Produced.with(...)`, `Grouped.with(...)` or `Materialized.with(...)` whenever the key or value type differs from what came out of the source."
+        },
+        {
+          "type": "markdown",
+          "text": "### The stateless toolbox\n\nEvery operator in the table returns a new `KStream`, except `foreach`, `print` and `to`, which end a branch of the topology. The original stream is never modified, so one stream can feed several different branches."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operator",
+            "What it does",
+            "Key"
+          ],
+          "rows": [
+            [
+              "`filter, filterNot`",
+              "Keep (or drop) the records for which the predicate is true",
+              "unchanged"
+            ],
+            [
+              "`mapValues`",
+              "Turn each value into a new value; the type may change",
+              "unchanged"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operator",
+            "What it does",
+            "Key"
+          ],
+          "rows": [
+            [
+              "`flatMapValues`",
+              "Turn each value into zero, one or many values",
+              "unchanged"
+            ],
+            [
+              "`map`",
+              "Turn each record into a new key and value (`KeyValue.pair`)",
+              "may change"
+            ],
+            [
+              "`flatMap`",
+              "Turn each record into zero, one or many new key-value pairs",
+              "may change"
+            ],
+            [
+              "`selectKey`",
+              "Compute a new key and keep the value",
+              "may change"
+            ],
+            [
+              "`peek`",
+              "Run a side effect and pass the record on unchanged",
+              "unchanged"
+            ],
+            [
+              "`foreach`",
+              "Run a side effect; ends the branch",
+              "n/a"
+            ],
+            [
+              "`print`",
+              "Write each record to standard output, for debugging",
+              "n/a"
+            ],
+            [
+              "`merge`",
+              "Combine two streams of the same type into one",
+              "unchanged"
+            ],
+            [
+              "`repartition`",
+              "Write the stream to an internal topic and read it back",
+              "unchanged"
+            ],
+            [
+              "`to`",
+              "Write the stream to a topic; ends the branch",
+              "unchanged"
+            ]
+          ],
+          "caption": "The stateless operators of KStream."
+        },
+        {
+          "type": "markdown",
+          "text": "The last column matters. Records with the same key must be processed by the same task, which means they must sit in the same partition. An operator that can change the key (`map`, `flatMap`, `selectKey`) breaks that guarantee, so Kafka Streams **marks the stream as needing repartitioning**. Nothing happens yet. The moment a later operator needs records of one key together (`groupByKey`, `groupBy`, a join, a windowed aggregation), Kafka Streams inserts a repartition topic in front of it, which costs a write, a read and some latency for every record. The rule of thumb: when the key stays the same, use the `Values` variant (`mapValues`, `flatMapValues`), which never marks the stream.\n\nThe fragment below shows the common operators. `views` is a `KStream<String, PageView>` keyed by `sessionId`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "KStream<String, PageView> real =\n    views.filterNot((sessionId, v) -> v.url().startsWith(\"/health\"));\nKStream<String, String> urls =\n    views.mapValues(v -> v.url());                                  // value type changes\nKStream<String, String> segments =\n    views.flatMapValues(v -> List.of(v.url().split(\"/\")));          // one record becomes many\nKStream<String, PageView> byUrl =\n    views.selectKey((sessionId, v) -> v.url());                     // new key: marks repartitioning\nKStream<String, PageView> traced =\n    views.peek((sessionId, v) -> System.out.println(\"view \" + v.url()));\nviews.print(Printed.<String, PageView>toSysOut().withLabel(\"views\"));   // debugging only",
+          "title": "Common stateless operators"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Side effects in peek and foreach run at least once Kafka Streams guarantees at-least-once processing by default (exactly-once is covered later in this Part). After a crash, records since the last commit are processed again, so a `peek` that sends an e-mail or calls a REST API will do it twice. Keep side effects idempotent, or write the data to a topic and let a consumer perform the action."
+        },
+        {
+          "type": "markdown",
+          "text": "### Branching and merging\n\n`split()` sends each record down the **first** branch whose predicate matches, like a chain of `if` and `else if`. You close the chain with `defaultBranch()` for everything that matched nothing, or with `noDefaultBranch()` to drop it. The result is a `Map<String, KStream<K, V>>` from branch name to stream. A key in the map is the prefix given to `split(Named)` followed by the name given to the branch with `Branched.as(...)`. A branch without a name is numbered by its position starting at 1, and an unnamed default branch gets 0.\n\nYou can also process a branch in place with `Branched.withConsumer(stream -> ...)` or `Branched.withFunction(...)`. A branch that has a consumer does not appear in the map. The old `branch(Predicate...)` method, which returned an array, no longer exists in current Kafka releases.\n\n`merge` is the opposite operation: it combines two streams with the same key and value types into one, for example page views from the web shop and from a mobile app. The merged stream interleaves the records of both inputs. Within a task Kafka Streams processes input records in timestamp order as far as the data is available; the setting `max.task.idle.ms` (default 0) controls how long a task waits for a lagging input to avoid processing out of order.\n\n#### Choosing the output topic per record\n\n`to` also accepts a `TopicNameExtractor`, a function of key, value and record context that returns the topic name. Kafka Streams creates only its own internal topics, so every topic the function can return must exist."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "views.to((sessionId, v, recordContext) ->\n             v.url().startsWith(\"/checkout\") ? \"checkout-views\" : \"product-views\",\n         Produced.with(Serdes.String(), viewSerde));",
+          "title": "Dynamic output topic"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Forcing a repartition\n\n`repartition()` writes the stream to an internal topic and reads it back. Use it to spread the work of an expensive step over more partitions than the input topic has, or after a key change when the next step is a Processor API operator that does not repartition by itself. It is also the replacement for the removed `through(topic)`, with the difference that Kafka Streams creates and manages the topic. The name you give becomes part of the topic name."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "KStream<String, PageView> spread = views.repartition(\n    Repartitioned.with(Serdes.String(), viewSerde)\n        .withName(\"views-spread\")\n        .withNumberOfPartitions(12));",
+          "title": "Repartition into twelve partitions"
+        },
+        {
+          "type": "markdown",
+          "text": "### A complete example: cleaning and routing page views\n\nThe topology below reads `page-views`, drops malformed records and health checks, strips query strings from URLs, and routes checkout and product views to their own topics. Everything else is dropped. Create the two output topics before you run it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport com.shopstream.events.PageView;\nimport java.util.Map;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.StreamsBuilder;\nimport org.apache.kafka.streams.Topology;\nimport org.apache.kafka.streams.kstream.Branched;\nimport org.apache.kafka.streams.kstream.Consumed;\nimport org.apache.kafka.streams.kstream.KStream;\nimport org.apache.kafka.streams.kstream.Named;\nimport org.apache.kafka.streams.kstream.Produced;\n\npublic class PageViewRouter {\n\n    static final String INPUT = \"page-views\";\n    static final String CHECKOUT = \"checkout-views\";\n    static final String PRODUCT = \"product-views\";\n\n    public static Topology buildTopology() {\n        Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n        StreamsBuilder builder = new StreamsBuilder();\n\n        Map<String, KStream<String, PageView>> routes = builder\n            .stream(INPUT, Consumed.with(Serdes.String(), viewSerde))\n            .filter((sessionId, view) -> view != null && view.url() != null)\n            .filterNot((sessionId, view) -> view.url().startsWith(\"/health\"))\n            .mapValues(PageViewRouter::withoutQueryString)\n            .split(Named.as(\"route-\"))\n            .branch((sessionId, view) -> view.url().startsWith(\"/checkout\"),\n                    Branched.as(\"checkout\"))\n            .branch((sessionId, view) -> view.url().startsWith(\"/product/\"),\n                    Branched.as(\"product\"))\n            .noDefaultBranch();\n\n        routes.get(\"route-checkout\").to(CHECKOUT, Produced.with(Serdes.String(), viewSerde));\n        routes.get(\"route-product\").to(PRODUCT, Produced.with(Serdes.String(), viewSerde));\n        return builder.build();\n    }\n    static PageView withoutQueryString(PageView view) {\n        int q = view.url().indexOf('?');\n        String path = q < 0 ? view.url() : view.url().substring(0, q);\n        return new PageView(view.userId(), view.sessionId(), path, view.referrer(), view.ts());\n    }\n}",
+          "title": "PageViewRouter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- The first `filter` guards against `null` values and missing URLs. A lambda that dereferences a `null` throws a `NullPointerException`, and an exception thrown in your code stops the stream thread (the chapter on fault tolerance shows the alternatives).\n- `mapValues` keeps the key, so this whole topology is one sub-topology without repartition topics, and it runs as one task per `page-views` partition.\n- The branch names combine with the prefix of `Named.as(\"route-\")`, so the map keys are `route-checkout` and `route-product`.\n- No state store and no internal topics are involved, so there is nothing to clean up when you change the topology.\n\n### Testing without a broker\n\nKafka Streams ships a test driver that runs a topology inside your JVM, synchronously, with no broker. You pipe records into a `TestInputTopic` and read results from a `TestOutputTopic`. Put `org.apache.kafka:kafka-streams-test-utils` and JUnit 5 on the test classpath (the chapter on testing covers the details and the limits of the driver)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport com.shopstream.events.PageView;\nimport java.time.Instant;\nimport java.util.Properties;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.StreamsConfig;\nimport org.apache.kafka.streams.TestInputTopic;\nimport org.apache.kafka.streams.TestOutputTopic;\nimport org.apache.kafka.streams.TopologyTestDriver;\nimport org.junit.jupiter.api.AfterEach;\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.Test;\n\nclass PageViewRouterTest {\n\n    private TopologyTestDriver driver;\n    private TestInputTopic<String, PageView> input;\n    private TestOutputTopic<String, PageView> checkout;\n    private TestOutputTopic<String, PageView> product;\n\n    @BeforeEach\n    void setUp() {\n        Properties props = new Properties();\n        props.put(StreamsConfig.APPLICATION_ID_CONFIG, \"router-test\");\n        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, \"dummy:9092\");\n        driver = new TopologyTestDriver(PageViewRouter.buildTopology(), props);\n\n        Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n        input = driver.createInputTopic(\n            \"page-views\", Serdes.String().serializer(), viewSerde.serializer());\n        checkout = driver.createOutputTopic(\n            \"checkout-views\", Serdes.String().deserializer(), viewSerde.deserializer());\n        product = driver.createOutputTopic(\n            \"product-views\", Serdes.String().deserializer(), viewSerde.deserializer());\n    }\n\n    @AfterEach\n    void tearDown() {\n        driver.close();\n    }\n    @Test\n    void routesByUrlAndStripsQueryStrings() {\n        input.pipeInput(\"s-1\", view(\"s-1\", \"/checkout/pay?step=2\"));\n        input.pipeInput(\"s-2\", view(\"s-2\", \"/product/SKU-RED-SHOE-42?utm=mail\"));\n        input.pipeInput(\"s-3\", view(\"s-3\", \"/health\"));\n        input.pipeInput(\"s-4\", view(\"s-4\", \"/about\"));\n\n        assertEquals(\"/checkout/pay\", checkout.readValue().url());\n        assertEquals(\"/product/SKU-RED-SHOE-42\", product.readValue().url());\n        assertTrue(checkout.isEmpty());\n        assertTrue(product.isEmpty());\n    }\n\n    private static PageView view(String sessionId, String url) {\n        Instant ts = Instant.parse(\"2026-10-08T10:15:30Z\");\n        return new PageView(\"c-77\", sessionId, url, \"/home\", ts);\n    }\n}",
+          "title": "PageViewRouterTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The driver needs an `application.id` and a `bootstrap.servers` value to satisfy configuration validation, but it never connects to anything. Remember to call `close()`, here in `@AfterEach`, because the driver holds state directories and threads."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Clean first, then analyse A common design is a small \"sanitising\" topology that reads the raw topic, validates and normalises the records and writes a clean topic. Every other application then reads the clean topic and can trust its shape. Bad data is handled in exactly one place."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"What is the difference between map and mapValues in Kafka Streams, and why does it matter?\" `mapValues` transforms only the value, so the key and therefore the partitioning stay the same. `map` can change the key, so Kafka Streams marks the stream for repartitioning, and the next operator that needs co-located keys (a grouping, a join, a windowed aggregation) writes the records to an internal repartition topic and reads them back. That is extra network traffic, storage and latency. Use `mapValues` unless you really need a new key."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Stateless operators (`filter`, `mapValues`, `flatMapValues`, `peek`, `split`, `merge`, `to`) process one record at a time and need no state store.\n- Provide serdes explicitly at every boundary (`Consumed`, `Produced`, `Grouped`, `Materialized`); defaults hide type mistakes until run time.\n- Operators that can change the key (`map`, `flatMap`, `selectKey`) mark the stream for repartitioning; prefer the `Values` variants when the key stays.\n- `split().branch(...)` routes each record to the first matching branch; finish with `defaultBranch` or `noDefaultBranch`. `repartition()` replaces `through()`.\n- Test topologies without a broker using `TopologyTestDriver`, `TestInputTopic` and `TestOutputTopic`."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-4",
+      "type": "concept",
+      "title": "Aggregations and State Stores",
+      "subtopicId": "7-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Counting, summing and tracking \"the latest value\" per key all need memory that survives from one record to the next. Kafka Streams provides it as **state**: stores that live next to your code, are sharded like the input partitions and are backed up to Kafka. This chapter answers three questions about ShopStream: how many views does each URL get, what is the latest known state of each shopping session, and how many customers are in each loyalty tier? Along the way it explains where state lives, how it survives a crash and, a point that surprises many people, when an aggregate becomes visible downstream.\n\n### Group, then aggregate\n\nAn aggregation always has two steps. First you **group** the records by key. That gives a `KGroupedStream` (or `KGroupedTable`), which is only a description of the grouping and cannot be read. Then you apply an aggregation operator, which returns a `KTable` holding the current aggregate for each key.\n\n- `groupByKey()` keeps the existing key. If no earlier operator changed the key, no repartition topic is needed.\n- `groupBy(selector)` computes a new key from each record and always repartitions, because records with the new key may currently sit in any partition.\n\nIn both cases pass `Grouped.with(keySerde, valueSerde)`, and give the grouping a name (`Grouped.with(\"views-by-url\", ...)`) so that the repartition topic gets a stable name."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Operator",
+            "Result type",
+            "You supply"
+          ],
+          "rows": [
+            [
+              "`count()`",
+              "Long",
+              "Nothing; it counts the records of each key"
+            ],
+            [
+              "`reduce(reducer)`",
+              "Same as the value type",
+              "A function (aggregate, value) → combined value, for sum, min, max or latest"
+            ],
+            [
+              "`aggregate(init, aggregator)`",
+              "Any type you choose",
+              "A starting value and a function (key, value, aggregate) → new aggregate"
+            ]
+          ],
+          "caption": "The three aggregation operators of a grouped stream."
+        },
+        {
+          "type": "markdown",
+          "text": "The topology below computes three results. `Customer` is the record `Customer(String name, String tier, String` `city)` of the compacted `customers` topic, and `SessionSummary` is defined inside the listing."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport com.shopstream.events.Customer;\nimport com.shopstream.events.PageView;\nimport java.time.Instant;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.common.utils.Bytes;\nimport org.apache.kafka.streams.KeyValue;\nimport org.apache.kafka.streams.StreamsBuilder;\nimport org.apache.kafka.streams.Topology;\nimport org.apache.kafka.streams.kstream.Consumed;\nimport org.apache.kafka.streams.kstream.Grouped;\nimport org.apache.kafka.streams.kstream.KStream;\nimport org.apache.kafka.streams.kstream.KTable;\nimport org.apache.kafka.streams.kstream.Materialized;\nimport org.apache.kafka.streams.kstream.Produced;\nimport org.apache.kafka.streams.state.KeyValueStore;\n\npublic class PageViewStats {\n\n    /** What we know about one shopping session. */\n    public record SessionSummary(long views, String lastUrl, Instant lastSeen) {\n\n        public static SessionSummary empty() {\n            return new SessionSummary(0, null, null);\n        }\n\n        public SessionSummary add(PageView view) {\n            boolean newest = lastSeen == null || view.ts().isAfter(lastSeen);\n            return new SessionSummary(views + 1,\n                newest ? view.url() : lastUrl,\n                newest ? view.ts() : lastSeen);\n        }\n    }\n\n    public static Topology buildTopology() {\n        Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n        Serde<SessionSummary> summarySerde = JsonSerde.of(SessionSummary.class);\n        Serde<Customer> customerSerde = JsonSerde.of(Customer.class);\n        StreamsBuilder builder = new StreamsBuilder();\n\n        KStream<String, PageView> views =\n            builder.stream(\"page-views\", Consumed.with(Serdes.String(), viewSerde));\n\n        // 1. count: views per URL. The key changes from sessionId to url: repartition topic.\n        views.groupBy((sessionId, view) -> view.url(),\n                      Grouped.with(\"views-by-url\", Serdes.String(), viewSerde))\n             .count(Materialized.as(\"views-per-url\"))\n             .toStream()\n             .to(\"page-view-counts\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        // 2. aggregate: one summary per session. The key is already sessionId: no repartition.\n        views.groupByKey(Grouped.with(Serdes.String(), viewSerde))\n             .aggregate(\n                 SessionSummary::empty,\n                 (sessionId, view, summary) -> summary.add(view),\n                 Materialized.<String, SessionSummary, KeyValueStore<Bytes, byte[]>>as(\n                         \"session-summary-store\")\n                     .withKeySerde(Serdes.String())\n                     .withValueSerde(summarySerde))\n             .toStream()\n             .to(\"session-summaries\", Produced.with(Serdes.String(), summarySerde));\n\n        // 3. table aggregation: customers per loyalty tier\n        KTable<String, Customer> customers = builder.table(\"customers\",\n            Consumed.with(Serdes.String(), customerSerde), Materialized.as(\"customers-store\"));\n        customers.groupBy((customerId, customer) -> KeyValue.pair(customer.tier(), customer),\n                          Grouped.with(\"customers-by-tier\", Serdes.String(), customerSerde))\n                 .count(Materialized.as(\"customers-per-tier\"))\n                 .toStream()\n                 .to(\"customers-per-tier\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        return builder.build();\n    }\n}",
+          "title": "PageViewStats.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Repartition or not.** `groupBy` on the URL re-keys the stream, so Kafka Streams adds the internal topic `shopstream-analytics-views-by-url-repartition` (the application id is the prefix). `groupByKey` on the session summary is free because `page-views` is already keyed by `sessionId`.\n- **The aggregator runs once per record and must be correct for any arrival order.** `add` keeps the newest URL by comparing timestamps instead of assuming the last record to arrive is the latest event.\n- `Materialized` **for** `aggregate` **needs explicit type arguments and a value serde.** Kafka Streams can reuse the grouping's key serde, but it cannot know the serde of your aggregate type, and chaining `withValueSerde` onto `Materialized.as(...)` defeats type inference, hence the explicit `<String, SessionSummary,` `KeyValueStore<Bytes, byte[]>>`.\n- **Aggregations skip records whose key or value is** `null`, log a warning and count them in the dropped-records metric.\n\n#### Aggregating a table: adder and subtractor\n\nThe input of the third aggregation is a table, so a record is an update that replaces the previous value of its key. When customer `c-1` moves from `SILVER` to `GOLD`, the `SILVER` count must go down and the `GOLD` count must go up. `KTable.groupBy` therefore maps each row to a new key-value pair, and the aggregation on the resulting `KGroupedTable` applies an **adder** to the new value and a **subtractor** to the value it replaces (`count()` supplies both for you; `reduce` and `aggregate` take them as arguments).\n\n**Customers per tier while the customers table changes**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "update to customers      updates to customers-per-tier\nc-1 = SILVER             SILVER = 1\nc-2 = SILVER             SILVER = 2\nc-1 = GOLD               SILVER = 1, then GOLD = 1    (subtract from old tier, add to new tier)"
+        },
+        {
+          "type": "markdown",
+          "text": "### State stores and changelog topics\n\nA **state store** is a small embedded database that holds one task's share of an aggregate. Kafka Streams has three shapes of store: key-value stores (aggregations of streams and tables), window stores (windowed aggregations and stream-stream joins) and session stores (session windows). The DSL creates them for you; with the Processor API you create and use them yourself.\n\nBy default a store is a **RocksDB** database on local disk, one per store and task, under `state.dir`. A typical layout looks like this:\n\n**Typical state directory of one instance**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "/var/lib/analytics/state                 <- state.dir\n└── shopstream-analytics                 <- application.id\n    ├── 0_0                              <- task: sub-topology 0, partition 0\n    │   └── rocksdb\n    │       └── views-per-url            <- one RocksDB database per store and task\n    └── 1_0\n        └── rocksdb\n            └── session-summary-store"
+        },
+        {
+          "type": "markdown",
+          "text": "RocksDB keeps its write buffers and block cache in native memory, outside the Java heap, so a container memory limit must leave room beyond `-Xmx`. Tuning goes through a class that implements `RocksDBConfigSetter` and is named in `rocksdb.config.setter`. For small, hot state you can choose an in-memory store, either globally with `default.dsl.store=in_memory` or per operator with `Materialized.as(Stores.inMemoryKeyValueStore(\"name\"))`.\n\nLocal disk alone is not durable, so every store has a **changelog topic**, named `<application.id>-<store` `name>-changelog`, with one partition per task. Each update to the store is also produced to its changelog, and the topic is compacted, so it keeps the latest value of every key (stores of windows also expire old data). If an instance dies, or a task moves to another instance, the new owner **restores** the store by replaying the changelog before it processes new records; a surviving local copy with a checkpoint file needs only the missing tail. Restoration time grows with the size of the state, which is the main reason failover of a large application is slow and why standby replicas exist (see the chapter on fault tolerance).\n\nTreat changelog and repartition topics as private to the application. Other applications should read the topic you write with `to(...)`, which is the application's real output."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "State is the cost of stateful processing A key-value aggregate never forgets a key: counting per `sessionId` grows with every new session, forever. Plan for growth. Use windows when old keys stop mattering (next chapter), watch the store sizes, and remember that every store also occupies disk and a changelog topic in the cluster. Disabling logging with `Materialized.withLoggingDisabled()` removes the changelog but also the fault tolerance: after a failure the state is gone. Do it only for state you can rebuild cheaply."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "At-least-once can count twice With the default `processing.guarantee=at_least_once`, a crash between processing a record and committing its offset replays that record, and the aggregate counts it again. For counters that must be exact, use `exactly_once_v2` (see the chapter on fault tolerance)."
+        },
+        {
+          "type": "markdown",
+          "text": "### When do results appear? Record caches and commits\n\nRun the counting topology and you will notice that the output topic does not receive one record for every input record. Stateful operators write into a **record cache** before they touch the store and forward results downstream. The cache keeps only the newest aggregate per key, so ten updates of `/cart` that arrive close together collapse into one output record. The cache is flushed, which writes the store, its changelog and the downstream records, when the commit interval passes or when the cache is full."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Default",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`commit.interval.ms`",
+              "30000 (100 with exactly\\_once\\_v2)",
+              "How often caches are flushed and offsets committed"
+            ],
+            [
+              "`statestore.cache.max.bytes`",
+              "10485760 (10 MiB)",
+              "Total cache size for all stream threads of the instance; a full cache evicts and forwards entries early"
+            ],
+            [
+              "`Materialized.withCachingDisabled` `()`",
+              "cache enabled",
+              "No cache for this store: every update is forwarded at once"
+            ]
+          ],
+          "caption": "Settings that decide when aggregate results leave a stateful operator."
+        },
+        {
+          "type": "markdown",
+          "text": "The consequence is a way of thinking: **the output of an aggregation is a changelog**. Every record is the latest value known when the cache was flushed; intermediate values may be skipped, and the same key appears many times. Write it to a compacted topic or an upsert target, and make consumers idempotent. Setting `statestore.cache.max.bytes` to 0 makes every update visible, at the price of more output records and more writes to the changelog. If you need exactly one final result per window, use `suppress`, covered in the next chapter.\n\n### Naming, optimisation and changing a topology\n\nEach stateful operator creates internal resources: a store, a changelog topic and often a repartition topic. Unless you name them, their names are generated from the operator's position in the topology, such as `KSTREAM-AGGREGATE-STATE-STORE-0000000003`. Insert one operator earlier in the code and every later number shifts. After a restart the application looks for stores and topics that do not exist, starts counting from zero and leaves the old internal topics behind. Name every stateful operator: `Materialized.as(...)`, `Grouped.with(name, ...)`, `Repartitioned.as(...)`, `StreamJoined.as(...)` and `Named.as(...)`. To enforce the habit, set `ensure.explicit.internal.resource.naming=true` (default `false`); Kafka Streams then refuses to start when an internal resource would get a generated name.\n\nThe setting `topology.optimization` (default `none`) lets Kafka Streams rewrite the topology to save internal topics. `all` enables three optimizations. `reuse.ktable.source.topics` uses the input topic of a source table as its changelog instead of creating a second topic. `merge.repartition.topics` shares one repartition topic between operators that need the same re-keyed stream. `single.store.self.join` uses one store for a stream joined with itself. You can also list them individually."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Pass the Properties to build() The optimizer runs only when you give the configuration to the builder: `builder.build(props)`. With a plain `builder.build()` followed by `new KafkaStreams(topology, props)` the optimization is not applied. Switching optimizations on or off for a running application changes its internal topics, so treat it like any other topology change: reset the application or deploy it under a new `application.id`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Testing aggregations\n\nThe test driver flushes caches and commits after every input record, so you see every intermediate update, and it lets you look inside the stores. The first test pipes three page views of one session, the last of them late, and checks the summary in the store. The second moves a customer between tiers."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport com.shopstream.analytics.PageViewStats.SessionSummary;\nimport com.shopstream.events.Customer;\nimport com.shopstream.events.PageView;\nimport java.time.Instant;\nimport java.util.Properties;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.StreamsConfig;\nimport org.apache.kafka.streams.TestInputTopic;\nimport org.apache.kafka.streams.TopologyTestDriver;\nimport org.apache.kafka.streams.state.KeyValueStore;\nimport org.junit.jupiter.api.AfterEach;\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.Test;\n\nclass PageViewStatsTest {\n\n    private final Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n    private final Serde<Customer> customerSerde = JsonSerde.of(Customer.class);\n    private TopologyTestDriver driver;\n\n    @BeforeEach\n    void setUp() {\n        Properties props = new Properties();\n        props.put(StreamsConfig.APPLICATION_ID_CONFIG, \"stats-test\");\n        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, \"dummy:9092\");\n        driver = new TopologyTestDriver(PageViewStats.buildTopology(), props);\n    }\n\n    @AfterEach\n    void tearDown() {\n        driver.close();\n    }\n\n    @Test\n    void keepsTheNewestUrlWhenEventsArriveOutOfOrder() {\n        TestInputTopic<String, PageView> input = driver.createInputTopic(\n            \"page-views\", Serdes.String().serializer(), viewSerde.serializer());\n        input.pipeInput(\"s-1\", view(\"/cart\", \"2026-10-08T10:00:20Z\"));\n        input.pipeInput(\"s-1\", view(\"/checkout\", \"2026-10-08T10:00:50Z\"));\n        input.pipeInput(\"s-1\", view(\"/home\", \"2026-10-08T10:00:05Z\"));      // late event\n\n        KeyValueStore<String, SessionSummary> store =\n            driver.getKeyValueStore(\"session-summary-store\");\n        assertEquals(3, store.get(\"s-1\").views());\n        assertEquals(\"/checkout\", store.get(\"s-1\").lastUrl());\n    }\n\n    @Test\n    void movesACustomerBetweenTiers() {\n        TestInputTopic<String, Customer> customers = driver.createInputTopic(\n            \"customers\", Serdes.String().serializer(), customerSerde.serializer());\n        customers.pipeInput(\"c-1\", new Customer(\"Asha\", \"SILVER\", \"Pune\"));\n        customers.pipeInput(\"c-2\", new Customer(\"Ravi\", \"SILVER\", \"Hyderabad\"));\n        customers.pipeInput(\"c-1\", new Customer(\"Asha\", \"GOLD\", \"Pune\"));\n\n        KeyValueStore<String, Long> perTier = driver.getKeyValueStore(\"customers-per-tier\");\n        assertEquals(1L, perTier.get(\"SILVER\").longValue());\n        assertEquals(1L, perTier.get(\"GOLD\").longValue());\n    }\n\n    private static PageView view(String url, String timestamp) {\n        return new PageView(\"c-77\", \"s-1\", url, \"/home\", Instant.parse(timestamp));\n    }\n}",
+          "title": "PageViewStatsTest.java"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"How does Kafka Streams make local state fault tolerant?\" Every state store is a local database (RocksDB by default) that is also backed by a compacted changelog topic in Kafka: each update to the store is written to the changelog. If an instance fails, another instance takes over the task and rebuilds the store by replaying the changelog before processing continues. Standby replicas keep warm copies on other instances to shorten that recovery. With `exactly_once_v2`, the store update, the output records and the offset commit become one atomic transaction."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- An aggregation is group, then count, reduce or aggregate; the result is a `KTable`. `groupBy` re-keys and always repartitions, `groupByKey` repartitions only after an earlier key change.\n- Aggregators must be correct for any arrival order; `aggregate` needs an explicit value serde in `Materialized`.\n- Every state store is local (RocksDB by default) and backed by a compacted changelog topic; restoration time grows with state size.\n- Aggregation output is a stream of updates, thinned by the record cache: flushed every `commit.interval.ms` or when `statestore.cache.max.bytes` fills up.\n- Name stateful operators (or set `ensure.explicit.internal.resource.naming`), and pass the `Properties` to `build()` when you use `topology.optimization`."
+        }
+      ]
+    },
+    {
+      "id": "ch-7-5",
+      "type": "concept",
+      "title": "Windows and Time",
+      "subtopicId": "7-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A plain count per URL grows forever. The question a business asks is usually bounded in time: how many views did `/cart` get **per minute**, how long did this visit last, did this card fail three times **within ten minutes**? Windowing slices the infinite stream into finite pieces by time and aggregates each piece separately. It also gives Kafka Streams a reason to forget: when a window is old enough, its state can be dropped, so memory stays bounded.\n\n### Four kinds of windows"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 466.1 120.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M32.1 90.0 L176.1 90.0 C177.8 90.0 179.1 88.7 179.1 87.0 L179.1 75.0 C179.1 73.3 177.8 72.0 176.1 72.0 L32.1 72.0 C30.5 72.0 29.1 73.3 29.1 75.0 L29.1 87.0 C29.1 88.7 30.5 90.0 32.1 90.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M87.1 56.0 L186.1 56.0 C187.8 56.0 189.1 54.7 189.1 53.0 L189.1 41.0 C189.1 39.3 187.8 38.0 186.1 38.0 L87.1 38.0 C85.5 38.0 84.1 39.3 84.1 41.0 L84.1 53.0 C84.1 54.7 85.5 56.0 87.1 56.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M197.1 56.0 L296.1 56.0 C297.8 56.0 299.1 54.7 299.1 53.0 L299.1 41.0 C299.1 39.3 297.8 38.0 296.1 38.0 L197.1 38.0 C195.5 38.0 194.1 39.3 194.1 41.0 L194.1 53.0 C194.1 54.7 195.5 56.0 197.1 56.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.1 90.0 L376.1 90.0 C377.8 90.0 379.1 88.7 379.1 87.0 L379.1 75.0 C379.1 73.3 377.8 72.0 376.1 72.0 L292.1 72.0 C290.5 72.0 289.1 73.3 289.1 75.0 L289.1 87.0 C289.1 88.7 290.5 90.0 292.1 90.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M32.1 24.0 L131.1 24.0 C132.8 24.0 134.1 22.7 134.1 21.0 L134.1 5.0 C134.1 3.3 132.8 2.0 131.1 2.0 L32.1 2.0 C30.5 2.0 29.1 3.3 29.1 5.0 L29.1 21.0 C29.1 22.7 30.5 24.0 32.1 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M142.1 24.0 L241.1 24.0 C242.8 24.0 244.1 22.7 244.1 21.0 L244.1 5.0 C244.1 3.3 242.8 2.0 241.1 2.0 L142.1 2.0 C140.5 2.0 139.1 3.3 139.1 5.0 L139.1 21.0 C139.1 22.7 140.5 24.0 142.1 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.1 24.0 L351.1 24.0 C352.8 24.0 354.1 22.7 354.1 21.0 L354.1 5.0 C354.1 3.3 352.8 2.0 351.1 2.0 L252.1 2.0 C250.5 2.0 249.1 3.3 249.1 5.0 L249.1 21.0 C249.1 22.7 250.5 24.0 252.1 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M362.1 24.0 L461.1 24.0 C462.8 24.0 464.1 22.7 464.1 21.0 L464.1 5.0 C464.1 3.3 462.8 2.0 461.1 2.0 L362.1 2.0 C360.5 2.0 359.1 3.3 359.1 5.0 L359.1 21.0 C359.1 22.7 360.5 24.0 362.1 24.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M32.1 34.0 L131.1 34.0 C132.8 34.0 134.1 32.7 134.1 31.0 L134.1 19.0 C134.1 17.3 132.8 16.0 131.1 16.0 L32.1 16.0 C30.5 16.0 29.1 17.3 29.1 19.0 L29.1 31.0 C29.1 32.7 30.5 34.0 32.1 34.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M142.1 34.0 L241.1 34.0 C242.8 34.0 244.1 32.7 244.1 31.0 L244.1 19.0 C244.1 17.3 242.8 16.0 241.1 16.0 L142.1 16.0 C140.5 16.0 139.1 17.3 139.1 19.0 L139.1 31.0 C139.1 32.7 140.5 34.0 142.1 34.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"64.1\" y=\"15.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"35.1\" lengthAdjust=\"spacingAndGlyphs\">tumbling 0</text><text x=\"174.1\" y=\"15.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"35.1\" lengthAdjust=\"spacingAndGlyphs\">tumbling 1</text><text x=\"284.1\" y=\"15.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"35.1\" lengthAdjust=\"spacingAndGlyphs\">tumbling 2</text><text x=\"394.1\" y=\"15.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"35.1\" lengthAdjust=\"spacingAndGlyphs\">tumbling 3</text><text x=\"65.8\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"31.6\" lengthAdjust=\"spacingAndGlyphs\">hopping 0</text><text x=\"175.8\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"31.6\" lengthAdjust=\"spacingAndGlyphs\">hopping 2</text><text x=\"120.8\" y=\"49.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"31.6\" lengthAdjust=\"spacingAndGlyphs\">hopping 1</text><text x=\"230.8\" y=\"49.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"31.6\" lengthAdjust=\"spacingAndGlyphs\">hopping 3</text><text x=\"78.3\" y=\"83.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"51.7\" lengthAdjust=\"spacingAndGlyphs\">session (user A)</text><text x=\"318.9\" y=\"83.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"30.5\" lengthAdjust=\"spacingAndGlyphs\">session B</text><text x=\"213.3\" y=\"86.0\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"41.6\" lengthAdjust=\"spacingAndGlyphs\">inactivity gap</text><text x=\"2.0\" y=\"102.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"14.2\" lengthAdjust=\"spacingAndGlyphs\">time</text></svg>",
+          "width": 466,
+          "caption": "The window types on one timeline: tumbling windows tile it without overlap, hopping windows overlap, and session windows grow while a key stays active and end after a gap of inactivity.",
+          "alt": "tumbling 0 tumbling 1 tumbling 2 tumbling 3 | hopping 0 hopping 2 | hopping 1 hopping 3 | session (user A) session B | inactivity gap | time"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Window",
+            "Shape",
+            "Factory"
+          ],
+          "rows": [
+            [
+              "Tumbling",
+              "Fixed size, no overlap; every record falls into exactly one window",
+              "`TimeWindows.ofSizeAndGrace(size,` `grace)`"
+            ],
+            [
+              "Hopping",
+              "Fixed size that advances by a smaller step, so windows overlap and a record falls into several",
+              "`TimeWindows.ofSizeAndGrace(size,` `grace).advanceBy(step)`"
+            ],
+            [
+              "Sliding",
+              "Fixed maximum time difference between records; a window exists for each distinct set of records",
+              "`SlidingWindows.ofTimeDifferenceAndGrac` `e(diff, grace)`"
+            ],
+            [
+              "Session",
+              "Dynamic size per key; ends after a gap with no records, and sessions that a late record bridges are merged",
+              "`SessionWindows.ofInactivityGapAndGrace` `(gap, grace)`"
+            ]
+          ],
+          "caption": "Window types and how to create them."
+        },
+        {
+          "type": "markdown",
+          "text": "Each factory has a `WithNoGrace` twin (`ofSizeWithNoGrace`, `ofTimeDifferenceWithNoGrace`, `ofInactivityGapWithNoGrace`). The old factories without a grace argument are gone from current releases, so you must decide about lateness explicitly. Time windows are aligned to the epoch and cover `[start, end)`: with a size of one minute the windows are 10:00:00 to 10:01:00, 10:01:00 to 10:02:00 and so on, whatever time your application started. A window exists only for keys that have records in it; there are no empty windows.\n\n### Time, lateness and grace\n\nWhich timestamp assigns a record to a window? By default the timestamp of the Kafka record, which is the producer's creation time or the broker's append time, depending on the topic's `message.timestamp.type`. If the real event time is inside the payload, a **timestamp extractor** reads it. It receives the already deserialized record and the highest timestamp seen so far in the partition:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport com.shopstream.events.PageView;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.streams.processor.TimestampExtractor;\n\n/** Uses the event time stored in the payload instead of the record timestamp. */\npublic class PageViewTimestampExtractor implements TimestampExtractor {\n\n    @Override\n    public long extract(ConsumerRecord<Object, Object> record, long partitionTime) {\n        if (record.value() instanceof PageView view && view.ts() != null) {\n            return view.ts().toEpochMilli();\n        }\n        return record.timestamp();\n    }\n}",
+          "title": "PageViewTimestampExtractor.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Attach it to one source with `Consumed.with(...).withTimestampExtractor(...)`, or to all sources with `default.timestamp.extractor`. The built-in extractors in `org.apache.kafka.streams.processor` differ in what they do with an invalid (negative) timestamp: `FailOnInvalidTimestamp` (the default) throws, `LogAndSkipOnInvalidTimestamp` skips the record, `UsePartitionTimeOnInvalidTimestamp` substitutes the partition time. `WallclockTimestampExtractor` ignores the record and returns the current system time, which turns the application into processing-time semantics.\n\nRecords arrive out of order, so a window cannot close the moment its end time passes. The **grace period** keeps it open a little longer. A window closes when stream time exceeds **window end plus grace**. Records for an open window are added, even when they are late. A record for a window that has already closed is **dropped**; Kafka Streams logs it and counts it in the `dropped-records` metrics. With `WithNoGrace` the window closes as soon as stream time passes its end.\n\nGrace is a trade-off between completeness and delay: a long grace catches more stragglers but delays every final result by the same amount. Choose it from the lateness you actually observe in your data, for example the delay between event time and arrival time that 99.9 percent of records stay within, and watch the dropped-records metric afterwards.\n\n### Page views per minute, with one final result\n\nThe topology counts page views per URL and minute and writes **one** record per window, after it closed. It uses the extractor above, a grace period of 30 seconds, and turns the windowed key into a readable string."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport com.shopstream.events.PageView;\nimport java.time.Duration;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.KeyValue;\nimport org.apache.kafka.streams.StreamsBuilder;\nimport org.apache.kafka.streams.Topology;\nimport org.apache.kafka.streams.kstream.Consumed;\nimport org.apache.kafka.streams.kstream.Grouped;\nimport org.apache.kafka.streams.kstream.Materialized;\nimport org.apache.kafka.streams.kstream.Produced;\nimport org.apache.kafka.streams.kstream.Suppressed;\nimport org.apache.kafka.streams.kstream.TimeWindows;\n\npublic class PageViewWindows {\n\n    public static Topology buildTopology() {\n        Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n        TimeWindows perMinute =\n            TimeWindows.ofSizeAndGrace(Duration.ofMinutes(1), Duration.ofSeconds(30));\n        StreamsBuilder builder = new StreamsBuilder();\n\n        builder.stream(\"page-views\", Consumed.with(Serdes.String(), viewSerde)\n                   .withTimestampExtractor(new PageViewTimestampExtractor()))\n               .groupBy((sessionId, view) -> view.url(),\n                        Grouped.with(\"views-by-url\", Serdes.String(), viewSerde))\n               .windowedBy(perMinute)\n               .count(Materialized.as(\"views-per-minute\"))\n               .suppress(Suppressed.untilWindowCloses(Suppressed.BufferConfig.unbounded()))\n               .toStream()\n               .map((windowedUrl, count) -> KeyValue.pair(\n                        windowedUrl.key() + \"@\" + windowedUrl.window().startTime(), count))\n               .to(\"page-views-per-minute\", Produced.with(Serdes.String(), Serdes.Long()));\n\n        return builder.build();\n    }\n}",
+          "title": "PageViewWindows.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `windowedBy` turns the grouped stream into a windowed one, and `count` then returns a `KTable<Windowed<String>,` `Long>`. A `Windowed<K>` pairs the key with its `Window`, which knows `start()`, `end()`, `startTime()` and `endTime()`.\n- Without `suppress`, the table would emit an updated count whenever a window changes (thinned by the record cache), so a consumer would see 1, 2, 3 for the same minute. `Suppressed.untilWindowCloses` holds the updates back and emits exactly one record per window when it closes.\n- The buffer of `untilWindowCloses` must be **strict**: it may never emit early. `BufferConfig.unbounded()` can exhaust memory if you have many keys. The bounded alternative stops the application instead: `Suppressed.BufferConfig.maxRecords(100_000).shutDownWhenFull()`.\n- Windowed keys can be written with `WindowedSerdes.timeWindowedSerdeFrom(String.class, windowSizeMs)`, but a string key such as `/cart@2026-10-08T10:00:00Z` is easier for other consumers.\n- Windowed aggregations also accept `emitStrategy(EmitStrategy.onWindowClose())` before the aggregation, which emits only when a window closes without a separate suppression buffer. `suppress` remains the general tool because it also works on any `KTable`; `Suppressed.untilTimeLimit` rate-limits updates instead."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "\"Final\" means stream time, not wall-clock time A window closes only when a **newer record** pushes stream time past `window end + grace`. If a partition receives no more records, its stream time stands still and its last window is never emitted, however late the wall clock says it is. Low-traffic topics and the end of a test need a later record to move time on. Each task has its own stream time, so a quiet partition delays only its own keys."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Sessions and distinct counts\n\nSession windows suit \"visits\". The fragment counts the page views of each visit of a logged-in user, where a visit ends after 30 minutes of inactivity. When a late record bridges two sessions, Kafka Streams merges them: downstream you see a record with a `null` value (a tombstone) for each old session and a new record for the merged one, so consumers must handle deletes."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "KTable<Windowed<String>, Long> pagesPerVisit = views\n    .filter((sessionId, v) -> v.userId() != null)\n    .groupBy((sessionId, v) -> v.userId(),\n             Grouped.with(\"views-by-user\", Serdes.String(), viewSerde))\n    .windowedBy(SessionWindows.ofInactivityGapAndGrace(\n        Duration.ofMinutes(30), Duration.ofMinutes(5)))\n    .count(Materialized.as(\"pages-per-visit\"));",
+          "title": "Session windows: pages per visit"
+        },
+        {
+          "type": "markdown",
+          "text": "\"Unique sessions per URL and minute\" is an `aggregate` on the same windowed stream whose aggregate holds a set of session ids. That works for modest cardinalities; the set lives in the state store and its changelog, so for millions of distinct values per window an approximate sketch is the better tool.\n\n### Testing time\n\nThe test driver makes time explicit, so windows are easy to test. The test below proves that nothing is emitted while the window is open and that one final result appears once a later record moves stream time past the window end plus grace."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.analytics;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport com.shopstream.events.PageView;\nimport java.time.Instant;\nimport java.util.Properties;\nimport org.apache.kafka.common.serialization.Serde;\nimport org.apache.kafka.common.serialization.Serdes;\nimport org.apache.kafka.streams.KeyValue;\nimport org.apache.kafka.streams.StreamsConfig;\nimport org.apache.kafka.streams.TestInputTopic;\nimport org.apache.kafka.streams.TestOutputTopic;\nimport org.apache.kafka.streams.TopologyTestDriver;\nimport org.junit.jupiter.api.Test;\n\nclass PageViewWindowsTest {\n    @Test\n    void emitsOneFinalCountWhenTheWindowCloses() {\n        Properties props = new Properties();\n        props.put(StreamsConfig.APPLICATION_ID_CONFIG, \"windows-test\");\n        props.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, \"dummy:9092\");\n        Serde<PageView> viewSerde = JsonSerde.of(PageView.class);\n\n        try (TopologyTestDriver driver =\n                 new TopologyTestDriver(PageViewWindows.buildTopology(), props)) {\n            TestInputTopic<String, PageView> input = driver.createInputTopic(\n                \"page-views\", Serdes.String().serializer(), viewSerde.serializer());\n            TestOutputTopic<String, Long> output = driver.createOutputTopic(\n                \"page-views-per-minute\",\n                Serdes.String().deserializer(), Serdes.Long().deserializer());\n\n            input.pipeInput(\"s-1\", view(\"s-1\", \"/cart\", \"2026-10-08T10:00:10Z\"));\n            input.pipeInput(\"s-2\", view(\"s-2\", \"/cart\", \"2026-10-08T10:00:40Z\"));\n            assertTrue(output.isEmpty());                 // the 10:00 window is still open\n\n            // stream time 10:01:45 passes window end plus grace (10:01:30): the window closes\n            input.pipeInput(\"s-3\", view(\"s-3\", \"/home\", \"2026-10-08T10:01:45Z\"));\n            assertEquals(KeyValue.pair(\"/cart@2026-10-08T10:00:00Z\", 2L), output.readKeyValue());\n        }\n    }\n\n    private static PageView view(String sessionId, String url, String eventTime) {\n        return new PageView(\"c-77\", sessionId, url, \"/home\", Instant.parse(eventTime));\n    }\n}",
+          "title": "PageViewWindowsTest.java"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "\"How does Kafka Streams deal with late and out-of-order events in windowed aggregations?\" Records are assigned to windows by event time. A window stays open until stream time (the largest timestamp seen by the task) passes window end plus the grace period. Late records inside that period update the window; later ones are dropped and counted in the dropped-records metric. To get one final result per window, add `suppress(Suppressed.untilWindowCloses(...))`, which emits only after the window has closed. Stream time only advances when new records arrive, so the last window of a quiet partition stays open."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Windows slice a stream by time: tumbling (no overlap), hopping (overlap), sliding (time difference) and session (inactivity gap).\n- Event time comes from the record timestamp or a custom `TimestampExtractor`; stream time is the highest timestamp a task has seen.\n- A window closes when stream time passes window end plus grace; later records are dropped. You must choose the grace period explicitly (`ofSizeAndGrace` or `ofSizeWithNoGrace`).\n- Without `suppress` or `EmitStrategy.onWindowClose()`, windowed aggregations emit a stream of updates; with them, exactly one result per window.\n- Final results depend on stream time, so a quiet partition never emits its last window until new data arrives."
+        }
+      ]
+    }
+  ]
+}

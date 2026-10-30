@@ -1,10 +1,306 @@
 {
   "source": {
     "document": "Core_Java_In_Depth.pdf",
-    "pages": "73-117",
+    "pages": "62-125",
     "planDays": "1–2"
   },
   "sections": [
+    {
+      "id": "ch-3-1",
+      "type": "concept",
+      "title": "Classes and Objects",
+      "subtopicId": "3-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every Java program you will ever read is built from classes. A class is a blueprint that bundles data (fields) with the operations on that data (methods), and an object is one concrete thing made from that blueprint. This sounds simple, and it is, until the day a bug turns out to be \"two variables pointed at the same object\" or \"a field was read before it was assigned\". Both bugs come from not having an accurate mental picture of what the JVM does when you write `new`. This chapter builds that picture, including the exact order in which Java initialises a class and its objects.\n\n### State, behaviour and identity\n\nAn object has three things: **state** (the values stored in its fields), **behaviour** (the methods that read or change that state) and **identity** (it is this object and not another one that happens to hold the same values). Identity is the part beginners forget. Two `Book` objects with the same title and page count are still two objects; `==` on two references compares identity, not content.\n\nA class declares what every object of that type has:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Book {\n    private final String title;   // state: set once, never changes\n    private int pagesRead;        // state: changes as we read\n\n    public Book(String title) {   // constructor: runs once per new Book\n        this.title = title;\n    }\n\n    public void read(int pages) { // behaviour\n        pagesRead += pages;\n    }\n\n    public String progress() {\n        return title + \": \" + pagesRead + \" pages read\";\n    }\n}",
+          "title": "Book.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The fields `title` and `pagesRead` exist once per object. The methods exist once per class: the JVM does not copy method code into every object. When you call `book.read(10)`, the JVM passes `book` to the method as a hidden first argument, which is what the keyword `this` refers to inside it.\n\n### References versus objects\n\nWhen you write `Book b = new Book(\"Dune\");` two different things happen. The `new` expression allocates an object on the **heap** and returns where it lives. The variable `b` is a **reference**: a small value (typically 4 or 8 bytes) that lets the JVM find the object. A local variable like `b` lives in the stack frame of the running method; the object it refers to lives on the heap. Copying a reference copies the arrow, never the object."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "stack frame of main()                 heap\n+-----------------+            +----------------------+\n|  a  ──────────────────────►  | Counter  count = 5   |\n|  b  ──────────────────────►  +----------------------+\n|  c  ──────────────────────►  | Counter  count = 5   |\n+-----------------+            +----------------------+\na and b: same object      c: a different object with equal state"
+        },
+        {
+          "type": "markdown",
+          "text": "The next program makes this concrete. Read it first and predict the output of each line."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Refs {\n    static class Counter {\n        int count;\n        Counter(int start) { count = start; }\n    }\n    static void bump(Counter c) { c.count++; }\n    static void replace(Counter c) { c = new Counter(100); c.count++; }\n\n    public static void main(String[] args) {\n        Counter a = new Counter(1);\n        Counter b = a;                 // copies the reference, not the object\n        b.count = 5;\n        System.out.println(\"a.count = \" + a.count);\n        System.out.println(\"a == b: \" + (a == b));\n        Counter c = new Counter(5);\n        System.out.println(\"a == c: \" + (a == c));\n        bump(a);\n        System.out.println(\"after bump: \" + a.count);\n        replace(a);\n        System.out.println(\"after replace: \" + a.count);\n        Counter d = null;\n        try { d.count++; } catch (NullPointerException e) { System.out.println(\"NPE caught\"); }\n    }\n}",
+          "title": "Refs.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Refs.java\na.count = 5\na == b: true\na == c: false\nafter bump: 6\nafter replace: 6\nNPE caught",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. Changing `b.count` changed what `a` sees, because there is only one object. `a == c` is false although both hold 5, because `==` compares references. `bump` changed the caller's object, but `replace` did not: Java passes the *reference by value*. The method received its own copy of the arrow, repointed that copy at a brand new object, and the caller's arrow was untouched. \"Java is pass-by-value, and for objects the value is a reference\" is the exact, correct statement (Part 2 covers methods in more detail).\n\n#### null and NullPointerException\n\nA reference can hold `null`, meaning \"no object\". Using a null reference to reach a field or call a method throws `NullPointerException` (NPE). Since Java 14 the message says which expression was null, for example `Cannot invoke` `\"String.length()\" because \"s\" is null`; the variable name appears when the class was compiled with `javac -g` (otherwise you see `<local3>`). Primitives (`int`, `double`) can never be null; only references can.\n\n#### When does an object die?\n\nThere is no `delete`. An object becomes eligible for garbage collection when no live reference can reach it any more. In `Object a = new Object(); Object b = a; a = null;` the object is still reachable through `b`, so it stays. Part 9 explains how the collector decides.\n\n### Constructors\n\nA **constructor** is code that runs when `new` creates an object, before the reference is returned to you. It has the class name and no return type. Its job is to put the object into a valid state. If you write no constructor at all, the compiler adds a public no-argument **default constructor**; the moment you write any constructor, that free one disappears.\n\nConstructors can call each other with `this(...)`, which avoids duplicating validation:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Ctors {\n    static class Book {\n        private final String title;\n        private final int pages;\n        Book(String title, int pages) {\n            if (pages <= 0) throw new IllegalArgumentException(\"pages must be positive: \" + pages);\n            this.title = title;\n            this.pages = pages;\n        }\n        Book(String title) { this(title, 100); }   // delegates to the main constructor\n        Book() { this(\"Untitled\"); }               // delegates again\n        @Override public String toString() { return title + \" (\" + pages + \" pages)\"; }\n    }\n    static class Empty { int v; boolean flag; String s; double d; }\n\n    public static void main(String[] args) {\n        System.out.println(new Book());\n        System.out.println(new Book(\"Dune\"));\n        System.out.println(new Book(\"Dune\", 612));\n        Empty e = new Empty();\n        System.out.println(e.v + \" \" + e.flag + \" \" + e.s + \" \" + e.d);\n        try { new Book(\"Bad\", 0); }\n        catch (IllegalArgumentException ex) { System.out.println(ex.getMessage()); }\n    }\n}",
+          "title": "Ctors.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Ctors.java\nUntitled (100 pages)\nDune (100 pages)\nDune (612 pages)\n0 false null 0.0\npages must be positive: 0",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. Only one constructor contains real logic; the others funnel into it. A `this(...)` call must be the first statement of the constructor (Java 25 relaxes this: code that does not touch `this` may precede it; see Part 11). The class `Empty` shows the **default values** the JVM gives *fields* before any code runs: `0` for numeric types, `false` for `boolean`, `'\\u0000'` for `char`, `null` for references. **Local variables get no default**; the compiler refuses to compile a read of an unassigned local.\n\n#### The keyword this\n\nInside an instance method or constructor, `this` is the reference to the current object. You need it in two situations: to tell a field from a parameter of the same name (`this.title = title`), and to pass the current object to another method. A constructor that fails by throwing leaves no usable object: the `new` expression never completes.\n\n### Initialisation order\n\nAn object does not appear fully formed. Java runs a precise sequence, and getting it wrong causes some of the most confusing bugs: a method called from a superclass constructor that sees a field as `null`. The sequence has two phases.\n\n**Class initialisation** happens once per class, the first time the class is actively used (first `new`, first call of a static method, first access to a non-constant static field). The JVM first initialises the superclass, then runs the class's `static` field initialisers and `static { }` blocks, in the order they appear in the source.\n\n**Instance initialisation** happens for every `new`. Memory is allocated and zeroed (all fields get their default values), then the constructor runs in this order: the call to the superclass constructor first (`super(...)`, implicit if you wrote none); then the class's instance field initialisers and instance initialiser blocks `{ }` in source order; then the rest of the constructor body. The same rule applies at every level of the hierarchy, from `Object` downwards."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 129.7\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M255.0 100.8 L449.0 100.8 C450.7 100.8 452.0 99.4 452.0 97.8 L452.0 85.8 C452.0 84.1 450.7 82.8 449.0 82.8 L255.0 82.8 C253.3 82.8 252.0 84.1 252.0 85.8 L252.0 97.8 C252.0 99.4 253.3 100.8 255.0 100.8 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 78.8 L449.0 78.8 C450.7 78.8 452.0 77.4 452.0 75.8 L452.0 63.8 C452.0 62.1 450.7 60.8 449.0 60.8 L255.0 60.8 C253.3 60.8 252.0 62.1 252.0 63.8 L252.0 75.8 C252.0 77.4 253.3 78.8 255.0 78.8 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 50.8 L209.0 50.8 C210.7 50.8 212.0 49.4 212.0 47.8 L212.0 23.8 C212.0 22.1 210.7 20.8 209.0 20.8 L5.0 20.8 C3.3 20.8 2.0 22.1 2.0 23.8 L2.0 47.8 C2.0 49.4 3.3 50.8 5.0 50.8 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 56.8 L449.0 56.8 C450.7 56.8 452.0 55.4 452.0 53.8 L452.0 41.8 C452.0 40.1 450.7 38.8 449.0 38.8 L255.0 38.8 C253.3 38.8 252.0 40.1 252.0 41.8 L252.0 53.8 C252.0 55.4 253.3 56.8 255.0 56.8 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 34.8 L449.0 34.8 C450.7 34.8 452.0 33.4 452.0 31.8 L452.0 19.8 C452.0 18.1 450.7 16.8 449.0 16.8 L255.0 16.8 C253.3 16.8 252.0 18.1 252.0 19.8 L252.0 31.8 C252.0 33.4 253.3 34.8 255.0 34.8 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"44.9\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"124.2\" lengthAdjust=\"spacingAndGlyphs\">Once per class (superclass first)</text><text x=\"290.7\" y=\"6.8\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"102.6\" lengthAdjust=\"spacingAndGlyphs\">Per new object (top-down)</text><text x=\"288.7\" y=\"28.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"126.6\" lengthAdjust=\"spacingAndGlyphs\">Parent: field initialisers + instance blocks</text><text x=\"79.3\" y=\"33.8\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"55.5\" lengthAdjust=\"spacingAndGlyphs\">Parent: static init</text><text x=\"81.7\" y=\"42.8\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"50.7\" lengthAdjust=\"spacingAndGlyphs\">Child: static init</text><text x=\"314.0\" y=\"50.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"76.0\" lengthAdjust=\"spacingAndGlyphs\">Parent: constructor body</text><text x=\"51.6\" y=\"70.8\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"110.9\" lengthAdjust=\"spacingAndGlyphs\">runs the first time the class is used</text><text x=\"291.0\" y=\"72.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"122.1\" lengthAdjust=\"spacingAndGlyphs\">Child: field initialisers + instance blocks</text><text x=\"316.3\" y=\"94.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"71.5\" lengthAdjust=\"spacingAndGlyphs\">Child: constructor body</text></svg>",
+          "width": 454,
+          "caption": "Class initialisation runs once, superclass first. Each new object then repeats the instance steps from the top of the hierarchy to the bottom.",
+          "alt": "Once per class (superclass first) Per new object (top-down) | Parent: field initialisers + instance blocks | Parent: static init | Child: static init | Parent: constructor body | runs the first time the class is used Child: field initialisers + instance blocks | Child: constructor body"
+        },
+        {
+          "type": "markdown",
+          "text": "This program prints the order. The numbers in the messages are the order we expect; the output proves it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class InitOrder {\n    static class Base {\n        static { System.out.println(\"1 Base static block\"); }\n        int x = log(\"3 Base field initialiser\");\n        { System.out.println(\"4 Base instance block\"); }\n        Base() {\n            System.out.println(\"5 Base constructor\");\n            show();                       // virtual call from a constructor: dangerous\n        }\n        void show() { System.out.println(\"Base.show\"); }\n    }\n    static class Derived extends Base {\n        static { System.out.println(\"2 Derived static block\"); }\n        int y = log(\"6 Derived field initialiser\");\n        String name = \"set\";\n        { System.out.println(\"7 Derived instance block\"); }\n        Derived() {\n            super();\n            System.out.println(\"8 Derived constructor\");\n        }\n        @Override void show() { System.out.println(\"Derived.show name=\" + name + \" y=\" + y); }\n    }\n    static int log(String s) { System.out.println(s); return 1; }\n\n    public static void main(String[] args) {\n        System.out.println(\"main starts\");\n        new Derived();\n        System.out.println(\"--- second object ---\");\n        new Derived();\n    }\n}",
+          "title": "InitOrder.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java InitOrder.java\nmain starts\n1 Base static block\n2 Derived static block\n3 Base field initialiser\n4 Base instance block\n5 Base constructor\nDerived.show name=null y=0\n6 Derived field initialiser\n7 Derived instance block\n8 Derived constructor\n--- second object ---\n3 Base field initialiser\n4 Base instance block\n5 Base constructor\nDerived.show name=null y=0\n6 Derived field initialiser\n7 Derived instance block\n8 Derived constructor",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. The static blocks ran once, superclass first, and not on the second `new`. The line `Derived.show` `name=null y=0` is the trap: `Base`'s constructor called `show()`, which is overridden, so the **Derived** version ran while `Derived`'s field initialisers had not yet executed. It saw `name` as `null` and `y` as `0`, the zeroed defaults, even though `name` is assigned `\"set\"` in the source. The rule: never call an overridable method from a constructor.\n\nYou can see the mechanism in the bytecode. `javap -c -p 'InitOrder$Derived'` (trimmed) shows that the compiler copied the field initialisers and the instance block *into the constructor*, right after the call to the superclass constructor, and gathered the static block into a method called `static {}` (the class initialiser, `<clinit>`):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javap -c -p 'InitOrder$Derived'\n  InitOrder$Derived();\n    Code:\n       0: aload_0\n       1: invokespecial #1     // Method InitOrder$Base.\"<init>\":()V\n       4: aload_0\n       5: ldc           #7     // String 6 Derived field initialiser\n       7: invokestatic  #9     // Method InitOrder.log:(Ljava/lang/String;)I\n      10: putfield      #15    // Field y:I\n      13: aload_0\n      14: ldc           #21    // String set\n      16: putfield      #23    // Field name:Ljava/lang/String;\n      19: getstatic     #27    // Field java/lang/System.out:...\n      ...\n  static {};\n    Code:\n       0: getstatic     #27    // Field java/lang/System.out:...\n       3: ldc           #47    // String 2 Derived static block",
+          "title": "Trimmed javap output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Constants do not trigger class initialisation\n\nA `static final` field whose value is a compile-time constant (a literal or constant expression of a primitive or `String`) is inlined by the compiler into every user. Reading it does not initialise the class at all:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Lazy {\n    static class Config {\n        static final int MAX = 10;                 // compile-time constant: inlined\n        static final String NAME = load(\"NAME\");   // computed: not a constant\n        static { System.out.println(\"Config initialised\"); }\n        static String load(String s) { return s.toLowerCase(); }\n    }\n    public static void main(String[] args) {\n        System.out.println(\"MAX = \" + Config.MAX);\n        System.out.println(\"before NAME\");\n        System.out.println(\"NAME = \" + Config.NAME);\n    }\n}",
+          "title": "Lazy.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Lazy.java\nMAX = 10\nbefore NAME\nConfig initialised\nNAME = name",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "`MAX` printed without \"Config initialised\" appearing; reading `NAME` forced the class to initialise first. This laziness is also what makes the \"initialisation on demand holder\" singleton idiom in Part 12 work."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never call an overridable method from a constructor. The subclass override runs before the subclass's own fields are initialised, so it reads defaults (`null`, `0`). Make the method `private`, `static` or `final`, or move the work out of the constructor into a factory method or an explicit `init()` step."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Field initialisers run in source order, and that order matters. `int a = b + 1; int b = 5;` does not compile (illegal forward reference), but `int a = getB() + 1; int b = 5;` does, and `a` ends up as 1 because `getB()` ran while `b` was still 0."
+        },
+        {
+          "type": "markdown",
+          "text": "### Putting it together: a small class design\n\nA well-formed class keeps its fields `private`, sets every field exactly once in a constructor that validates its input, and exposes only the operations callers need. Mark fields `final` whenever the value never changes after construction; the compiler then guarantees it is assigned exactly once, and the JVM guarantees other threads see it correctly (Part 8). Prefer a constructor that produces a fully valid object over a no-argument constructor followed by a chain of setters, because the latter lets other code observe a half-built object."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between a class and an object, and where do they live in memory? A class is a type definition (loaded once into the JVM, its metadata in Metaspace); an object is an instance created with `new`, allocated on the heap. A reference variable holds the address of the object, not the object, and the reference itself lives in a stack frame (local variable) or inside another object (field)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "In what order do static blocks, instance blocks, field initialisers and constructors run? Superclass static initialisation, then subclass static initialisation (once per class). For each `new`: superclass constructor chain first (its field initialisers and instance blocks in source order, then its constructor body), then the subclass's initialisers and blocks, then the subclass constructor body."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Objects live on the heap; variables hold references. Assignment copies the reference, `==` compares identity.\n\n- Fields get default values (`0`, `false`, `null`); locals do not.\n- Order: superclass static, subclass static (once); then per object: super constructor, field initialisers and blocks in source order, constructor body.\n- The compiler copies instance initialisers into each constructor after `super(...)`; static ones go to `<clinit>`.\n- Do not call overridable methods from constructors; prefer final fields and constructors that fully validate."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-2",
+      "type": "concept",
+      "title": "Static, Access Control and Packages",
+      "subtopicId": "3-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The previous chapter treated every field as belonging to an object. Some data and behaviour belong to the class as a whole instead: a counter of how many accounts have been opened, a constant, a utility function like `Math.max`. The keyword `static` expresses that. A second, equally important question is who is allowed to touch what. Access modifiers and packages let a class hide its internals so they can change later without breaking its users. Together these two ideas are the foundation of encapsulation.\n\n### Static members\n\nA `static` field exists once per class, shared by all instances (and usable with no instance at all). A `static` method belongs to the class and has no `this`. Static members are accessed with the class name: `Account.issued()`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Statics {\n    static class Account {\n        private static int nextId = 1000;           // one copy, shared by all accounts\n        private static final double MIN_BALANCE = 0.0;\n        private final int id;                       // one copy per account\n        private double balance;\n\n        Account(double opening) { this.id = nextId++; this.balance = opening; }\n\n        static int issued() { return nextId - 1000; }   // no 'this' here\n        int id() { return id; }\n        double balance() { return balance; }\n        void withdraw(double amt) {\n            if (balance - amt < MIN_BALANCE) throw new IllegalStateException(\"insufficient funds\");\n            balance -= amt;\n        }\n    }\n\n    public static void main(String[] args) {\n        Account a = new Account(50), b = new Account(70);\n        System.out.println(a.id() + \" \" + b.id() + \" issued=\" + Account.issued());\n        a.withdraw(20);\n        System.out.println(a.balance());\n        try { a.withdraw(100); }\n        catch (IllegalStateException e) { System.out.println(e.getMessage()); }\n    }\n}",
+          "title": "Statics.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Statics.java\n1000 1001 issued=2\n30.0\ninsufficient funds",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `nextId` is shared, so each constructor call hands out the next number. `id` is per object and `final`. A static method cannot read instance fields directly (there is no object), but an instance method can freely read static fields. The reverse mistake, calling an instance method from `static void main`, is the first compile error most beginners meet: `main` has no object, so you must create one first.\n\n#### Static initialisers and constants\n\nConstants are written `static final` with UPPER\\_SNAKE\\_CASE names. A static field that holds a mutable object (`static` `final List<String> NAMES = new ArrayList<>()`) is only a constant reference; the list can still change. Use `List.of(...)` or `Collections.unmodifiableList` for a genuinely fixed collection. Complex static setup goes in a `static { }` block, which runs once at class initialisation (see the previous chapter).\n\n#### Static members are not polymorphic\n\nYou can write `someAccount.issued()`, and it compiles, but it is resolved from the *declared type* of the variable and never looks at the object. It is confusing, and linters flag it; always call statics through the class name. A subclass can declare a static method with the same signature, which *hides* rather than overrides the original (see the inheritance chapter)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Static mutable state is global state. A `static int counter` incremented by many threads is a race condition, and static state makes tests depend on each other, because it survives from one test to the next. Use static for constants, pure helper functions and factory methods. For shared mutable data, pass an object in (dependency injection, which Spring does for you)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Static nested classes: a preview\n\nA class declared inside another class with the `static` modifier is a **static nested class**. It is an ordinary class that happens to live in the namespace of its outer class and can see the outer class's private static members. This book's examples use them (`Counter`, `Account` above) so that one file can hold several small classes. They do not hold a hidden reference to an outer object. The other kinds of nested class (inner, local, anonymous) are covered later in this Part.\n\n### Access modifiers\n\nJava has four access levels. They answer: from where in the program can this class, field, method or constructor be reached?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Modifier",
+            "Same class",
+            "Same package",
+            "Subclass in other package",
+            "Anywhere"
+          ],
+          "rows": [
+            [
+              "`'private'`",
+              "✓",
+              "✗",
+              "✗",
+              "✗"
+            ],
+            [
+              "`(none, package-private)`",
+              "✓",
+              "✓",
+              "✗",
+              "✗"
+            ],
+            [
+              "`'protected'`",
+              "✓",
+              "✓",
+              "✓ (via inheritance)",
+              "✗"
+            ],
+            [
+              "`'public'`",
+              "✓",
+              "✓",
+              "✓",
+              "✓"
+            ]
+          ],
+          "caption": "Who can access a member? (✓ = allowed)"
+        },
+        {
+          "type": "markdown",
+          "text": "Top-level classes can only be `public` or package-private; the other two levels apply to members. The compiler enforces these rules. The following test class sits in the default package and extends a class from `com.example.lib`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.lib;\n\npublic class Widget {\n    public int pub = 1;\n    protected int prot = 2;\n    int pkg = 3;               // package-private\n    private int priv = 4;\n    public int sum() { return pub + prot + pkg + priv; }\n}",
+          "title": "com/example/lib/Widget.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import com.example.lib.Widget;\n\npublic class Other extends Widget {\n    void test(Widget w) {\n        System.out.println(pub);      // public: fine\n        System.out.println(prot);     // protected, via inheritance: fine\n        System.out.println(w.prot);   // protected, via a plain Widget reference: error\n        System.out.println(pkg);      // package-private: error\n        System.out.println(priv);     // private: error\n    }\n}",
+          "title": "Other.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d out com/example/lib/Widget.java Other.java\nOther.java:7: error: prot has protected access in Widget\n        System.out.println(w.prot);   // protected via a Widget reference: error\n                            ^\nOther.java:8: error: pkg is not public in Widget; cannot be accessed from outside package\n        System.out.println(pkg);      // package-private: error\n                           ^\nOther.java:9: error: priv has private access in Widget\n        System.out.println(priv);     // private: error\n                           ^\n3 errors",
+          "title": "Compile it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `protected` is the subtle one. A subclass in another package may use the member only on *its own* instances (`this.prot`, or an object of the subclass type), not on an arbitrary `Widget` reference, which is why `w.prot` fails while plain `prot` works. Within the same package, `protected` behaves like package-private plus the inheritance rule.\n\n#### Choosing a level\n\nStart with `private`. Widen only when a real caller needs it: package-private for helpers shared inside one package, `public` for the actual API, `protected` rarely (it publishes your internals to every subclass author forever). Every public member is a promise you must keep.\n\n### Packages\n\nA **package** is a named group of related classes, and it maps to a directory: class `com.example.lib.Widget` lives in `com/example/lib/Widget.java`. Packages do three jobs: they avoid name clashes (two libraries can both have a class `Date`), they define the package-private access boundary, and they organise code. By convention package names are all lower case and start with a reversed domain name you own (`com.example.shop`), which makes them globally unique.\n\nA file starts with `package com.example.lib;`. To use a class from another package, import it (`import` `java.util.List;`) or write its full name. `import java.util.*;` imports every class in that package on demand but not sub-packages (`java.util.concurrent` needs its own import). Everything in `java.lang` (`String`, `Math`, `Object`) is imported automatically. A `static import` (`import static java.lang.Math.max;`) lets you call a static member without the class name; use it sparingly, mostly for constants and test assertions.\n\nUsing a package is a build concern too: `javac -d out ...` writes class files into a matching directory tree, and `java` `-cp out com.example.lib.Main` runs one. Part 1 covered the classpath; Part 11 covers modules, which add a stronger boundary above packages.\n\n### Encapsulation\n\n**Encapsulation** means a class hides how it stores its data and offers a small set of operations instead. The reward is freedom to change: the class `Temperature` can store Celsius today and Kelvin tomorrow, and no caller breaks, provided they only used the methods. The cost of not doing it is that every caller becomes coupled to every field.\n\n#### Getters and setters: a fair debate\n\nThe textbook pattern is private fields with public `getX()` and `setX()`. Used mechanically it adds nothing: a class with a getter and setter for every field is just a struct with extra typing. The question to ask is \"what operation does the caller want?\". A `BankAccount` should offer `deposit(amount)` and `withdraw(amount)`, which can check rules, rather than `setBalance(...)`, which lets anyone put in any number. Guidelines:\n\n- Expose a getter only when callers truly need to read the value; do not generate them by reflex.\n- Prefer behaviour methods that enforce invariants over setters. If a setter must exist, validate in it.\n- Prefer immutable objects (next section) and, for plain data carriers, records (covered later in this Part), which give you accessors with no boilerplate.\n- Frameworks matter in practice: JavaBeans conventions (`getX`/`isX`/`setX`) are what Spring, Jackson and JPA use to read and write properties, so entity and DTO classes often keep them. That is a framework requirement, not a design ideal.\n\n### Immutability and defensive copies\n\nAn **immutable** object never changes after construction. `String`, `Integer`, `BigDecimal` and `LocalDate` are immutable. Immutable objects are easy to reason about, safe to share between threads without locking, and safe as `HashMap` keys. The recipe for an immutable class:\n\n1. Declare the class `final` (so no subclass can add mutable state).\n2. Make all fields `private final`.\n3. Provide no setters; \"modifying\" methods return a new object.\n4. Make a **defensive copy** of any mutable object received in the constructor, and return copies (or unmodifiable views) from getters.\n\nStep 4 is the one people miss. If the constructor stores the caller's list, the caller still holds a reference to it and can change it behind your back:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Defensive {\n    static final class LeakyShelf {\n        private final List<String> books;\n        LeakyShelf(List<String> books) { this.books = books; }   // stores the caller's list\n        List<String> books() { return books; }                   // hands out the internal list\n    }\n    static final class SafeShelf {\n        private final List<String> books;\n        SafeShelf(List<String> books) { this.books = List.copyOf(books); }  // copy in\n        List<String> books() { return books; }   // safe: List.copyOf is unmodifiable\n    }\n\n    public static void main(String[] args) {\n        List<String> src = new ArrayList<>(List.of(\"Dune\", \"Emma\"));\n        LeakyShelf leaky = new LeakyShelf(src);\n        src.add(\"Hacked\");\n        leaky.books().remove(\"Dune\");\n        System.out.println(\"leaky: \" + leaky.books());\n\n        src = new ArrayList<>(List.of(\"Dune\", \"Emma\"));\n        SafeShelf safe = new SafeShelf(src);\n        src.add(\"Hacked\");\n        System.out.println(\"safe: \" + safe.books());\n        try { safe.books().add(\"x\"); }\n        catch (UnsupportedOperationException e) {\n            System.out.println(\"UnsupportedOperationException\");\n        }\n    }\n}",
+          "title": "Defensive.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Defensive.java\nleaky: [Emma, Hacked]\nsafe: [Dune, Emma]\nUnsupportedOperationException",
+          "title": "Run it"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `final` on `books` only froze the *reference*; the list behind it kept changing in `LeakyShelf`. `List.copyOf` (Java 10+) creates an unmodifiable snapshot, so changes to `src` do not reach `SafeShelf` and the getter can safely return it. For an array field, use `array.clone()` on the way in and out. For a mutable element type such as the legacy `java.util.Date`, copy each element too (`new Date(d.getTime())`), or better, avoid mutable types and use `java.time`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`final` means \"this variable cannot be reassigned\", not \"this object cannot change\". `final List<String> xs = new` `ArrayList<>(); xs.add(\"ok\");` compiles and works. Immutability comes from the design of the class, not from the keyword on a field."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring applications, immutable configuration and value objects are everywhere. Constructor injection (`final` fields set in the constructor) is preferred over field injection because the bean cannot be observed half-built and tests can create it with plain `new`. DTOs are increasingly records."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you make a class immutable? Is `String` immutable because its field is `final`? `final` class, `private final` fields, no setters, defensive copies of mutable inputs and outputs. `String` is immutable because it exposes no operation that changes its internal state (its array is private and never leaked), not merely because a field is `final`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Use `static` for class-level constants, helpers and factories; avoid shared mutable static state.\n\n- Four access levels: `private`, package-private, `protected`, `public`. Start private and widen only when needed.\n- A package is a namespace, a directory and an access boundary; names are lower case, reversed-domain.\n- Encapsulate behaviour, not just fields: offer operations that enforce invariants, not a setter per field.\n- Immutability needs a final class, private final fields, no setters, and defensive copies in and out.\n- `final` freezes a reference, not the object it refers to."
+        }
+      ]
+    },
     {
       "id": "ch-3-3",
       "type": "concept",
@@ -253,7 +549,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 110.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M305.0 68.0 L439.0 68.0 C440.7 68.0 442.0 66.7 442.0 65.0 L442.0 5.0 C442.0 3.3 440.7 2.0 439.0 2.0 L305.0 2.0 C303.3 2.0 302.0 3.3 302.0 5.0 L302.0 65.0 C302.0 66.7 303.3 68.0 305.0 68.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 23.0 L152.0 23.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M252.0 23.0 L302.0 23.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 38.0 L99.0 38.0 C100.7 38.0 102.0 36.7 102.0 35.0 L102.0 11.0 C102.0 9.3 100.7 8.0 99.0 8.0 L5.0 8.0 C3.3 8.0 2.0 9.3 2.0 11.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 38.0 L249.0 38.0 C250.7 38.0 252.0 36.7 252.0 35.0 L252.0 11.0 C252.0 9.3 250.7 8.0 249.0 8.0 L155.0 8.0 C153.3 8.0 152.0 9.3 152.0 11.0 L152.0 35.0 C152.0 36.7 153.3 38.0 155.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 23.0 L146.6 20.4 L146.6 25.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 23.0 L296.6 20.4 L296.6 25.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"31.9\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"40.3\" lengthAdjust=\"spacingAndGlyphs\">Shape s = ...</text><text x=\"178.5\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"47.0\" lengthAdjust=\"spacingAndGlyphs\">object on heap</text><text x=\"32.9\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.3\" lengthAdjust=\"spacingAndGlyphs\">(static type)</text><text x=\"176.2\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"51.6\" lengthAdjust=\"spacingAndGlyphs\">header -&gt; Circle</text><text x=\"341.8\" y=\"28.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"60.3\" lengthAdjust=\"spacingAndGlyphs\">Circle method table</text><text x=\"340.6\" y=\"37.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"62.8\" lengthAdjust=\"spacingAndGlyphs\">area() -&gt; Circle.area</text><text x=\"339.4\" y=\"45.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"65.2\" lengthAdjust=\"spacingAndGlyphs\">toString() -&gt; Object's</text><text x=\"106.6\" y=\"88.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"190.9\" lengthAdjust=\"spacingAndGlyphs\">s.area(): the object's real class picks the method at run time</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 110.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M305.0 68.0 L439.0 68.0 C440.7 68.0 442.0 66.7 442.0 65.0 L442.0 5.0 C442.0 3.3 440.7 2.0 439.0 2.0 L305.0 2.0 C303.3 2.0 302.0 3.3 302.0 5.0 L302.0 65.0 C302.0 66.7 303.3 68.0 305.0 68.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 23.0 L152.0 23.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M252.0 23.0 L302.0 23.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 38.0 L99.0 38.0 C100.7 38.0 102.0 36.7 102.0 35.0 L102.0 11.0 C102.0 9.3 100.7 8.0 99.0 8.0 L5.0 8.0 C3.3 8.0 2.0 9.3 2.0 11.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 38.0 L249.0 38.0 C250.7 38.0 252.0 36.7 252.0 35.0 L252.0 11.0 C252.0 9.3 250.7 8.0 249.0 8.0 L155.0 8.0 C153.3 8.0 152.0 9.3 152.0 11.0 L152.0 35.0 C152.0 36.7 153.3 38.0 155.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 23.0 L146.6 20.4 L146.6 25.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 23.0 L296.6 20.4 L296.6 25.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"31.9\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"40.3\" lengthAdjust=\"spacingAndGlyphs\">Shape s = ...</text><text x=\"178.5\" y=\"21.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"47.0\" lengthAdjust=\"spacingAndGlyphs\">object on heap</text><text x=\"32.9\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"38.3\" lengthAdjust=\"spacingAndGlyphs\">(static type)</text><text x=\"176.2\" y=\"29.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"51.6\" lengthAdjust=\"spacingAndGlyphs\">header -&gt; Circle</text><text x=\"341.8\" y=\"28.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"60.3\" lengthAdjust=\"spacingAndGlyphs\">Circle method table</text><text x=\"340.6\" y=\"37.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"62.8\" lengthAdjust=\"spacingAndGlyphs\">area() -&gt; Circle.area</text><text x=\"339.4\" y=\"45.8\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"65.2\" lengthAdjust=\"spacingAndGlyphs\">toString() -&gt; Object's</text><text x=\"106.6\" y=\"88.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"190.9\" lengthAdjust=\"spacingAndGlyphs\">s.area(): the object's real class picks the method at run time</text></svg>",
           "width": 444,
           "caption": "A call through a superclass reference reaches the method of the object's real class through that class's method table.",
           "alt": "Shape s = ... object on heap | (static type) header -> Circle Circle method table | area() -> Circle.area | toString() -> Object's | s.area(): the object's real class picks the method at run time"
@@ -605,6 +901,756 @@
       ]
     },
     {
+      "id": "ch-3-7",
+      "type": "concept",
+      "title": "Nested, Inner, Local and Anonymous Classes",
+      "subtopicId": "3-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Most classes live in their own file at the top level. But sometimes a class exists only to serve one other class: a node inside a linked list, an iterator that walks one collection, a small callback used in exactly one place. Java lets you declare a class *inside* another class so that the helper stays next to the code that needs it, and so that it can reach private members it would otherwise have no access to. This chapter covers the four flavours, the hidden machinery that makes them work, and the one famous trap (the memory leak through the hidden outer reference).\n\n### The four kinds at a glance\n\nEverything declared inside another type is a **nested class**. There are four kinds, and the difference that matters most is whether an instance carries a hidden reference to an instance of the enclosing class."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Kind",
+            "Declared",
+            "Has outer instance?",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`static nested`",
+              "`static class N` as a member",
+              "No",
+              "Builder, Node, Entry, helper types"
+            ],
+            [
+              "`inner (member)`",
+              "`class I` as a non-static member",
+              "Yes (`Outer.this`)",
+              "Iterators, event handlers tied to one object"
+            ],
+            [
+              "`local`",
+              "inside a method or block",
+              "Yes if the method is non-static",
+              "One-off helper, local record/enum/interface"
+            ],
+            [
+              "`anonymous`",
+              "`new Type() { ... }` expression",
+              "Yes if created in non-static code",
+              "Single-use implementation of an interface or abstract class"
+            ]
+          ]
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 143.5\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 90.6 L89.0 90.6 C90.7 90.6 92.0 89.2 92.0 87.6 L92.0 53.6 C92.0 51.9 90.7 50.6 89.0 50.6 L5.0 50.6 C3.3 50.6 2.0 51.9 2.0 53.6 L2.0 87.6 C2.0 89.2 3.3 90.6 5.0 90.6 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M372.0 70.6 L332.0 70.6\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M125.0 90.6 L209.0 90.6 C210.7 90.6 212.0 89.2 212.0 87.6 L212.0 53.6 C212.0 51.9 210.7 50.6 209.0 50.6 L125.0 50.6 C123.3 50.6 122.0 51.9 122.0 53.6 L122.0 87.6 C122.0 89.2 123.3 90.6 125.0 90.6 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 90.6 L329.0 90.6 C330.7 90.6 332.0 89.2 332.0 87.6 L332.0 53.6 C332.0 51.9 330.7 50.6 329.0 50.6 L255.0 50.6 C253.3 50.6 252.0 51.9 252.0 53.6 L252.0 87.6 C252.0 89.2 253.3 90.6 255.0 90.6 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M375.0 90.6 L449.0 90.6 C450.7 90.6 452.0 89.2 452.0 87.6 L452.0 53.6 C452.0 51.9 450.7 50.6 449.0 50.6 L375.0 50.6 C373.3 50.6 372.0 51.9 372.0 53.6 L372.0 87.6 C372.0 89.2 373.3 90.6 375.0 90.6 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M332.0 70.6 L337.4 73.2 L337.4 68.0 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"196.5\" y=\"7.1\" font-size=\"8.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"110.0\" lengthAdjust=\"spacingAndGlyphs\">The four kinds of nested class.</text><text x=\"81.4\" y=\"30.6\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"51.2\" lengthAdjust=\"spacingAndGlyphs\">Static nested</text><text x=\"308.1\" y=\"30.6\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"67.8\" lengthAdjust=\"spacingAndGlyphs\">Inner (non-static)</text><text x=\"155.3\" y=\"68.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"23.5\" lengthAdjust=\"spacingAndGlyphs\">Nested</text><text x=\"37.5\" y=\"73.1\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"18.9\" lengthAdjust=\"spacingAndGlyphs\">Outer</text><text x=\"271.2\" y=\"73.1\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"41.5\" lengthAdjust=\"spacingAndGlyphs\">Outer object</text><text x=\"392.1\" y=\"73.1\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"39.9\" lengthAdjust=\"spacingAndGlyphs\">Inner object</text><text x=\"145.4\" y=\"77.8\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"43.2\" lengthAdjust=\"spacingAndGlyphs\">no Outer link</text><text x=\"308.3\" y=\"104.6\" font-size=\"7.0\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"87.3\" lengthAdjust=\"spacingAndGlyphs\">hidden Outer.this reference</text></svg>",
+          "width": 454,
+          "caption": "Static nested classes stand alone; inner classes are tied to one outer instance through a hidden reference.",
+          "alt": "The four kinds of nested class. | Static nested Inner (non-static) | Nested | Outer Outer object Inner object | no Outer link | hidden Outer.this reference"
+        },
+        {
+          "type": "markdown",
+          "text": "The next listing shows a static nested class, an inner class and an anonymous class together, and prints the names the compiler gives them."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.function.IntSupplier;\n\npublic class Counter {\n    private int hits = 0;\n\n    class Ticket {                       // inner class: needs a Counter\n        final int number;\n        Ticket() { number = ++hits; }    // reads and writes Counter.this.hits\n        Counter owner() { return Counter.this; }\n    }\n\n    static class Config {                // static nested: no outer instance\n        final String name;\n        Config(String name) { this.name = name; }\n    }\n\n    public static void main(String[] args) {\n        Counter c = new Counter();\n        Counter.Ticket a = c.new Ticket();\n        Counter.Ticket b = c.new Ticket();\n        System.out.println(a.number + \" \" + b.number + \" hits=\" + c.hits);\n        System.out.println(a.owner() == c);\n        Counter.Config cfg = new Counter.Config(\"prod\");\n        System.out.println(cfg.name);\n\n        int base = 100;                  // effectively final\n        IntSupplier s = new IntSupplier() {        // anonymous class\n            @Override public int getAsInt() { return base + 1; }\n        };\n        System.out.println(s.getAsInt());\n        System.out.println(s.getClass().getName());\n        System.out.println(a.getClass().getName());\n        System.out.println(cfg.getClass().getName());\n    }\n}",
+          "title": "Counter.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Counter.java\n1 2 hits=2\ntrue\nprod\n101\nCounter$1\nCounter$Ticket\nCounter$Config",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `c.new Ticket()` is the syntax for creating an inner object: you must supply the outer instance. Inside `Counter`'s own instance methods you can write plain `new Ticket()` and `this` is used.\n- `Ticket` updates the private field `hits` of `Counter` directly. Nested classes and their outer class share private access; that is a main reason to nest.\n- `Counter.this` names the enclosing instance. If `Ticket` had its own `hits`, `hits` would mean the inner one and `Counter.this.hits` the outer one (shadowing).\n- At runtime there is no nesting at all. The compiler produces separate class files named `Counter$Ticket`, `Counter$Config` and `Counter$1` (anonymous classes are numbered).\n\n### Static nested versus inner: the hidden reference\n\nCompile `Counter.java` with `javac` and inspect the inner class with `javap -p`. The compiler has added a field and a constructor parameter that you never wrote."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d t Counter.java\n$ javap -p -cp t 'Counter$Ticket'\nCompiled from \"Counter.java\"\nclass Counter$Ticket {\n  final int number;\n  final Counter this$0;\n  Counter$Ticket(Counter);\n  Counter owner();\n}",
+          "title": "Inside an inner class"
+        },
+        {
+          "type": "markdown",
+          "text": "`this$0` is the hidden reference to the outer object, and the constructor takes the outer instance as its first parameter. A static nested class gets neither. This is why a static nested class is the right default: it costs nothing extra and cannot accidentally keep an outer object alive. **Make a nested class** `static` **unless it genuinely needs the outer** **instance.** IDEs will even suggest it."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Since JDK 18 the compiler leaves `this$0` out of an inner class when the class never uses the outer instance (JDK-8271623). So on a modern JDK the field exists only if the inner or anonymous class actually touches the outer object, or if the class is serializable. The leak below therefore depends on how you write the class, which is exactly what makes it hard to notice."
+        },
+        {
+          "type": "markdown",
+          "text": "### Local classes and capturing variables\n\nA **local class** is declared inside a method, constructor or block. It is visible only there. It can read local variables and parameters of the enclosing method, but only if they are **final or effectively final**: assigned once and never changed. Since Java 16 a local class can also be a record, an enum or an interface (all implicitly static, so they cannot capture locals)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Local {\n    interface Greeter { String greet(); }\n\n    static List<Greeter> make() {\n        List<Greeter> list = new ArrayList<>();\n        for (int i = 0; i < 3; i++) {\n            final int n = i;                 // copy captured by value\n            list.add(() -> \"hello \" + n);\n        }\n        return list;\n    }\n\n    static int sum(int[] xs) {\n        record Pair(int a, int b) {}         // local record\n        int total = 0;\n        for (int i = 0; i + 1 < xs.length; i++) {\n            Pair p = new Pair(xs[i], xs[i + 1]);\n            total += p.a() * p.b();\n        }\n        return total;\n    }\n\n    public static void main(String[] args) {\n        for (Greeter g : make()) System.out.println(g.greet());\n        System.out.println(sum(new int[]{1, 2, 3, 4}));\n        class Local1 { int v = 7; }            // local class\n        System.out.println(new Local1().v + \" \" + Local1.class.getName());\n    }\n}",
+          "title": "Local.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Local.java\nhello 0\nhello 1\nhello 2\n20\n7 Local$1Local1",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "**Why must captured variables be effectively final?** A local variable lives on the method's stack frame and dies when the method returns, but the object of the local or anonymous class may live much longer. So the compiler does not share the variable; it **copies the value** into a synthetic field of the new object. If the original could change afterwards, the copy would silently disagree with it, and if the copy could change, the method would not see it. Java resolves the confusion by forbidding both: the value is fixed, so copying is invisible. (Languages such as JavaScript capture the variable itself, which is a different and more confusing model.) The loop above copies `i` into `n` for exactly this reason: `i` changes on every iteration, so it cannot be captured."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Capturing a mutable *object* is fine; only the variable's reference must not change. `final List<String> log = new` `ArrayList<>();` can be captured and `log.add(...)` still works. The effectively-final rule protects the variable, not the object it points to. A common workaround, a one-element array `int[] count = {0};`, compiles but is shared mutable state: do not use it with threads, and prefer an `AtomicInteger` or restructure the code."
+        },
+        {
+          "type": "markdown",
+          "text": "### Anonymous classes\n\nAn **anonymous class** declares and instantiates a class in one expression. It has no name, so it is used once, typically to implement an interface or extend a class with a small override:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Comparator<String> byLength = new Comparator<>() {      // diamond allowed since Java 9\n    @Override public int compare(String a, String b) {\n        return Integer.compare(a.length(), b.length());\n    }\n};\nThread t = new Thread() {                                // subclass with an override\n    @Override public void run() { System.out.println(\"hi\"); }\n};"
+        },
+        {
+          "type": "markdown",
+          "text": "Restrictions: no constructor (it has no name; arguments in `new Base(args) { ... }` go to the superclass constructor), it can extend a class **or** implement one interface, not both, and it can declare extra fields and methods but the outside world can call them only through `var`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "var o = new Object() { int x = 5; int twice() { return x * 2; } };\nSystem.out.println(o.twice());       // works: var keeps the anonymous type"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Anonymous class or lambda?\n\nSince Java 8, a lambda replaces an anonymous class when the type is a **functional interface** (one abstract method). Lambdas are shorter and, as the next section shows, do not carry a hidden outer reference unless they use `this` or an outer member. They are not identical:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Anonymous class",
+            "Lambda"
+          ],
+          "rows": [
+            [
+              "`this` means",
+              "the anonymous object itself",
+              "the enclosing instance"
+            ],
+            [
+              "Can implement",
+              "any interface or abstract/concrete class",
+              "functional interfaces only"
+            ],
+            [
+              "Can have fields and several methods",
+              "yes",
+              "no"
+            ],
+            [
+              "Class file",
+              "a real `Outer$1.class`",
+              "none; created at runtime via `invokedynamic`"
+            ],
+            [
+              "Name shadowing",
+              "its members can shadow outer variables",
+              "cannot redeclare an enclosing local name"
+            ]
+          ],
+          "caption": "Anonymous class versus lambda."
+        },
+        {
+          "type": "markdown",
+          "text": "Use an anonymous class when you need more than one method, state, or a superclass that is not an interface. Otherwise use a lambda. The mechanism behind lambdas is explained in the chapter on lambdas in the functional Java Part.\n\n### The memory leak through the hidden outer reference\n\nAn inner or anonymous class created in an instance method may hold `this$0`, which keeps the **entire outer object** reachable for as long as the inner object lives. If the outer object is big and the inner object is long-lived (queued task, registered listener, cached callback), you have a leak. The program below creates tasks that each belong to a `Report` holding a 10 MB array, and keeps only the tasks."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Leak {\n    static class Report {\n        private final byte[] big = new byte[10_000_000];          // 10 MB\n\n        Runnable usesOuter() {                                    // anonymous, reads Report.this\n            return new Runnable() {\n                public void run() { System.out.println(big.length); }\n            };\n        }\n        Runnable ignoresOuter() {                                 // anonymous, never touches it\n            return new Runnable() {\n                public void run() { System.out.println(\"task\"); }\n            };\n        }\n    }\n\n    static void fields(Class<?> c) {\n        var fs = c.getDeclaredFields();\n        for (var f : fs) System.out.println(c.getName() + \" has field \" + f.getName());\n        if (fs.length == 0) System.out.println(c.getName() + \" has no fields\");\n    }\n\n    public static void main(String[] args) throws Exception {\n        Report r = new Report();\n        fields(r.usesOuter().getClass());\n        fields(r.ignoresOuter().getClass());\n        List<Runnable> keep = new ArrayList<>();\n        for (int i = 0; i < 20; i++) {\n            keep.add(new Report().usesOuter());     // each task keeps its 10 MB Report alive\n            System.out.println(\"kept \" + keep.size());\n        }\n    }\n}",
+          "title": "Leak.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -Xmx100m Leak.java\nLeak$Report$1 has field this$0\nLeak$Report$2 has no fields\nkept 1\nkept 2\n...\nkept 8\nException in thread \"main\" java.lang.OutOfMemoryError: Java heap space\n        at Leak$Report.<init>(Leak.java:6)\n        at Leak.main(Leak.java:31)",
+          "title": "Run with a small heap (output trimmed)"
+        },
+        {
+          "type": "markdown",
+          "text": "The first anonymous class uses `big`, so the compiler keeps `this$0` and each task pins 10 MB; the heap is exhausted after eight. The second one does not use the outer object, so on JDK 18 and later it carries nothing (on JDK 17 and earlier it would have carried `this$0` anyway). The same trap exists for inner `Iterator`s, listeners, and for the older Android and Swing idioms.\n\n#### How to avoid it\n\n- Default to `static` nested classes and pass in only what the helper needs.\n- Prefer a lambda that uses no instance member, or a static factory method that returns the lambda.\n- Do not store inner-class instances (listeners, callbacks) in static fields or long-lived collections without a way to remove them.\n- When you suspect it, take a heap dump and look for `this$0` in the path to GC roots; the diagnostics Part shows how."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between a static nested class and an inner class? A static nested class is just a class that lives in another class's namespace; you create it with `new Outer.Nested()` and it has no outer instance. An inner class is non-static, needs an enclosing instance (`outer.new Inner()`), can use `Outer.this` and the outer's private members, and (when it uses them) holds a hidden `this$0` reference that can cause leaks. Prefer static nested unless you need the outer instance."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In frameworks you meet nested classes constantly: `Map.Entry` is a nested interface, `ArrayList` has a private inner `Itr` iterator, and Spring or Lombok builders are static nested `Builder` classes. Anonymous classes used to be the way to write callbacks (`new Callback() { ... }`); in modern code they are replaced by lambdas except when state or a superclass is needed."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Nest a class to keep a helper next to its only user and to share private access. Default to `static` nested.\n- An inner class holds a hidden outer reference (`this$0`); the compiler passes it as an extra constructor argument.\n- Local and anonymous classes capture local variables by copying their value, so those variables must be effectively final.\n- Anonymous classes are numbered class files (`Outer$1`); use a lambda instead when the target is a functional interface.\n- An inner object that outlives its outer object and uses it keeps the whole outer graph alive: a classic leak."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-8",
+      "type": "concept",
+      "title": "Enums",
+      "subtopicId": "3-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Many values come from a small, fixed set: days of the week, order states, card suits, HTTP methods. Before Java 5 programmers used `static final int` constants (`int PENDING = 0; int SHIPPED = 1;`), which have no type safety (you can pass `42`), no readable printing, and no namespace. A Java `enum` solves this: it is a class with a fixed, closed set of instances, each one a named constant. The compiler checks the type, you can print the name, and the constants can carry data and behaviour.\n\n### Constants are objects\n\nThe simplest enum lists its constants. Each constant is a `public static final` instance of the enum class, created once when the class is initialised, so you may compare constants with `==`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "enum OrderStatus { PENDING, PAID, SHIPPED, CANCELLED }\n\nOrderStatus s = OrderStatus.PAID;\nSystem.out.println(s);                    // PAID  (toString defaults to name())\nSystem.out.println(s == OrderStatus.PAID); // true: one instance per constant"
+        },
+        {
+          "type": "markdown",
+          "text": "Every enum implicitly extends `java.lang.Enum<E>`, which supplies these methods:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`'values()'`",
+              "A fresh array of all constants in declaration order (added by the compiler)."
+            ],
+            [
+              "`'valueOf(String)'`",
+              "Constant with that exact name; throws `IllegalArgumentException` if none (case-sensitive)."
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`'name()'`",
+              "The constant's identifier as written. `final`; use it for stable storage."
+            ],
+            [
+              "`'ordinal()'`",
+              "Zero-based position in the declaration. Fragile: reordering changes it."
+            ],
+            [
+              "`'compareTo(E)'`",
+              "Compares ordinals, so constants sort in declaration order."
+            ],
+            [
+              "`'getDeclaringClass()'`",
+              "The enum type, even for constants with bodies."
+            ]
+          ],
+          "caption": "Methods every enum has."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not persist `ordinal()` (in a database column or a file). Inserting a new constant in the middle silently changes the meaning of every stored number. Store `name()` or an explicit code field instead. In JPA/Hibernate prefer `@Enumerated(EnumType.STRING)`, not the default `ORDINAL`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Fields, constructors and methods\n\nAn enum can have fields, a constructor and methods. The constructor is implicitly `private`; it runs once per constant, with the arguments you write after the constant name."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\n\npublic class Planets {\n    enum Level {\n        LOW(1), MEDIUM(5), HIGH(10);\n\n        private final int weight;\n        Level(int weight) { this.weight = weight; }     // implicitly private\n        int weight() { return weight; }\n        boolean atLeast(Level other) { return compareTo(other) >= 0; }\n    }\n\n    enum Op {\n        ADD(\"+\") { int apply(int a, int b) { return a + b; } },\n        MUL(\"*\") { int apply(int a, int b) { return a * b; } };\n\n        final String symbol;\n        Op(String symbol) { this.symbol = symbol; }\n        abstract int apply(int a, int b);\n    }\n\n    public static void main(String[] args) {\n        System.out.println(Arrays.toString(Level.values()));\n        System.out.println(Level.valueOf(\"HIGH\").weight());\n        System.out.println(Level.HIGH.ordinal() + \" \" + Level.HIGH.name());\n        System.out.println(Level.HIGH.atLeast(Level.MEDIUM));\n        for (Op op : Op.values())\n            System.out.println(op + \" \" + op.symbol + \" \" + op.apply(6, 7)\n                + \" \" + op.getClass() + \" \" + op.getDeclaringClass());\n        try { Level.valueOf(\"high\"); }\n        catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }\n        System.out.println(Level.LOW == Level.valueOf(\"LOW\"));\n    }\n}",
+          "title": "Planets.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Planets.java\n[LOW, MEDIUM, HIGH]\n10\n2 HIGH\ntrue\nADD + 13 class Planets$Op$1 class Planets$Op\nMUL * 42 class Planets$Op$2 class Planets$Op\nNo enum constant Planets.Level.high\ntrue",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `Op` declares an **abstract method** and gives each constant its own body. Each such constant is an anonymous subclass (`Planets$Op$1`), which is why `getClass()` differs from `getDeclaringClass()`. This is the strategy pattern with a fixed set of strategies and no `if` chains.\n- A field of an enum should be `final`. A mutable field turns the constants into shared global state.\n- The enum cannot be extended (`Level` is `final`; constants with bodies make it implicitly sealed), and it cannot be instantiated with `new`.\n\n#### What the compiler generates\n\n`javap -p` on `Planets$Level` shows the machinery: a `final` class extending `Enum`, one `public static final` field per constant, a private `$VALUES` array, and a static initializer that creates the constants."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javap -p -cp t 'Planets$Level'\nfinal class Planets$Level extends java.lang.Enum<Planets$Level> {\n  public static final Planets$Level LOW;\n  public static final Planets$Level MEDIUM;\n  public static final Planets$Level HIGH;\n  private final int weight;\n  private static final Planets$Level[] $VALUES;\n  public static Planets$Level[] values();\n  public static Planets$Level valueOf(java.lang.String);\n  private Planets$Level(int);\n  int weight();\n  boolean atLeast(Planets$Level);\n  private static Planets$Level[] $values();\n  static {};\n}",
+          "title": "Inspecting the compiled enum"
+        },
+        {
+          "type": "markdown",
+          "text": "`values()` returns a **copy** of `$VALUES` each call (to protect the original), so in a hot loop call it once and keep the array, or use `EnumSet.allOf`. Enums can also implement interfaces, which is how you give a family of constants a common type without inheritance:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Arrays;\nimport java.util.Map;\nimport java.util.stream.Collectors;\n\npublic class Cmd {\n    interface Priced { int cents(); }\n    enum Size implements Priced {\n        S(100), M(150), L(200);\n        private final int cents;\n        Size(int c) { cents = c; }\n        public int cents() { return cents; }\n        static final Map<String, Size> BY_NAME =\n            Arrays.stream(values()).collect(Collectors.toMap(s -> s.name().toLowerCase(), s -> s));\n    }\n    public static void main(String[] args) {\n        System.out.println(Size.BY_NAME.get(\"m\").cents());\n        System.out.println(Size.M.compareTo(Size.L));\n        System.out.println(Size.class.getSuperclass());\n    }\n}",
+          "title": "Cmd.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Cmd.java\n150\n-1\nclass java.lang.Enum",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The static lookup map is a standard idiom for parsing input. Note that it must be a `static` field declared after the constants, because the constants are created first.\n\n### Enums in switch\n\nAn enum is the ideal `switch` selector. In a switch **expression** the compiler requires every constant to be covered (or a `default`), so adding a new constant later produces a compile error at every switch that forgot it. That is a real advantage over integer codes. With a classic switch **statement** over an enum, missing constants are silently ignored unless you add a `default` that throws."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Light next() {\n    return switch (this) {\n        case RED -> GREEN;\n        case GREEN -> YELLOW;\n        case YELLOW -> RED;      // no default needed: all constants covered\n    };\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "Inside a `case` label you write the bare constant name (`RED`), not `Light.RED`. (Since Java 21, pattern-switch also lets you qualify enum constants in case labels when mixing types.)"
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Avoid writing a `default` branch in a switch expression over an enum you own. The missing default is what lets the compiler tell you about new constants. Add `default` only for enums you do not control."
+        },
+        {
+          "type": "markdown",
+          "text": "### EnumSet and EnumMap\n\nBecause an enum has a small known number of constants, specialised collections exist and are much faster than `HashSet` and `HashMap` for them.\n\n- `EnumSet<E>` stores membership as bits (one `long` for up to 64 constants). Operations are a few machine instructions. Factories: `of`, `noneOf`, `allOf`, `range`, `complementOf`, `copyOf`.\n- `EnumMap<K, V>` stores values in an array indexed by `ordinal()`. Iteration is in declaration order."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.EnumMap;\nimport java.util.EnumSet;\nimport java.util.Map;\n\npublic class Sets {\n    enum Day { MON, TUE, WED, THU, FRI, SAT, SUN }\n\n    enum Light {\n        RED, GREEN, YELLOW;\n        Light next() {\n            return switch (this) {\n                case RED -> GREEN;\n                case GREEN -> YELLOW;\n                case YELLOW -> RED;\n            };\n        }\n    }\n\n    public static void main(String[] args) {\n        EnumSet<Day> weekend = EnumSet.of(Day.SAT, Day.SUN);\n        EnumSet<Day> work = EnumSet.complementOf(weekend);\n        System.out.println(weekend + \" \" + work);\n        System.out.println(EnumSet.range(Day.TUE, Day.THU));\n        Map<Day, Integer> hours = new EnumMap<>(Day.class);\n        hours.put(Day.FRI, 6);\n        hours.put(Day.MON, 8);\n        System.out.println(hours);          // iterates in declaration order\n        Light l = Light.RED;\n        for (int i = 0; i < 4; i++) { System.out.print(l + \" \"); l = l.next(); }\n        System.out.println();\n    }\n}",
+          "title": "Sets.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Sets.java\n[SAT, SUN] [MON, TUE, WED, THU, FRI]\n[TUE, WED, THU]\n{MON=8, FRI=6}\nRED GREEN YELLOW RED",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Note that `EnumMap` printed `MON` before `FRI` although `FRI` was inserted first. `EnumMap` needs the `Class` object (`Day.class`) in its constructor because the map cannot infer the key type at runtime (generics are erased). Use an `EnumSet` instead of an `int` bit-flag field (`READ | WRITE`) whenever you need a set of options.\n\n### Singleton via enum\n\nJoshua Bloch's recommendation in *Effective Java* is that a single-element enum is the best way to implement a singleton: the JVM guarantees the constant is created exactly once (class initialisation is thread-safe), and unlike a class with a private constructor, an enum cannot be duplicated by serialization or by reflection (`Constructor.newInstance` refuses to create enum instances)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public enum Registry {\n    INSTANCE;\n\n    private int count;\n    public synchronized int register() { return ++count; }\n\n    public static void main(String[] args) {\n        System.out.println(Registry.INSTANCE.register());\n        System.out.println(Registry.INSTANCE.register());\n        System.out.println(Registry.INSTANCE == Registry.valueOf(\"INSTANCE\"));\n    }\n}",
+          "title": "Registry.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Registry.java\n1\n2\ntrue",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The limits: an enum singleton cannot extend another class (it already extends `Enum`), it is created eagerly at first use of the class, and in a Spring application you normally let the container manage singletons instead. The design patterns Part compares the other singleton forms."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Enum constants are created in a `static` initializer in declaration order. A constructor or constant body that touches a `static` field of the same enum (other than a compile-time constant) sees its default value, because the field is not yet initialised. The compiler reports a direct reference as an error."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why can you compare enums with `==`, and why is a single-element enum a good singleton? Each constant is created once per class loader and the type has no public constructor, so reference equality equals logical equality (and `==` is null-safe and type-checked at compile time). A single-element enum is a good singleton because class initialisation is atomic and thread-safe, serialization of enums preserves identity (it writes the name and uses `valueOf`), and reflection cannot create a second instance."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In backend code enums model statuses and types (`OrderStatus`, `PaymentMethod`) and often appear in JSON and database mappings. Jackson serialises an enum by `name()` by default; JPA by ordinal unless told otherwise (see the warning above). Keep an explicit `code` field when external systems need stable values and look it up through a static map."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- An enum is a class with a closed set of singleton instances; compare constants with `==`.\n- Constants can have fields, constructors, methods and per-constant bodies (an abstract method per constant replaces `if` chains).\n- Never persist `ordinal()`; store `name()` or an explicit code.\n- Switch expressions over enums are checked for completeness, so omit `default` for your own enums.\n- Use `EnumSet` and `EnumMap` for enum-keyed collections; a single-element enum is a safe singleton."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-9",
+      "type": "concept",
+      "title": "Records",
+      "subtopicId": "3-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A huge amount of Java code is \"data carriers\": a class with a few fields, a constructor, getters, `equals`, `hashCode` and `toString`. Writing a `Point` with two ints takes about thirty lines, and every line is a chance for a bug (forgetting a field in `equals`, for example). A **record** (Java 16) states the intent in one line and the compiler writes the rest:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "record Point(int x, int y) {}"
+        },
+        {
+          "type": "markdown",
+          "text": "That declares a final class with two private final fields, a constructor, accessors `x()` and `y()`, and `equals`, `hashCode` and `toString` based on both components. A record is a *transparent, shallowly immutable carrier of values*: what you see in the header is its whole state and its public shape.\n\n### What you get for free"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\nimport java.util.Objects;\n\npublic class Records {\n    record Point(int x, int y) {}\n\n    record Money(long cents, String currency) {\n        Money {                                   // compact canonical constructor\n            Objects.requireNonNull(currency, \"currency\");\n            if (cents < 0) throw new IllegalArgumentException(\"negative: \" + cents);\n            currency = currency.toUpperCase();    // normalise the parameter\n        }\n        Money plus(Money o) { return new Money(cents + o.cents, currency); }\n        static Money ofEuros(int e) { return new Money(e * 100L, \"eur\"); }\n    }\n\n    record Course(String title, List<String> students) {\n        Course {\n            students = List.copyOf(students);     // defensive copy, unmodifiable\n        }\n    }\n\n    record Leaky(List<String> items) {}\n\n    public static void main(String[] args) {\n        Point p = new Point(3, 4);\n        System.out.println(p + \" \" + p.x() + \" \" + p.equals(new Point(3, 4))\n            + \" \" + (p.hashCode() == new Point(3, 4).hashCode()));\n        System.out.println(Money.ofEuros(5).plus(new Money(250, \"Eur\")));\n        try { new Money(-1, \"usd\"); }\n        catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }\n\n        List<String> src = new ArrayList<>(List.of(\"Ana\", \"Raj\"));\n        Leaky leaky = new Leaky(src);\n        Course course = new Course(\"Java\", src);\n        src.add(\"Zed\");\n        System.out.println(leaky.items() + \" \" + course.students());\n        try { course.students().add(\"x\"); }\n        catch (UnsupportedOperationException e) { System.out.println(\"UOE\"); }\n        System.out.println(Point.class.isRecord() + \" \" + Point.class.getSuperclass());\n        for (var c : Point.class.getRecordComponents())\n            System.out.println(c.getName() + \":\" + c.getType());\n    }\n}",
+          "title": "Records.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Records.java\nPoint[x=3, y=4] 3 true true\nMoney[cents=750, currency=EUR]\nnegative: -1\n[Ana, Raj, Zed] [Ana, Raj]\nUOE\ntrue class java.lang.Record\nx:int\ny:int",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The accessor is `x()`, not `getX()`. The generated `toString` is `Point[x=3, y=4]`.\n- `Money` has a **compact constructor**: no parameter list, no field assignments. The body runs first and may validate or reassign the *parameters* (`currency = currency.toUpperCase()`); the compiler then assigns the fields from the parameters at the end. You cannot write `this.currency = ...` there.\n- `Leaky` stores the caller's list: when `src` changes, the \"immutable\" record changes too. `Course` copies in its constructor, so it is safe.\n\n### Constructors in depth\n\nA record has one **canonical constructor** whose parameters match the components in order. You have three ways to deal with it:\n\n1. Write nothing: the compiler generates it.\n2. Write a **compact** constructor (as above) for validation and normalisation. The most common choice.\n3. Write the full **explicit canonical** constructor with a parameter list and `this.x = x;` assignments. It must be at least as accessible as the record itself.\n\nYou can also add other constructors, but each one must start with `this(...)`, delegating eventually to the canonical one, so every instance passes through the same validation."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.*;\nimport java.util.*;\n\npublic class Rec2 {\n    record Range(int lo, int hi) {\n        Range {\n            if (lo > hi) throw new IllegalArgumentException(lo + \" > \" + hi);\n        }\n        Range(int single) { this(single, single); }        // non-canonical must delegate\n        static final Range EMPTY = new Range(0, 0);        // static fields allowed\n        int length() { return hi - lo; }\n        static Range of(String s) {\n            String[] p = s.split(\"-\");\n            return new Range(Integer.parseInt(p[0]), Integer.parseInt(p[1]));\n        }\n    }\n    record Pair<A, B>(A first, B second) {}\n    record Line(Pair<Integer,Integer> from, Pair<Integer,Integer> to) {}\n    record Person(String name, int age) implements Serializable {}\n    record Version(String tag) implements Comparable<Version> {\n        public int compareTo(Version o) { return tag.compareTo(o.tag); }\n        @Override public String toString() { return \"v\" + tag; }\n    }\n    record Named(String name) {\n        @Override public String name() { return name.trim(); }      // custom accessor\n    }\n\n    public static void main(String[] args) throws Exception {\n        System.out.println(new Range(5) + \" \" + Range.of(\"2-9\").length() + \" \" + Range.EMPTY);\n        System.out.println(new Line(new Pair<>(0, 0), new Pair<>(3, 4)));\n        var bos = new ByteArrayOutputStream();\n        try (var out = new ObjectOutputStream(bos)) { out.writeObject(new Person(\"Ana\", 30)); }\n        try (var in = new ObjectInputStream(new ByteArrayInputStream(bos.toByteArray()))) {\n            System.out.println(in.readObject());\n        }\n        System.out.println(new Version(\"1.2\") + \" \" + new Named(\"  x \").name()\n            + \"|\" + new Named(\"  x \"));\n        System.out.println(new Pair<>(null, 1).equals(new Pair<>(null, 1)));\n        System.out.println(new Pair<>(1.0, 0.0).equals(new Pair<>(1.0, -0.0)));\n    }\n}",
+          "title": "Rec2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Rec2.java\nRange[lo=5, hi=5] 7 Range[lo=0, hi=0]\nLine[from=Pair[first=0, second=0], to=Pair[first=3, second=4]]\nPerson[name=Ana, age=30]\nv1.2 x|Named[name=  x ]\ntrue\nfalse",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Records can be generic (`Pair<A, B>`), nested inside each other (`Line`), implement interfaces (`Comparable`, `Serializable`), and have static fields, static methods and ordinary instance methods.\n- Records **cannot** declare instance fields beyond the components, cannot extend another class (they already extend `java.lang.Record`), and are implicitly `final`, so they cannot be extended.\n- You may override an accessor (`Named.name()`), but the generated `toString`, `equals` and `hashCode` read the **fields**, not the accessors: the last line of output still shows `x` untrimmed. Keep accessors and fields consistent.\n- Equality of components: reference components use `equals` (null-safe, so `null` works), primitives are compared by value, and `double`/`float` components compare with `Double.compare`, so `0.0` is not equal to `-0.0`.\n\n### How it works under the hood\n\n`javap -p` on a record shows what the compiler added. The three object methods are `final` and are implemented with `invokedynamic`, delegating to `java.lang.runtime.ObjectMethods` at link time instead of bytecode generated per record."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javap -p -cp t 'Records$Point'\nfinal class Records$Point extends java.lang.Record {\n  private final int x;\n  private final int y;\n  Records$Point(int, int);\n  public final java.lang.String toString();\n  public final int hashCode();\n  public final boolean equals(java.lang.Object);\n  public int x();\n  public int y();\n}",
+          "title": "Inspecting a record"
+        },
+        {
+          "type": "markdown",
+          "text": "The class file also stores a `Record` attribute listing the components, which is what `getRecordComponents()` reads (the last lines of the first program's output). Frameworks use it for reflection-based construction. `Jackson` (since 2.12), `Gson`, JPA projections and Spring MVC can all bind to records.\n\n### Immutability, honestly\n\nFields are `final` and there are no setters, so you cannot reassign a component. But the immutability is **shallow**: if a component is a mutable object (an array, an `ArrayList`, a `Date`) the record's content can still change, as `Leaky` showed. To get real immutability:\n\n- Copy mutable inputs in the compact constructor (`List.copyOf`, `Map.copyOf`, `array.clone()`), and\n- Return unmodifiable views or copies from accessors if the component is an array, because the default accessor returns the very same array.\n\nRecords do not make *wither* operations (change one field, get a new object) automatic. You write them by hand: `Point` `withX(int nx) { return new Point(nx, y); }`. If a record has many components, a nested builder is still sensible."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A record with an array component has identity-based `equals` for that component, because arrays do not override `equals`. `new R(new int[]{1}).equals(new R(new int[]{1}))` is `false`. Prefer a `List` and copy it, or override `equals`, `hashCode` and `toString` yourself."
+        },
+        {
+          "type": "markdown",
+          "text": "### When to use a record\n\nRecords fit values defined entirely by their data: coordinates, money amounts, DTOs (data transfer objects) returned by a REST controller, keys of a `HashMap` (the generated `hashCode` is correct), tuple-like return values from a method, and the variants of a sealed hierarchy (the next chapter). Local records (declared inside a method) are good for intermediate results in a stream pipeline.\n\nThey are the wrong tool when the object has identity or changing state (a bank account, a connection), when you need to hide the representation (a record's header is its public API; changing a component changes the API), or when it must be a JPA `@Entity` (entities need a no-arg constructor, mutable fields and proxies; records do not allow that).\n\n#### Serialization notes\n\nA record can implement `Serializable`, as `Person` did above (output proved the round trip). Records are serialized by their components only and **deserialized by calling the canonical constructor**, so your validation also runs on untrusted input; a plain class bypasses its constructor during deserialization, which is a classic security hole. `readObject`, `writeObject` and `serialPersistentFields` are ignored for records; only `writeReplace` and `readResolve` work. The default `serialVersionUID` of a record is `0L` unless you declare one. In practice most services serialize records as JSON rather than with Java serialization."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Are records immutable? What can you not do with them? Records are shallowly immutable: components are `final`, no setters exist, and the class is `final`. A mutable component can still be changed through its own methods, so you copy mutable inputs in the compact constructor. You cannot add instance fields, extend a class, or make the record abstract; it can implement interfaces and have static members and extra methods."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot, request and response bodies are very often records (`record CreateOrderRequest(String sku, int` `qty) {}`), with Bean Validation annotations (`@NotBlank`, `@Min`) placed on the components. Configuration properties can also be bound to records through constructor binding."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A record declares a transparent, final data carrier; the compiler generates fields, canonical constructor, accessors, `equals`, `hashCode`, `toString`.\n- Validate and normalise in the compact constructor; every other constructor must delegate to the canonical one.\n- Immutability is shallow: copy mutable components, especially collections and arrays.\n- Records cannot extend classes or add instance fields, but can implement interfaces, be generic, nested and local.\n- Use them for DTOs, keys, value objects and sealed-hierarchy variants, not for entities or objects with identity."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-10",
+      "type": "concept",
+      "title": "Sealed Classes and Interfaces",
+      "subtopicId": "3-10",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Normally anyone can extend a public class or implement a public interface. That openness is usually good, but sometimes you want the opposite: a type with a **closed, known set of subtypes**. A payment is either a card payment, a bank transfer or a wallet payment, and nothing else. An expression tree has exactly four node kinds. Before Java 17 you could only approximate this with a package-private constructor or an enum. A **sealed** class or interface (finalised in Java 17, JEP 409) lists exactly which classes may extend it, and the compiler enforces and exploits that list.\n\n### Declaring a sealed hierarchy"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Shapes {\n    sealed interface Shape permits Circle, Rect, Tri {}\n    record Circle(double r) implements Shape {}\n    record Rect(double w, double h) implements Shape {}\n    record Tri(double b, double h) implements Shape {}\n\n    static double area(Shape s) {\n        return switch (s) {                       // no default: compiler checks coverage\n            case Circle c -> Math.PI * c.r() * c.r();\n            case Rect r   -> r.w() * r.h();\n            case Tri t    -> 0.5 * t.b() * t.h();\n        };\n    }\n\n    public static void main(String[] args) {\n        for (Shape s : new Shape[]{new Circle(1), new Rect(2, 3), new Tri(4, 5)})\n            System.out.printf(\"%s -> %.2f%n\", s, area(s));\n        System.out.println(Shape.class.isSealed());\n        for (var c : Shape.class.getPermittedSubclasses()) System.out.println(c.getSimpleName());\n    }\n}",
+          "title": "Shapes.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Shapes.java\nCircle[r=1.0] -> 3.14\nRect[w=2.0, h=3.0] -> 6.00\nTri[b=4.0, h=5.0] -> 10.00\ntrue\nCircle\nRect\nTri",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### The rules\n\n- `sealed` plus a `permits` list names the allowed direct subtypes. If all of them are in the **same source file**, `permits` may be omitted and the compiler infers them.\n- Permitted subtypes must be in the same module (or, in the unnamed module, the same package) as the sealed type.\n- Every permitted subtype must say what happens next, by choosing exactly one modifier: `final` (no more subclasses; records and enums are implicitly final), `sealed` (continues the closed hierarchy with its own `permits`) or `non-sealed` (reopens the hierarchy: anyone may extend it).\n- The sealed type itself may be `abstract`, an interface or an ordinary class."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Sealed2 {\n    sealed static abstract class Account permits Savings, Checking {}\n    static final class Savings extends Account {}\n    static non-sealed class Checking extends Account {}\n    static class Premium extends Checking {}           // allowed: Checking is non-sealed\n\n    sealed interface Result<T> {\n        record Ok<T>(T value) implements Result<T> {}\n        record Err<T>(String msg) implements Result<T> {}\n    }\n\n    static String describe(Result<Integer> r) {\n        return switch (r) {\n            case Result.Ok<Integer> ok -> \"ok \" + ok.value();\n            case Result.Err<Integer> err -> \"error \" + err.msg();\n        };\n    }\n    public static void main(String[] args) {\n        System.out.println(describe(new Result.Ok<>(7)) + \", \"\n            + describe(new Result.Err<>(\"boom\")));\n        System.out.println(new Premium() instanceof Account);\n    }\n}",
+          "title": "Sealed2.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Sealed2.java\nok 7, error boom\ntrue",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "`Result<T>` shows the compact style: the variants are nested records inside the sealed interface, so no `permits` clause is needed. This `Ok`/`Err` shape is the same idea as `Result` types in Rust or Kotlin.\n\n### What the compiler does for you\n\nTwo things make sealed types worth using. First, a class outside the list cannot extend the type:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Bad.java\nBad.java:5: error: class is not allowed to extend sealed class: S (as it is not ...)\n    record C() implements S {}\n    ^\n1 error",
+          "title": "Adding a subtype that is not permitted (message shortened)"
+        },
+        {
+          "type": "markdown",
+          "text": "Second, a `switch` over a sealed type is checked for **exhaustiveness**: if you leave out a variant and have no `default`, it does not compile."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Bad2.java\nBad2.java:5: error: the switch expression does not cover all possible input values\n    static int f(S s) { return switch (s) { case A a -> 1; }; }\n                               ^\n1 error",
+          "title": "Forgetting a variant"
+        },
+        {
+          "type": "markdown",
+          "text": "This reverses the usual cost of extension. With a normal interface it is cheap to add a new type and expensive to add a new operation (every implementer must change). With a sealed hierarchy plus `switch`, adding an *operation* is cheap (write one more method with a switch) and adding a *variant* is checked: every switch without a `default` breaks at compile time, pointing at exactly the code to update. That is the right trade for stable data models such as ASTs, events and results."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Do not add `default` to a switch over your own sealed type. The `default` silences the exhaustiveness check, which is the main benefit. If you need a catch-all for the future, make the hierarchy non-sealed or accept the compile error as a feature."
+        },
+        {
+          "type": "markdown",
+          "text": "### Algebraic data types in plain Java\n\nComputer scientists call this pattern an **algebraic data type**: a *sum type* (a value is exactly one of several variants, here the sealed interface) whose variants are *product types* (each bundles several values, here records). Sealed interfaces plus records give Java both halves. Combined with pattern matching (the next chapter) you can take a value apart in the `switch` itself:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Calc {\n    sealed interface Expr permits Num, Add, Mul, Neg {}\n    record Num(int v) implements Expr {}\n    record Add(Expr l, Expr r) implements Expr {}\n    record Mul(Expr l, Expr r) implements Expr {}\n    record Neg(Expr e) implements Expr {}\n\n    static int eval(Expr e) {\n        return switch (e) {\n            case Num n -> n.v();\n            case Add a -> eval(a.l()) + eval(a.r());\n            case Mul m -> eval(m.l()) * eval(m.r());\n            case Neg n -> -eval(n.e());\n        };\n    }\n    static String show(Expr e) {\n        return switch (e) {\n            case Num(int v) -> Integer.toString(v);\n            case Add(Expr l, Expr r) -> \"(\" + show(l) + \" + \" + show(r) + \")\";\n            case Mul(Expr l, Expr r) -> show(l) + \" * \" + show(r);\n            case Neg(Expr x) -> \"-\" + show(x);\n        };\n    }\n    public static void main(String[] args) {\n        Expr e = new Add(new Num(2), new Mul(new Num(3), new Neg(new Num(4))));\n        System.out.println(show(e) + \" = \" + eval(e));\n    }\n}",
+          "title": "Calc.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Calc.java\n(2 + 3 * -4) = -10",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The same job in classic object-oriented style would put an `eval()` method in every class (the visitor pattern if operations should live outside). Sealed types plus switch replace the visitor with ordinary code: no `accept` methods and no double dispatch. The design patterns Part returns to this.\n\n#### Sealed versus enum versus open interface\n\nUse an **enum** when the variants are fixed singletons with the same shape. Use a **sealed interface of records** when variants differ in what data they carry. Use a plain **interface** when third parties must be able to add implementations (plug-ins, `List`, `Comparable`)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Sealed does not mean secret. Adding a permitted subtype is a source-incompatible change for everyone who switches over the type, even in other projects, so do not seal types in a public library API unless you are ready to treat new variants as breaking. The JDK itself seals very few types."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What problem do sealed classes solve, and how do they relate to `switch`? They let the author restrict which classes may extend a type, via `permits` (each subtype must be `final`, `sealed` or `non-sealed`). Because the compiler then knows the complete set of subtypes, a `switch` over the sealed type can be checked for exhaustiveness without a `default`, so adding a new variant produces compile errors where the code needs updating."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `sealed ... permits` closes a hierarchy; each permitted subtype must be `final`, `sealed` or `non-sealed`.\n- A switch over a sealed type is exhaustive without `default`, so new variants cause compile errors where handling is missing.\n- Sealed interfaces plus records give algebraic data types (sum of products) in plain Java.\n- Choose enums for same-shaped constants, sealed records for variants with different data, open interfaces for extension by others.\n- Sealing a public API makes adding a variant a breaking change."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-11",
+      "type": "concept",
+      "title": "Pattern Matching",
+      "subtopicId": "3-11",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Code constantly asks \"what kind of thing is this, and if it is that kind, give me its parts\". Older Java answered with a test, a cast and a variable: three steps, one of which (the cast) the compiler cannot verify against the test. **Pattern** **matching** merges them: a *pattern* both tests a value and, on success, declares variables bound to its parts. Java has delivered it in stages: `instanceof` patterns (Java 16), `switch` patterns (Java 21), and record patterns (Java 21), with unnamed patterns (`_`) finalised in Java 22."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 454.0 108.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M115.0 86.0 L309.0 86.0 C310.7 86.0 312.0 84.7 312.0 83.0 L312.0 65.0 C312.0 63.3 310.7 62.0 309.0 62.0 L115.0 62.0 C113.3 62.0 112.0 63.3 112.0 65.0 L112.0 83.0 C112.0 84.7 113.3 86.0 115.0 86.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.0 46.0 L112.0 16.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M72.0 46.0 L112.0 46.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M72.0 46.0 L112.0 76.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M5.0 61.0 L69.0 61.0 C70.7 61.0 72.0 59.7 72.0 58.0 L72.0 34.0 C72.0 32.3 70.7 31.0 69.0 31.0 L5.0 31.0 C3.3 31.0 2.0 32.3 2.0 34.0 L2.0 58.0 C2.0 59.7 3.3 61.0 5.0 61.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.0 56.0 L309.0 56.0 C310.7 56.0 312.0 54.7 312.0 53.0 L312.0 35.0 C312.0 33.3 310.7 32.0 309.0 32.0 L115.0 32.0 C113.3 32.0 112.0 33.3 112.0 35.0 L112.0 53.0 C112.0 54.7 113.3 56.0 115.0 56.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 46.0 L107.5 43.8 L107.5 48.2 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 76.0 L109.7 71.6 L107.1 75.0 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M345.0 61.0 L449.0 61.0 C450.7 61.0 452.0 59.7 452.0 58.0 L452.0 34.0 C452.0 32.3 450.7 31.0 449.0 31.0 L345.0 31.0 C343.3 31.0 342.0 32.3 342.0 34.0 L342.0 58.0 C342.0 59.7 343.3 61.0 345.0 61.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.0 14.0 L342.0 40.0\" fill=\"none\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M115.0 26.0 L309.0 26.0 C310.7 26.0 312.0 24.7 312.0 23.0 L312.0 5.0 C312.0 3.3 310.7 2.0 309.0 2.0 L115.0 2.0 C113.3 2.0 112.0 3.3 112.0 5.0 L112.0 23.0 C112.0 24.7 113.3 26.0 115.0 26.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 16.0 L107.1 17.0 L109.7 20.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M342.0 40.0 L340.0 35.4 L337.2 38.7 Z\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"192.7\" y=\"16.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"38.6\" lengthAdjust=\"spacingAndGlyphs\">case Circle c</text><text x=\"161.1\" y=\"46.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"101.8\" lengthAdjust=\"spacingAndGlyphs\">case Square s when s.size() &gt; 10</text><text x=\"372.0\" y=\"44.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"50.1\" lengthAdjust=\"spacingAndGlyphs\">first match runs</text><text x=\"27.9\" y=\"48.5\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"18.2\" lengthAdjust=\"spacingAndGlyphs\">value</text><text x=\"367.9\" y=\"52.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"58.3\" lengthAdjust=\"spacingAndGlyphs\">and binds variable</text><text x=\"201.2\" y=\"76.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"21.5\" lengthAdjust=\"spacingAndGlyphs\">default</text><text x=\"140.4\" y=\"100.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"183.1\" lengthAdjust=\"spacingAndGlyphs\">tested top to bottom; dominated cases are compile errors</text></svg>",
+          "width": 454,
+          "caption": "How a value flows through a pattern switch: cases are tried top to bottom, each pattern tests then binds, and the first match wins.",
+          "alt": "case Circle c | case Square s when s.size() > 10 first match runs | value | and binds variable | default | tested top to bottom; dominated cases are compile errors"
+        },
+        {
+          "type": "markdown",
+          "text": "### Type patterns with instanceof"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "if (o instanceof String) {\n    String s = (String) o;            // test, cast, bind: three steps\n    System.out.println(s.length());\n}\n\nif (o instanceof String s) {          // test + cast + bind in one\n    System.out.println(s.length());\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "The binding `s` is in scope exactly where the compiler can prove the match succeeded. That includes the right side of `&&`, and the code after a negated test that exits:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "if (o instanceof String s && s.length() > 3) { /* s usable here */ }\nif (!(o instanceof Integer i)) return \"not an int\";\nreturn \"int \" + (i + 1);              // i is in scope: we only get here if it matched"
+        },
+        {
+          "type": "markdown",
+          "text": "Because `||` could be reached on a failed match, `o instanceof String s || s.isEmpty()` does not compile. A pattern variable is not `final` automatically but it behaves like a local: you may reassign it unless declared `final`, though you rarely should.\n\n### Pattern matching for switch\n\nA `switch` (statement or expression, since Java 21) may switch on **any reference type** and use patterns as case labels. Cases are tried top to bottom; the first one that matches runs."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.List;\n\npublic class Patterns {\n    record Point(int x, int y) {}\n    record Line(Point from, Point to) {}\n\n    static String old(Object o) {\n        if (o instanceof String) {\n            String s = (String) o;            // test, cast, bind: three steps\n            return \"string of \" + s.length();\n        }\n        return \"other\";\n    }\n\n    static String describe(Object o) {\n        if (o instanceof String s && s.length() > 3) return \"long string \" + s;\n        if (!(o instanceof Integer i)) return \"not an int: \" + o;\n        return \"int \" + (i + 1);                       // i is in scope here\n    }\n\n    static String classify(Object o) {\n        return switch (o) {\n            case null -> \"null!\";\n            case Integer i when i > 100 -> \"big int \" + i;\n            case Integer i -> \"int \" + i;\n            case String s when s.isEmpty() -> \"empty string\";\n            case String s -> \"string \" + s;\n            case Line(Point(var x1, var y1), Point(int x2, int y2)) when x1 == x2\n                -> \"vertical line\";\n            case Line(Point a, Point b) -> \"line \" + a + \"->\" + b;\n            case int[] arr -> \"int array of \" + arr.length;\n            case List<?> l -> \"list size \" + l.size();\n            default -> \"something else: \" + o.getClass().getSimpleName();\n        };\n    }\n\n    public static void main(String[] args) {\n        System.out.println(old(\"hello\") + \" | \" + old(5));\n        System.out.println(describe(\"hello\") + \" | \" + describe(\"hi\") + \" | \" + describe(41));\n        Object[] tests = {null, 7, 500, \"\", \"abc\", new Line(new Point(1, 1), new Point(1, 9)),\n            new Line(new Point(0, 0), new Point(2, 3)), new int[3], List.of(1, 2), 2.5};\n        for (Object t : tests) System.out.println(classify(t));\n        Object obj = new Line(new Point(1, 2), new Point(3, 4));\n        if (obj instanceof Line(Point(var a, var b), Point p2)) System.out.println(a + b + p2.x());\n    }\n}",
+          "title": "Patterns.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Patterns.java\nstring of 5 | other\nlong string hello | not an int: hi | int 42\nnull!\nint 7\nbig int 500\nempty string\nstring abc\nvertical line\nline Point[x=0, y=0]->Point[x=2, y=3]\nint array of 3\nlist size 2\nsomething else: Double\n6",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `case null` handles null explicitly. Without it, switching on `null` still throws `NullPointerException`, as with the old switch. You can combine: `case null, default -> ...`.\n- `when` adds a **guard**: a boolean condition on the same case. `case Integer i when i > 100` must come before the plain `case Integer i`.\n- `case Line(Point(var x1, var y1), Point(int x2, int y2))` is a **record pattern with nested patterns**: it tests for `Line`, calls its accessors, tests the components for `Point`, and binds the ints, all in one line. `var` lets the compiler infer each component type.\n- The last line shows a record pattern in `instanceof`.\n\n### Record patterns\n\nA **record pattern** `R(P1, P2, ...)` matches a record `R` and then matches each component against its sub-pattern. Nesting is unlimited, which is how you pull apart a tree in one expression (`case Add(Mul(Num(var a), Num(var b)),` `var rest)` in the expression example of the previous chapter). Under the hood the compiler calls the component accessors; if one throws, the exception is wrapped in a `MatchException`. A sub-pattern whose type is the same as (or wider than) the component type is called *total* and matches everything including `null`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Nul {\n    record Box(Object content) {}\n    public static void main(String[] a) {\n        Object o = new Box(null);\n        System.out.println(o instanceof Box(Object c));      // total pattern matches null\n        System.out.println(o instanceof Box(String c));      // type test fails on null\n        Object n = null;\n        System.out.println(n instanceof Object x);\n        try {\n            switch (n) {\n                case String s -> System.out.println(\"s\");\n                default -> System.out.println(\"d\");\n            }\n        } catch (NullPointerException e) { System.out.println(\"NPE\"); }\n    }\n}",
+          "title": "Nul.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Nul.java\ntrue\nfalse\nfalse\nNPE",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The lines correspond to: `new Box(null) instanceof Box(Object c)` is `true` (a total pattern accepts the null component); `... instanceof Box(String c)` is `false` (a type test never matches null); `null instanceof Object x` is `false` (instanceof never matches null); and `switch (n) { case String s ...; default ... }` with `n == null` throws `NullPointerException` because there is no `case null`.\n\n### Dominance and exhaustiveness\n\nThe compiler checks the order of your labels. A case that can never be reached because an earlier one already matches everything it would is **dominated**, and that is a compile error:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac Dom.java\nDom.java:5: error: this case label is dominated by a preceding case label\n            case String s -> \"s\";\n                 ^\n1 error",
+          "title": "A dominated label"
+        },
+        {
+          "type": "markdown",
+          "text": "(`CharSequence` came first, and every `String` is a `CharSequence`.) The rules to remember:\n\n- A more specific type must come **before** a more general one; guarded cases before unguarded ones of the same type.\n- `default` (or `case null, default`) should be last. `case null` may be anywhere but is conventionally first.\n- A switch expression, or a pattern switch statement, must be **exhaustive**: every possible value must be covered. For an `Object` selector that means a `default` or a total pattern like `case Object o`. For a sealed type, covering every permitted subtype is enough.\n\nThe compiler also checks sealed-record exhaustiveness through nested record patterns, which is what let the `show` method in the previous chapter work without `default`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Fall-through and patterns do not mix: you cannot fall into a case that declares a pattern variable, because the variable might not be bound. Use arrow (`->`) cases, which never fall through. With colon cases a pattern label must end in `break`, `return` or similar before the next label."
+        },
+        {
+          "type": "markdown",
+          "text": "### What is new after Java 21"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Feature",
+            "Status",
+            "Note"
+          ],
+          "rows": [
+            [
+              "`instanceof` type patterns",
+              "Java 16 final",
+              "Binding scope follows flow analysis."
+            ],
+            [
+              "Pattern `switch`, record patterns",
+              "Java 21 final",
+              "Both in this chapter; guards use `when`."
+            ],
+            [
+              "Unnamed variables and patterns `_`",
+              "Java 22 final",
+              "`case Box(_)`, `catch (Exception _)`. Needs 22 or later, so not run here."
+            ],
+            [
+              "Primitive types in patterns",
+              "Preview in 25, 26 and 27",
+              "`case int i` on a `long` or `Object` selector. Not final; do not rely on it."
+            ]
+          ],
+          "caption": "Pattern-related features by version."
+        },
+        {
+          "type": "markdown",
+          "text": "With unnamed patterns (Java 22 and later) you write `case Line(Point(var x, _), _)` to say \"I do not care about this component\", which removes unused variable names. They are not runnable on this book's JDK 21 and are shown only as a note. Primitive patterns are a preview feature in Java 25 (and still preview in 26 and 27 according to the JEP list), so treat them as experimental."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What does pattern matching for `instanceof`/`switch` give you over casts, and how does `switch` treat `null`? It combines the type test, the cast and the variable binding, so a wrong cast is impossible. A `switch` with patterns can have guards (`when`), nested record patterns and compile-time exhaustiveness checks. `null` selectors throw `NullPointerException` unless the switch has a `case null` label (possibly `case null, default`)."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Pattern switches over sealed event or command hierarchies are replacing long `if (x instanceof A) ... else if (x` `instanceof B)` chains in message handlers, parsers and compilers. They also replace many visitor-pattern implementations. In Spring services the typical use is mapping a sealed `Result` or domain event into an HTTP response."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A pattern tests a value and binds variables in one step: `o instanceof String s`, `case Circle c`, `case Point(var` `x, var y)`.\n- Cases run top to bottom; more specific labels must precede general ones (dominance), and `when` adds a guard.\n- Switch over any reference type; null needs `case null`, otherwise it throws NPE.\n- Record patterns nest, and switches over sealed types are checked for exhaustiveness.\n- `_` is final since Java 22; primitive patterns are still preview in 25, 26 and 27."
+        }
+      ]
+    },
+    {
       "id": "ch-3-12",
       "type": "concept",
       "title": "Wrapper Classes, Autoboxing and Identity",
@@ -780,10 +1826,260 @@
       ]
     },
     {
+      "id": "ch-3-13",
+      "type": "concept",
+      "title": "Designing Classes Well",
+      "subtopicId": "3-13",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Knowing the syntax of classes, interfaces, enums and records is the easy half. The harder half is deciding what to build with them: which things become classes, which depend on which, and how to leave room for change without paying for flexibility you never use. Bad class design rarely fails on day one. It fails six months later when a small requirement forces edits in twelve files, or when a bug appears because two parts of the program shared a mutable object. This chapter gathers the design habits that matter most in everyday Java, each with a small example you can run, and finishes with a checklist you can apply in code reviews and interviews.\n\n### Composition over inheritance\n\nInheritance (`extends`) is the strongest coupling Java offers. A subclass depends on the superclass's **implementation**, not only its public contract: which methods call which, in what order, and what they assume. When the superclass changes, subclasses can break even though no signature changed. **Composition** means building a class by holding another object in a field and forwarding calls to it. The class depends only on the other object's public methods.\n\nThe classic demonstration is a set that counts how many elements were ever added. The inheritance version looks natural; the composition version is correct:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Collection;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Set;\n\npublic class Fragile {\n    // BAD: inheritance couples us to HashSet's internals\n    static class CountingHashSet<E> extends HashSet<E> {\n        int added = 0;\n        @Override public boolean add(E e) { added++; return super.add(e); }\n        @Override public boolean addAll(Collection<? extends E> c) {\n            added += c.size();\n            return super.addAll(c);\n        }\n    }\n\n    // GOOD: composition + forwarding\n    static class CountingSet<E> {\n        private final Set<E> inner = new HashSet<>();\n        private int added = 0;\n        boolean add(E e) { added++; return inner.add(e); }\n        boolean addAll(Collection<? extends E> c) {\n            boolean changed = false;\n            for (E e : c) changed |= add(e);\n            return changed;\n        }\n        int added() { return added; }\n    }\n\n    public static void main(String[] args) {\n        CountingHashSet<String> bad = new CountingHashSet<>();\n        bad.addAll(List.of(\"a\", \"b\", \"c\"));\n        System.out.println(\"inheritance: expected 3, got \" + bad.added);\n        CountingSet<String> good = new CountingSet<>();\n        good.addAll(List.of(\"a\", \"b\", \"c\"));\n        System.out.println(\"composition: expected 3, got \" + good.added());\n    }\n}",
+          "title": "Fragile.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Fragile.java\ninheritance: expected 3, got 6\ncomposition: expected 3, got 3",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The inheritance version counts every element twice. Its `addAll` adds `c.size()` and then calls `super.addAll`, and `HashSet`'s inherited `addAll` is implemented by calling the overridden `add` for each element, which increments the counter again. Nothing in the documentation promised that, and a future JDK could change it either way. This is the **fragile base class problem**.\n\nThe rules of thumb:\n\n- Use inheritance only for a true \"is-a\" relationship, when the subclass honours everything the superclass promises, and when the superclass was designed for extension (documented, or abstract).\n- Otherwise hold the collaborator in a `private final` field. Composition lets you swap the collaborator (pass a `TreeSet` instead), test with a fake, and hide the inner type from callers.\n- Share behaviour between unrelated classes with an interface (with `default` methods if useful) and a helper object, not a deep class tree. If you do not intend a class to be extended, make it `final` (as the wrapper classes and `String` are); the \"design for inheritance or prohibit it\" rule from *Effective Java* is sound advice."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is \"favour composition over inheritance\" a common design guideline? Inheritance couples a subclass to the superclass's implementation details (fragile base class) and fixes the relationship at compile time. Composition depends only on a public contract, can be changed at run time by passing a different collaborator, and is easier to test. Use inheritance for genuine is-a relationships designed for extension, and composition for reuse."
+        },
+        {
+          "type": "markdown",
+          "text": "### SOLID in plain Java\n\nSOLID is five guidelines for class design, popularised by Robert C. Martin. They are guidelines, not laws: applying them mechanically produces needless interfaces. Used with judgement they keep code easy to change. Here is each one with a Java illustration.\n\n#### S: Single Responsibility\n\nA class should have one reason to change. A class `OrderService` that also formats invoices as PDF, talks to SQL and sends email will change whenever any of those change. Split by responsibility: one class for the business rule, one for persistence, one for notification.\n\n#### O and D: Open/Closed and Dependency Inversion\n\nSoftware entities should be **open for extension, closed for modification**: add behaviour by adding code (a new class), not by editing a working `if`/`switch` chain. **Dependency inversion** says high-level logic should depend on abstractions (interfaces), not on concrete low-level classes, and receive its collaborators from outside (constructor injection). Together they give you this shape, which is the core idea behind Spring's dependency injection:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class Solid {\n    record Order(String id, double total) {}\n\n    // S: one reason to change each\n    interface OrderRepository { void save(Order o); }\n    interface Notifier { void send(String message); }\n\n    // D: the service depends on abstractions, receives them through the constructor\n    static class OrderService {\n        private final OrderRepository repo;\n        private final Notifier notifier;\n        OrderService(OrderRepository repo, Notifier notifier) {\n            this.repo = repo;\n            this.notifier = notifier;\n        }\n        void place(Order o) {\n            repo.save(o);\n            notifier.send(\"Order \" + o.id() + \" placed\");\n        }\n    }\n\n    // O: new discount rules are new classes; the calculator never changes\n    interface Discount { double apply(double amount); }\n    record Percent(double pct) implements Discount {\n        public double apply(double amount) { return amount * (1 - pct / 100); }\n    }\n    record Flat(double off) implements Discount {\n        public double apply(double amount) { return Math.max(0, amount - off); }\n    }\n\n    public static void main(String[] args) {\n        List<String> log = new ArrayList<>();\n        OrderService svc = new OrderService(o -> log.add(\"saved \" + o), log::add);\n        svc.place(new Order(\"A1\", 99.5));\n        log.forEach(System.out::println);\n        for (Discount d : List.of(new Percent(10), new Flat(25), new Flat(500)))\n            System.out.println(d + \" -> \" + d.apply(200));\n    }\n}",
+          "title": "Solid.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Solid.java\nsaved Order[id=A1, total=99.5]\nOrder A1 placed\nPercent[pct=10.0] -> 180.0\nFlat[off=25.0] -> 175.0\nFlat[off=500.0] -> 0.0",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "`OrderService` has no idea whether the repository is a database or a list, nor whether notifications are email or a log line: in production you pass real implementations, in a unit test two lambdas (both interfaces have one method, so lambdas fit). Adding a `BuyOneGetOne` discount requires a new record and no change to existing code. If you know the sealed types from the previous chapters, note the trade-off: a **sealed** `Discount` makes adding a variant a deliberate, compiler-checked edit everywhere it is handled (closed for extension, open for new operations), while an open interface does the opposite. Choose by which kind of change you expect.\n\n#### L: Liskov Substitution\n\nCode that works with a base type must keep working with any subtype. Subtypes may not strengthen preconditions or weaken the promises of the base. The standard counter-example is a `Square` that extends a mutable `Rectangle`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public class Lsp {\n    static class Rectangle {\n        protected int w, h;\n        void setWidth(int w) { this.w = w; }\n        void setHeight(int h) { this.h = h; }\n        int area() { return w * h; }\n    }\n    static class Square extends Rectangle {\n        @Override void setWidth(int w) { this.w = w; this.h = w; }\n        @Override void setHeight(int h) { this.w = h; this.h = h; }\n    }\n    static void stretch(Rectangle r) {\n        r.setWidth(5);\n        r.setHeight(2);\n        System.out.println(\"expected 10, got \" + r.area());\n    }\n    public static void main(String[] args) {\n        stretch(new Rectangle());\n        stretch(new Square());\n    }\n}",
+          "title": "Lsp.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Lsp.java\nexpected 10, got 10\nexpected 10, got 4",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "Mathematically a square is a rectangle, but a *mutable* square does not honour the contract \"width and height change independently\". The fix is not cleverer code but a different model: make shapes immutable values (a `Shape` interface with `area()`; separate `Rectangle` and `Square` records), so nobody can observe the broken promise. Other Liskov violations to avoid: an override that throws `UnsupportedOperationException` for an inherited method, and an override that returns or accepts narrower values than documented.\n\n#### I: Interface Segregation\n\nPrefer several small interfaces to one large one, so a class is never forced to implement methods it does not need. `Comparable`, `Runnable`, `Iterable` and `AutoCloseable` are one-method interfaces for exactly this reason, and a class can implement as many as it needs. A 15-method `DataStore` interface that every fake has to implement fully is a smell."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Do not create an interface for every class \"just in case\". One implementation and no prospect of another is a reason to skip the interface. Introduce one when you have a second implementation, a need to substitute in tests, or a module boundary to protect."
+        },
+        {
+          "type": "markdown",
+          "text": "### Immutability checklist\n\nAn **immutable** object cannot change after construction. Immutable objects can be shared freely between threads and callers with no locking, are safe as `HashMap` keys and `HashSet` elements, and cannot be left in a half-updated state. `String`, the wrappers, `BigDecimal` and the `java.time` types are immutable, and so are records (shallowly, as the records chapter explained). To write your own class:\n\n1. Declare the class `final` (or give it only private constructors) so a subclass cannot add mutability.\n2. Make all fields `private final`.\n3. Provide no setters or other mutators. \"Change\" operations return a new object (a \"wither\": `loan.withDue(...)`).\n4. Initialise every field in the constructor, validating arguments there, so the object is never visible in an invalid state.\n5. **Defensive copy** every mutable argument on the way in, and every mutable field on the way out (or expose only an unmodifiable view).\n6. Do not let `this` escape from the constructor (do not register `this` as a listener or start a thread in it).\n\nThe following program applies the checklist by hand and shows what a record does and does not do for you:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.time.LocalDate;\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class Imm {\n    // Immutable by the checklist\n    static final class Loan {\n        private final String member;\n        private final LocalDate due;\n        private final List<String> notes;\n        Loan(String member, LocalDate due, List<String> notes) {\n            this.member = member;\n            this.due = due;\n            this.notes = List.copyOf(notes);          // defensive copy, unmodifiable\n        }\n        String member() { return member; }\n        LocalDate due() { return due; }\n        List<String> notes() { return notes; }\n        Loan withDue(LocalDate newDue) { return new Loan(member, newDue, notes); }\n    }\n\n    // Leaky: record does not copy mutable components\n    record LeakyLoan(String member, List<String> notes) {}\n    record SafeLoan(String member, List<String> notes) {\n        SafeLoan { notes = List.copyOf(notes); }\n    }\n\n    public static void main(String[] args) {\n        List<String> n = new ArrayList<>(List.of(\"fragile spine\"));\n        Loan loan = new Loan(\"Asha\", LocalDate.of(2026, 11, 1), n);\n        n.add(\"late once\");\n        System.out.println(loan.notes());\n        try { loan.notes().add(\"x\"); } catch (UnsupportedOperationException e) {\n            System.out.println(\"UOE\");\n        }\n        Loan later = loan.withDue(LocalDate.of(2026, 11, 15));\n        System.out.println(loan.due() + \" -> \" + later.due());\n\n        List<String> shared = new ArrayList<>(List.of(\"a\"));\n        LeakyLoan leaky = new LeakyLoan(\"Ravi\", shared);\n        SafeLoan safe = new SafeLoan(\"Ravi\", shared);\n        shared.add(\"b\");\n        System.out.println(leaky.notes() + \" vs \" + safe.notes());\n        System.out.println(new SafeLoan(\"Ravi\", List.of(\"a\")).equals(safe) + \" \"\n            + (new SafeLoan(\"Ravi\", List.of(\"a\")).hashCode() == safe.hashCode()));\n    }\n}",
+          "title": "Imm.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Imm.java\n[fragile spine]\nUOE\n2026-11-01 -> 2026-11-15\n[a, b] vs [a]\ntrue true",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the caller's later `n.add(\"late once\")` did not leak into `loan` because the constructor copied the list. `List.copyOf` returns an unmodifiable list, so even `loan.notes().add(...)` fails. The `LeakyLoan` record saw the caller's later change (`[a, b]`) because a record stores the reference it is given; the compact constructor in `SafeLoan` fixed it with one line. `List.copyOf` (Java 10) has a bonus: if the argument is already an immutable list from `List.of`, it returns it without copying."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`final` on a field makes the *reference* constant, not the object behind it. A `private final List<String> notes` can still be mutated through `notes.add(...)` unless the list itself is unmodifiable. Immutability is a property of the whole object graph reachable from the fields."
+        },
+        {
+          "type": "markdown",
+          "text": "### equals and hashCode: let records do it\n\nHand-written `equals`/`hashCode` is easy to get wrong (the Object class chapter showed how a missing `hashCode` breaks `HashMap`). For classes that are plain **values** (a point, money, a customer id, a library loan), make them records: the compiler generates `equals`, `hashCode` and `toString` from all components, consistently and with no maintenance as fields change. Two cautions. Records compare components with `equals`, so an array component is compared by identity; use a `List` instead. And do not make an object with identity (a bank account whose balance changes, a JPA entity with a generated id) a record: two accounts with the same balance are not the same account. Mutable entities keep an explicit `equals` based on a stable business key or id, or they inherit identity equality, which is fine when two distinct objects should never be equal.\n\nIf you do write `equals` by hand, the safe recipe on a final class is: check `this == o`, check the type (`o instanceof Loan` `other`, or `getClass()` if the class is extensible), compare fields with `Objects.equals` (or `Double.compare` for floats), and compute `hashCode` from exactly the same fields using `Objects.hash(...)`.\n\n### API design smells\n\nClasses are used by other people (and by you in three months). Common smells, with the fix:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Smell",
+            "Better"
+          ],
+          "rows": [
+            [
+              "Boolean flag parameters: `make(t, true, false, 2)`",
+              "Named options type, an enum, or two methods with clear names."
+            ],
+            [
+              "Long parameter lists (5 or more)",
+              "A record or builder grouping related values."
+            ],
+            [
+              "Returning `null` for \"nothing\"",
+              "`Optional<T>` for a single result, an empty collection for many. Never return `null` for a collection."
+            ],
+            [
+              "Magic ints and strings for modes",
+              "An `enum` (Format.PDF) or a sealed type."
+            ],
+            [
+              "Public mutable fields or exposed internal lists",
+              "Private fields, copies or unmodifiable views, behaviour methods instead of getters and setters."
+            ],
+            [
+              "Setters that allow a partly built object",
+              "Constructor or builder that produces a valid object in one step."
+            ],
+            [
+              "Class that is \"data plus a manager\" (an `OrderUtil` full of static methods acting on a passive `Order`)",
+              "Put behaviour with the data it uses (the \"tell, do not ask\" idea)."
+            ],
+            [
+              "Catch-all `Exception` or `Object` in signatures",
+              "The most specific type; generics instead of casts."
+            ],
+            [
+              "Inheritance only to reuse code",
+              "Composition, interface plus helper."
+            ]
+          ],
+          "caption": "Smells in class and method design."
+        },
+        {
+          "type": "markdown",
+          "text": "Here the first three smells are fixed in a few lines. Notice that the \"before\" version compiles and returns `null` to the caller:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.List;\nimport java.util.Optional;\n\npublic class Smells {\n    enum Format { PDF, CSV }\n    record Report(String title) {}\n\n    // BAD: boolean flags, null returns, magic ints, long parameter list\n    static Report make(String t, boolean landscape, boolean color, int fmt) { return null; }\n\n    // BETTER: named types, no null, small surface\n    record Options(boolean landscape, boolean color, Format format) {\n        static Options defaults() { return new Options(false, true, Format.PDF); }\n        Options withLandscape() { return new Options(true, color, format); }\n    }\n    static Report make(String title, Options o) { return new Report(title + \" as \" + o.format()); }\n\n    static Optional<Report> find(List<Report> all, String title) {\n        return all.stream().filter(r -> r.title().equals(title)).findFirst();\n    }\n\n    public static void main(String[] args) {\n        System.out.println(make(\"Sales\", Options.defaults().withLandscape()));\n        System.out.println(find(List.of(new Report(\"Sales\")), \"Costs\")\n            .map(Report::title).orElse(\"none\"));\n        System.out.println(make(\"Q\", true, false, 2));\n    }\n}",
+          "title": "Smells.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Smells.java\nReport[title=Sales as PDF]\nnone\nnull",
+          "title": "Output"
+        },
+        {
+          "type": "markdown",
+          "text": "The call `make(\"Q\", true, false, 2)` is unreadable (what is `2`? which boolean is colour?) and silently returned `null`; the call `make(\"Sales\", Options.defaults().withLandscape())` states its intent. A tip learned the hard way: a record accessor already uses the component name (`landscape()`), so a method that builds a modified copy cannot reuse that name; the convention is `withLandscape()`.\n\n### A short checklist for a new class\n\n- Can I state what this class is for in one sentence, with no \"and\"?\n- Is every field `private`, and `final` unless there is a reason? Could this be a record or an enum?\n- Does the constructor leave the object valid? Are arguments validated and mutable ones copied?\n- Do callers depend on an interface or on this concrete type? Do I take my dependencies through the constructor?\n- Is it `final` or documented for extension? If it extends something, is it really an is-a and does it honour the parent's contract?\n- Are `equals`, `hashCode`, `toString` consistent and complete (or generated)?\n- Could a caller misuse it with a `null`, a negative number, or the wrong call order? Can I make that impossible in the types?"
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a Spring Boot service these ideas show up everywhere: services receive repositories and clients through constructor injection (dependency inversion), request and response bodies are records (immutable DTOs), entities use identity equality or an id-based `equals`, and \"enum instead of a string status\" prevents a class of data bugs. Reviewers routinely reject long boolean-flag methods and `return null` for collections."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Prefer composition to inheritance; inherit only for a real is-a relationship in a class designed for extension, otherwise make the class `final`.\n- Depend on small interfaces and receive collaborators through the constructor (SOLID: single responsibility, open/closed, Liskov, interface segregation, dependency inversion).\n- Immutability checklist: final class, private final fields, no mutators, validate in the constructor, defensive copies in and out.\n- Use records for plain values so `equals`, `hashCode` and `toString` are generated; keep identity-based equality for mutable entities.\n- Avoid API smells: boolean flags, long parameter lists, null returns, magic constants and exposed internals."
+        }
+      ]
+    },
+    {
       "id": "practice",
       "type": "practice",
       "title": "Practice questions",
       "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Classes and Objects"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print, and why? `Book a = new Book(\"X\"); Book b = a; b = new Book(\"Y\");` `System.out.println(a == b);` (assume `Book` has the constructor shown above).",
+              "answer": "It prints `false`. `b` was repointed at a new object; `a` still refers to the first one."
+            },
+            {
+              "question": "A class has no constructors. Another programmer adds `Book(String t)`. Existing code `new Book()` stops compiling. Why?",
+              "answer": "The compiler only supplies the default no-argument constructor when the class declares no constructor. Declaring any constructor removes it."
+            },
+            {
+              "question": "In `InitOrder`, why did `Derived.show` print `name=null` even though the field is assigned `\"set\"`?",
+              "answer": "The superclass constructor called the overridden `show()` before the subclass field initialisers ran, so the fields still held default values."
+            },
+            {
+              "question": "What is wrong here? `class T { int a = b; int b = 2; }`",
+              "answer": "Illegal forward reference: `a`'s initialiser reads `b` before `b` is declared. It is a compile-time error."
+            },
+            {
+              "question": "Does reading `Config.MAX` (a `static final int MAX = 10;`) run the static block of `Config`? What if the field is `static final int MAX = compute();`?",
+              "answer": "No for a compile-time constant (the value is inlined, the class is not initialised). Yes for `compute()`: the class initialises on first access."
+            },
+            {
+              "question": "Can a Java method change which object the caller's variable refers to? Explain with the `replace` method from `Refs`.",
+              "answer": "No. The method gets a copy of the reference. Reassigning the parameter changes only the copy; mutating the object it points to is visible to the caller."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Static, Access Control and Packages"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the difference between a static field and an instance field? Which one is stored once per object?",
+              "answer": "A static field exists once per class and is shared by all objects; an instance field exists once per object."
+            },
+            {
+              "question": "Why does this fail to compile? `public class A { int n; public static void main(String[] a) { n = 1; } }`",
+              "answer": "`main` is static and has no `this`, so it cannot access the instance field `n` without an object."
+            },
+            {
+              "question": "A class in package `p1` has a package-private method. Can a subclass in package `p2` override it? Can code in `p1` call it?",
+              "answer": "No: package-private members are not visible outside `p1`, so a `p2` method with that signature is a new method, not an override. Yes, code in `p1` can call it."
+            },
+            {
+              "question": "What does this print? `final int[] a = {1}; a[0] = 2; System.out.println(a[0]);` Does `final` stop it?",
+              "answer": "It prints `2`. `final` only prevents reassigning `a`; the array contents can change."
+            },
+            {
+              "question": "Name two things that break the immutability of a class whose fields are all `private final`.",
+              "answer": "Storing a mutable object passed in by the caller without copying it, and returning a reference to an internal mutable object (also: a non-final class that a subclass can make mutable)."
+            },
+            {
+              "question": "Why is `setBalance(double)` a poor method on a bank account class? What would you offer instead?",
+              "answer": "It lets any caller bypass the rules (overdraft limits, auditing). Offer `deposit` and `withdraw`, which validate and keep the balance consistent."
+            }
+          ]
+        },
         {
           "type": "markdown",
           "text": "#### Inheritance"
@@ -918,6 +2214,171 @@
         },
         {
           "type": "markdown",
+          "text": "#### Nested, Inner, Local and Anonymous Classes"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which of the four nested kinds never has an outer-instance reference?",
+              "answer": "The static nested class. (Local and anonymous classes created in a static method also have none.)"
+            },
+            {
+              "question": "What is wrong with this code, and how do you fix it? `int n = 0; Runnable r = new Runnable() { public void` `run() { n++; } };`",
+              "answer": "`n` is modified inside the class, so it is not effectively final and the code does not compile. Use an `AtomicInteger`, make the counter a field of an object, or restructure so the value is returned."
+            },
+            {
+              "question": "What does `Outer.this` mean inside an inner class, and how do you create an inner object from `main`?",
+              "answer": "It is the enclosing instance of the inner object. From `main` you need an outer object: `Outer o = new Outer();` `Outer.Inner i = o.new Inner();`."
+            },
+            {
+              "question": "Why is a class file named `Outer$1.class` produced for an anonymous class?",
+              "answer": "The JVM has no concept of nested classes; the compiler flattens each one into its own class file, naming anonymous classes `Outer$1`, `Outer$2` and so on."
+            },
+            {
+              "question": "Why can a long-lived anonymous object cause an `OutOfMemoryError` even if you no longer use the outer object?",
+              "answer": "The inner object holds `this$0`, so everything reachable from the outer object stays reachable (here the 10 MB array) as long as the inner object is referenced."
+            },
+            {
+              "question": "What does `this` refer to inside a lambda versus inside an anonymous class body?",
+              "answer": "In a lambda, `this` is the enclosing instance. In an anonymous class, `this` is the anonymous object itself."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Enums"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does `enum E { A, B }` compile to, and what are `A` and `B`?",
+              "answer": "A final class `E extends Enum<E>` with two `public static final` instances `A` and `B`, created in a static initializer."
+            },
+            {
+              "question": "Is this legal? `new Level()` where `Level` is an enum.",
+              "answer": "No. Enum constructors are private and you cannot instantiate an enum with `new`; the set of instances is closed."
+            },
+            {
+              "question": "What does this print? `enum T { X, Y, Z } ... System.out.println(T.Z.compareTo(T.X) + \" \" +` `T.valueOf(\"Y\").ordinal());`",
+              "answer": "`2 1`. `compareTo` returns the ordinal difference (2 - 0) and `Y` has ordinal 1."
+            },
+            {
+              "question": "Why is storing `ordinal()` in a database dangerous?",
+              "answer": "Adding or reordering constants changes the ordinals, so stored numbers then point at the wrong constants. Store the name or a stable code."
+            },
+            {
+              "question": "When would you pick `EnumMap` over `HashMap`, and what must you pass to its constructor?",
+              "answer": "When keys are an enum: it is faster and smaller (an array indexed by ordinal) and iterates in declaration order. Pass the key type's `Class` object, e.g. `new EnumMap<>(Day.class)`."
+            },
+            {
+              "question": "Why does `Level.valueOf(\"high\")` fail when the constant is `HIGH`, and what is thrown?",
+              "answer": "`valueOf` matches the name exactly and is case-sensitive; it throws `IllegalArgumentException` (\"No enum constant ...\")."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Records"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Name five members the compiler generates for `record Point(int x, int y) {}`.",
+              "answer": "Private final fields `x`, `y`; the canonical constructor; accessors `x()`, `y()`; `equals`; `hashCode`; `toString`."
+            },
+            {
+              "question": "In a compact constructor, why does `this.x = x;` fail to compile, and how do you change the stored value?",
+              "answer": "In a compact constructor the fields are assigned automatically at the end, so assigning them yourself is an error. To change the stored value, reassign the parameter: `x = Math.abs(x);`."
+            },
+            {
+              "question": "What does this print? `record R(int[] a) {} ... System.out.println(new R(new int[]{1}).equals(new R(new` `int[]{1})));`",
+              "answer": "`false`. Arrays use identity `equals`, and the record's `equals` delegates to it for that component."
+            },
+            {
+              "question": "Why does a non-canonical record constructor have to start with `this(...)`?",
+              "answer": "So that every construction path goes through the canonical constructor, and therefore through its validation and field assignment."
+            },
+            {
+              "question": "A record has a `List<String>` component. How do you make the record safe against a caller who later mutates their list?",
+              "answer": "Copy it in the compact constructor: `items = List.copyOf(items);` (this also rejects `null` elements), and do not expose a mutable list from accessors."
+            },
+            {
+              "question": "Why should you not use a record as a JPA `@Entity`?",
+              "answer": "Entities need mutable state, a no-argument constructor and non-final classes (for lazy-loading proxies); a record is final, immutable and has no no-arg constructor. Use records for DTOs and projections instead."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Sealed Classes and Interfaces"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What three modifiers may a permitted subclass of a sealed class use?",
+              "answer": "`final`, `sealed` or `non-sealed` (records and enums count as implicitly final)."
+            },
+            {
+              "question": "When can the `permits` clause be left out?",
+              "answer": "When all permitted subtypes are declared in the same compilation unit (file), or are nested inside the sealed type; the compiler infers them."
+            },
+            {
+              "question": "What is wrong with this? `sealed interface S permits A {} record A() implements S {} class B implements` `S {}`",
+              "answer": "`B` is not in the `permits` list, so the compiler rejects it (\"class is not allowed to extend sealed class\")."
+            },
+            {
+              "question": "Why does a switch over a sealed type not need a `default`, and what is the risk of adding one anyway?",
+              "answer": "Because the compiler knows all subtypes, it can verify every case is covered. A `default` would hide a missing new variant until it fails at runtime."
+            },
+            {
+              "question": "A sealed interface is implemented by three records. Is the product or the sum type the interface? And the records?",
+              "answer": "The interface is the sum type (one of several alternatives); each record is a product type (several fields together)."
+            },
+            {
+              "question": "Does `non-sealed` break the exhaustiveness guarantee? Explain briefly.",
+              "answer": "No. The `non-sealed` subtype is itself still one of the known permitted variants, so the switch covers it by its own case; you just cannot know the types below it."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Pattern Matching"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `Object o = \"hi\"; if (!(o instanceof String s)) { System.out.println(\"no\");` `return; } System.out.println(s.length());`",
+              "answer": "`2`. The binding `s` is in scope after the early return because reaching it means the test succeeded."
+            },
+            {
+              "question": "Why does this not compile? `switch (o) { case CharSequence c -> ..; case String s -> ..; default -> ..;` `}`",
+              "answer": "`case String s` is dominated: every `String` is a `CharSequence`, so it can never be reached. Put the more specific case first."
+            },
+            {
+              "question": "How do you make a pattern switch accept `null` without an exception?",
+              "answer": "Add `case null ->` (or `case null, default ->`). Otherwise a `null` selector throws `NullPointerException`."
+            },
+            {
+              "question": "What does `case Point(var x, var y) when x == y` do?",
+              "answer": "It matches a `Point` and binds both components, and then only succeeds when the guard (the two coordinates are equal) is true; otherwise the next case is tried."
+            },
+            {
+              "question": "Is `null instanceof Object` true or false?",
+              "answer": "False. `instanceof` never matches `null`."
+            },
+            {
+              "question": "Why do you not need `default` when every subtype of a sealed interface has a case?",
+              "answer": "The compiler knows the permitted subtypes, so the cases are provably exhaustive. (An unexpected new subclass compiled later leads to a `MatchException` at runtime, which is why recompiling dependents matters.)"
+            }
+          ]
+        },
+        {
+          "type": "markdown",
           "text": "#### Wrapper Classes, Autoboxing and Identity"
         },
         {
@@ -946,6 +2407,39 @@
             {
               "question": "Name two reasons to prefer `int` over `Integer` for a loop counter.",
               "answer": "A primitive avoids an allocation and a `valueOf` call each iteration, uses 4 bytes instead of an object, and can never be `null`, so it cannot throw on unboxing."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Designing Classes Well"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why does the `CountingHashSet` in this chapter report 6 for three elements?",
+              "answer": "`addAll` adds `c.size()` and then `HashSet`'s inherited `addAll` calls the overridden `add` for each element, which counts them again."
+            },
+            {
+              "question": "A class has `private final List<String> items` and a getter `return items;`. Is it immutable? Give one fix.",
+              "answer": "No: callers can modify the list through the getter. Return `List.copyOf(items)` or `Collections.unmodifiableList(items)`, and copy the list in the constructor too."
+            },
+            {
+              "question": "What is wrong with this record? `record Course(String name, String[] tags) {}` (hint: think of `equals`).",
+              "answer": "A record compares components with `equals`, and arrays use identity, so two `Course` objects with equal tag contents are not equal and `hashCode` differs. Use `List<String>` (copied in a compact constructor)."
+            },
+            {
+              "question": "A `Penguin` extends `Bird`, which has `fly()`. `Penguin.fly()` throws `UnsupportedOperationException`. Which principle does this break, and what is a better design?",
+              "answer": "Liskov Substitution: code that accepts a `Bird` cannot rely on `fly()`. Model flying separately (a `FlyingBird` interface or a capability), so only birds that fly promise it."
+            },
+            {
+              "question": "What does `new SafeLoan(\"Ravi\", List.of(\"a\")).equals(safe)` need to be true, and why did it work in this chapter?",
+              "answer": "All components must be equal: the same member and equal notes. The compact constructor copied the list, and `List.equals` compares contents, so the lists with the same elements are equal."
+            },
+            {
+              "question": "Name two smells in `void export(String file, boolean zip, boolean overwrite, int type)`.",
+              "answer": "Boolean flag parameters, a magic `int` mode, and a long parameter list. Use an options record and an enum."
             }
           ]
         }

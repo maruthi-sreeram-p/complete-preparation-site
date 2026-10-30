@@ -1,13 +1,10 @@
 """
-Builds content/roadmaps/<id>/roadmap.json from Day_By_Day_Plan.xlsx and the PDF bookmark trees.
+Builds content/roadmaps/<id>/roadmap.json: every part and chapter of every guide, in one ordered path.
 
-Mapping (agreed with the user):
-  category   = weekly theme from the plan (topics go under the week of their first appearance),
-               plus a separate "DSA Patterns" category
-  topic      = one guide Part; subtopics = the chapters the plan names (PDF bookmarks give page ranges)
-  plan-only  = days with no PDF behind them (build, resume, mocks, final revision)
-  requires   = previous Part of the same guide (by part number), Spring Boot Basics Part 1 before
-               Beyond Basics Part 1, and each mock/final-revision day requires the Parts it names
+  order       tools/learning_path.json: stages (categories), each an ordered list of guide parts
+  topic       one guide Part; subtopics = ALL its chapters (PDF bookmarks give the page ranges)
+  plan days   Day_By_Day_Plan.xlsx is parsed only to show which days of the plan cover each part
+  requires    a NeetCode-style tree: rows of 1, 3, 5 steps, each row joined to the one above, stage after stage
 
 Usage (run in isolation so nothing in the data folders is imported):
   python -I tools/build_roadmap.py <folder with the PDFs and xlsx> [--report report.txt]
@@ -45,8 +42,9 @@ MARKER = re.compile(
     rf"(?:(?P<guide>{GUIDE_RE})\s+)?Part\s+(?P<p1>\d+)(?:\s+(?:and|to)\s+(?P<p2>\d+))?(?:\s*\([^)]*\))?\s*:?"
 )
 
-WEEK_COLORS = ["violet", "blue", "cyan", "teal", "fuchsia", "amber", "rose", "green"]
+STAGE_COLORS = ["violet", "blue", "cyan", "teal", "fuchsia", "amber", "rose", "green", "slate"]
 PLAN_ONLY_DAYS = {51, 52, 53, 54, 55, 56}
+ROW_SIZES = [1, 3, 5]
 
 norm = lambda s: re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
 
@@ -174,6 +172,20 @@ def day_ranges(days):
     return ", ".join(f"{a}" if a == b else f"{a}–{b}" for a, b in runs)
 
 
+def stage_rows(rows, stage_id):
+    return (r for r in rows if r[0]["category"] == stage_id)
+
+
+def nearest_parents(upper, lower_size, j):
+    """The parents directly above position j of the row below, measured from the centre of each row."""
+    if lower_size == 1:  # a single step below joins the whole row back together
+        return [t["id"] for t in upper]
+    x = j - (lower_size - 1) / 2
+    offsets = [(abs((i - (len(upper) - 1) / 2) - x), t["id"]) for i, t in enumerate(upper)]
+    best = min(o for o, _ in offsets)
+    return [tid for o, tid in offsets if o == best]
+
+
 def page_range(chapters):
     lo = min(c["start"] for c in chapters)
     hi = max(c["end"] for c in chapters)
@@ -261,109 +273,81 @@ def main():
             elif not re.search(r"problems?|redo|timed", item, re.I):
                 report.append(f"day {day}: DSA UNMATCHED '{item}'")
 
-    # reference-only parts (no chapters matched anywhere): include the whole part
-    for guide, p, day, matched in mentions:
-        if (guide, p) not in topics:
-            t = topic_for(guide, p, day)
-            for num, c in outlines[guide][0][p]["chapters"].items():
-                t["chapters"][(p, num)] = c
-            report.append(f"day {day}: {guide} Part {p} was only referenced by name; whole part included "
-                          f"({len(t['chapters'])} chapters)")
-
-    # ------------------------------------------------------------ categories
-    weeks = {}
-    for d, info in sorted(days.items()):
-        w = weeks.setdefault(info["week"], {"theme": info["theme"], "days": []})
-        w["days"].append(d)
-    categories = []
-    for i, (w, info) in enumerate(sorted(weeks.items())):
-        categories.append({"id": f"week-{w}", "title": info["theme"],
-                           "description": f"Week {w} · days {min(info['days'])}–{max(info['days'])}",
-                           "color": WEEK_COLORS[i % len(WEEK_COLORS)]})
-    categories.append({"id": "dsa-patterns", "title": "DSA Patterns",
-                       "description": "Parallel daily track from DSA_Patterns.pdf", "color": "slate"})
-
-    # ------------------------------------------------------------ topics
-    def topic_id(guide, part):
-        return f"{GUIDES[guide][0]}-part-{part}"
-
-    built = []
-    for (guide, part), t in topics.items():
-        info = outlines[guide][0][part]
-        chapters = [t["chapters"][k] for k in sorted(t["chapters"])]
-        first_day = min(t["days"])
-        category = "dsa-patterns" if guide == "DSA Patterns" else f"week-{days[first_day]['week']}"
-        built.append({
-            "sort": (first_day, 1 if guide == "DSA Patterns" else 0, t["first"][1]),
-            "topic": {
-                "id": topic_id(guide, part),
-                "title": f"{guide} · Part {part}: {info['title']}",
-                "category": category,
-                "summary": f"{guide}, Part {part} · plan days {day_ranges(t['days'])}",
-                "requires": [],
-                "subtopics": [{"id": c["num"].replace(".", "-"), "title": c["title"],
-                               "pages": f"{c['start']}-{c['end']}"} for c in chapters],
-                "source": {"document": GUIDES[guide][1], "pages": page_range(chapters),
-                           "planDays": day_ranges(t["days"])},
-            },
-        })
-
+    # ------------------------------------------------------------ the ordered path
+    path = json.loads((Path(__file__).resolve().parent / "learning_path.json").read_text(encoding="utf-8"))
     plan_only = {
-        51: ("plan-day-51-deploy-careerflux", "Build day: deploy CareerFlux", ("Git, Docker and CI/CD", 4)),
-        52: ("plan-day-52-resume-walkthroughs", "Resume and project walkthroughs", None),
-        53: ("plan-day-53-mock-core-java-spring", "Mock interview 1: Core Java and Spring Boot",
-             [("Core Java", 14), ("Spring Boot Beyond Basics", 6)]),
-        54: ("plan-day-54-mock-databases-design", "Mock interview 2: Databases and System Design",
-             [("Databases", 2), ("System Design", 4)]),
-        55: ("plan-day-55-mock-dsa-lld", "Mock interview 3: DSA and LLD",
-             [("DSA Patterns", 7), ("System Design", 3)]),
-        56: ("plan-day-56-final-revision", "Final revision from the cheat sheets",
-             [("System Design", 4), ("Databases", 2), ("Spring Boot Beyond Basics", 6),
-              ("Git, Docker and CI/CD", 4)]),
+        51: ("plan-day-51-deploy-careerflux", "Build day: deploy CareerFlux"),
+        52: ("plan-day-52-resume-walkthroughs", "Resume and project walkthroughs"),
+        53: ("plan-day-53-mock-core-java-spring", "Mock interview 1: Core Java and Spring Boot"),
+        54: ("plan-day-54-mock-databases-design", "Mock interview 2: Databases and System Design"),
+        55: ("plan-day-55-mock-dsa-lld", "Mock interview 3: DSA and LLD"),
+        56: ("plan-day-56-final-revision", "Final revision from the cheat sheets"),
     }
-    for day, (tid, title, reqs) in plan_only.items():
-        if reqs is None:
-            reqs = []
-        elif isinstance(reqs, tuple):
-            reqs = [reqs]
-        req_ids = [topic_id(g, p) for g, p in reqs if (g, p) in topics]
-        for g, p in reqs:
-            if (g, p) not in topics:
-                report.append(f"day {day}: required part {g} Part {p} is not a topic")
-        built.append({"sort": (day, 2, 0), "topic": {
-            "id": tid, "title": title, "category": f"week-{days[day]['week']}",
-            "summary": days[day]["output"], "requires": req_ids,
-            "estimatedMinutes": days[day]["minutes"],
-            "source": {"document": PLAN_FILE, "planDays": str(day)},
-        }})
 
-    built.sort(key=lambda b: b["sort"])
-    result = [b["topic"] for b in built]
-    by_id = {t["id"]: t for t in result}
+    def part_topic(guide, part, stage_id):
+        info = outlines[guide][0][part]
+        chapters = [info["chapters"][k] for k in sorted(info["chapters"])]
+        days = topics.get((guide, part), {}).get("days")
+        source = {"document": GUIDES[guide][1], "pages": page_range(chapters)}
+        summary = f"{guide}, Part {part} · {len(chapters)} chapters"
+        if days:
+            source["planDays"] = day_ranges(days)
+            summary += f" · plan days {source['planDays']}"
+        return {
+            "id": f"{GUIDES[guide][0]}-part-{part}",
+            "title": f"{guide} · Part {part}: {info['title']}",
+            "category": stage_id,
+            "summary": summary,
+            "subtopics": [{"id": c["num"].replace(".", "-"), "title": c["title"],
+                           "pages": f"{c['start']}-{c['end']}"} for c in chapters],
+            "source": source,
+        }
 
-    # dependencies: previous existing Part of the same guide, by part number
-    per_guide = {}
-    for guide, part in topics:
-        per_guide.setdefault(guide, []).append(part)
-    for guide, parts in per_guide.items():
-        parts.sort()
-        for prev, cur in zip(parts, parts[1:]):
-            by_id[topic_id(guide, cur)]["requires"].append(topic_id(guide, prev))
-    extra = (("Spring Boot Beyond Basics", 1), ("Spring Boot Basics", 1))
-    if (extra[0] in topics) and (extra[1] in topics):
-        by_id[topic_id(*extra[0])]["requires"].append(topic_id(*extra[1]))
+    categories, result, placed = [], [], set()
+    for i, stage in enumerate(path["stages"]):
+        categories.append({"id": stage["id"], "title": stage["title"], "description": stage.get("description", ""),
+                           "color": STAGE_COLORS[i % len(STAGE_COLORS)]})
+        for item in stage["items"]:
+            if "guide" in item:
+                for part in item["parts"]:
+                    if part not in outlines[item["guide"]][0]:
+                        report.append(f"learning_path.json: {item['guide']} has no Part {part}")
+                        continue
+                    placed.add((item["guide"], part))
+                    result.append(part_topic(item["guide"], part, stage["id"]))
+            elif "plan" in item:
+                day = item["plan"]
+                tid, title = plan_only[day]
+                result.append({"id": tid, "title": title, "category": stage["id"], "summary": days[day]["output"],
+                               "estimatedMinutes": days[day]["minutes"],
+                               "source": {"document": PLAN_FILE, "planDays": str(day)}})
+            else:
+                topic = item["topic"]
+                result.append({"id": topic["id"], "title": topic["title"], "category": stage["id"],
+                               "summary": topic.get("summary", stage.get("description", "")),
+                               "source": {"document": "Written for this site (not from your PDFs)"}})
 
-    for t in result:
-        if not t["requires"]:
-            del t["requires"]
+    for guide, (parts, _) in outlines.items():
+        for part in parts:
+            if (guide, part) not in placed:
+                report.append(f"MISSING: {guide} Part {part} is not in learning_path.json")
 
-    out = {
-        "title": "Interview Prep: 8-Week Day-by-Day Plan",
-        "description": "Built from Day_By_Day_Plan.xlsx: each node is a Part of one of your guides, with the chapters "
-                       "the plan names as subtopics. Categories are the plan's weekly themes.",
-        "categories": categories,
-        "topics": result,
-    }
+    # A tree like NeetCode's: within each stage the steps fan out in rows of 1, 3, 5, 1, 3, 5 ...
+    # Reading the rows top to bottom and left to right gives the learning order.
+    rows = []
+    for stage in categories:
+        members = [t for t in result if t["category"] == stage["id"]]
+        i = 0
+        while i < len(members):
+            size = ROW_SIZES[sum(1 for _ in stage_rows(rows, stage["id"])) % len(ROW_SIZES)]
+            rows.append(members[i:i + size])
+            i += size
+    for upper, lower in zip(rows, rows[1:]):
+        for j, topic in enumerate(lower):
+            topic["requires"] = nearest_parents(upper, len(lower), j)
+
+    out = {"title": path["title"], "description": path["description"], "layout": "tree",
+           "categories": categories, "topics": result}
     target = Path(__file__).resolve().parent.parent / "content" / "roadmaps" / ROADMAP_ID / "roadmap.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

@@ -63,7 +63,7 @@ export default function DiagramBlock({ title, format = 'mermaid', code, svg, wid
             role="img"
             aria-label={alt || caption || title || 'Diagram'}
             className="mx-auto max-w-full [&_svg]:h-auto [&_svg]:w-full"
-            style={format === 'svg' ? { width: '100%', maxWidth: Math.round((width || 500) * 1.5) } : { width: 'fit-content' }}
+            style={format === 'svg' ? { width: '100%', maxWidth: Math.round((width || 500) * 2) } : { width: 'fit-content' }}
             dangerouslySetInnerHTML={{ __html: state.svg }}
           />
         )}

@@ -1,0 +1,1012 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "60-80"
+  },
+  "sections": [
+    {
+      "id": "ch-4-1",
+      "type": "concept",
+      "title": "Serialization Basics",
+      "subtopicId": "4-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A Kafka broker never looks inside your messages. To the broker, the key and the value of a record are two arrays of bytes (either may also be `null`). That is a deliberate design choice: because the broker does not parse, validate or convert anything, it can append and serve data very quickly, and it can serve producers and consumers written in any language.\n\nThe price is that you have to decide how a Java object turns into bytes (**serialization**) and how those bytes turn back into an object (**deserialization**), and every producer and consumer of a topic has to make the same decision. This chapter shows where that decision lives in the Kafka client, which serializers ship with Kafka, and how to write your own. The chapters after it explain why \"just send JSON\" stops working as a system grows, and what to do instead.\n\n### Where serialization happens"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": " producer JVM                     broker                      consumer JVM\n┌────────────────────┐      ┌────────────────┐      ┌────────────────────┐\n│ OrderCreated       │      │ key:   byte[]  │      │ byte[]             │\n│   ↓ Serializer     │ ───→ │ value: byte[]  │ ───→ │   ↓ Deserializer   │\n│ byte[]             │      │ (never parsed) │      │ OrderCreated       │\n└────────────────────┘      └────────────────┘      └────────────────────┘"
+        },
+        {
+          "type": "markdown",
+          "text": "The producer calls the key and value serializers inside `send()`, on the thread that called `send()`, before the record is placed into a batch. The consumer calls the deserializers inside `poll()`, one record at a time, while it builds the batch of records it returns to you. Both clients learn which classes to use from their configuration:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Client",
+            "What you provide"
+          ],
+          "rows": [
+            [
+              "`key.serializer`",
+              "producer",
+              "A class implementing `Serializer` for the record key"
+            ],
+            [
+              "`value.serializer`",
+              "producer",
+              "A class implementing `Serializer` for the record value"
+            ],
+            [
+              "`key.deserializer`",
+              "consumer",
+              "A class implementing `Deserializer` for the record key"
+            ],
+            [
+              "`value.deserializer`",
+              "consumer",
+              "A class implementing `Deserializer` for the record value"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*The settings that select the serializer and deserializer classes. None has a default, so a client refuses to start without them.*\n\nIn Java you normally use the constants (`ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG`, `ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG`, `ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG`, `ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG`) and pass either a `Class` object or a fully qualified class name. Key and value are configured independently, so a topic can have a `String` key and a JSON value.\n\n### The Serializer and Deserializer interfaces\n\nBoth interfaces live in `org.apache.kafka.common.serialization`. Each has exactly one abstract method; everything else has a default implementation, so a minimal serializer is a single method."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`byte[] serialize(String topic, T data)`",
+              "Convert the object to bytes. The topic name is passed in so one class can behave differently per topic."
+            ],
+            [
+              "`byte[] serialize(String topic, Headers headers,` `T data)`",
+              "Same, but you also receive the record headers and may add some, for example a content type."
+            ],
+            [
+              "`T deserialize(String topic, byte[] data)`",
+              "Convert bytes back to an object. Returning `null` for `null` input is the recommended behaviour."
+            ],
+            [
+              "`T deserialize(String topic, Headers headers,` `byte[] data)`",
+              "Same, with the record headers (never `null`, possibly empty)."
+            ],
+            [
+              "`T deserialize(String topic, Headers headers,` `ByteBuffer data)`",
+              "Same, but the payload arrives as a `ByteBuffer`."
+            ],
+            [
+              "`void configure(Map<String, ?> configs, boolean` `isKey)`",
+              "Called once with the client's configuration; `isKey` tells you whether you were chosen for keys or values."
+            ],
+            [
+              "`void close()`",
+              "Release resources. Both interfaces extend `Closeable`."
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*The methods of* `Serializer<T>` *and* `Deserializer<T>` *(Kafka 4.2 Javadoc). Only the first method of each interface is abstract.*\n\nTwo details matter in practice. First, when you configure a class by name, Kafka creates the object by reflection, so the class needs a public constructor without parameters. Second, `configure` receives the **whole** client configuration, which is how a serializer can read its own settings: custom keys such as `schema.registry.url` (used by the Schema Registry serializers later in this Part) are simply additional entries in the producer or consumer properties."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "If you pass serializer or deserializer instances to the `KafkaProducer` or `KafkaConsumer` constructor, the client does not call `configure()` on them. The constructor Javadoc says so explicitly. An instance you create yourself must be fully configured before you hand it over. Only classes selected by name through `key.serializer` and friends are created and configured by the client."
+        },
+        {
+          "type": "markdown",
+          "text": "### Built-in serializers\n\nKafka ships serializers for the common simple types. They are all you need for keys such as `orderId` and for plain text or binary values."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Java type",
+            "Classes",
+            "What ends up in the byte array"
+          ],
+          "rows": [
+            [
+              "`String`",
+              "`StringSerializer`",
+              "Text in UTF-8 by default; the encoding can be changed with a serializer encoding property"
+            ],
+            [
+              "`Integer / Short`",
+              "`IntegerSerializer,` `ShortSerializer`",
+              "4 or 2 bytes, big-endian"
+            ],
+            [
+              "`Long`",
+              "`LongSerializer`",
+              "8 bytes, big-endian"
+            ],
+            [
+              "`Float / Double`",
+              "`FloatSerializer,` `DoubleSerializer`",
+              "4 or 8 bytes (IEEE 754)"
+            ],
+            [
+              "`Boolean`",
+              "`BooleanSerializer`",
+              "one byte"
+            ],
+            [
+              "`UUID`",
+              "`UUIDSerializer`",
+              "The 36-character text form of the UUID, as a string"
+            ],
+            [
+              "`byte[]`",
+              "`ByteArraySerializer`",
+              "The array itself, unchanged"
+            ],
+            [
+              "`ByteBuffer`",
+              "`ByteBufferSerializer`",
+              "The buffer content (the input position is rewound to zero first)"
+            ],
+            [
+              "`Bytes`",
+              "`BytesSerializer`",
+              "The wrapped array of Kafka's `Bytes` helper class"
+            ],
+            [
+              "`Void`",
+              "`VoidSerializer`",
+              "Always `null`; use it when a topic has no key"
+            ],
+            [
+              "`List`",
+              "`ListSerializer`",
+              "A list, each element written by an inner serializer"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Serializers and deserializers included in* `kafka-clients`*. Each class named* `XSerializer` *has a matching* `XDeserializer`*.* To see what the broker stores, look at the key `o-1001` written once by `StringSerializer` and the number 1001 written once by `LongSerializer`:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "StringSerializer(\"o-1001\")  →  6f 2d 31 30 30 31              (6 bytes: the UTF-8 characters)\nLongSerializer(1001L)       →  00 00 00 00 00 00 03 e9        (8 bytes: 0x3e9 = 1001, big-endian)"
+        },
+        {
+          "type": "markdown",
+          "text": "The bytes carry no type information. Nothing in the second line says \"this is a long\". Whoever reads it must already know. Kafka Streams packages a serializer and a deserializer together as a `Serde` (for example `Serdes.String()` or `Serdes.serdeFrom(serializer, deserializer)`); that is covered in the Kafka Streams Part.\n\n### Writing your own: JSON with Jackson 3\n\nTo make the idea concrete we build a serializer pair for the `OrderCreated` record of the running example. JSON is a reasonable first format: it is readable and every language can parse it. We use Jackson 3 (package `tools.jackson`), the version that Spring Boot 4 and Spring for Apache Kafka 4 build on. Its `JsonMapper` is immutable and thread-safe once built, understands Java records, and has `java.time` support built in."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.serde;\n\nimport com.shopstream.events.OrderCreated;\nimport org.apache.kafka.common.errors.SerializationException;\nimport org.apache.kafka.common.serialization.Serializer;\nimport tools.jackson.core.JacksonException;\nimport tools.jackson.databind.json.JsonMapper;\n\npublic class OrderCreatedSerializer implements Serializer<OrderCreated> {\n\n    private final JsonMapper mapper = JsonMapper.builder().build();\n\n    @Override\n    public byte[] serialize(String topic, OrderCreated event) {\n        if (event == null) {\n            return null; // a null value must stay a Kafka null (a tombstone)\n        }\n        try {\n            return mapper.writeValueAsBytes(event);\n        } catch (JacksonException e) {\n            throw new SerializationException(\"Cannot serialize OrderCreated for \" + topic, e);\n        }\n    }\n}",
+          "title": "OrderCreatedSerializer.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.serde;\n\nimport com.shopstream.events.OrderCreated;\nimport org.apache.kafka.common.errors.SerializationException;\nimport org.apache.kafka.common.serialization.Deserializer;\nimport tools.jackson.core.JacksonException;\nimport tools.jackson.databind.json.JsonMapper;\n\npublic class OrderCreatedDeserializer implements Deserializer<OrderCreated> {\n\n    private final JsonMapper mapper = JsonMapper.builder().build();\n\n    @Override\n    public OrderCreated deserialize(String topic, byte[] data) {\n        if (data == null) {\n            return null;\n        }\n        try {\n            return mapper.readValue(data, OrderCreated.class);\n        } catch (JacksonException e) {\n            throw new SerializationException(\"Cannot deserialize OrderCreated from \" + topic, e);\n        }\n    }\n}",
+          "title": "OrderCreatedDeserializer.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** Both classes have an implicit public no-argument constructor, so Kafka can instantiate them from a class name. They keep no per-record state, which matters because one producer is shared by many threads and therefore calls the same serializer concurrently. Failures are wrapped in Kafka's `SerializationException` so the client reports them in the usual way. And `null` goes in and out unchanged: Jackson would happily turn `null` into the four characters `null`, a perfectly non-null byte array, and the record would stop being a tombstone.\n\nWiring the classes into a plain Java producer takes three properties:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Properties props = new Properties();\nprops.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\nprops.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);\nprops.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, OrderCreatedSerializer.class);"
+        },
+        {
+          "type": "markdown",
+          "text": "A serializer class per event type does not scale: ShopStream would need one pair per event type. Real projects use one generic serializer that handles many types. Spring for Apache Kafka ships `JacksonJsonSerializer` and `JacksonJsonDeserializer` for exactly that purpose (see the Spring Boot Part), and the Schema Registry serializers do the same for Avro, Protobuf and JSON Schema.\n\n### What goes wrong\n\n**Serialization failures are synchronous.** If the object cannot be serialized, `send()` throws a `SerializationException` in the calling thread. It does not arrive through the callback or the returned future, because the record was never accepted for sending.\n\n**Deserialization failures happen inside** `poll()`**.** When a deserializer throws, the consumer raises a `RecordDeserializationException` from `poll()`. The next chapter shows why that is dangerous.\n\n**Mismatched classes.** If the producer writes the key with `StringSerializer` and a consumer reads it with `LongDeserializer`, the consumer fails because the byte count is not 8. The opposite mistake is worse: `StringDeserializer` accepts any bytes, so reading a `Long` key with it produces unreadable text and no error at all.\n\n**Java native serialization.** `ObjectOutputStream` works, and you should not use it: the bytes are tied to exact class versions, only Java can read them, and deserializing untrusted bytes is a well-known security hole."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does Kafka store byte arrays instead of typed objects? Because the broker is deliberately a dumb, fast log. It never parses a record, so it needs no knowledge of your classes or languages, it can send log segments to consumers straight from disk and page cache, and it treats every topic the same. The trade-off is that nothing on the server validates the content. The contract between producers and consumers has to be enforced at the edges, which is what schemas and the Schema Registry are for."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Serialization basics\n\n- Kafka stores and transmits `byte[]` keys and values; the broker never interprets them.\n- Serializers run inside `send()`, deserializers inside `poll()`. Key and value have separate settings that have no default.\n- Implement `Serializer.serialize(topic, data)` or `Deserializer.deserialize(topic, data)`; always pass `null` through unchanged and keep the class stateless and thread-safe.\n- Instances passed to a client constructor are not configured by the client; classes selected by name are.\n- The bytes carry no type information, so producers and consumers must agree on the format by some other means. That is the subject of the next chapters."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-2",
+      "type": "concept",
+      "title": "Why Schemas Matter",
+      "subtopicId": "4-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "JSON is the easiest way to start: people can read it, every language can parse it and no extra infrastructure is needed. For one service talking to itself that is fine. On a Kafka cluster shared by many teams, \"just send JSON\" hides a coupling that eventually hurts. This chapter describes the problem. The chapters that follow introduce the tools that solve it.\n\n### A Friday-afternoon incident\n\nShopStream's `order-service` publishes `OrderCreated` events to the `orders` topic. Three other applications read them: `payment-service`, `notification-service` and the `analytics-app`. This is the event as everyone has known it for months:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"eventId\": \"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\",\n  \"type\": \"ORDER_CREATED\",\n  \"occurredAt\": \"2026-10-08T10:15:30Z\",\n  \"orderId\": \"o-1001\",\n  \"customerId\": \"c-77\",\n  \"lines\": [ { \"sku\": \"SKU-RED-SHOE-42\", \"qty\": 2, \"unitPrice\": 499.00 } ],\n  \"total\": 998.00,\n  \"currency\": \"INR\"\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "On Friday the order team decides to report tax separately. A developer renames `total` to `grandTotal` and adds a `tax` field. The unit tests of `order-service` pass, the build is green, the service is deployed. The new events look like this:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"eventId\": \"0b7e5a10-52c3-4c0e-9f1d-77a1c4f1b2aa\",\n  \"type\": \"ORDER_CREATED\",\n  \"occurredAt\": \"2026-10-09T16:02:11Z\",\n  \"orderId\": \"o-1002\",\n  \"customerId\": \"c-12\",\n  \"lines\": [ { \"sku\": \"SKU-BLUE-CAP-01\", \"qty\": 1, \"unitPrice\": 1180.00 } ],\n  \"grandTotal\": 1180.00,\n  \"tax\": 180.00,\n  \"currency\": \"INR\"\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "What happens next depends on how each consumer was written. `payment-service` deserializes into a record with a `BigDecimal total`; the field is missing, so `total` is `null`, the first call on it throws a `NullPointerException`, and the listener fails on every new order. `notification-service` formats the amount into an e-mail and happily sends \"Your order total is null\". The `analytics-app` sums the field with a null guard, so the revenue dashboard quietly shows zero from Friday afternoon onwards. Three consumers, three different symptoms, one of them completely silent.\n\nNothing in Kafka could have prevented this. The broker saw bytes, and bytes do not have a \"wrong\" shape. The root cause is that the agreement between producer and consumers existed only in people's heads and in scattered copies of a sample message.\n\n### What goes missing without a schema\n\nA **schema** is a machine-readable description of a record: which fields exist, their names, their types and which of them are optional. Without one, several problems appear sooner or later."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Problem",
+            "Example",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "Structural drift",
+              "A field is renamed or removed",
+              "Consumers read `null` or fail, sometimes silently"
+            ],
+            [
+              "Type drift",
+              "`qty` changes from `2` to `\"2\"`",
+              "Parse errors, or wrong arithmetic"
+            ],
+            [
+              "Ambiguous types",
+              "JSON has one \"number\" type; `499.00` may be read as a binary double",
+              "Money rounding errors unless every consumer picks a decimal type"
+            ],
+            [
+              "Absent versus null",
+              "A missing field, a `null` field and `0`",
+              "Each consumer interprets them differently"
+            ],
+            [
+              "Repeated names",
+              "Every record repeats `\"customerId\"`, `\"unitPrice\"` and so on",
+              "Larger records on the wire and on disk"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Problem",
+            "Example",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "No documentation",
+              "The meaning of fields lives in someone's memory",
+              "A new team reverse-engineers the format from samples"
+            ]
+          ],
+          "caption": "Problems that a schema removes or makes visible."
+        },
+        {
+          "type": "markdown",
+          "text": "### Data lives longer than code\n\nA REST API can be versioned and the old version retired a month later, because requests are short-lived. Kafka records are not. They stay in the log for the retention period (seven days by default), forever in a compacted topic, and in an event-sourced design they are the system of record. A consumer that starts next year, or a new service that replays the topic from the beginning, must be able to read **every** record ever written, including those written under the first version of the format.\n\nThat has two consequences. Producers must evolve the format in ways that old and new readers both survive. And each record must be traceable to the version of the format that wrote it. Schema registries solve both: they check changes before they happen and they tag every record with a schema identifier. The next chapter shows how.\n\n### What a data contract is"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Definition",
+          "text": "Data contract: an explicit, versioned agreement between the owner of a data stream and its consumers. It consists of the schema (names, types, defaults), the meaning of the fields (units, currency, allowed values), the rules for changing the schema (the compatibility mode), and an owner who answers questions about it."
+        },
+        {
+          "type": "markdown",
+          "text": "The schema is the part a machine can check. The rest is documentation, review and conversation, and it matters just as much. A schema cannot notice that `total` silently changed from rupees to paise: the type is still a number, only the meaning changed. Treat the topic as a public API of the owning team. Changes go through review, and the schema file lives in version control next to the code that produces the events.\n\n### Poison pills\n\nA **poison pill** is a record that a consumer cannot process, and that it will meet again every time it tries. The most common cause is bytes that the deserializer cannot decode: a producer wrote JSON where Avro was expected, a field has the wrong type, or the message is truncated. When the deserializer throws, `poll()` throws a `RecordDeserializationException`. The consumer does not move past the broken record, so the next `poll()` fetches the same record and fails the same way. The group stops making progress on that partition, and the lag grows.\n\nThe exception tells you exactly where the record sits (`topicPartition()` and `offset()`), and its `valueBuffer()` and `keyBuffer()` return the raw bytes. A hand-written escape hatch looks like this:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "while (running) {\n    try {\n        ConsumerRecords<String, OrderCreated> records = consumer.poll(Duration.ofMillis(500));\n        for (ConsumerRecord<String, OrderCreated> record : records) {\n            process(record.value());\n        }\n    } catch (RecordDeserializationException e) {\n        log.error(\"Skipping undecodable record at {} offset {}\", e.topicPartition(), e.offset(), e);\n        consumer.seek(e.topicPartition(), e.offset() + 1);\n    }\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "This loop skips the bad record and carries on. That keeps the service alive, but the record is lost unless you also copy `e.valueBuffer()` to a dead-letter topic. Spring for Apache Kafka automates the whole pattern with `ErrorHandlingDeserializer` and dead-letter publishing (see the error handling chapters in the Spring Kafka Parts). A good schema practice shrinks the problem at the source: when producers can only write records that match a registered, compatible schema, undecodable records almost never reach the topic."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is a poison pill in Kafka, and how do you deal with it? A poison pill is a record that makes a consumer fail every time it is fetched, typically because it cannot be deserialized, so the consumer never advances past it. Defences, from cheapest to best: catch the deserialization exception and skip the offset (and keep the bytes in a dead-letter topic), wrap the deserializer so failures become values the error handler can route (Spring's `ErrorHandlingDeserializer`), and prevent bad records in the first place with schemas and compatibility checks on the producer side."
+        },
+        {
+          "type": "markdown",
+          "text": "### Three schema formats\n\nThree formats dominate the Kafka world. **Apache Avro** and **Protocol Buffers (Protobuf)** are compact binary formats; **JSON Schema** describes ordinary JSON text. All three define fields, types and defaults, and all three can be managed by a schema registry. Later chapters compare them in detail and show Avro and Protobuf in working code. At this point you only need to remember the idea: the schema is written once, stored centrally, checked automatically, and referenced from each record by a small identifier instead of being repeated.\n\n### Do you always need one?\n\nNo. If one team owns both the producer and the only consumer, if the topic is a prototype or a short-lived log, or if you are learning, plain JSON (or plain strings) is a sensible choice and a registry is extra infrastructure to run, secure and keep available. The balance tips when several teams share a topic, when records are retained for a long time or replayed, when the data feeds analytics or other downstream systems, or when a bad deploy would cost real money. The rest of this Part assumes that you are in the second group."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Why schemas matter\n\n- The broker cannot protect consumers from format changes; without a schema the contract exists only in people's heads.\n- Kafka data outlives code. Consumers must read every record ever written, so formats must evolve compatibly and records must reveal which version wrote them.\n- A data contract is schema plus meaning, change rules and an owner. The schema can be checked by machines; the meaning needs review.\n- A poison pill blocks a consumer on one undecodable record. Skip-and-dead-letter handles it; schemas and compatibility checks prevent most cases.\n- Schemas cost infrastructure and discipline. Use them when several teams, long retention or money are involved."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-3",
+      "type": "concept",
+      "title": "Schema Registry",
+      "subtopicId": "4-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The previous chapter ended with an idea: write the schema once, store it centrally, check every change automatically, and let each record point to its schema with a small identifier instead of carrying it. The component that implements this idea is a **schema registry**. This chapter explains how the best-known one, Confluent Schema Registry, works and how to talk to it. Apache Kafka itself does not include a registry; it is a separate service that you run next to your brokers.\n\n### What the registry does\n\nA registry is a small web service with a REST API. It has four jobs: it stores schemas, it gives each distinct schema a numeric ID, it checks new schemas for compatibility with earlier ones, and it hands schemas back to clients that ask for them by ID. It keeps its data in a Kafka topic, `_schemas` by default, which is a single-partition compacted topic. The service instances themselves hold no state on disk, so you can restart them or run several side by side. One instance acts as the primary, chosen through the Kafka group protocol (`leader.eligibility` controls which nodes may become primary), and every instance can answer reads.\n\n### Subjects, versions and IDs\n\nThree words appear everywhere in registry documentation. A **subject** is a named scope for schema evolution: the list of versions of one kind of data. A **version** is a position within a subject's sequence (1, 2, 3, ...). A **schema ID** is the globally unique identifier of a schema definition."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": " subject \"order-status-value\"                   globally unique schema IDs\n┌─────────────────────────────┐\n│ version 1  →  schema ID 1   │                ID 1: OrderStatus\n└─────────────────────────────┘\n subject \"orders-value\"\n┌─────────────────────────────┐\n│ version 1  →  schema ID 2   │                ID 2: OrderCreated, the first layout\n│ version 2  →  schema ID 3   │                ID 3: OrderCreated plus new fields\n└─────────────────────────────┘"
+        },
+        {
+          "type": "markdown",
+          "text": "Versions count per subject; IDs count across the whole registry, in order of registration. A registered schema never changes: a new layout becomes a new version with a new ID. If the same schema text is registered under a second subject, the registry returns the existing ID.\n\n### The wire format\n\nWhen a Schema Registry serializer writes a record, it prepends five bytes to the encoded data. The first byte is a format marker (the \"magic byte\", always 0 today). The next four bytes are the schema ID as a big-endian integer. The rest is the payload in the chosen encoding. For Protobuf the schema ID is followed by message indexes, so the reader knows which message type inside the schema was written."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": " byte 0     bytes 1-4                    bytes 5 ...\n┌────────┬─────────────────────────┬──────────────────────────────────────┐\n│  0x00  │ schema ID (big-endian)  │ payload: Avro binary / Protobuf /    │\n│ magic  │ e.g. 00 00 00 01 = 1    │ JSON text, depending on the format   │\n└────────┴─────────────────────────┴──────────────────────────────────────┘"
+        },
+        {
+          "type": "markdown",
+          "text": "Two consequences follow. A record written this way cannot be read with a plain `StringDeserializer` or `JacksonJsonDeserializer`; every reader must understand the five-byte prefix. And the other way round: if you point a registry deserializer at a topic that contains plain JSON, it fails because the first byte is not the expected marker, with an error about an unknown magic byte. Seeing that message almost always means \"this topic was not written by a registry serializer\".\n\n### How producers and consumers use the registry\n\nThe clients hide all registry traffic inside the serializer and deserializer classes. The producer side works like this:\n\n1. `serialize(topic, value)` derives the **subject** from the topic name and the naming strategy (by default `orders-value` for the value of topic `orders`).\n2. With `auto.register.schemas` switched on (the default), the serializer registers the value's schema under that subject. The registry checks compatibility with the existing versions and returns the schema ID, or rejects the schema with an HTTP 409 error if it is incompatible. With auto-registration switched off, the serializer only looks up the ID of a schema that must already exist.\n3. The serializer writes magic byte, ID and the encoded payload, and the producer sends the bytes as usual.\n\nThe consumer side is shorter:\n\n1. The deserializer reads the schema ID from the first five bytes.\n2. It fetches the schema with that ID from the registry (`GET /schemas/ids/{id}`).\n3. It decodes the payload with that **writer schema**, and converts to the reader's own schema (for example, your generated class) if the two differ.\n\nBoth sides cache what they learn, so the registry is contacted only the first time a client sees a schema, not once per record. That keeps the registry out of the hot path. It also means a consumer that is already running keeps working during a short registry outage, but a *new* consumer, or one that meets a new schema ID, cannot decode anything until the registry is back. In production, run at least two registry instances.\n\n### Compatibility modes\n\nEvery subject has a compatibility mode that decides which new schemas the registry accepts. The terms are always from the point of view of the *new* schema: \"backward\" means the new schema looks backward at old data. For Avro, call a field **optional** when it has a default value."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Mode",
+            "Guarantee",
+            "Typical safe change (Avro)",
+            "Upgrade first"
+          ],
+          "rows": [
+            [
+              "`BACKWARD`",
+              "Consumers on the new schema can read data written with the previous schema",
+              "Delete a field; add a field with a default",
+              "Consumers"
+            ],
+            [
+              "`BACKWARD_TRANSITIVE`",
+              "Same, for all earlier versions",
+              "Same",
+              "Consumers"
+            ],
+            [
+              "`FORWARD`",
+              "Consumers on the previous schema can read data written with the new schema",
+              "Add a field; delete a field that has a default",
+              "Producers"
+            ],
+            [
+              "`FORWARD_TRANSITIVE`",
+              "Same, for all earlier versions",
+              "Same",
+              "Producers"
+            ],
+            [
+              "`FULL`",
+              "Both of the above, against the previous version",
+              "Add or delete a field that has a default",
+              "Any order"
+            ],
+            [
+              "`FULL_TRANSITIVE`",
+              "Both, against all earlier versions",
+              "Same",
+              "Any order"
+            ],
+            [
+              "`NONE`",
+              "No check at all",
+              "Anything",
+              "Coordinate by hand"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Compatibility modes. A \"transitive\" mode checks against all earlier versions instead of only the latest one.*\n\nThe default is `BACKWARD`; the server-side setting is `schema.compatibility.level` (default `backward`) and individual subjects can override it. `BACKWARD` fits Kafka well because a consumer can always rewind: after you upgrade consumers first, they can read both the old records still in the topic and the new ones. Note that plain `BACKWARD` only compares with the previous version. If you replay topics from the beginning, or keep data for a very long time, prefer `BACKWARD_TRANSITIVE` (or the `FULL` variants when producers and consumers deploy independently).\n\n### Subject naming strategies\n\nThe subject is derived by a pluggable strategy, selected separately for keys and values by `key.subject.name.strategy` and `value.subject.name.strategy`. The classes live in the package `io.confluent.kafka.serializers.subject`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Strategy",
+            "Subject name",
+            "Choose it when"
+          ],
+          "rows": [
+            [
+              "`TopicNameStrategy`",
+              "`'orders-value' (topic name plus` `'-key' or '-value')`",
+              "Every topic holds one type of record. This is the default."
+            ],
+            [
+              "`RecordNameStrategy`",
+              "`'com.shopstream.events.avro.OrderC` `reated' (the full record name)`",
+              "One topic holds several record types, or one type is used on several topics and should evolve as a single unit"
+            ],
+            [
+              "`TopicRecordNameStrategy`",
+              "`'orders-com.shopstream.events.avro` `.OrderCreated'`",
+              "One topic holds several record types, and each topic should evolve independently"
+            ]
+          ],
+          "caption": "The three subject naming strategies."
+        },
+        {
+          "type": "markdown",
+          "text": "The ShopStream `orders` topic carries `OrderCreated`, `OrderConfirmed` and `OrderCancelled`. With `TopicNameStrategy` all three would be registered under `orders-value` and the registry would check each against the others, which fails immediately because they are different records. For such a multi-type topic use `RecordNameStrategy` or `TopicRecordNameStrategy`. The price: compatibility is checked per record type, not per topic, so nothing stops someone from adding a fourth type to the topic.\n\n### Running a registry locally\n\nThe following Compose file starts a single-node Kafka broker with two listeners (one for your laptop on port 9092, one for other containers) and a Schema Registry connected to it. The Kafka environment variables follow the rule of the `apache/kafka` image: prefix with `KAFKA_` and replace dots by underscores. The registry image uses the prefix `SCHEMA_REGISTRY_` with the same idea; the Confluent documentation pins an explicit image tag, and so should you."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  broker:\n    image: apache/kafka:4.3.1\n    container_name: broker\n    ports:\n    - \"9092:9092\"\n  environment:\n    KAFKA_NODE_ID: 1\n    KAFKA_PROCESS_ROLES: broker,controller\n    KAFKA_LISTENERS: PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093\n    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:19092,PLAINTEXT_HOST://localhost:9092\n    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT\n    KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER\n    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: >-\n      CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT\n    KAFKA_CONTROLLER_QUORUM_VOTERS: 1@broker:9093\n    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1\n    KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1\n    KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1\n    KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0\n\nschema-registry:\n  image: confluentinc/cp-schema-registry:8.3.2\n  container_name: schema-registry\n  depends_on:\n    - broker\n  ports:\n    - \"8081:8081\"\n  environment:\n    SCHEMA_REGISTRY_HOST_NAME: schema-registry\n    SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: broker:19092\n    SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The registry reaches the broker through the container-network listener `broker:19092`, while your own applications use `localhost:9092`; a single advertised address could not serve both. The registry creates its `_schemas` topic on first start (replication factor 3 by default, reduced to the number of live brokers, so one here). `depends_on` only orders container start, not readiness: if the registry exits because the broker was not yet reachable, start it again.\n\n### Talking to the registry with curl\n\nEverything the serializers do can be done by hand with the REST API. We register a first schema for the compacted `order-status` topic. The schema lives in a file, as it would in a project:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"type\": \"record\",\n  \"name\": \"OrderStatus\",\n  \"namespace\": \"com.shopstream.events.avro\",\n  \"fields\": [\n    { \"name\": \"orderId\", \"type\": \"string\" },\n    { \"name\": \"status\", \"type\": \"string\" }\n  ]\n}",
+          "title": "order-status.avsc"
+        },
+        {
+          "type": "markdown",
+          "text": "The API expects the schema as a JSON string inside a JSON body, which is awkward to type. `jq` builds the body from the file for us. Requests use the content type `application/vnd.schemaregistry.v1+json`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s http://localhost:8081/subjects\n[]\n$ jq -n --rawfile s order-status.avsc '{schema: $s}' | \\\n    curl -s -X POST -H \"Content-Type: application/vnd.schemaregistry.v1+json\" \\\n      --data @- http://localhost:8081/subjects/order-status-value/versions\n{\"id\":1}\n$ curl -s http://localhost:8081/subjects/order-status-value/versions\n[1]\n$ curl -s http://localhost:8081/subjects/order-status-value/versions/latest | \\\n    jq '{subject, version, id}'\n{\n  \"subject\": \"order-status-value\",\n  \"version\": 1,\n  \"id\": 1\n}\n$ curl -s http://localhost:8081/config\n{\"compatibilityLevel\":\"BACKWARD\"}",
+          "title": "Register a schema and look at it"
+        },
+        {
+          "type": "markdown",
+          "text": "Registering the same schema again returns the same ID and creates no new version. To change the compatibility mode of one subject, send a `PUT` to `/config/{subject}`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X PUT -H \"Content-Type: application/vnd.schemaregistry.v1+json\" \\\n    --data '{\"compatibility\": \"FULL\"}' \\\n    http://localhost:8081/config/order-status-value\n{\"compatibility\":\"FULL\"}",
+          "title": "Override the mode for one subject"
+        },
+        {
+          "type": "markdown",
+          "text": "The endpoints you will use most are summarised below. IDs, versions and outputs in this book are examples."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Endpoint",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`GET /subjects`",
+              "List all subjects"
+            ],
+            [
+              "`POST /subjects/{subject}/versions`",
+              "Register a schema (checked for compatibility); returns the ID"
+            ],
+            [
+              "`GET /subjects/{subject}/versions/{version}`",
+              "Fetch one version; `latest` is accepted"
+            ],
+            [
+              "`GET /schemas/ids/{id}`",
+              "Fetch a schema by its global ID (what consumers do)"
+            ],
+            [
+              "`POST /compatibility/subjects/{subject}/versions/` `{version}`",
+              "Test a schema against a version without registering it"
+            ],
+            [
+              "`GET /config and PUT /config`",
+              "Read or set the global compatibility mode"
+            ],
+            [
+              "`GET /config/{subject} and PUT /config/{subject}`",
+              "Read or set the mode of one subject"
+            ]
+          ],
+          "caption": "The Schema Registry REST endpoints used in this book."
+        },
+        {
+          "type": "markdown",
+          "text": "### Alternatives and licensing\n\nConfluent Schema Registry is distributed under the Confluent Community License. Confluent describes this licence as source-available and not approved by the OSI: you can read, modify and redistribute the code, but you may not use it to offer a competing hosted service. Apache Kafka itself stays under the Apache License 2.0, and the serializer artifacts on Maven are listed under Apache 2.0. Read the licence files of the version you plan to run; this paragraph is a summary, not legal advice.\n\nTwo open alternatives exist. **Apicurio Registry** is released under Apache 2.0, manages Avro, Protobuf, JSON Schema and several other artifact types, and can store its data in Kafka, PostgreSQL or SQL Server. **Karapace**, from Aiven, describes itself as a free and open source drop-in replacement for the Confluent Schema Registry and REST Proxy. Both are worth a look if the licence or your platform matters; the rest of this book uses the Confluent REST API and clients because they are the common denominator."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never delete or recreate the `_schemas` topic, and give it production-grade settings. Every record in your topics refers to a schema ID. If the registry loses its topic, those IDs mean nothing and the data becomes undecodable. Keep it compacted, replicate it (a replication factor of 3 with `min.insync.replicas=2` on a three-broker cluster) and disable unclean leader election."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What does a Schema Registry add to Kafka, and what happens at runtime? It stores versioned schemas per subject, assigns each one a global ID, enforces a compatibility mode when schemas are registered, and serves schemas by ID. At runtime the producer's serializer registers or looks up the schema once, caches the ID and prefixes every record with a magic byte and the four-byte ID. The consumer's deserializer reads the ID, fetches and caches the writer schema and decodes the payload. The broker never sees any of this; it still stores bytes."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Schema Registry\n\n- A registry is a separate REST service backed by the compacted `_schemas` topic. Subjects hold versions; IDs are global.\n- Each record carries a five-byte prefix: magic byte 0 and a big-endian schema ID. Readers must understand it.\n- Clients cache IDs and schemas, so the registry is off the hot path, but it must be highly available.\n- The default compatibility mode is `BACKWARD`; use the transitive variants when you replay old data. Mode names describe the new schema's view of the old one.\n- `TopicNameStrategy` (default) suits one record type per topic; multi-type topics need `RecordNameStrategy` or `TopicRecordNameStrategy`."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-4",
+      "type": "concept",
+      "title": "Avro in Practice",
+      "subtopicId": "4-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Apache Avro is the format most often used together with Kafka and a schema registry. It stores a record as a compact binary sequence of field values in the order the schema lists them, with no field names and no per-field markers. That is why Avro data is small, and also why you cannot read it without the schema that wrote it. The registry supplies that schema.\n\n### A schema for OrderCreated\n\nAvro schemas are JSON documents with a `.avsc` extension. Here is the canonical `OrderCreated` event of the running example. The `type` field of the JSON envelope disappears: in Avro the record name already says what the record is."
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"type\": \"record\",\n  \"name\": \"OrderCreated\",\n  \"namespace\": \"com.shopstream.events.avro\",\n  \"doc\": \"An order was accepted by order-service.\",\n  \"fields\": [\n    { \"name\": \"eventId\", \"type\": \"string\" },\n    { \"name\": \"orderId\", \"type\": \"string\" },\n    { \"name\": \"customerId\", \"type\": \"string\" },\n    { \"name\": \"lines\", \"type\": { \"type\": \"array\", \"items\": {\n        \"type\": \"record\",\n        \"name\": \"OrderLine\",\n        \"fields\": [\n          { \"name\": \"sku\", \"type\": \"string\" },\n          { \"name\": \"qty\", \"type\": \"int\" },\n          { \"name\": \"unitPrice\", \"type\": { \"type\": \"bytes\", \"logicalType\": \"decimal\",\n                                           \"precision\": 12, \"scale\": 2 } }\n        ] } } },\n    { \"name\": \"total\", \"type\": { \"type\": \"bytes\", \"logicalType\": \"decimal\",\n                                 \"precision\": 12, \"scale\": 2 } },\n    { \"name\": \"currency\", \"type\": \"string\", \"default\": \"INR\" },\n    { \"name\": \"occurredAt\", \"type\": { \"type\": \"long\", \"logicalType\": \"timestamp-millis\" } }\n  ]\n}",
+          "title": "OrderCreated.avsc"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** Avro has primitive types (`null`, `boolean`, `int`, `long`, `float`, `double`, `bytes`, `string`) and complex ones (`record`, `enum`, `array`, `map`, `union`, `fixed`). **Logical types** add meaning on top of a primitive: `decimal` is stored as `bytes` with a stated precision and scale, which is the right way to carry money; `timestamp-millis` is a `long` counting milliseconds since the Unix epoch. The `currency` field has a **default**. Defaults are what make schema evolution possible, as the last chapter of this Part shows.\n\nAs a size check, the compact JSON text of this example event (without the `type` field) is 220 bytes. The Avro encoding of the same data is 86 bytes, plus the five-byte registry prefix: 91 bytes in total. The saving comes from leaving out field names and from binary numbers; with real messages it varies, and compression narrows the gap."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "00 | 00 00 00 02 | 48 | 36 66 31 63 32 64 34 65 2d 38 61 34 37 2d ...\n │        │         │    └ the characters \"6f1c2d4e-8a47-\" of the eventId\n │        │         └ the string length 36, zigzag-encoded (0x48 = 72)\n │        └ schema ID 2 (ID 1 is the OrderStatus schema registered earlier), big-endian\n └ magic byte 0"
+        },
+        {
+          "type": "markdown",
+          "text": "### Generating Java classes and configuring the build\n\nYou can use Avro with generic records (a map-like `GenericRecord` that you fill by field name), but for application code generated classes are much safer: the compiler checks field names and types. The `avro-maven-plugin` reads every `.avsc` file under `src/main/avro` and writes Java sources during the `generate-sources` phase."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<properties>\n  <avro.version>1.12.2</avro.version>\n</properties>\n\n<repositories>\n  <repository>\n    <id>confluent</id>\n    <url>https://packages.confluent.io/maven/</url>\n  </repository>\n</repositories>\n\n<dependencies>\n  <dependency>\n    <groupId>org.apache.kafka</groupId>\n    <artifactId>kafka-clients</artifactId>\n    <version>4.3.1</version>\n  </dependency>\n  <dependency>\n    <groupId>io.confluent</groupId>\n    <artifactId>kafka-avro-serializer</artifactId>\n    <version>8.3.2</version>\n  </dependency>\n  <dependency>\n    <groupId>org.apache.avro</groupId>\n    <artifactId>avro</artifactId>\n    <version>${avro.version}</version>\n  </dependency>\n</dependencies>\n\n<build>\n  <plugins>\n    <plugin>\n      <groupId>org.apache.avro</groupId>\n      <artifactId>avro-maven-plugin</artifactId>\n      <version>${avro.version}</version>\n      <executions>\n        <execution>\n          <phase>generate-sources</phase>\n          <goals>\n            <goal>schema</goal>\n          </goals>\n          <configuration>\n            <sourceDirectory>${project.basedir}/src/main/avro/</sourceDirectory>\n            <stringType>String</stringType>\n            <enableDecimalLogicalType>true</enableDecimalLogicalType>\n          </configuration>\n        </execution>\n      </executions>\n    </plugin>\n  </plugins>\n</build>",
+          "title": "pom.xml (the parts that matter)"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The Confluent serializer libraries are not on Maven Central; they come from Confluent's repository `https://packages.confluent.io/maven/`, so the build needs the `<repositories>` block. Their versions follow Confluent Platform releases (for example 8.3.2), not Apache Kafka. Keep the plugin and the runtime library on the same Avro version. `stringType=String` makes generated getters return `java.lang.String` instead of `CharSequence`, and `enableDecimalLogicalType` asks the generator for `java.math.BigDecimal` fields; without it, decimals may come out as `ByteBuffer`. The generated classes land in `com.shopstream.events.avro`, next to (not instead of) the hand-written records of the JSON examples.\n\n### Producing and consuming Avro\n\nOnly three things change compared with the String or JSON producers of earlier chapters: the value serializer class, the registry address, and the value type."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.avro;\n\nimport com.shopstream.events.avro.OrderCreated;\nimport com.shopstream.events.avro.OrderLine;\nimport io.confluent.kafka.serializers.KafkaAvroSerializer;\nimport java.math.BigDecimal;\nimport java.time.Instant;\nimport java.util.List;\nimport java.util.Properties;\nimport org.apache.kafka.clients.producer.KafkaProducer;\nimport org.apache.kafka.clients.producer.ProducerConfig;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.apache.kafka.common.serialization.StringSerializer;\n\npublic class AvroOrderProducer {\n\n    public static void main(String[] args) {\n        Properties props = new Properties();\n        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);\n        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaAvroSerializer.class);\n        props.put(\"schema.registry.url\", \"http://localhost:8081\");\n\n        OrderLine line = OrderLine.newBuilder()\n                .setSku(\"SKU-RED-SHOE-42\")\n                .setQty(2)\n                .setUnitPrice(new BigDecimal(\"499.00\"))\n                .build();\n\n        OrderCreated event = OrderCreated.newBuilder()\n                .setEventId(\"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\")\n                .setOrderId(\"o-1001\")\n                .setCustomerId(\"c-77\")\n                .setLines(List.of(line))\n                .setTotal(new BigDecimal(\"998.00\"))\n                .setOccurredAt(Instant.parse(\"2026-10-08T10:15:30Z\"))\n                .build();\n\n        try (KafkaProducer<String, OrderCreated> producer = new KafkaProducer<>(props)) {\n            producer.send(new ProducerRecord<>(\"orders\", event.getOrderId(), event));\n            producer.flush();\n        }\n    }\n}",
+          "title": "AvroOrderProducer.java"
+        },
+        {
+          "type": "markdown",
+          "text": "On the first `send()` the serializer registers the schema under `orders-value` and caches the ID. The builder applies the default for `currency` (it was not set) and refuses to build if a field without a default is missing. The consumer needs one extra switch:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Properties props = new Properties();\nprops.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\nprops.put(ConsumerConfig.GROUP_ID_CONFIG, \"notification-service\");\nprops.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, \"earliest\");\nprops.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);\nprops.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaAvroDeserializer.class);\nprops.put(\"schema.registry.url\", \"http://localhost:8081\");\nprops.put(\"specific.avro.reader\", true);\n\ntry (KafkaConsumer<String, OrderCreated> consumer = new KafkaConsumer<>(props)) {\n    consumer.subscribe(List.of(\"orders\"));\n    for (ConsumerRecord<String, OrderCreated> r : consumer.poll(Duration.ofSeconds(5))) {\n        System.out.printf(\"%s total=%s%n\", r.key(), r.value().getTotal());\n    }\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "`specific.avro.reader=true` tells the deserializer to return instances of the generated class. Its default is `false`, in which case you receive a `GenericRecord` and a `ClassCastException` as soon as your code assigns it to `OrderCreated`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Side",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`schema.registry.url`",
+              "both",
+              "Address(es) of the registry"
+            ],
+            [
+              "`auto.register.schemas`",
+              "producer",
+              "Whether the serializer registers unknown schemas itself (on by default)"
+            ],
+            [
+              "`use.latest.version`",
+              "producer",
+              "Use the latest registered version instead of the record's own schema; only applies when auto-registration is off"
+            ],
+            [
+              "`specific.avro.reader`",
+              "consumer",
+              "Return generated classes instead of `GenericRecord` (default false)"
+            ],
+            [
+              "`key.subject.name.strategy,` `value.subject.name.strategy`",
+              "both",
+              "How the subject name is derived (default `TopicNameStrategy`)"
+            ]
+          ],
+          "caption": "The Schema Registry settings you meet most often on Avro clients."
+        },
+        {
+          "type": "markdown",
+          "text": "### Gotchas"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Turn off `auto.register.schemas` in production and register schemas from your build pipeline. With auto-registration on, any producer that runs with a changed class registers the new schema as a side effect of its first `send()`. It will still be compatibility-checked, but schema changes then happen at deploy time without review, and each environment drifts on its own. With it off, the serializer only looks up schemas that already exist, and a deployment with an unregistered schema fails loudly at the first record. Register from CI with the REST API or Confluent's Maven plugin."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A `BigDecimal` with the wrong scale is rejected. The schema above says `scale: 2`. Avro encodes the unscaled integer, so `new BigDecimal(\"998\")` (scale 0) cannot be written under that schema and the serializer throws. Normalise with `setScale(2)` before building the event. The same goes for nulls: a field of type `string` cannot be `null`; for optional values use a union with `null` first, and a default of `null`."
+        },
+        {
+          "type": "markdown",
+          "text": "Two more habits help. Put `\"null\"` first in a union whose default is `null`, because Avro requires the default to match the first branch of the union. And give every field you add later a default: that single rule keeps almost all changes compatible, as the final chapter of this Part shows."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does Avro need the writer's schema to read data, and how do the Kafka serializers provide it? Avro binary data contains only field values in schema order, with no names or types, so a reader without the writer's schema cannot tell where one field ends. The Confluent serializers solve this by registering the schema and prefixing each record with its ID. The deserializer fetches the writer schema by ID, then resolves it against the reader schema: fields missing in the data are filled from the reader's defaults, and fields the reader does not know are skipped."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Avro in practice\n\n- Avro encodes only values, in schema order; the writer schema is required for reading, supplied via the registry ID.\n- Use `decimal` for money and `timestamp-millis` for instants; give new fields defaults.\n- The `avro-maven-plugin` generates Java classes; the Confluent serializers come from Confluent's Maven repository and are versioned with Confluent Platform.\n- Producer: `KafkaAvroSerializer` plus `schema.registry.url`. Consumer: `KafkaAvroDeserializer` plus `specific.avro.reader=true` for generated classes.\n- In production switch `auto.register.schemas` off and register schemas from CI."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-5",
+      "type": "concept",
+      "title": "Protobuf and JSON Schema",
+      "subtopicId": "4-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Avro is a good default, but the registry also manages two other formats. **Protocol Buffers (Protobuf)** is Google's binary format, popular where services already talk gRPC. **JSON Schema** keeps the data as JSON text and adds validation. This chapter shows both with the same `OrderCreated` event, compares all four options, and gives rules for choosing.\n\n### Protocol Buffers\n\nA Protobuf schema is a `.proto` file. Unlike Avro, the bytes on the wire do not contain field names or a schema-order convention: every field is written as a **field number** plus a value. The numbers, not the names, identify fields, so a number must never change meaning once data exists."
+        },
+        {
+          "type": "code",
+          "language": "proto",
+          "code": "syntax = \"proto3\";\npackage com.shopstream.events;\nimport \"google/protobuf/timestamp.proto\";\noption java_package = \"com.shopstream.events.proto\";\noption java_multiple_files = true;\nmessage OrderLine {\n  string sku = 1;\n  int32 qty = 2;\n  int64 unit_price_minor = 3;   // amount in paise: 49900 means INR 499.00\n}\n\nmessage OrderCreated {\n  string event_id = 1;\n  string order_id = 2;\n  string customer_id = 3;\n  repeated OrderLine lines = 4;\n  int64 total_minor = 5;\n  string currency = 6;\n  google.protobuf.Timestamp occurred_at = 7;\n}",
+          "title": "order_created.proto"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** Protobuf has no decimal type, so money is carried as an integer in the smallest currency unit (a common convention, but you must document it in the contract). Timestamps use the well-known type `google.protobuf.Timestamp`. A proto3 scalar field that was never set reads as its zero value (`\"\"`, `0`), so you cannot tell \"not set\" from \"set to zero\" unless you declare the field `optional`. The `protoc` compiler generates the Java classes; build tools offer plugins for it.\n\nThe Confluent classes for Protobuf live in the artifact `io.confluent:kafka-protobuf-serializer`, from the same Confluent repository and with the same version numbers as the Avro serializer:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// producer\nprops.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, KafkaProtobufSerializer.class);\nprops.put(\"schema.registry.url\", \"http://localhost:8081\");\n\nOrderCreated event = OrderCreated.newBuilder()\n        .setEventId(\"6f1c2d4e-8a47-4d58-9d0e-3b2f6c1a9e10\")\n        .setOrderId(\"o-1001\")\n        .setCustomerId(\"c-77\")\n        .addLines(OrderLine.newBuilder().setSku(\"SKU-RED-SHOE-42\").setQty(2)\n                .setUnitPriceMinor(49900L))\n        .setTotalMinor(99800L)\n        .setCurrency(\"INR\")\n        .build();\n\n// consumer\nprops.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, KafkaProtobufDeserializer.class);\nprops.put(\"specific.protobuf.value.type\", OrderCreated.class.getName());"
+        },
+        {
+          "type": "markdown",
+          "text": "Both classes are in the package `io.confluent.kafka.serializers.protobuf`. Without `specific.protobuf.value.type` the deserializer cannot know your generated class and returns a generic `DynamicMessage`; the setting for keys is `specific.protobuf.key.type`. The wire format adds *message indexes* after the schema ID, because one `.proto` file may define several messages and the reader must know which one was written."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Protobuf support has a few sharp edges. Confluent's documentation states that Protobuf does not allow null values on message fields and recommends `optional` fields where you need presence, and it recommends the `BACKWARD_TRANSITIVE` mode for Protobuf subjects because adding new message types is not forward compatible. At the time of writing it also states that Google Protobuf v4 is not yet supported by these serializers, so check the supported `protobuf-java` version before upgrading it."
+        },
+        {
+          "type": "markdown",
+          "text": "### JSON Schema\n\nIf your consumers must keep receiving JSON (a browser client, an existing integration, a team that wants to read records with its eyes), JSON Schema gives you a registered, versioned, validated description without changing the text format. A schema for the running example looks like this:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"OrderCreated\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"eventId\": { \"type\": \"string\" },\n    \"orderId\": { \"type\": \"string\" },\n    \"customerId\": { \"type\": \"string\" },\n    \"lines\": {\n      \"type\": \"array\",\n      \"items\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"sku\": { \"type\": \"string\" },\n          \"qty\": { \"type\": \"integer\", \"minimum\": 1 },\n          \"unitPrice\": { \"type\": \"number\" }\n        },\n        \"required\": [\"sku\", \"qty\", \"unitPrice\"]\n      }\n    },\n    \"total\": { \"type\": \"number\" },\n    \"currency\": { \"type\": \"string\" },\n    \"occurredAt\": { \"type\": \"string\", \"format\": \"date-time\" }\n  },\n  \"required\": [\"eventId\", \"orderId\", \"customerId\", \"lines\", \"total\", \"occurredAt\"]\n}",
+          "title": "OrderCreated.schema.json"
+        },
+        {
+          "type": "markdown",
+          "text": "The classes are `io.confluent.kafka.serializers.json.KafkaJsonSchemaSerializer` and `KafkaJsonSchemaDeserializer` (artifact `io.confluent:kafka-json-schema-serializer`). The serializer can derive a schema from a Java class annotated for Jackson, or accept a schema you supply. Three settings are worth knowing: `json.fail.invalid.schema` (default `false`; set it to `true` to make the serializer fail when a value does not match the schema), `json.value.type` (the Java class the deserializer should create; without it you receive a `LinkedHashMap` for objects) and `json.oneof.for.nullables` (default `true`, which controls how nullable fields appear in derived schemas)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "JSON Schema through the registry is no longer plain JSON on the wire. The serializer still writes JSON text, but it puts the same magic byte and four-byte schema ID in front of it. A consumer using a plain JSON deserializer will fail on the first byte. Everybody on the topic needs the registry-aware deserializer, which is exactly the migration cost you hoped to avoid by staying with JSON."
+        },
+        {
+          "type": "markdown",
+          "text": "### Choosing a format"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Avro",
+            "Protobuf",
+            "JSON Schema",
+            "Plain JSON"
+          ],
+          "rows": [
+            [
+              "Encoding",
+              "Compact binary, values only",
+              "Compact binary, field number plus value",
+              "JSON text",
+              "JSON text"
+            ],
+            [
+              "Size on the wire",
+              "Smallest; no names, no tags",
+              "Small; one tag per field",
+              "Largest; names repeated per record",
+              "Largest"
+            ],
+            [
+              "Needs a schema to read",
+              "Yes (writer schema, from the registry)",
+              "Yes (generated class or registry)",
+              "No, but needed for validation",
+              "No"
+            ],
+            [
+              "Evolution mechanism",
+              "Reader/writer schema resolution by field name; defaults",
+              "Field numbers; add new numbers, never reuse",
+              "Rules depend on open or closed content model",
+              "None; by convention only"
+            ],
+            [
+              "Nulls and defaults",
+              "Explicit: union with `null`, declared defaults",
+              "Zero values; `optional` for presence",
+              "`required` list; nullable types",
+              "Anything goes"
+            ],
+            [
+              "Code generation",
+              "Optional (Maven or Gradle plugin)",
+              "Normal (`protoc`)",
+              "Rare; POJOs or maps",
+              "None"
+            ],
+            [
+              "Readable by eye",
+              "No",
+              "No",
+              "Yes (after the prefix)",
+              "Yes"
+            ],
+            [
+              "Registry support",
+              "Yes",
+              "Yes",
+              "Yes",
+              "Not applicable"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Avro, Protobuf, JSON Schema and plain JSON compared. \"Registry\" means a schema registry such as Confluent Schema Registry.*\n\nThere is no universally best format, but there are good defaults. Choose **Avro** when Kafka is the centre of your data flow: it has the longest history in the Kafka ecosystem, its reader/writer resolution suits long-retention topics, and Kafka Connect, Kafka Streams and ksqlDB all work with it. Choose **Protobuf** when your organisation already defines contracts in `.proto` files for gRPC, or when you need strong code generation in many languages. Choose **JSON** **Schema** when readability and compatibility with existing JSON consumers outweigh size. Stay with **plain JSON** only for prototypes, local experiments and topics with a single owner."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Pick one format per organisation (or at least per domain) and stick with it. Mixed formats multiply the tooling every team must learn, the monitoring you need, and the number of ways a consumer can misread a topic."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Protobuf and JSON Schema\n\n- Protobuf identifies fields by number: add new fields with new numbers, never reuse or retype one. It has no decimal type, so money usually travels as minor units.\n- Confluent's Protobuf serializer needs `specific.protobuf.value.type` to return generated classes (otherwise `DynamicMessage`). Use `BACKWARD_TRANSITIVE`.\n- JSON Schema keeps JSON text but adds a magic byte and schema ID, so plain JSON readers can no longer consume it.\n- Avro is a strong default for Kafka-centred pipelines, Protobuf fits gRPC-heavy organisations, JSON Schema fits JSON-bound consumers."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-6",
+      "type": "concept",
+      "title": "Evolving Schemas Safely",
+      "subtopicId": "4-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A schema is not finished the day it is registered. Fields get added, requirements change, and the Friday incident of the earlier chapter will happen again unless changes follow rules. This chapter turns the compatibility modes into everyday practice: which changes are safe, how to roll them out, how to test them before they reach production, and what to do when a change cannot be made compatible.\n\n### Which changes are safe\n\nThe table lists common Avro changes and whether each mode accepts them (according to the Confluent documentation). A \"field with a default\" is called optional; a field without a default is required."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Change",
+            "BACKWARD",
+            "FORWARD",
+            "FULL"
+          ],
+          "rows": [
+            [
+              "Add an optional field (with default)",
+              "✓",
+              "✓",
+              "✓"
+            ],
+            [
+              "Add a required field (no default)",
+              "✗",
+              "✓",
+              "✗"
+            ],
+            [
+              "Remove an optional field",
+              "✓",
+              "✓",
+              "✓"
+            ],
+            [
+              "Remove a required field",
+              "✓",
+              "✗",
+              "✗"
+            ],
+            [
+              "Add a variant to a union",
+              "✓",
+              "✗",
+              "✗"
+            ],
+            [
+              "Remove a variant from a union",
+              "✗",
+              "✓",
+              "✗"
+            ],
+            [
+              "Widen a scalar type (for example int to long)",
+              "✓",
+              "✗",
+              "✗"
+            ],
+            [
+              "Narrow a scalar type",
+              "✗",
+              "✓",
+              "✗"
+            ],
+            [
+              "Rename a field",
+              "✗",
+              "✗",
+              "✗"
+            ]
+          ],
+          "caption": "Avro schema changes and the compatibility modes that accept them."
+        },
+        {
+          "type": "markdown",
+          "text": "Read the table with the Avro resolution rules in mind. A reader that expects a field the data does not contain uses the field's default, or fails if there is none: that is why adding a required field breaks `BACKWARD`. A field in the data that the reader does not know is simply skipped: that is why removing fields is fine for `BACKWARD`. A rename looks like a removal plus an addition, and therefore breaks old data or old readers. Avro **aliases** can tell a reader that a new field name stands for an old one, but they help only one direction, so treat a rename as a multi-step change (below).\n\nEnums deserve a warning of their own. If a producer adds a symbol to an enum, old readers meet a symbol they do not know and fail, unless the reader schema declares a default symbol for the enum. Prefer a plain `string` for values that will grow, or declare an enum default from the first day.\n\nFor Protobuf the rules are shorter: add new fields with new numbers, never change the number or type of an existing field, and when you delete a field, mark its number and name as `reserved` so nobody reuses them:"
+        },
+        {
+          "type": "code",
+          "language": "proto",
+          "code": "message OrderCreated {\n  reserved 5;\n  reserved \"total_minor\";\n  // ...\n}"
+        },
+        {
+          "type": "markdown",
+          "text": "### The Friday incident, solved by expand and contract\n\nBack to the renamed `total`. With the registry in place the developer's change would have been rejected: removing the required field `total` and adding a required `grandTotal` is not accepted under `FORWARD` or `FULL`, and a new required field is refused under `BACKWARD`. The registry forces the safer path, **expand and contract**:\n\n1. **Expand.** Add the new fields as optional, keep the old one. Producers fill both `total` and `grandTotal`.\n2. **Migrate.** Consumers switch to `grandTotal` one at a time, falling back to `total` while old records still exist.\n3. **Contract.** After every consumer has moved (and old records are no longer needed, or a transitive check allows it), remove `total`.\n\nThe fields added in step 1 use the idiom for optional values in Avro, a union that starts with `null` and has the default `null`:"
+        },
+        {
+          "type": "code",
+          "language": "json",
+          "code": "[\n  { \"name\": \"grandTotal\",\n    \"type\": [\"null\", { \"type\": \"bytes\", \"logicalType\": \"decimal\", \"precision\": 12, \"scale\": 2 }],\n    \"default\": null },\n  { \"name\": \"tax\",\n    \"type\": [\"null\", { \"type\": \"bytes\", \"logicalType\": \"decimal\", \"precision\": 12, \"scale\": 2 }],\n    \"default\": null }\n]",
+          "title": "fields added in version 2"
+        },
+        {
+          "type": "markdown",
+          "text": "### Testing a change before you ship it\n\nThe registry can judge a candidate schema without registering it. Save two variants of `OrderCreated.avsc`: variant A appends the two fields above without the `\"default\": null` line (required fields), variant B appends them exactly as shown. Then ask the registry:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ jq -n --rawfile s OrderCreated-a.avsc '{schema: $s}' | \\\n    curl -s -X POST -H \"Content-Type: application/vnd.schemaregistry.v1+json\" \\\n      --data @- http://localhost:8081/compatibility/subjects/orders-value/versions/latest\n{\"is_compatible\":false}\n$ jq -n --rawfile s OrderCreated-b.avsc '{schema: $s}' | \\\n    curl -s -X POST -H \"Content-Type: application/vnd.schemaregistry.v1+json\" \\\n      --data @- http://localhost:8081/compatibility/subjects/orders-value/versions/latest\n{\"is_compatible\":true}",
+          "title": "Compatibility checks against the latest version of orders-value"
+        },
+        {
+          "type": "markdown",
+          "text": "Variant A is rejected under the default `BACKWARD` mode because consumers on the new schema could not read the existing records, which have no `grandTotal`. Variant B passes. Appending `?verbose=true` to the URL asks the registry to include messages that explain a rejection.\n\n### Rolling out a compatible change\n\nCompatible does not mean \"deploy everything at once\". The order depends on the mode, and it is the same order every time:\n\n- **BACKWARD** (the default): upgrade the **consumers** first. They then understand old and new records. Only afterwards let producers write the new version.\n- **FORWARD**: upgrade the **producers** first. The consumers still on the old schema can read what the producers now write, and they upgrade whenever they like.\n- **FULL**: upgrade in any order.\n- **Transitive variants**: the same orders, but the guarantee covers every earlier version, which is what you need if consumers may replay the whole topic.\n\nA mnemonic: the mode name says who can read what from the point of view of the new schema. BACKWARD means \"new reads old\", so the readers go first. FORWARD means \"old reads new\", so the writers go first."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not evolve key schemas casually. The default partitioner hashes the serialized key bytes. If a schema change alters how the same logical key is encoded, records for that key suddenly land in a different partition, and per-key ordering is broken at that moment. Keep keys simple: a plain string or number (`orderId`) rather than a record, and treat the key format as frozen."
+        },
+        {
+          "type": "markdown",
+          "text": "### When a change cannot be compatible\n\nSome changes are inherently breaking: splitting one event into two, changing the meaning of a field, switching the unit of an amount, changing the key. For those you cannot rely on the registry. The usual options are:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "How it works",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "New event type",
+              "Introduce `OrderCreatedV2` (a new record name) on the same topic with a multi-type naming strategy",
+              "Consumers must handle both types for a while"
+            ],
+            [
+              "New topic",
+              "Publish to `orders-v2` (often through a Kafka Streams job or by dual-writing) and move consumers across; delete the old topic when it is no longer read",
+              "Duplicated data, ordering across the two topics, migration effort"
+            ],
+            [
+              "Set the mode to `NONE` for one change",
+              "Lets the registry accept anything",
+              "Only with a coordinated, full stop of readers; the safety net is gone for that moment"
+            ]
+          ],
+          "caption": "Options for a breaking change."
+        },
+        {
+          "type": "markdown",
+          "text": "Prefer prevention: review the meaning of fields as carefully as their types, document units and currencies in the schema's `doc` attributes, and treat new topics as an expensive tool that you use rarely.\n\n### Checking compatibility in CI\n\nCompatibility should be checked on the pull request, not discovered in production. The simplest version is a script that asks the registry about every schema file and fails the build on a `false` answer. Run it against a registry that holds the current production schemas (a staging registry that mirrors production is the usual choice)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "#!/usr/bin/env bash\nset -euo pipefail\n\nREGISTRY=\"${REGISTRY:-http://localhost:8081}\"\n\ncheck() {\n  local subject=\"$1\" file=\"$2\" result\n  result=$(jq -n --rawfile s \"$file\" '{schema: $s}' | \\\n    curl -s -X POST -H \"Content-Type: application/vnd.schemaregistry.v1+json\" \\\n      --data @- \"$REGISTRY/compatibility/subjects/$subject/versions/latest\")\n  if [ \"$(echo \"$result\" | jq -r '.is_compatible')\" != \"true\" ]; then\n    echo \"INCOMPATIBLE: $file against $subject: $result\" >&2\n    return 1\n  fi\n  echo \"ok: $file against $subject\"\n}\n\ncheck orders-value src/main/avro/OrderCreated.avsc\ncheck order-status-value src/main/avro/OrderStatus.avsc",
+          "title": "check-schemas.sh"
+        },
+        {
+          "type": "markdown",
+          "text": "The check needs an existing version to compare with, so the very first version of a subject is registered by a deliberate step. Confluent also publishes a Maven plugin, `io.confluent:kafka-schema-registry-maven-plugin`, whose goals include `validate` (syntax), `test-compatibility` (local files against a registry), `register` and `set-compatibility`. Its `subjects` configuration maps a subject name to a schema file, which lets the same build both test and, after review, register the schemas."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "You use BACKWARD compatibility. In which order do you deploy a new schema version, and why? Consumers first, then producers. BACKWARD means a consumer on the new schema can read data written with the previous schema, so upgraded consumers handle old and new records. If producers went first, consumers on the old schema could receive records with fields they do not expect. For FORWARD it is the other way round, and with FULL the order does not matter. If consumers may replay the whole topic, use the TRANSITIVE variant so the guarantee covers every earlier version, not only the last."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Evolving schemas safely\n\n- Give every new field a default. Adding and removing optional fields is the safest change in every mode.\n- Never rename or retype a field in place. Use expand and contract: add, migrate consumers, remove.\n- BACKWARD: consumers first. FORWARD: producers first. FULL: any order. Use TRANSITIVE when old data may be replayed.\n- Test candidate schemas with the registry's `/compatibility` endpoint (or the Maven plugin) in CI, not in production.\n- Keep key formats frozen. For truly breaking changes use a new event type or a new topic, and plan the migration."
+        }
+      ]
+    }
+  ]
+}

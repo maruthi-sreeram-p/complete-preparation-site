@@ -1,0 +1,721 @@
+{
+  "source": {
+    "document": "Spring_Boot_Basics.pdf",
+    "pages": "38-53"
+  },
+  "sections": [
+    {
+      "id": "ch-3-1",
+      "type": "concept",
+      "title": "Spring Data JPA basics",
+      "subtopicId": "3-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Almost every backend application stores data in a relational database. Plain JDBC works, but you write the same code again and again: open a connection, prepare a statement, bind parameters, loop over a `ResultSet`, copy columns into objects, close everything. Object-relational mapping (ORM) removes that work. You describe how a class maps to a table, and a library generates the SQL. In the Spring world the stack has three layers, and interviewers like to hear you separate them."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Name",
+            "What it is"
+          ],
+          "rows": [
+            [
+              "JPA (Jakarta Persistence)",
+              "A specification: annotations such as `@Entity` and an API (`EntityManager`). It is only interfaces and rules, no code that talks to a database."
+            ],
+            [
+              "Hibernate",
+              "The most common JPA implementation (the \"provider\"). It generates SQL, tracks changes and caches objects. Spring Boot uses it by default."
+            ],
+            [
+              "Spring Data JPA",
+              "A Spring layer on top of JPA. You declare an interface and Spring generates the repository implementation for you at startup."
+            ]
+          ],
+          "caption": "Three names that are often confused."
+        },
+        {
+          "type": "markdown",
+          "text": "The packages are `jakarta.persistence.*` in Spring Boot 3 and 4 (older tutorials show `javax.persistence`, which no longer works).\n\n### Dependencies and configuration\n\nAdd the starter and a driver. H2 is an in-memory database that is perfect for learning and tests; PostgreSQL is what you would run for real."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<dependencies>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-data-jpa</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>com.h2database</groupId>\n    <artifactId>h2</artifactId>\n    <scope>runtime</scope>\n  </dependency>\n  <dependency>\n    <groupId>org.postgresql</groupId>\n    <artifactId>postgresql</artifactId>\n    <scope>runtime</scope>\n  </dependency>\n</dependencies>",
+          "title": "pom.xml (dependencies)"
+        },
+        {
+          "type": "markdown",
+          "text": "With H2 on the classpath and no datasource configured, Boot starts an embedded in-memory database automatically. For PostgreSQL you give the URL and credentials. Keep the password out of the file (see the chapter on configuration in Part 1) and read it from an environment variable."
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "spring.datasource.url=jdbc:postgresql://localhost:5432/library\nspring.datasource.username=library\nspring.datasource.password=${DB_PASSWORD}\nspring.jpa.hibernate.ddl-auto=validate\nspring.jpa.show-sql=false",
+          "title": "application.properties"
+        },
+        {
+          "type": "markdown",
+          "text": "Boot builds a connection pool (HikariCP) for you. You normally do not set the dialect any more; Hibernate detects it from the connection.\n\n### Entities\n\nAn entity is a class that maps to a table. It needs `@Entity`, an `@Id` field, and a no-argument constructor (JPA creates objects by reflection; the constructor may be `protected`). Entities cannot be records, because Hibernate needs to set fields after construction and may subclass the class to build proxies."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport jakarta.persistence.Column;\nimport jakarta.persistence.Entity;\nimport jakarta.persistence.GeneratedValue;\nimport jakarta.persistence.GenerationType;\nimport jakarta.persistence.Id;\nimport jakarta.persistence.Table;\n\n@Entity\n@Table(name = \"books\")\npublic class Book {\n\n    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n\n    @Column(nullable = false, length = 200)\n    private String title;\n\n    @Column(nullable = false, unique = true, length = 20)\n    private String isbn;\n\n    private int copies;\n\n    protected Book() { }            // required by JPA\n\n    public Book(String title, String isbn, int copies) {\n        this.title = title;\n        this.isbn = isbn;\n        this.copies = copies;\n    }\n\n    public Long getId() { return id; }\n    public String getTitle() { return title; }\n    public void setTitle(String title) { this.title = title; }\n    public String getIsbn() { return isbn; }\n    public int getCopies() { return copies; }\n    public void setCopies(int copies) { this.copies = copies; }\n}",
+          "title": "Book.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `@GeneratedValue(strategy = IDENTITY)` lets the database assign the id (auto-increment column), so `id` is `null` until the row is inserted. `@Column` is optional: without it the field maps to a column with the same name. Boot's default naming strategy turns `copies` into `copies` and `firstName` into `first_name`. Do not use a primitive `long` for the id, because a new object must be able to say \"I have no id yet\"."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "`GenerationType.SEQUENCE` is the usual choice on PostgreSQL because it lets Hibernate batch inserts; `IDENTITY` forces an immediate insert to learn the id. For a beginner project `IDENTITY` is simpler and fine."
+        },
+        {
+          "type": "markdown",
+          "text": "### The persistence context and entity states\n\nHibernate does not run SQL the moment you call a setter. It keeps loaded entities in a first-level cache called the **persistence context** (one per `EntityManager`, which in a Spring app usually means one per transaction). Every entity instance is in one of four states."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 424.0 100.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M155.0 92.0 L259.0 92.0 C260.7 92.0 262.0 90.7 262.0 89.0 L262.0 63.0 C262.0 61.3 260.7 60.0 259.0 60.0 L155.0 60.0 C153.3 60.0 152.0 61.3 152.0 63.0 L152.0 89.0 C152.0 90.7 153.3 92.0 155.0 92.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M207.0 60.0 L209.6 54.6 L204.4 54.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 38.0 L89.0 38.0 C90.7 38.0 92.0 36.7 92.0 35.0 L92.0 5.0 C92.0 3.3 90.7 2.0 89.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 38.0 L259.0 38.0 C260.7 38.0 262.0 36.7 262.0 35.0 L262.0 5.0 C262.0 3.3 260.7 2.0 259.0 2.0 L155.0 2.0 C153.3 2.0 152.0 3.3 152.0 5.0 L152.0 35.0 C152.0 36.7 153.3 38.0 155.0 38.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M325.0 38.0 L419.0 38.0 C420.7 38.0 422.0 36.7 422.0 35.0 L422.0 5.0 C422.0 3.3 420.7 2.0 419.0 2.0 L325.0 2.0 C323.3 2.0 322.0 3.3 322.0 5.0 L322.0 35.0 C322.0 36.7 323.3 38.0 325.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 20.0 L152.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M262.0 20.0 L322.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M152.0 20.0 L146.6 17.4 L146.6 22.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M322.0 20.0 L316.6 17.4 L316.6 22.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"115.2\" y=\"14.0\" font-size=\"6.5\" fill=\"#e7e9f3\" textLength=\"13.7\" lengthAdjust=\"spacingAndGlyphs\">save</text><text x=\"284.5\" y=\"14.0\" font-size=\"6.5\" fill=\"#e7e9f3\" textLength=\"15.1\" lengthAdjust=\"spacingAndGlyphs\">close</text><text x=\"31.3\" y=\"17.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"31.3\" lengthAdjust=\"spacingAndGlyphs\">Transient</text><text x=\"189.8\" y=\"17.9\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"34.4\" lengthAdjust=\"spacingAndGlyphs\">Managed</text><text x=\"355.9\" y=\"17.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"32.1\" lengthAdjust=\"spacingAndGlyphs\">Detached</text><text x=\"28.2\" y=\"27.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">new Book()</text><text x=\"171.6\" y=\"27.2\" font-size=\"7.4\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"70.8\" lengthAdjust=\"spacingAndGlyphs\">tracked by context</text><text x=\"347.7\" y=\"27.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"48.7\" lengthAdjust=\"spacingAndGlyphs\">context closed</text><text x=\"215.8\" y=\"52.0\" font-size=\"6.5\" fill=\"#e7e9f3\" textLength=\"22.3\" lengthAdjust=\"spacingAndGlyphs\">remove</text><text x=\"326.0\" y=\"68.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"92.0\" lengthAdjust=\"spacingAndGlyphs\">changes to managed entities</text><text x=\"191.2\" y=\"73.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"31.5\" lengthAdjust=\"spacingAndGlyphs\">Removed</text><text x=\"324.8\" y=\"79.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"94.4\" lengthAdjust=\"spacingAndGlyphs\">are written at flush or commit</text><text x=\"183.0\" y=\"83.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"48.0\" lengthAdjust=\"spacingAndGlyphs\">delete at flush</text></svg>",
+          "width": 424,
+          "caption": "Entity lifecycle: only managed entities are tracked, and tracked changes are written at flush or commit.",
+          "alt": "save close | Transient Managed Detached | new Book() tracked by context context closed | remove | changes to managed entities | Removed | are written at flush or commit | delete at flush"
+        },
+        {
+          "type": "markdown",
+          "text": "- **Transient (new):** created with `new`, not known to JPA, no row.\n- **Managed (persistent):** attached to the persistence context. Hibernate watches its fields (\"dirty checking\") and writes any change to the database when the transaction flushes.\n- **Detached:** was managed, but its persistence context closed (typically the transaction ended). Changes are no longer tracked.\n- **Removed:** scheduled for deletion at flush.\n\nThe consequence that surprises beginners: inside a transaction you do not have to call `save` after changing a managed entity. The change is saved automatically at commit."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Transactional\npublic void addCopies(Long bookId, int extra) {\n    Book book = bookRepository.findById(bookId).orElseThrow();  // managed\n    book.setCopies(book.getCopies() + extra);                   // dirty checking\n    // no save() needed: UPDATE is issued when the transaction commits\n}",
+          "title": "BookService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Repositories\n\nA Spring Data repository is an interface. You extend `JpaRepository<Entity, IdType>` and get CRUD and paging methods with no implementation code."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport java.util.List;\nimport java.util.Optional;\nimport org.springframework.data.domain.Page;\nimport org.springframework.data.domain.Pageable;\nimport org.springframework.data.jpa.repository.JpaRepository;\nimport org.springframework.data.jpa.repository.Query;\nimport org.springframework.data.repository.query.Param;\n\npublic interface BookRepository extends JpaRepository<Book, Long> {\n\n    Optional<Book> findByIsbn(String isbn);\n\n    List<Book> findByTitleContainingIgnoreCase(String fragment);\n\n    boolean existsByIsbn(String isbn);\n\n    Page<Book> findByCopiesGreaterThan(int copies, Pageable pageable);\n\n    @Query(\"select b from Book b where b.copies = 0\")\n    List<Book> findOutOfStock();\n\n    @Query(\"select b from Book b where lower(b.title) like lower(concat('%', :q, '%'))\")\n    List<Book> search(@Param(\"q\") String q);\n}",
+          "title": "BookRepository.java"
+        },
+        {
+          "type": "markdown",
+          "text": "At startup Spring creates a proxy class implementing this interface and registers it as a bean, so you inject `BookRepository` like any other dependency. The inherited methods you use most:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Behaviour"
+          ],
+          "rows": [
+            [
+              "`save(entity)`",
+              "INSERT if the entity is new, otherwise merge (UPDATE). Returns the managed instance: use the return value."
+            ],
+            [
+              "`findById(id)`",
+              "Returns `Optional<T>`; empty when no row."
+            ],
+            [
+              "`findAll() / findAll(Sort) / findAll(Pageable)`",
+              "All rows, sorted, or one page."
+            ],
+            [
+              "`existsById(id), count()`",
+              "Cheap checks."
+            ],
+            [
+              "`deleteById(id), delete(entity)`",
+              "Remove; `deleteById` on a missing id does nothing in current versions."
+            ],
+            [
+              "`saveAll(list)`",
+              "Save many in one call."
+            ]
+          ],
+          "caption": "Common JpaRepository methods."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Derived query methods\n\nSpring parses the method name: `findBy` + property + keyword. `findByTitleContainingIgnoreCase` becomes `where` `lower(title) like %?%`. Keywords include `And`, `Or`, `Between`, `LessThan`, `GreaterThan`, `In`, `IsNull`, `OrderBy`, `Top`/`First`. If you misspell a property, the application fails at startup with a clear message, which is a feature: you find the bug immediately. Once the name gets long (three conditions or more), switch to `@Query`.\n\n#### @Query and JPQL\n\nJPQL looks like SQL but speaks in entities and fields (`Book`, `b.title`), not tables and columns. Always bind values with named parameters (`:q`), never by concatenating strings, which would be an SQL injection hole. Add `nativeQuery =` `true` when you need real SQL.\n\n#### Paging and sorting\n\nNever return an unbounded list from an API. Pass a `Pageable` and get a `Page` with the content plus total counts."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Pageable pageable = PageRequest.of(0, 20, Sort.by(\"title\").ascending());\nPage<Book> page = bookRepository.findByCopiesGreaterThan(0, pageable);\n\npage.getContent();        // the 20 books on this page\npage.getTotalElements();  // total rows matching (extra COUNT query)\npage.getTotalPages();\npage.hasNext();",
+          "title": "PagingExample.java"
+        },
+        {
+          "type": "markdown",
+          "text": "In a controller you can simply declare a `Pageable` parameter and Spring fills it from `?page=0&size=20&sort=title,asc`. Return `Slice` instead of `Page` if you do not need the total, which saves the count query.\n\n### Creating the schema: ddl-auto, schema.sql and Flyway\n\nHibernate can create tables from your entities. The switch is `spring.jpa.hibernate.ddl-auto`:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Value",
+            "Effect"
+          ],
+          "rows": [
+            [
+              "`none`",
+              "Do nothing. The default for a real database."
+            ],
+            [
+              "`validate`",
+              "Check that tables and columns match the entities; fail at startup if not. Good for production."
+            ],
+            [
+              "`update`",
+              "Try to alter tables to match. Never adds safety; can not rename or drop columns."
+            ],
+            [
+              "`create /` `create-drop`",
+              "Drop and recreate the schema on startup (and drop on shutdown for `create-drop`). Only for tests."
+            ]
+          ],
+          "caption": "ddl-auto values."
+        },
+        {
+          "type": "markdown",
+          "text": "Boot defaults to `create-drop` for an embedded database (H2) and `none` for everything else, which is why a demo \"just works\" and a PostgreSQL project does not create tables. In production the schema must be controlled by **versioned** **migration scripts**, not by Hibernate guessing. The standard tool is Flyway (Liquibase is the alternative). Add `flyway-core` (and `flyway-database-postgresql` for PostgreSQL on recent Flyway versions) and put numbered scripts in `src/main/resources/db/migration`; Boot runs them at startup before Hibernate validates."
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "create table books (\n    id      bigint generated by default as identity primary key,\n    title   varchar(200) not null,\n    isbn    varchar(20)  not null unique,\n    copies  integer      not null\n);",
+          "title": "db/migration/V1__create_books.sql"
+        },
+        {
+          "type": "markdown",
+          "text": "`schema.sql` and `data.sql` in `src/main/resources` also work and are simple, but they have no history, no checksums and no ordering across environments. Use them for demos and tests, Flyway for anything deployed."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never run `ddl-auto=update` or `create` against a production database. `create` deletes all data on the next restart. `update` silently drifts the schema away from what your team reviewed, and it cannot do destructive changes like renaming a column, so you end up fixing it by hand at 2 a.m. Use Flyway migrations plus `validate`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between JPA, Hibernate and Spring Data JPA? JPA is the specification (annotations and the `EntityManager` API). Hibernate is an implementation of that specification that generates SQL and tracks entity changes. Spring Data JPA sits on top: it generates repository implementations from interfaces and derived method names, and calls JPA/Hibernate underneath. You can use Hibernate without Spring Data, but not Spring Data JPA without a JPA provider."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why does an update work without calling save()? A loaded entity inside a transaction is managed. At flush time Hibernate compares it with the snapshot taken at load time (dirty checking) and issues an UPDATE for any difference. `save()` is only required for new entities or for detached ones that you want to merge back."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- JPA is the specification, Hibernate the provider, Spring Data JPA the repository layer on top.\n- An entity needs `@Entity`, `@Id` and a no-arg constructor; use `jakarta.persistence` imports.\n- Managed entities are dirty-checked: changes inside a transaction are written at commit without `save`.\n- Derived query names are checked at startup; use `@Query` with named parameters for anything longer.\n- Return `Page` or `Slice` with a `Pageable`, never unbounded lists.\n- Production schemas come from Flyway migrations with `ddl-auto=validate`, not from Hibernate generation."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-2",
+      "type": "concept",
+      "title": "Relationships, transactions and the N+1 problem",
+      "subtopicId": "3-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Real data has relationships: an author writes many books, a member borrows many books, a book has many categories. JPA maps these with four annotations, and almost every serious JPA bug comes from using them without understanding two things: who owns the relationship, and when related data is loaded. This chapter covers both, then the transaction rules that make multi-step changes safe.\n\n### Mapping relationships\n\nThink in terms of the **foreign key**. In a relational schema, the table that holds the foreign key column is the one that really stores the relationship. JPA calls it the **owning side**. The other side is optional, read-only convenience, and is marked with `mappedBy`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Entity\npublic class Author {\n\n    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n\n    private String name;\n\n    // inverse side: no column here, the FK lives in the books table\n    @OneToMany(mappedBy = \"author\", cascade = CascadeType.ALL, orphanRemoval = true)\n    private List<Book> books = new ArrayList<>();\n\n    protected Author() { }\n    public Author(String name) { this.name = name; }\n\n    public void addBook(Book book) {      // keep both sides in sync\n        books.add(book);\n        book.setAuthor(this);\n    }\n    public void removeBook(Book book) {\n        books.remove(book);\n        book.setAuthor(null);\n    }\n    public Long getId() { return id; }\n    public String getName() { return name; }\n    public List<Book> getBooks() { return books; }\n}",
+          "title": "Author.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Entity\npublic class Book {\n    // id, title, isbn as before\n\n    @ManyToOne(fetch = FetchType.LAZY, optional = false)\n    @JoinColumn(name = \"author_id\")      // owning side: this table has the FK column\n    private Author author;\n\n    public Author getAuthor() { return author; }\n    void setAuthor(Author author) { this.author = author; }\n}",
+          "title": "Book.java (relationship part)"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `@ManyToOne` on `Book` is the owning side and creates the `author_id` column. `mappedBy = \"author\"` on `Author.books` says \"the field `author` in `Book` owns this\". If you set only `author.getBooks().add(book)` and forget `book.setAuthor(...)`, nothing is written, because the owner was never set. That is why we use the helper methods `addBook` and `removeBook`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Annotation",
+            "Meaning",
+            "Default fetch"
+          ],
+          "rows": [
+            [
+              "`@ManyToOne`",
+              "Many books, one author. FK in the \"many\" table.",
+              "EAGER"
+            ],
+            [
+              "`@OneToMany`",
+              "One author, many books. Usually the inverse side of a `@ManyToOne`.",
+              "LAZY"
+            ],
+            [
+              "`@OneToOne`",
+              "One to one, FK on one side.",
+              "EAGER"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Annotation",
+            "Meaning",
+            "Default fetch"
+          ],
+          "rows": [
+            [
+              "`@ManyToMany`",
+              "Students and courses. Needs a join table (`@JoinTable`).",
+              "LAZY"
+            ]
+          ],
+          "caption": "The four relationship annotations."
+        },
+        {
+          "type": "markdown",
+          "text": "For `@ManyToMany`, the owning side declares `@JoinTable(name = \"loan_books\", joinColumns = ...,` `inverseJoinColumns = ...)`. In practice, when the join needs its own data (a loan has a date and a due date), do not use `@ManyToMany`: create a real `Loan` entity with two `@ManyToOne` fields. That is exactly what the project in Part 5 does.\n\n### Cascade and orphan removal\n\n`cascade` passes an operation from parent to children. With `CascadeType.ALL` on `Author.books`, saving an author saves its new books, and deleting an author deletes its books. `orphanRemoval = true` also deletes a book removed from the list. Use cascading only for real parent-owns-child aggregates (order and its lines). Do not put `CascadeType.REMOVE` on a `@ManyToOne` or on `@ManyToMany`: deleting one book must never delete the shared author.\n\n### Lazy and eager fetching\n\n**Eager** means \"load the related data together with me\". **Lazy** means \"put a placeholder (a proxy) there and load the data only when somebody touches it\". Lazy is almost always right, because eager loading drags whole object graphs into memory whether you need them or not. Notice the default for `@ManyToOne` and `@OneToOne` is EAGER, so set `fetch =` `FetchType.LAZY` explicitly, as we did.\n\nThe price of lazy loading is `LazyInitializationException`: the proxy can only load data while its persistence context is open (inside the transaction)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public String authorNameOf(Long bookId) {\n    Book book = bookRepository.findById(bookId).orElseThrow();   // tx ends here\n    return book.getAuthor().getName();   // proxy touched after the tx is closed\n}\n// org.hibernate.LazyInitializationException: could not initialize proxy\n//   [com.example.library.Author#1] - no Session",
+          "title": "LazyBug.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The fix is not \"make everything eager\". Load what you need inside the transaction: put `@Transactional` on the service method, or better, fetch exactly the data required with a query (below)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Spring Boot enables `spring.jpa.open-in-view=true` by default. It keeps the persistence context open during the whole web request, so lazy loading appears to work even in your controller and even when the service has no transaction. It hides the bug above, leaks database access into the web layer, and holds a connection longer. Boot logs a warning at startup. Most teams set `spring.jpa.open-in-view=false` and fetch what they need in the service layer."
+        },
+        {
+          "type": "markdown",
+          "text": "### The N+1 select problem\n\nThis is the most asked JPA question in interviews. You load a list of N authors with one query, then read each author's books. Each access to a lazy collection fires its own query: 1 query for the list plus N for the collections."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Transactional(readOnly = true)\npublic List<String> authorsWithCounts() {\n    List<Author> authors = authorRepository.findAll();      // 1 query\n    List<String> result = new ArrayList<>();\n    for (Author a : authors) {\n        result.add(a.getName() + \": \" + a.getBooks().size());  // 1 query per author\n    }\n    return result;\n}",
+          "title": "NPlusOne.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**Typical SQL log (spring.jpa.show-sql=true), 3 authors**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "select a1_0.id, a1_0.name from author a1_0\nselect b1_0.author_id, b1_0.id, b1_0.title from book b1_0 where b1_0.author_id=?\nselect b1_0.author_id, b1_0.id, b1_0.title from book b1_0 where b1_0.author_id=?\nselect b1_0.author_id, b1_0.id, b1_0.title from book b1_0 where b1_0.author_id=?"
+        },
+        {
+          "type": "markdown",
+          "text": "With 3 authors it is invisible. With 10,000 it is 10,001 round trips to the database and a slow endpoint that \"worked fine on my machine\". You find it by turning on SQL logging in development (`logging.level.org.hibernate.SQL=DEBUG`) and counting statements. There are three standard fixes.\n\n#### Fix 1: join fetch\n\nTell JPQL to load the collection in the same query."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public interface AuthorRepository extends JpaRepository<Author, Long> {\n\n    @Query(\"select distinct a from Author a left join fetch a.books\")\n    List<Author> findAllWithBooks();\n}",
+          "title": "AuthorRepository.java"
+        },
+        {
+          "type": "markdown",
+          "text": "One SQL join, one round trip. Limits: you cannot page a collection `join fetch` in the database (Hibernate pages in memory and warns), and fetching two collections at once at the same time multiplies rows.\n\n#### Fix 2: @EntityGraph\n\nThe same idea without writing JPQL. It works on derived methods too."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@EntityGraph(attributePaths = \"books\")\n@Query(\"select a from Author a\")\nList<Author> findAllWithBooksGraph();\n\n@EntityGraph(attributePaths = \"books\")\nOptional<Author> findByName(String name);",
+          "title": "AuthorRepository.java (alternative)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Fix 3: DTO projection\n\nIf you only need a few fields, do not load entities at all. Select straight into a record. It is the fastest option, because there is no persistence context overhead and no lazy loading to trip over."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public record AuthorSummary(Long id, String name, long bookCount) { }\n\n// in AuthorRepository\n@Query(\"\"\"\n       select new com.example.library.AuthorSummary(a.id, a.name, count(b))\n       from Author a left join a.books b\n       group by a.id, a.name\n       \"\"\")\nList<AuthorSummary> summaries();",
+          "title": "AuthorSummary.java"
+        },
+        {
+          "type": "markdown",
+          "text": "A fourth, less common tool is `@BatchSize` (or the property `spring.jpa.properties.hibernate.default_batch_fetch_size=50`), which loads lazy collections for 50 parents at once, turning N queries into N/50. It is a cheap safety net, not a design."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the N+1 problem and how do you fix it? One query loads N parent rows, then lazy access to a relationship on each parent fires N more queries. Fix by fetching the relationship in the initial query: `join fetch` in JPQL, `@EntityGraph`, or select a DTO projection that contains exactly the columns needed. Detect it by logging SQL and counting statements, or with a test that asserts the query count. Switching to EAGER does not fix it (Hibernate still issues the extra selects for `findAll`) and loads data you do not need."
+        },
+        {
+          "type": "markdown",
+          "text": "### equals and hashCode on entities\n\nEntities live in sets and maps, and Hibernate compares them. Two rules keep you safe. Do not use Lombok `@Data` or an IDE-generated `equals` over all fields, since fields change and lazy collections would be loaded just to compute a hash. And do not base equality on a database-generated `id` naively, because it is `null` before the first save, so the hash code would change after persisting an entity already placed in a `HashSet`.\n\nA pragmatic pattern: equality on a natural business key that never changes (the ISBN), or the id only when non-null with a constant hash code."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Override\npublic boolean equals(Object o) {\n    if (this == o) return true;\n    if (!(o instanceof Book other)) return false;\n    return isbn != null && isbn.equals(other.isbn);\n}\n\n@Override\npublic int hashCode() {\n    return java.util.Objects.hashCode(isbn);   // stable for the life of the object\n}",
+          "title": "Book.java (equality by natural key)"
+        },
+        {
+          "type": "markdown",
+          "text": "Use `instanceof` rather than `getClass()` comparison, because Hibernate may hand you a subclass proxy. Do not include relationship fields in `toString` either, or you create infinite loops (author prints books, each book prints its author).\n\n### Transactions\n\nA **transaction** groups several database operations so that they either all succeed or all roll back (atomicity). A bank transfer that debits one account and credits another is the classic example. In Spring you declare it with `@Transactional` on a service method."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Service\npublic class LoanService {\n\n    private final BookRepository books;\n    private final LoanRepository loans;\n\n    public LoanService(BookRepository books, LoanRepository loans) {\n        this.books = books;\n        this.loans = loans;\n    }\n\n    @Transactional\n    public Loan borrow(Long bookId, Long memberId) {\n        Book book = books.findById(bookId).orElseThrow(() -> new BookNotFound(bookId));\n        if (book.getCopies() == 0) {\n            throw new NoCopiesLeft(bookId);        // unchecked: rolls back\n        }\n        book.setCopies(book.getCopies() - 1);      // dirty checking\n        return loans.save(new Loan(bookId, memberId));\n    }\n\n    @Transactional(readOnly = true)\n    public List<Book> available() {\n        return books.findByCopiesGreaterThan(0, Pageable.unpaged()).getContent();\n    }\n}",
+          "title": "LoanService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Spring wraps `LoanService` in a proxy (see the chapter on bean lifecycle and proxies in Part 1). The proxy begins a transaction before `borrow`, calls your code, then commits if it returns normally or rolls back if it throws.\n\n#### The rules you must know\n\n- **Rollback only on unchecked exceptions by default.** A `RuntimeException` or `Error` rolls back. A checked exception (such as `IOException`) commits! Declare `@Transactional(rollbackFor = Exception.class)` if checked exceptions should roll back.\n- **Placement:** put it on public methods of Spring beans, in the service layer, not on repositories or controllers. A `private` or `final` method cannot be intercepted by the proxy.\n- **Propagation** says what to do if a transaction already exists. The default `REQUIRED` joins the existing one, or starts a new one if none. So a service method calling another `@Transactional` method shares a single transaction, and an exception in the inner one marks the whole transaction rollback-only. `REQUIRES_NEW` suspends the current transaction and runs the inner call in an independent one (use it for audit logging that must survive a rollback). Other values (`SUPPORTS`, `MANDATORY`, `NEVER`, `NESTED`) are rare.\n- `readOnly = true` is a hint: Hibernate skips dirty checking and the driver may optimise. Use it on query methods. It is not a security guarantee.\n- **Isolation** controls what concurrent transactions see of each other: `READ_COMMITTED` (the default on PostgreSQL) prevents dirty reads, `REPEATABLE_READ` also keeps repeated reads stable, `SERIALIZABLE` behaves as if transactions ran one by one and is the slowest. Leave the default unless you can name the anomaly you are preventing.\n\n#### Self-invocation: the proxy limit\n\nBecause the transaction logic lives in the proxy, a call from one method to another method of the same object never passes through the proxy."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Service\npublic class ReportService {\n\n    public void monthly() {\n        archive();                 // plain this.archive(): proxy bypassed, NO transaction\n    }\n\n    @Transactional\n    public void archive() {\n        // expected to run in a transaction, but does not when called from monthly()\n    }\n}",
+          "title": "SelfInvocation.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Fixes: move `archive` into another bean and inject it, or put `@Transactional` on the outer method as well. Calling from a controller or another bean works because that call goes through the proxy."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Catching an exception inside a `@Transactional` method and swallowing it prevents the rollback: the proxy sees a normal return and commits. Either rethrow, or deliberately design the catch as part of your business logic. Likewise, never keep a transaction open across a slow HTTP call to another service; it holds a database connection while waiting."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Does @Transactional roll back on a checked exception? By default, no. Rollback happens for `RuntimeException` and `Error`; a checked exception commits the work done so far. Use `rollbackFor` to change that. A second favourite follow-up: \"Why does @Transactional not work when I call the method from another method in the same class?\" Because Spring applies it through a proxy, and a `this.` call skips the proxy."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The side with the foreign key owns the relationship; `mappedBy` marks the inverse side, and you must set both sides in code.\n- Make associations LAZY (set it explicitly for `@ManyToOne`/`@OneToOne`) and fetch what you need with `join fetch`, `@EntityGraph` or a DTO projection.\n- N+1 is one list query plus one query per row's lazy relation; find it by counting logged SQL.\n- `LazyInitializationException` means you touched a proxy outside the transaction; consider disabling open-in-view.\n- `@Transactional` rolls back on unchecked exceptions only, joins existing transactions by default (`REQUIRED`), and works through a proxy, so self-invocation is not covered.\n- Base entity `equals`/`hashCode` on a stable business key, never on all fields or on relationship collections."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-3",
+      "type": "concept",
+      "title": "Testing Spring Boot applications",
+      "subtopicId": "3-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Tests are what let you change code without fear, and interviewers expect you to know the difference between a fast unit test and a slow integration test. Spring Boot gives you a rich set of test tools, but the most important idea is not a tool: test each thing at the cheapest level that can still catch the bug.\n\n### The test pyramid\n\n**The test pyramid**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "      /\\\n     /  \\      few    end-to-end: whole app + real DB (@SpringBootTest, Testcontainers)\n    /----\\\n   /      \\    some   slice tests: one layer + Spring (@WebMvcTest, @DataJpaTest)\n  /--------\\\n /          \\  many   unit tests: plain Java + JUnit + Mockito, no Spring at all\n/____________\\"
+        },
+        {
+          "type": "markdown",
+          "text": "Unit tests run in milliseconds because no Spring context is started. Slice tests start only the beans of one layer (a few hundred milliseconds to a couple of seconds). Full `@SpringBootTest` tests start the whole application and cost seconds each, and Spring caches the context between tests with the same configuration to soften that.\n\nThe starter `spring-boot-starter-test` (added by start.spring.io as a `test` dependency) brings JUnit 5 (Jupiter), AssertJ, Mockito, Hamcrest, JSONassert, JsonPath and Spring's test support."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Spring Boot 4 splits test support into per-technology test starters, for example `spring-boot-starter-webmvc-test` for MVC tests and `spring-boot-starter-data-jpa-test` for JPA tests. Generate the project on start.spring.io and tick the starters you use, and it adds the matching test starters. Spring Boot 3.5 only needs `spring-boot-starter-test`. The test annotations are the same names; in Boot 4 some of them live in new packages, so let the IDE fix imports. This chapter marks the differences."
+        },
+        {
+          "type": "markdown",
+          "text": "### Unit tests without Spring\n\nKeep business logic in plain classes with constructor injection (as the previous Parts recommended), and you can test it with `new`. Mockito replaces the collaborators, AssertJ gives readable assertions."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport static org.assertj.core.api.Assertions.assertThat;\nimport static org.assertj.core.api.Assertions.assertThatThrownBy;\nimport static org.mockito.ArgumentMatchers.any;\nimport static org.mockito.Mockito.never;\nimport static org.mockito.Mockito.verify;\nimport static org.mockito.Mockito.when;\n\nimport java.util.Optional;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.extension.ExtendWith;\nimport org.mockito.InjectMocks;\nimport org.mockito.Mock;\nimport org.mockito.junit.jupiter.MockitoExtension;\n\n@ExtendWith(MockitoExtension.class)\nclass LoanServiceTest {\n\n    @Mock BookRepository books;\n    @Mock LoanRepository loans;\n    @InjectMocks LoanService service;\n\n    @Test\n    void borrowReducesCopies() {\n        Book book = new Book(\"Dune\", \"978-0\", 2);\n        when(books.findById(1L)).thenReturn(Optional.of(book));\n        when(loans.save(any(Loan.class))).thenAnswer(inv -> inv.getArgument(0));\n\n        service.borrow(1L, 7L);\n\n        assertThat(book.getCopies()).isEqualTo(1);\n    }\n\n    @Test\n    void borrowFailsWhenNoCopiesLeft() {\n        when(books.findById(1L)).thenReturn(Optional.of(new Book(\"Dune\", \"978-0\", 0)));\n\n        assertThatThrownBy(() -> service.borrow(1L, 7L))\n            .isInstanceOf(NoCopiesLeft.class);\n        verify(loans, never()).save(any());\n    }\n}",
+          "title": "LoanServiceTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. There is no Spring annotation in sight: `@ExtendWith(MockitoExtension.class)` is Mockito's JUnit 5 extension, `@Mock` creates the fakes and `@InjectMocks` calls the constructor with them. `when(...).thenReturn(...)` stubs a call; `verify(...)` checks an interaction happened (or, with `never()`, did not). Name tests after behaviour (`borrowFailsWhenNoCopiesLeft`), and follow arrange, act, assert."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Mockito by default (strict stubs under `MockitoExtension`) fails a test that stubs a call it never uses. That is useful: it flags dead setup. Do not mock what you do not own (such as `String` or a JDK collection) or simple value objects like `Book`; use real instances."
+        },
+        {
+          "type": "markdown",
+          "text": "### Controller tests with @WebMvcTest\n\n`@WebMvcTest(BookController.class)` starts only the web layer: the controller, JSON conversion, validation, `@RestControllerAdvice`, and security filters. It does not create services or repositories, so you provide fakes with `@MockitoBean`. `MockMvc` then sends requests to the `DispatcherServlet` without opening a network port."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport static org.hamcrest.Matchers.is;\nimport static org.mockito.Mockito.when;\nimport static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;\nimport static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;\nimport static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;\nimport static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;\n\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;\nimport org.springframework.http.MediaType;\nimport org.springframework.test.context.bean.override.mockito.MockitoBean;\nimport org.springframework.test.web.servlet.MockMvc;\n\n@WebMvcTest(BookController.class)\nclass BookControllerTest {\n\n    @Autowired MockMvc mvc;\n    @MockitoBean BookService service;\n    @Test\n    void getReturnsBook() throws Exception {\n        when(service.find(1L)).thenReturn(new BookResponse(1L, \"Dune\", \"978-0\", 2));\n\n        mvc.perform(get(\"/api/books/1\"))\n           .andExpect(status().isOk())\n           .andExpect(jsonPath(\"$.title\", is(\"Dune\")));\n    }\n\n    @Test\n    void missingBookIs404() throws Exception {\n        when(service.find(9L)).thenThrow(new BookNotFound(9L));\n\n        mvc.perform(get(\"/api/books/9\"))\n           .andExpect(status().isNotFound());\n    }\n\n    @Test\n    void invalidBodyIs400() throws Exception {\n        mvc.perform(post(\"/api/books\")\n                .contentType(MediaType.APPLICATION_JSON)\n                .content(\"{\\\"title\\\":\\\"\\\",\\\"isbn\\\":\\\"1\\\",\\\"copies\\\":-1}\"))\n           .andExpect(status().isBadRequest());\n    }\n}",
+          "title": "BookControllerTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice. `@MockitoBean` (from Spring Framework 6.2) replaces the old `@MockBean`, which is removed in Boot 4; it registers a Mockito mock in the test's application context. The third test shows the value of this slice: validation and the error handler run, with no service and no database. In Boot 3.5 `@WebMvcTest` is in `org.springframework.boot.test.autoconfigure.web.servlet`; in Boot 4 it moved to `org.springframework.boot.webmvc.test.autoconfigure` and needs `spring-boot-starter-webmvc-test`. `get`/`post`/`jsonPath` are unchanged."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "If your app has Spring Security, `@WebMvcTest` includes the security filter chain, so requests return 401 or 403 until you authenticate. Add `@WithMockUser(roles = \"ADMIN\")` on the test (needs `spring-security-test`), or `.with(csrf())` for POSTs when CSRF is enabled. Do not \"fix\" it by deleting security from the test; you would stop testing the real rules."
+        },
+        {
+          "type": "markdown",
+          "text": "### Repository tests with @DataJpaTest\n\n`@DataJpaTest` starts only JPA: entities, repositories, a `TestEntityManager`. It replaces your datasource with an embedded H2 database (if on the classpath) and wraps each test in a transaction that rolls back afterwards, so tests do not pollute each other."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport static org.assertj.core.api.Assertions.assertThat;\n\nimport java.util.Optional;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;\n\n@DataJpaTest\nclass BookRepositoryTest {\n\n    @Autowired BookRepository books;\n\n    @Test\n    void findsByIsbn() {\n        books.save(new Book(\"Dune\", \"978-0\", 3));\n\n        Optional<Book> found = books.findByIsbn(\"978-0\");\n\n        assertThat(found).isPresent();\n        assertThat(found.get().getTitle()).isEqualTo(\"Dune\");\n    }\n    @Test\n    void searchIgnoresCase() {\n        books.save(new Book(\"Dune\", \"978-0\", 3));\n        assertThat(books.search(\"DUN\")).hasSize(1);\n    }\n}",
+          "title": "BookRepositoryTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Test your own queries (derived methods with more than one condition, `@Query` strings, paging), not the `save` and `findById` that Spring Data already tested. In Boot 3.5 the annotation is in `org.springframework.boot.test.autoconfigure.orm.jpa`; in Boot 4 it moved to `org.springframework.boot.data.jpa.test.autoconfigure` (companion starter `spring-boot-starter-data-jpa-test`). Check the import your IDE offers."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "An in-memory H2 database is not PostgreSQL. SQL that works on H2 can fail in production (JSON columns, `ilike`, sequences, locking). For queries that matter, run the test against the real engine with Testcontainers (below), or at least H2 in `MODE=PostgreSQL`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Full-stack tests with @SpringBootTest\n\n`@SpringBootTest` loads the complete application context. With `webEnvironment = RANDOM_PORT` it also starts the real embedded server on a random free port, and you call it over HTTP."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport static org.assertj.core.api.Assertions.assertThat;\n\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.boot.test.web.client.TestRestTemplate;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.ResponseEntity;\n\n@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)\nclass LibraryApiIT {\n\n    @Autowired TestRestTemplate rest;\n\n    @Test\n    void createThenFetchBook() {\n        var request = new CreateBookRequest(\"Dune\", \"978-0-441\", 2);\n\n        ResponseEntity<BookResponse> created =\n            rest.postForEntity(\"/api/books\", request, BookResponse.class);\n        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);\n\n        BookResponse fetched =\n            rest.getForObject(\"/api/books/\" + created.getBody().id(), BookResponse.class);\n        assertThat(fetched.title()).isEqualTo(\"Dune\");\n    }\n}",
+          "title": "LibraryApiIT.java"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "In Boot 4, `@SpringBootTest` no longer provides `TestRestTemplate` or `MockMvc` automatically. Add `@AutoConfigureTestRestTemplate` (plus the `spring-boot-resttestclient` test dependency; the class lives in `org.springframework.boot.resttestclient`) or `@AutoConfigureMockMvc`. The newer `RestTestClient` (enabled with `@AutoConfigureRestTestClient`) is the recommended replacement for `TestRestTemplate` and has a fluent `expectStatus()` / `expectBody()` style like `WebTestClient`. In Boot 3.5 only the listing above is needed."
+        },
+        {
+          "type": "markdown",
+          "text": "Full-stack tests are slow and blunt, so write few of them: one per main use case (create, read, borrow, return). They prove the pieces are wired together: component scanning, configuration, Flyway migrations, security, serialisation.\n\n### Real databases with Testcontainers\n\nTestcontainers starts a throwaway Docker container (here PostgreSQL) for your tests, so tests run against the same engine as production. Spring Boot integrates it with `@ServiceConnection`, which configures the datasource from the running container, with no URL to write."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@SpringBootTest\n@Testcontainers\nclass PostgresIT {\n\n    @Container\n    @ServiceConnection\n    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(\"postgres:16-alpine\");\n\n    @Autowired BookRepository books;\n\n    @Test\n    void persistsAgainstRealPostgres() {\n        Book saved = books.save(new Book(\"Dune\", \"978-0\", 1));\n        assertThat(books.findById(saved.getId())).isPresent();\n    }\n}",
+          "title": "PostgresIT.java (needs Docker and testcontainers dependencies)"
+        },
+        {
+          "type": "markdown",
+          "text": "You need the `spring-boot-testcontainers`, `org.testcontainers:junit-jupiter` and `org.testcontainers:postgresql` test dependencies (Boot 4 packages differ slightly; the Testcontainers site documents the BOM versions) and a running Docker daemon. It is the best way to make Flyway migrations and native queries trustworthy. To keep the build fast, reuse one container across test classes with a shared static container to keep the build fast.\n\n### Which annotation for which job"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Annotation",
+            "Starts",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "`(none) + JUnit/Mockito`",
+              "Nothing",
+              "Business logic in services, mappers, validators"
+            ],
+            [
+              "`@WebMvcTest`",
+              "Controllers, advice, JSON, filters",
+              "Status codes, JSON shape, validation, error responses"
+            ],
+            [
+              "`@DataJpaTest`",
+              "Entities, repositories, embedded DB",
+              "Custom queries, mappings, constraints"
+            ],
+            [
+              "`@JsonTest`",
+              "Jackson only",
+              "Serialisation of DTOs"
+            ],
+            [
+              "`@SpringBootTest`",
+              "Whole application",
+              "A few end-to-end flows, wiring checks"
+            ],
+            [
+              "`@MockitoBean`",
+              "Mock in the Spring context",
+              "Replace a bean (service, client) in a slice test"
+            ],
+            [
+              "`@TestConfiguration`",
+              "Extra beans for a test",
+              "Fixed clocks, stub clients"
+            ]
+          ],
+          "caption": "Test annotations at a glance."
+        },
+        {
+          "type": "markdown",
+          "text": "### What to test\n\n- **Business rules and branches**: the borrow limit, the \"no copies left\" path, boundary values (0, 1, max).\n- **Contracts at the edge**: status codes, validation errors, error body, JSON field names. These are what clients depend on.\n- **Your queries and mappings**: custom `@Query`, unique constraints, cascades.\n- **Failure paths**: not found, duplicate, invalid input, unauthorised. Bugs live here.\n- **Do not test**: getters and setters, Spring itself, or private methods. Test through the public behaviour.\n\nMake tests independent (no test relies on another test's data), deterministic (inject a `Clock` instead of calling `LocalDate.now()`), and fast. Run them with `./mvnw test`; by convention Maven's Surefire plugin runs classes named `*Test` and Failsafe (`./mvnw verify`) runs `*IT`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between @Mock and @MockitoBean (formerly @MockBean)? `@Mock` is plain Mockito: it creates a fake object, no Spring involved, ideal for unit tests with `@InjectMocks`. `@MockitoBean` creates a Mockito mock and registers it in the Spring `ApplicationContext`, replacing any bean of that type, so Spring injects the fake into the controller or service under test. `@MockBean` did the same job and was deprecated in Boot 3.4 and removed in Boot 4."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why prefer @WebMvcTest over @SpringBootTest for a controller? It starts only the web layer, so it is much faster and tests exactly what the controller is responsible for: mapping, validation, serialisation and error handling. Collaborators are mocked, so failures point at the controller. Use `@SpringBootTest` sparingly to prove the layers are wired together."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Test at the cheapest level: many plain unit tests, some slice tests, few full `@SpringBootTest` runs.\n- Unit tests need no Spring: constructor injection plus Mockito and AssertJ.\n- `@WebMvcTest` + `MockMvc` + `@MockitoBean` tests the web layer; `@DataJpaTest` tests your queries with automatic rollback.\n- `@MockitoBean` replaces `@MockBean`; in Boot 4 also check package changes and the added `@AutoConfigure...` annotations on `@SpringBootTest`.\n- Use Testcontainers when the real database engine matters (migrations, native SQL).\n- Test behaviour and failure paths, not getters or the framework."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Spring Data JPA basics"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which of JPA, Hibernate and Spring Data JPA is only a specification?",
+              "answer": "JPA (Jakarta Persistence). Hibernate implements it; Spring Data JPA builds on it."
+            },
+            {
+              "question": "A method in a `@Transactional` service does `book.setTitle(\"X\");` on an entity it loaded with `findById` and returns. Is the title updated in the database? Why?",
+              "answer": "Yes. The entity is managed, so dirty checking issues an UPDATE when the transaction commits; no `save` call is needed."
+            },
+            {
+              "question": "What happens at startup if you declare `List<Book> findByTitel(String t)` in the repository?",
+              "answer": "The context fails to start: Spring cannot find a property named `titel` on `Book` and reports it."
+            },
+            {
+              "question": "What is wrong with `@Query(\"select b from Book b where b.title = '\" + t + \"'\")`, and what is the fix?",
+              "answer": "String concatenation allows SQL/JPQL injection (and it will not compile as an annotation value anyway if `t` is not a constant). Use a named parameter `:t` with `@Param(\"t\")`."
+            },
+            {
+              "question": "Which `ddl-auto` value would you use with Flyway in production, and why?",
+              "answer": "`validate` (or `none`): Flyway owns the schema, Hibernate only checks that it matches."
+            },
+            {
+              "question": "Can a Java `record` be an `@Entity`? Give one reason.",
+              "answer": "No: JPA needs a no-arg constructor, mutable fields and the ability to subclass the class for lazy proxies; records are final and immutable. Use records for DTOs instead."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Relationships, transactions and the N+1 problem"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In the `Author`/`Book` mapping above, which side owns the relationship and how do you know?",
+              "answer": "`Book`, because it has the `@ManyToOne` with the `@JoinColumn`; the foreign key column lives in its table. `Author.books` is the inverse side (`mappedBy`)."
+            },
+            {
+              "question": "You write `author.getBooks().add(book);` and save the author, but `book.author_id` is null. Why?",
+              "answer": "The owning side `Book.author` was never set. Update both sides (helper method `addBook`)."
+            },
+            {
+              "question": "What is wrong here, and what exception do you expect? `Book b = repo.findById(1L).get(); return` `b.getAuthor().getName();` in a method without `@Transactional`, with `open-in-view=false`.",
+              "answer": "`LazyInitializationException`: the author proxy is touched after the persistence context closed. Fetch the author in the query or add a transaction."
+            },
+            {
+              "question": "A page lists 50 authors with their book counts and takes 51 SQL statements. Name the problem and two fixes.",
+              "answer": "N+1 select. Fix with `join fetch` / `@EntityGraph`, or a DTO projection with `count` and `group by`."
+            },
+            {
+              "question": "A `@Transactional` method throws `new IOException(\"disk\")`. Is the data rolled back?",
+              "answer": "No. Checked exceptions do not trigger rollback by default; add `rollbackFor = Exception.class`."
+            },
+            {
+              "question": "Method `a()` of a bean calls `this.b()` which is annotated `@Transactional(propagation = REQUIRES_NEW)`. How many transactions are created by calling `a()` from outside?",
+              "answer": "Zero, unless `a()` itself is transactional: the `this.b()` call bypasses the proxy so the annotation on `b` is ignored."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Testing Spring Boot applications"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which test type would you write for \"returns 409 when the ISBN already exists\" in the controller, and which annotation supplies the service?",
+              "answer": "A `@WebMvcTest` with MockMvc; `@MockitoBean BookService` throws the \"duplicate\" exception and the test expects status 409."
+            },
+            {
+              "question": "What does this print? Why? `@DataJpaTest` test A saves a `Book` and ends; test B calls `books.count()` first thing.",
+              "answer": "B sees 0 rows (if the table was empty before): each `@DataJpaTest` test runs in a transaction that is rolled back at the end, so test A's data is gone."
+            },
+            {
+              "question": "A `@WebMvcTest` for a secured controller returns 401. Name two ways to fix the test without disabling security.",
+              "answer": "Authenticate the request with `@WithMockUser(...)` or a `jwt()` / `httpBasic()` request post-processor; add `csrf()` for state-changing requests when CSRF is on."
+            },
+            {
+              "question": "Why can `@DataJpaTest` with H2 give you false confidence, and what is the remedy?",
+              "answer": "H2 differs from PostgreSQL in SQL dialect, types and locking. Run the repository tests on the real engine with Testcontainers."
+            },
+            {
+              "question": "What is wrong: `@Autowired private BookService service;` inside a class annotated only `@WebMvcTest(BookController.class)`?",
+              "answer": "`@WebMvcTest` does not create `@Service` beans, so the context fails with a missing bean. Use `@MockitoBean` for the service."
+            },
+            {
+              "question": "What does `@SpringBootTest(webEnvironment = RANDOM_PORT)` do that the default mock environment does not?",
+              "answer": "It starts a real embedded server on a random free port, so you test over actual HTTP using `TestRestTemplate` or a client, including servlet filters."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

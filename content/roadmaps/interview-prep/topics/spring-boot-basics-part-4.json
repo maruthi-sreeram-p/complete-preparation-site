@@ -1,0 +1,483 @@
+{
+  "source": {
+    "document": "Spring_Boot_Basics.pdf",
+    "pages": "54-66"
+  },
+  "sections": [
+    {
+      "id": "ch-4-1",
+      "type": "concept",
+      "title": "Spring Security basics",
+      "subtopicId": "4-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every API that is not a toy needs to answer two questions on every request: who is calling, and are they allowed to do this? Spring Security is the framework that answers both. It is a large library with a reputation for being confusing, mostly because people copy configuration they do not understand. The good news is that the core model is small: a chain of servlet filters, an `Authentication` object, and a few rules. Learn those and the rest is detail.\n\nThis chapter targets Spring Security 6.x (Spring Boot 3.5) and 7.x (Spring Boot 4). The configuration style shown here, a `SecurityFilterChain` bean using the lambda DSL, works on both.\n\n### What you get by adding the starter\n\nAdd `spring-boot-starter-security` to the pom and start the application without writing any security code. Boot auto-configures a default setup:\n\n- Every endpoint requires authentication.\n- There is one user named `user`, with a random password printed once in the startup log.\n- Both a login form and HTTP Basic are enabled, so a browser gets a form and `curl -u` works.\n- CSRF protection is on, so `POST`, `PUT` and `DELETE` without a CSRF token get `403`.\n- Security headers (such as `X-Content-Type-Options`) are added to responses."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ ./mvnw spring-boot:run\nUsing generated security password: 8e557245-73e2-4286-969a-2f0f1d1e0c3b\n\nThis generated password is for development use only.\nYour security configuration must be updated before running in production.",
+          "title": "Typical output: the default user (the password differs every run)"
+        },
+        {
+          "type": "markdown",
+          "text": "This default is a safe starting point, which is exactly why you must replace it: nobody ships an API whose only user is `user` with a random password.\n\n### The filter chain\n\nSpring Security is not magic inside your controllers. It is a set of servlet filters that run before the `DispatcherServlet` ever sees the request. A single servlet filter, `DelegatingFilterProxy` (in Boot, a registered `FilterChainProxy`), hands each request to the first `SecurityFilterChain` whose request matcher matches. That chain is an ordered list of filters, each with one job."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 100.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M204.6 94.0 L298.3 94.0 C300.0 94.0 301.3 92.7 301.3 91.0 L301.3 69.0 C301.3 67.3 300.0 66.0 298.3 66.0 L204.6 66.0 C202.9 66.0 201.6 67.3 201.6 69.0 L201.6 91.0 C201.6 92.7 202.9 94.0 204.6 94.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M324.3 94.0 L418.1 94.0 C419.7 94.0 421.1 92.7 421.1 91.0 L421.1 69.0 C421.1 67.3 419.7 66.0 418.1 66.0 L324.3 66.0 C322.6 66.0 321.3 67.3 321.3 69.0 L321.3 91.0 C321.3 92.7 322.6 94.0 324.3 94.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M251.4 66.0 L254.1 60.6 L248.8 60.6 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M371.2 66.0 L373.8 60.6 L368.6 60.6 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 42.0 L89.2 42.0 C90.8 42.0 92.2 40.7 92.2 39.0 L92.2 5.0 C92.2 3.3 90.8 2.0 89.2 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 39.0 C2.0 40.7 3.3 42.0 5.0 42.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M107.2 42.0 L191.4 42.0 C193.0 42.0 194.4 40.7 194.4 39.0 L194.4 5.0 C194.4 3.3 193.0 2.0 191.4 2.0 L107.2 2.0 C105.5 2.0 104.2 3.3 104.2 5.0 L104.2 39.0 C104.2 40.7 105.5 42.0 107.2 42.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M209.4 42.0 L293.5 42.0 C295.2 42.0 296.5 40.7 296.5 39.0 L296.5 5.0 C296.5 3.3 295.2 2.0 293.5 2.0 L209.4 2.0 C207.7 2.0 206.4 3.3 206.4 5.0 L206.4 39.0 C206.4 40.7 207.7 42.0 209.4 42.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M311.5 42.0 L395.7 42.0 C397.4 42.0 398.7 40.7 398.7 39.0 L398.7 5.0 C398.7 3.3 397.4 2.0 395.7 2.0 L311.5 2.0 C309.9 2.0 308.5 3.3 308.5 5.0 L308.5 39.0 C308.5 40.7 309.9 42.0 311.5 42.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M413.7 42.0 L497.9 42.0 C499.6 42.0 500.9 40.7 500.9 39.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L413.7 2.0 C412.1 2.0 410.7 3.3 410.7 5.0 L410.7 39.0 C410.7 40.7 412.1 42.0 413.7 42.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M93.2 22.0 L103.2 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M195.4 22.0 L205.4 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M297.5 22.0 L307.5 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M399.7 22.0 L409.7 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M103.2 22.0 L97.8 19.4 L97.8 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M205.4 22.0 L200.0 19.4 L200.0 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M307.5 22.0 L302.1 19.4 L302.1 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M409.7 22.0 L404.3 19.4 L404.3 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"128.0\" y=\"20.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"42.5\" lengthAdjust=\"spacingAndGlyphs\">Security filter</text><text x=\"228.3\" y=\"20.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"46.2\" lengthAdjust=\"spacingAndGlyphs\">Authentication</text><text x=\"332.5\" y=\"20.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"42.2\" lengthAdjust=\"spacingAndGlyphs\">Authorization</text><text x=\"34.2\" y=\"24.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"25.9\" lengthAdjust=\"spacingAndGlyphs\">Request</text><text x=\"440.3\" y=\"24.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"31.1\" lengthAdjust=\"spacingAndGlyphs\">Controller</text><text x=\"140.7\" y=\"28.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"17.1\" lengthAdjust=\"spacingAndGlyphs\">chain</text><text x=\"230.3\" y=\"28.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"42.2\" lengthAdjust=\"spacingAndGlyphs\">who are you?</text><text x=\"339.8\" y=\"28.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"27.6\" lengthAdjust=\"spacingAndGlyphs\">allowed?</text><text x=\"223.3\" y=\"82.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"56.3\" lengthAdjust=\"spacingAndGlyphs\">401 Unauthorized</text><text x=\"348.3\" y=\"82.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"45.7\" lengthAdjust=\"spacingAndGlyphs\">403 Forbidden</text></svg>",
+          "width": 503,
+          "caption": "A request passes through the filter chain; each filter either lets it continue or stops it with 401 or 403 before any controller code runs.",
+          "alt": "Security filter Authentication Authorization | Request Controller | chain who are you? allowed? | 401 Unauthorized 403 Forbidden"
+        },
+        {
+          "type": "markdown",
+          "text": "The filters you should know by name:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Filter",
+            "Job"
+          ],
+          "rows": [
+            [
+              "`CorsFilter`",
+              "Answers browser pre-flight requests; must run before authentication"
+            ],
+            [
+              "`CsrfFilter`",
+              "Rejects state-changing requests without a valid CSRF token"
+            ],
+            [
+              "`BasicAuthenticationFilter`",
+              "Reads the `Authorization: Basic` header and authenticates"
+            ],
+            [
+              "`BearerTokenAuthenticationFilter`",
+              "Reads `Authorization: Bearer` and validates a JWT"
+            ],
+            [
+              "`ExceptionTranslationFilter`",
+              "Turns security exceptions into 401 (not logged in) or 403 (not allowed)"
+            ],
+            [
+              "`AuthorizationFilter`",
+              "Last filter: checks the request against your `authorizeHttpRequests` rules"
+            ]
+          ],
+          "caption": "Important filters in a typical chain."
+        },
+        {
+          "type": "markdown",
+          "text": "When authentication succeeds, the result is stored in the `SecurityContext` (held in a thread-local for the duration of the request). Anywhere in your code you can read it with `SecurityContextHolder.getContext().getAuthentication()`, or let Spring inject it as a controller parameter (`Authentication`, `Principal`, or `@AuthenticationPrincipal`).\n\n### Authentication versus authorisation\n\nThese two words are constantly confused, and interviewers love the difference.\n\n- **Authentication** (authn) proves who you are: a password, a token, a certificate. Failure means `401 Unauthorized` (the name is unfortunate; it really means unauthenticated).\n- **Authorisation** (authz) decides what an identified user may do: roles and permissions. Failure means `403` `Forbidden`.\n\nAn `Authentication` object carries a principal (the user), credentials (cleared after login), and a list of `GrantedAuthority` values such as `ROLE_ADMIN` or `SCOPE_books.read`. Authorisation rules are checks against that list.\n\n### Your own SecurityFilterChain\n\nAs soon as you define a `SecurityFilterChain` bean, Boot's default chain backs off and yours replaces it completely. Here is a realistic configuration for a stateless JSON API using HTTP Basic (we will swap Basic for JWT later):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.config;\n\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.http.HttpMethod;\nimport org.springframework.security.config.Customizer;\nimport org.springframework.security.config.annotation.web.builders.HttpSecurity;\nimport org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;\nimport org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;\nimport org.springframework.security.config.http.SessionCreationPolicy;\nimport org.springframework.security.web.SecurityFilterChain;\n\n@Configuration\n@EnableWebSecurity\npublic class SecurityConfig {\n\n    @Bean\n    SecurityFilterChain api(HttpSecurity http) throws Exception {\n        http\n            .csrf(AbstractHttpConfigurer::disable)\n            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n            .authorizeHttpRequests(auth -> auth\n                .requestMatchers(\"/actuator/health/**\").permitAll()\n                .requestMatchers(HttpMethod.GET, \"/api/products/**\").permitAll()\n                .requestMatchers(\"/api/admin/**\").hasRole(\"ADMIN\")\n                .anyRequest().authenticated())\n            .httpBasic(Customizer.withDefaults());\n        return http.build();\n    }\n}",
+          "title": "SecurityConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Rules are evaluated top to bottom and the first match wins. Put specific rules before general ones, and always end with `anyRequest()`. A broad `permitAll` placed first silently opens everything below it.\n- `hasRole(\"ADMIN\")` checks for the authority `ROLE_ADMIN`. Spring adds the `ROLE_` prefix for you, so storing `ROLE_ADMIN` and calling `hasRole(\"ROLE_ADMIN\")` is a common double-prefix bug. Use `hasAuthority` when you want the exact string.\n- `requestMatchers` replaced `antMatchers` and `mvcMatchers` (removed in Security 6). `WebSecurityConfigurerAdapter` is also gone: if a tutorial extends it, the tutorial is outdated.\n- Requests that match no rule are not automatically denied in every setup, so the closing `anyRequest().authenticated()` (or `denyAll()`) is your safety net.\n\n### Users and passwords\n\nAuthentication needs a source of users. Spring Security abstracts it as `UserDetailsService`, a single method `loadUserByUsername`. Boot provides an in-memory one for the default user. For real applications you implement it against your user table:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.security;\n\nimport org.springframework.security.core.userdetails.User;\nimport org.springframework.security.core.userdetails.UserDetails;\nimport org.springframework.security.core.userdetails.UserDetailsService;\nimport org.springframework.security.core.userdetails.UsernameNotFoundException;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class DbUserDetailsService implements UserDetailsService {\n\n    private final AppUserRepository users;\n\n    public DbUserDetailsService(AppUserRepository users) {\n        this.users = users;\n    }\n\n    @Override\n    public UserDetails loadUserByUsername(String username) {\n        AppUser u = users.findByUsername(username)\n            .orElseThrow(() -> new UsernameNotFoundException(\"No such user\"));\n        return User.withUsername(u.getUsername())\n            .password(u.getPasswordHash())      // already hashed\n            .roles(u.getRole())                 // \"ADMIN\" becomes ROLE_ADMIN\n            .build();\n    }\n}",
+          "title": "DbUserDetailsService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`AppUser` and `AppUserRepository` are your own JPA entity and repository (see the Spring Data chapter). Boot picks up a single `UserDetailsService` bean automatically.\n\n**Never store plain-text passwords.** Store a salted, deliberately slow hash. Spring Security's `PasswordEncoder` does both:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.config;\n\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;\nimport org.springframework.security.crypto.password.PasswordEncoder;\n\n@Configuration\npublic class PasswordConfig {\n\n    @Bean\n    PasswordEncoder passwordEncoder() {\n        return new BCryptPasswordEncoder();   // default strength 10\n    }\n}",
+          "title": "PasswordConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "You call `encoder.encode(raw)` when a user registers and Spring Security calls `matches(raw, stored)` at login. BCrypt generates a fresh random salt each time, so encoding the same password twice gives different strings, and the salt and cost are embedded in the hash itself. `PasswordEncoderFactories.createDelegatingPasswordEncoder()` stores hashes as `{bcrypt}$2a$...`, which lets you migrate algorithms later without a flag day."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Two encodings of the same password never compare equal with `equals`. A beginner bug is `encode(raw).equals(stored)`. It is always false because of the random salt. Always call `passwordEncoder.matches(raw, stored)`. Another classic: seeding test users with a plain password in the database while the encoder is BCrypt gives \"Encoded password does not look like BCrypt\" warnings and a 401 on every login."
+        },
+        {
+          "type": "markdown",
+          "text": "### Basic, session or JWT?\n\nThe question \"how does the client prove who it is on request number two?\" has three common answers."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Style",
+            "How it works",
+            "Trade-offs"
+          ],
+          "rows": [
+            [
+              "HTTP Basic",
+              "Username and password sent in a header on every request",
+              "Trivial to use and test; password travels on every call, so HTTPS is mandatory; fine for internal tools and demos"
+            ],
+            [
+              "Session cookie",
+              "Login once, server stores a session, browser sends `JSESSIONID`",
+              "Natural for server-rendered sites; needs sticky or shared sessions to scale; needs CSRF protection"
+            ],
+            [
+              "JWT bearer token",
+              "Client sends a signed token; server verifies the signature, no server-side session",
+              "Stateless and scales easily; hard to revoke before expiry; keep tokens short-lived"
+            ]
+          ],
+          "caption": "Authentication styles compared."
+        },
+        {
+          "type": "markdown",
+          "text": "A **JWT** (JSON Web Token) is three Base64URL parts separated by dots: header, payload (claims such as `sub`, `exp`, `scope`), and a signature. The signature proves who issued it and that nobody changed it. The payload is encoded, not encrypted: never put secrets in it."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does JWT authentication work in a Spring Boot API? A login endpoint (or, better, a separate identity provider such as Keycloak or an OAuth2 authorization server) issues a signed, short-lived token. The client sends it as `Authorization:` `Bearer <token>`. A filter verifies the signature, expiry and issuer, builds an `Authentication` with the claims as authorities, and stores it in the `SecurityContext`. The server keeps no session, so any instance can serve any request. The downside is revocation: a leaked token stays valid until it expires, so use short lifetimes plus refresh tokens."
+        },
+        {
+          "type": "markdown",
+          "text": "### A JWT resource server\n\nIn modern Spring the recommended pattern is that your API is a **resource server**: it only validates tokens, and a dedicated identity provider issues them. Writing your own token-signing login endpoint is possible but easy to get subtly wrong. Add `spring-boot-starter-oauth2-resource-server` and point it at the issuer:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  security:\n    oauth2:\n      resourceserver:\n        jwt:\n          issuer-uri: https://auth.example.com/realms/shop",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "Boot downloads the issuer's public keys from its discovery document and uses them to verify signatures. The filter chain changes by one line:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.config;\n\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.security.config.Customizer;\nimport org.springframework.security.config.annotation.web.builders.HttpSecurity;\nimport org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;\nimport org.springframework.security.config.http.SessionCreationPolicy;\nimport org.springframework.security.web.SecurityFilterChain;\n@Configuration\npublic class JwtSecurityConfig {\n\n    @Bean\n    SecurityFilterChain api(HttpSecurity http) throws Exception {\n        http\n            .csrf(AbstractHttpConfigurer::disable)\n            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n            .authorizeHttpRequests(auth -> auth\n                .requestMatchers(\"/actuator/health/**\").permitAll()\n                .requestMatchers(\"/api/admin/**\").hasAuthority(\"SCOPE_admin\")\n                .anyRequest().authenticated())\n            .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()));\n        return http.build();\n    }\n}",
+          "title": "JwtSecurityConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "By default, the `scope` claim becomes authorities with a `SCOPE_` prefix. If your provider puts roles in another claim (Keycloak uses `realm_access.roles`), configure a `JwtAuthenticationConverter` bean to map them. This is a sketch: details depend on your identity provider, so read its documentation and Spring Security's resource-server reference."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Spring Boot does not ship a token issuer. If you need to run one yourself, use Spring Authorization Server or an off-the-shelf product. For the project in this guide we keep HTTP Basic with in-memory users, because it needs no extra infrastructure and lets you focus on the application."
+        },
+        {
+          "type": "markdown",
+          "text": "### Method security\n\nURL rules are coarse. For rules that depend on the data (\"only the owner or an admin may edit this\"), put the check on the service method. Enable it once and annotate:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.service;\n\nimport org.springframework.security.access.prepost.PreAuthorize;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class LoanService {\n\n    @PreAuthorize(\"hasRole('LIBRARIAN')\")\n    public void deleteLoan(long id) {\n        // delete logic\n    }\n\n    @PreAuthorize(\"hasRole('LIBRARIAN') or #username == authentication.name\")\n    public String loansOf(String username) {\n        return \"loans of \" + username;\n    }\n}",
+          "title": "LoanService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Add `@EnableMethodSecurity` to a configuration class (it turns on `@PreAuthorize` and `@PostAuthorize`; in Spring Security 6 and later it replaced `@EnableGlobalMethodSecurity`). The expression language can reach method parameters (`#username`) and the current `authentication`. Because this works through a proxy, it carries the same limits as `@Transactional`: calling a secured method from another method in the same class bypasses the check (see the chapter on bean lifecycle and proxies).\n\n### CSRF and CORS\n\n**CSRF** (cross-site request forgery) is an attack on browsers that automatically attach cookies: a malicious page makes your logged-in browser send a request to your site. The defence is a secret token that a malicious page cannot read. Rule of thumb:\n\n- Browser plus session cookie: keep CSRF enabled.\n- Stateless API where the client sends the credential in a header (Basic or Bearer) that the browser does not attach on its own: disabling CSRF is reasonable. Do it deliberately, with that reason in mind, not because a `403` was annoying.\n\n**CORS** (cross-origin resource sharing) is the browser rule that a page from one origin may not call another origin unless the server allows it. Security filters run before Spring MVC, so a CORS configuration that lives only in MVC will not stop the security chain from rejecting the browser's unauthenticated pre-flight `OPTIONS` request. Fix it by enabling CORS in the chain with `.cors(Customizer.withDefaults())` and publishing a `CorsConfigurationSource` bean (or let it find your MVC CORS configuration). The REST design chapter covers the CORS settings themselves.\n\n### Common mistakes\n\n- Leaving the default generated user in place or committing real passwords to `application.yml`. Use environment variables or a secret store.\n- Returning `403` or `200` where `401` is right, or the reverse: clients rely on the distinction to decide whether to log in again.\n- Trusting the client: hiding a button is not authorisation. Enforce on the server.\n- Disabling security \"temporarily\" for tests in the main configuration. Use `@WithMockUser` and the `spring-security-test` helpers in tests instead.\n- Rule order mistakes (a broad `permitAll()` before specific rules).\n- Logging `Authorization` headers or tokens.\n- Long-lived JWTs with no way to revoke them.\n- Exposing Actuator endpoints that reveal environment or heap dumps (next chapter)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Adding the starter secures everything with one random user; define your own `SecurityFilterChain` to take control.\n- Security is a filter chain in front of MVC; rules match top to bottom, first match wins, end with `anyRequest()`.\n- 401 means unauthenticated, 403 means authenticated but forbidden; `hasRole` adds the `ROLE_` prefix.\n- Hash passwords with BCrypt via `PasswordEncoder`; compare with `matches`.\n- For JWT, make the API a resource server and let an identity provider issue short-lived tokens.\n- Disable CSRF only for stateless header-credential APIs; use `@PreAuthorize` for data-dependent rules, remembering it is proxy-based."
+        }
+      ]
+    },
+    {
+      "id": "ch-4-2",
+      "type": "concept",
+      "title": "Observability and shipping",
+      "subtopicId": "4-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "An application that works on your laptop has done about a third of its job. In production you must answer: is it alive, is it healthy, how fast is it, what did it log, and how do I package and start it identically everywhere? Spring Boot gives you most of the answers with Actuator, Micrometer and good packaging support. This chapter covers them, then a Dockerfile, a `docker-compose.yml` with PostgreSQL, and a deployment checklist.\n\n### Actuator\n\nSpring Boot Actuator adds production-ready endpoints that expose the running application's state over HTTP (and JMX). Add the starter:"
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-actuator</artifactId>\n</dependency>",
+          "title": "pom.xml (fragment)"
+        },
+        {
+          "type": "markdown",
+          "text": "By default over HTTP only `/actuator/health` is exposed. The most useful endpoints are:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Endpoint",
+            "What it shows"
+          ],
+          "rows": [
+            [
+              "`health`",
+              "Up or down, plus details of database, disk and other checks"
+            ],
+            [
+              "`info`",
+              "Build and git information, plus anything you add under `info.*`"
+            ],
+            [
+              "`metrics`",
+              "Names of all Micrometer metrics; `/actuator/metrics/jvm.memory.used` gives one"
+            ],
+            [
+              "`prometheus`",
+              "Metrics in Prometheus text format (needs the Prometheus registry dependency)"
+            ],
+            [
+              "`loggers`",
+              "Read and change log levels at runtime"
+            ],
+            [
+              "`env`",
+              "All configuration properties and their sources (sensitive)"
+            ],
+            [
+              "`beans, mappings, conditions`",
+              "What is in the container, which URLs exist, why auto-configuration did or did not apply"
+            ],
+            [
+              "`heapdump, threaddump`",
+              "A JVM heap or thread dump (very sensitive)"
+            ]
+          ],
+          "caption": "Common Actuator endpoints."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Exposing endpoints safely\n\nEndpoints can be enabled and exposed separately. Exposure over the web is controlled with an include list:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "management:\n  endpoints:\n    web:\n      exposure:\n        include: health,info,metrics,prometheus\n  endpoint:\n    health:\n      show-details: when-authorized\n      probes:\n        enabled: true\n  server:\n    port: 9090",
+          "title": "application.yml"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never expose all endpoints on a public port. Setting `management.endpoints.web.exposure.include: \"*\"` is a favourite in tutorials. In production it publishes `env`, `heapdump` and `loggers` (which can change log levels) to anyone who can reach the port. Expose the minimum, secure the rest with Spring Security, and consider a separate `management.server.port` that is only reachable from inside your network. Heap dumps can contain passwords and tokens."
+        },
+        {
+          "type": "markdown",
+          "text": "Note that `env` and `configprops` mask values of keys that look like secrets, but masking is a heuristic. Treat it as a safety net, not as permission.\n\n#### Health and Kubernetes-style probes\n\nHealth is built from `HealthIndicator` beans that Boot registers automatically when the relevant class is present: a database check if there is a `DataSource`, disk space, and so on. With `management.endpoint.health.probes.enabled=true` (switched on automatically when running on Kubernetes) you get two groups:\n\n- `/actuator/health/liveness`: is the process in a state it cannot recover from? If not, the orchestrator restarts it.\n- `/actuator/health/readiness`: is it ready to take traffic? During start-up and graceful shutdown it reports out of service so the load balancer stops sending requests.\n\nKeep liveness cheap and independent of external systems. If liveness checks the database and the database blips, the orchestrator restarts every healthy instance and makes the outage worse.\n\nYou can add your own check by implementing `HealthIndicator`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.ops;\n\nimport org.springframework.boot.actuate.health.Health;\nimport org.springframework.boot.actuate.health.HealthIndicator;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class LicenceHealthIndicator implements HealthIndicator {\n\n    @Override\n    public Health health() {\n        boolean valid = checkLicence();\n        return valid\n            ? Health.up().withDetail(\"licence\", \"valid\").build()\n            : Health.down().withDetail(\"licence\", \"expired\").build();\n    }\n\n    private boolean checkLicence() {\n        return true;   // call something real here\n    }\n}",
+          "title": "LicenceHealthIndicator.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The component name `licence` (from the class name minus `HealthIndicator`) becomes the key in the health response."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s localhost:9090/actuator/health\n{\"status\":\"UP\",\"groups\":[\"liveness\",\"readiness\"]}",
+          "title": "Typical output"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "In Spring Boot 4 the Actuator is split into smaller modules and some package names moved, but the starter, the properties and the endpoint URLs above stay the same. Check the migration guide when an import does not resolve."
+        },
+        {
+          "type": "markdown",
+          "text": "### Metrics with Micrometer\n\n**Micrometer** is the metrics facade Actuator uses, in the way SLF4J is a facade for logging. You record measurements in vendor-neutral terms and a registry ships them to Prometheus, Datadog, CloudWatch and others. Boot instruments the JVM (memory, GC, threads), the web server (`http.server.requests`, a timer by URI, method and status), the datasource pool and more, without any code from you.\n\nMetric types you meet:\n\n- **Counter**: only goes up (orders placed).\n- **Gauge**: a value that goes up and down (queue size).\n- **Timer**: counts events and records their duration (request latency).\n\nTo scrape with Prometheus, add `io.micrometer:micrometer-registry-prometheus` and expose the `prometheus` endpoint. Your own metric is a few lines:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.ops;\n\nimport io.micrometer.core.instrument.Counter;\nimport io.micrometer.core.instrument.MeterRegistry;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class CheckoutService {\n\n    private final Counter orders;\n\n    public CheckoutService(MeterRegistry registry) {\n        this.orders = Counter.builder(\"shop.orders.placed\")\n            .description(\"Orders successfully placed\")\n            .register(registry);\n    }\n\n    public void placeOrder() {\n        // business logic\n        orders.increment();\n    }\n}",
+          "title": "CheckoutService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Keep tag values low-cardinality. A tag such as `userId` creates one time series per user and can overwhelm your monitoring system.\n\n### Logging\n\nBoot uses **SLF4J** as the API in your code and **Logback** as the default implementation. Create a logger per class and log with placeholders, which avoids building strings for log levels that are switched off:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.shop.ops;\n\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class ReportJob {\n\n    private static final Logger log = LoggerFactory.getLogger(ReportJob.class);\n\n    public void run(String name, int rows) {\n        log.info(\"Report {} produced {} rows\", name, rows);\n        try {\n            export(name);\n        } catch (IllegalStateException e) {\n            log.error(\"Export of report {} failed\", name, e);   // exception last: full stack trace\n        }\n    }\n\n    private void export(String name) {\n        if (name.isBlank()) {\n            throw new IllegalStateException(\"empty name\");\n        }\n    }\n}",
+          "title": "ReportJob.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Levels, from most to least severe: `ERROR`, `WARN`, `INFO` (the default), `DEBUG`, `TRACE`. Set them per package in configuration, and change them at runtime through the `loggers` endpoint when you need to investigate:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "logging:\n  level:\n    root: INFO\n    com.example.shop: DEBUG\n    org.hibernate.SQL: DEBUG",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Logging rules that matter\n\n- Do not log passwords, tokens, card numbers or full request bodies.\n- Pass the exception as the last argument so you get the stack trace; do not log only `e.getMessage()`.\n- In containers, log to the console (stdout) and let the platform collect it. Do not write log files inside a container.\n- Use JSON in production so log systems can index fields. Since Spring Boot 3.4 this is built in: `logging.structured.format.console=ecs` (other values include `logstash` and `gelf`).\n- A **correlation id** put in the MDC (`MDC.put(\"requestId\", id)` in a filter) lets you follow one request across log lines. With Micrometer Tracing the trace and span ids are added for you.\n\n### Graceful shutdown\n\nWhen an orchestrator stops your container it sends `SIGTERM`. Without graceful shutdown, in-flight requests are cut off. With it, the server stops accepting new connections, finishes active requests, then closes the application context."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "server:\n  shutdown: graceful\nspring:\n  lifecycle:\n    timeout-per-shutdown-phase: 30s",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "Setting it explicitly is good practice even when your Boot version already defaults to it. Make the timeout shorter than the platform's kill grace period (Kubernetes defaults to 30 seconds), and make sure your container starts the JVM directly (not through a shell script that swallows the signal).\n\n### Packaging: the executable jar\n\n`./mvnw package` runs your tests and produces `target/app-0.0.1-SNAPSHOT.jar`, an executable \"fat\" jar containing your classes, all dependencies and a launcher. Run it with `java -jar`. That jar is the unit of deployment: build it once and run the same artefact in every environment, changing only configuration."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ ./mvnw -q package -DskipTests\n$ java -jar target/library-api-0.0.1-SNAPSHOT.jar --spring.profiles.active=prod",
+          "title": "Build and run the jar"
+        },
+        {
+          "type": "markdown",
+          "text": "### Docker\n\nA **container image** packages the JRE, your jar and its start command. Two things make good Spring Boot images: a small base image, and layers ordered so that the rarely changing parts (dependencies) are cached and only your code layer is rebuilt.\n\nBoot supports this with a layered jar: the jar's content is split into `dependencies`, `spring-boot-loader`, `snapshot-dependencies` and `application`. A multi-stage Dockerfile extracts the layers:"
+        },
+        {
+          "type": "code",
+          "language": "dockerfile",
+          "code": "FROM eclipse-temurin:21-jdk AS build\nWORKDIR /workspace\nCOPY .mvn/ .mvn/\nCOPY mvnw pom.xml ./\nRUN ./mvnw -q dependency:go-offline\nCOPY src/ src/\nRUN ./mvnw -q package -DskipTests\nRUN java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination /layers\n\nFROM eclipse-temurin:21-jre\nRUN useradd --system --create-home appuser\nUSER appuser\nWORKDIR /app\nCOPY --from=build /layers/dependencies/ ./\nCOPY --from=build /layers/spring-boot-loader/ ./\nCOPY --from=build /layers/snapshot-dependencies/ ./\nCOPY --from=build /layers/application/ ./\nEXPOSE 8080\nENTRYPOINT [\"java\", \"org.springframework.boot.loader.launch.JarLauncher\"]",
+          "title": "Dockerfile"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Stage one builds with the JDK; stage two ships only the JRE. The final image has no Maven, no source code.\n- `COPY pom.xml` plus `dependency:go-offline` before copying `src/` means dependency downloads are cached until the pom changes.\n- The process runs as a non-root user.\n- `extract --layers` with `-Djarmode=tools` is the current mechanism (Spring Boot 3.3 and later). Older tutorials use `-Djarmode=layertools ... extract`, and the launcher class was `org.springframework.boot.loader.JarLauncher` before Boot 3.2. If your Boot version is older than shown here, check the reference documentation for its exact command.\n- Simpler alternative: `COPY target/app.jar /app/app.jar` and `ENTRYPOINT [\"java\",\"-jar\",\"/app/app.jar\"]`. It works but rebuilds the whole dependency layer on every code change.\n\nContainer-awareness: modern JVMs read the container memory limit. Rather than hard-coding `-Xmx`, set `-XX:MaxRAMPercentage=75` through the `JAVA_TOOL_OPTIONS` environment variable, leaving headroom for metaspace, threads and native memory.\n\n#### Buildpacks: no Dockerfile at all\n\nSpring Boot's Maven plugin can build an OCI image using Cloud Native Buildpacks:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ ./mvnw spring-boot:build-image -Dspring-boot.build-image.imageName=library-api:1.0",
+          "title": "Build an image with buildpacks"
+        },
+        {
+          "type": "markdown",
+          "text": "It needs a running Docker daemon, produces a layered, memory-tuned image, and gets security patches for the base layers by rebuilding. It is quick to adopt; a hand-written Dockerfile gives you more control. Both are legitimate.\n\n### Configuration in containers\n\nDo not bake environment-specific values into the image. Spring Boot's relaxed binding maps environment variables to properties: `spring.datasource.url` is `SPRING_DATASOURCE_URL`, `server.port` is `SERVER_PORT`, and `library.jwt.secret` is `LIBRARY_JWT_SECRET`. Dots become underscores and everything is upper case. This lets you configure the same image per environment from the outside, as the earlier configuration chapter's precedence list explains (environment variables beat the packaged `application.yml`).\n\n### docker-compose with PostgreSQL\n\nCompose runs several containers together. This file starts PostgreSQL and the application, and waits for the database to be healthy:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_DB: shop\n      POSTGRES_USER: shop\n      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}\n    volumes:\n      - dbdata:/var/lib/postgresql/data\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U shop -d shop\"]\n      interval: 5s\n      timeout: 3s\n      retries: 10\n\n  app:\n    build: .\n    depends_on:\n      db:\n        condition: service_healthy\n    environment:\n      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/shop\n      SPRING_DATASOURCE_USERNAME: shop\n      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:-changeme}\n      SPRING_JPA_HIBERNATE_DDL_AUTO: validate\n    ports:\n      - \"8080:8080\"\nvolumes:\n  dbdata:",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Inside the Compose network the app reaches the database by its service name, `db`, not `localhost`. Mixing these up is the number one Compose error.\n- `depends_on` with `service_healthy` waits for PostgreSQL to accept connections, not merely for its container to start.\n- The password comes from the environment (`DB_PASSWORD`), with a development default only. Put real secrets in a secret manager or an untracked `.env` file.\n- `ddl-auto: validate` makes Hibernate check the schema instead of changing it. Create the schema with Flyway or Liquibase migrations (see the Spring Data JPA chapter).\n- Start with `docker compose up --build`.\n\n### Deployment checklist\n\nBefore you call it production-ready, walk through this list:\n\n- Secrets come from the environment or a secret store; none are in the repository or the image.\n- Profile `prod` is active; `ddl-auto` is `validate` or `none`; schema is managed by migrations.\n- Actuator exposes only what you need, secured or on a private port; health probes are configured.\n- Security: HTTPS terminated at the proxy or load balancer, CORS restricted to known origins, default user gone.\n- Logs go to stdout, in JSON, with no sensitive data; error responses do not include stack traces.\n- Graceful shutdown is on; container runs as non-root; memory settings suit the container limit.\n- Connection pool size (`spring.datasource.hikari.maximum-pool-size`) matches what the database can handle across all instances.\n- The jar was built by CI from a tagged commit, and the same image moves from test to production.\n- You have verified a rollback path and a backup/restore for the database."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Teams commonly run this pipeline: push to Git, CI runs `./mvnw verify` (unit and integration tests, often with Testcontainers), builds an image, pushes it to a registry, and the platform (Kubernetes, ECS, a PaaS) rolls it out with readiness probes gating traffic. The pieces you learned here, health probes, graceful shutdown, environment-driven config, are what make that rollout safe."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between liveness and readiness probes, and why does it matter? Liveness answers \"should this process be restarted?\"; readiness answers \"should it receive traffic right now?\". A pod that is warming up or temporarily cannot reach a dependency should fail readiness (traffic is withheld) but pass liveness (it is not killed). Mixing them up causes restart storms."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Actuator gives health, metrics and more; expose the minimum and never expose everything publicly.\n- Use liveness for \"restart me\" and readiness for \"send me traffic\"; keep liveness cheap.\n- Micrometer is the metrics facade; keep tag cardinality low.\n- Log with SLF4J placeholders to stdout, in JSON in production, with the exception as the last argument.\n- Build one layered jar or image, enable graceful shutdown, and inject all environment-specific configuration through environment variables.\n- In compose, services reach each other by service name; wait for health, not just start."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Spring Security basics"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "A user logs in successfully but calls `/api/admin/users` and gets a response. Which status means \"authenticated but not allowed\", and which means \"not authenticated\"?",
+              "answer": "`403 Forbidden` is authenticated but not allowed; `401 Unauthorized` is not authenticated."
+            },
+            {
+              "question": "You store the role as `ROLE_ADMIN` and write `hasRole(\"ROLE_ADMIN\")`. What goes wrong?",
+              "answer": "Spring adds `ROLE_` itself, so it looks for `ROLE_ROLE_ADMIN` and access is denied. Use `hasRole(\"ADMIN\")` or `hasAuthority(\"ROLE_ADMIN\")`."
+            },
+            {
+              "question": "What is wrong with `if (encoder.encode(raw).equals(stored))`?",
+              "answer": "BCrypt salts randomly, so two encodings differ and the comparison is always false. Use `matches(raw, stored)`."
+            },
+            {
+              "question": "In this chain, can an anonymous caller read `/api/books`? `.authorizeHttpRequests(a ->` `a.anyRequest().authenticated().requestMatchers(\"/api/books\").permitAll())`",
+              "answer": "No. First match wins and `anyRequest().authenticated()` is first. A rule placed after `anyRequest()` is unreachable."
+            },
+            {
+              "question": "Why can a stateless Bearer-token API usually disable CSRF, while a session-cookie site cannot?",
+              "answer": "The browser does not automatically attach a Bearer header, so a forged cross-site request carries no credential. Cookies are attached automatically, which is what CSRF exploits."
+            },
+            {
+              "question": "Why does `@PreAuthorize` on a method not run when another method of the same bean calls it?",
+              "answer": "The call goes straight to `this`, bypassing the proxy that applies the security interceptor."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Observability and shipping"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which single property turns on exposure of `metrics` and `prometheus` over HTTP?",
+              "answer": "`management.endpoints.web.exposure.include` (for example `health,info,metrics,prometheus`)."
+            },
+            {
+              "question": "What is wrong with `log.error(\"failed: \" + e.getMessage())` compared with `log.error(\"failed\", e)`?",
+              "answer": "The first version loses the stack trace and builds the string even when the level is disabled. The second logs the full exception."
+            },
+            {
+              "question": "In compose, the app uses `jdbc:postgresql://localhost:5432/shop` and cannot connect. Why?",
+              "answer": "Inside the app container `localhost` is the app container itself. Use the service name `db`."
+            },
+            {
+              "question": "How would you set `server.port` to 9000 in a container without rebuilding the image?",
+              "answer": "Set the environment variable `SERVER_PORT=9000` (or `--server.port=9000` as a command-line argument)."
+            },
+            {
+              "question": "Why is it a bad idea to include a database check in the liveness probe?",
+              "answer": "A short database outage would make the orchestrator restart healthy instances, turning a small blip into a bigger outage. Put dependency checks in readiness."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

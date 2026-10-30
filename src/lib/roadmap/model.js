@@ -166,6 +166,7 @@ export function buildRoadmap(raw, { id, contentIds = new Set() }) {
     title: isNonEmptyString(raw?.title) ? raw.title : id,
     description: typeof raw?.description === 'string' ? raw.description : '',
     placeholder: raw?.placeholder === true,
+    layout: raw?.layout === 'tree' ? 'tree' : 'layered',
     categories,
     categoryById,
     topics,

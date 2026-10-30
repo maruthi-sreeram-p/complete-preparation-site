@@ -1,0 +1,196 @@
+{
+  "source": {
+    "document": "Written for this site (not from your PDFs)"
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "type": "introduction",
+      "title": "What hooks are",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Not from your PDFs",
+          "text": "Your PDFs do not cover this topic, so this page was written for the site. Your 12-week plan lists React, hooks, rendering, performance, state management and TypeScript. Check it against the official documentation, or give me a PDF to replace it."
+        },
+        "Hooks are functions that let a component keep state and run side effects. React identifies each hook by **its call order**, so there are two rules: call them only at the top level of a component or custom hook, and never inside conditions or loops."
+      ]
+    },
+    {
+      "id": "hooks",
+      "type": "concept",
+      "title": "The hooks you need",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Hook",
+            "Purpose",
+            "Causes a re-render?"
+          ],
+          "rows": [
+            [
+              "`useState`",
+              "A value that survives renders",
+              "Yes, when set to a different value"
+            ],
+            [
+              "`useEffect`",
+              "Sync with something outside React: network, timers, subscriptions",
+              "Only if it sets state"
+            ],
+            [
+              "`useRef`",
+              "A mutable box, or a reference to a DOM node",
+              "No"
+            ],
+            [
+              "`useMemo`",
+              "Cache a calculated value between renders",
+              "No"
+            ],
+            [
+              "`useCallback`",
+              "Cache a function between renders",
+              "No"
+            ],
+            [
+              "`useContext`",
+              "Read a value from a provider above",
+              "Yes, when the value changes"
+            ],
+            [
+              "`useReducer`",
+              "State with several related transitions",
+              "Yes, on dispatch"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "effect",
+      "type": "concept",
+      "title": "useEffect properly",
+      "blocks": [
+        {
+          "type": "diagram",
+          "format": "mermaid",
+          "title": "Effect lifecycle",
+          "code": "flowchart TD\n  A[Component renders] --> B[React updates the DOM]\n  B --> C[Browser paints]\n  C --> D{Did a dependency change?}\n  D -->|first render or yes| E[Run cleanup of the previous effect]\n  E --> F[Run the effect]\n  D -->|no| G[Skip]\n  H[Component removed] --> I[Run cleanup]",
+          "caption": "Effects run after paint. Cleanup runs before the next run and on removal."
+        },
+        {
+          "type": "code",
+          "language": "tsx",
+          "code": "function UserProfile({ id }: { id: number }) {\n  const [user, setUser] = useState<User | null>(null);\n\n  useEffect(() => {\n    const controller = new AbortController();\n    fetch(`/api/users/${id}`, { signal: controller.signal })\n      .then((res) => res.json())\n      .then(setUser)\n      .catch((e) => { if (e.name !== 'AbortError') console.error(e); });\n    return () => controller.abort();\n  }, [id]);\n\n  return user ? <h1>{user.name}</h1> : <p>Loading</p>;\n}",
+          "title": "Fetching with cleanup",
+          "walkthrough": [
+            {
+              "lines": "5-6",
+              "title": "Cancellable request",
+              "text": "The controller lets the cleanup cancel this request."
+            },
+            {
+              "lines": "10",
+              "title": "Cleanup",
+              "text": "If `id` changes quickly, the old request is cancelled, so a slow old response cannot overwrite the new one. This bug is called a race condition."
+            },
+            {
+              "lines": "11",
+              "title": "Dependencies",
+              "text": "The effect reruns when `id` changes. List everything from the component that the effect uses."
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "You might not need an effect",
+          "text": "Do not use an effect to compute a value from props or state: calculate it during render. `const fullName = first + ' ' + last` needs no state and no effect. Effects are for synchronising with things outside React."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Strict Mode",
+          "text": "In development, `StrictMode` runs each effect, its cleanup and the effect again on mount, to expose missing cleanups. Two requests in development are expected, not a bug."
+        }
+      ]
+    },
+    {
+      "id": "closure",
+      "type": "concept",
+      "title": "The stale closure",
+      "blocks": [
+        "Each render has its own props and state values. A function created during a render closes over that render's values forever.",
+        {
+          "type": "code",
+          "language": "tsx",
+          "code": "function Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount(count + 1);        // bug: count is always 0 here, so it sticks at 1\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  // fix: the updater form always receives the latest value\n  // setCount((c) => c + 1);\n\n  return <p>{count}</p>;\n}"
+        }
+      ]
+    },
+    {
+      "id": "custom",
+      "type": "code",
+      "title": "Custom hooks",
+      "blocks": [
+        "A custom hook is a function starting with `use` that calls other hooks. It shares logic, not state: each component that calls it gets its own copy.",
+        {
+          "type": "code",
+          "language": "tsx",
+          "code": "function useFetch<T>(url: string) {\n  const [state, setState] = useState<Result<T>>({ status: 'loading' });\n\n  useEffect(() => {\n    const controller = new AbortController();\n    setState({ status: 'loading' });\n    fetch(url, { signal: controller.signal })\n      .then((res) => {\n        if (!res.ok) throw new Error(`HTTP ${res.status}`);\n        return res.json();\n      })\n      .then((data) => setState({ status: 'ok', data }))\n      .catch((e) => {\n        if (e.name !== 'AbortError') setState({ status: 'error', message: e.message });\n      });\n    return () => controller.abort();\n  }, [url]);\n\n  return state;\n}",
+          "title": "useFetch.ts"
+        }
+      ]
+    },
+    {
+      "id": "notes",
+      "type": "notes",
+      "title": "Important notes",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "**Why can't hooks be called conditionally?** React stores hook state in a list per component and matches it by call position. A conditional call shifts the positions, so hooks read each other's state."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Call hooks at the top level only.\n- Effects synchronise with the outside world; do not use them to derive values.\n- Always return a cleanup for subscriptions, timers and requests.\n- List every dependency the effect uses.\n- Use the updater form `setX((x) => ...)` when the new value depends on the old one."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why does a request fire twice in development?",
+              "answer": "StrictMode mounts, cleans up and remounts in development to reveal missing cleanups. It does not happen in production."
+            },
+            {
+              "question": "What is the difference between `useRef` and `useState`?",
+              "answer": "Changing a ref does not re-render and takes effect immediately. Setting state schedules a re-render."
+            },
+            {
+              "question": "What is a stale closure, and how do you fix one?",
+              "answer": "A function keeps the values from the render that created it. Fix it by listing the dependency or using the updater form of the setter."
+            },
+            {
+              "question": "How does a custom hook differ from a shared service in Spring?",
+              "answer": "A Spring singleton shares one instance and its state. A custom hook shares only the logic: each component gets separate state."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

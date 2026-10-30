@@ -1,6 +1,44 @@
-export const NODE_SIZE = { width: 248, height: 76 }
+export const NODE_SIZE = { width: 300, height: 76 }
 
 const DEFAULTS = { gapX: 44, gapY: 84, maxPerRow: 6 }
+
+export const TREE = { gapX: 60, gapY: 64, stageHeight: 34, stageWidth: 620, stageGap: 40 }
+
+/**
+ * NeetCode-style tree: rows centred on one vertical spine, each row one level of the dependency
+ * graph, with a heading on the spine wherever a new stage begins.
+ */
+function computeTreeLayout(roadmap) {
+  const { topicsById, categoryById, sequence } = roadmap
+  const { width, height } = NODE_SIZE
+  const { gapX, gapY, stageHeight, stageGap } = TREE
+
+  const levelOf = {}
+  const rows = []
+  for (const id of sequence) {
+    const reqs = topicsById[id].requires
+    levelOf[id] = reqs.length ? Math.max(...reqs.map((r) => levelOf[r])) + 1 : 0
+    ;(rows[levelOf[id]] ??= []).push(id)
+  }
+
+  const positions = {}
+  const stages = []
+  let y = 0
+  let category = null
+  for (const row of rows) {
+    const rowCategory = topicsById[row[0]].categoryId
+    if (rowCategory !== category) {
+      category = rowCategory
+      stages.push({ categoryId: rowCategory, category: categoryById[rowCategory], y })
+      y += stageHeight + stageGap
+    }
+    row.forEach((id, i) => {
+      positions[id] = { x: (i - (row.length - 1) / 2) * (width + gapX) - width / 2, y }
+    })
+    y += height + gapY
+  }
+  return { positions, stages }
+}
 
 /**
  * Layered top-to-bottom layout for the dependency graph.
@@ -15,6 +53,7 @@ const DEFAULTS = { gapX: 44, gapY: 84, maxPerRow: 6 }
  * Returns top-left positions, which is what React Flow expects.
  */
 export function computeLayout(roadmap, options = {}) {
+  if (roadmap.layout === 'tree') return computeTreeLayout(roadmap)
   const { gapX, gapY, maxPerRow } = { ...DEFAULTS, ...options }
   const { width, height } = NODE_SIZE
   const step = width + gapX

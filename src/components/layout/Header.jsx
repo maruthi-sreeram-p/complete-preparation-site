@@ -23,8 +23,8 @@ export default function Header() {
   const percent = roadmap ? computeStats(roadmap, state.roadmaps[roadmap.id]).percent : null
 
   return (
-    <header className="sticky top-0 z-30 h-14 border-b border-line bg-canvas/80 backdrop-blur">
-      <div className="mx-auto flex h-full max-w-7xl items-center gap-3 px-4">
+    <header className="sticky top-0 z-30 h-14 border-b border-line bg-canvas">
+      <div className="flex h-full w-full items-center gap-3 px-4 lg:px-6">
         <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight">
           <span className="grid size-7 place-items-center rounded-lg bg-linear-to-br from-accent to-accent-2">
             <Waypoints size={16} className="text-canvas" />

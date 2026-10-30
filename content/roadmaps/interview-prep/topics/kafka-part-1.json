@@ -1,10 +1,79 @@
 {
   "source": {
     "document": "Kafka_Complete_Guide.pdf",
-    "pages": "7-15",
+    "pages": "5-21",
     "planDays": "41"
   },
   "sections": [
+    {
+      "id": "about-this-guide",
+      "type": "introduction",
+      "title": "About this guide",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### How to use this guide\n\n- **Read it in order the first time.** The opening parts build the mental model (what Kafka is and how it works inside), then come the plain Java clients, schemas and Spring Boot, followed by Kafka Streams, Kafka Connect and the design patterns. Use the contents page to jump to what you need. This edition does not yet include the hands-on installation labs, the consumer API chapters, the use-case catalogue, the end-to-end projects, the operations part or the interview kit.\n- **Every chapter follows the same rhythm:** what it is, why it exists, how it works, how to implement it (with code), what goes wrong, and a short key-points box. Coloured boxes mean: NOTE (extra detail), TIP (practical advice), WATCH OUT and GOTCHA (mistakes that cost people days), REAL WORLD (how it appears in production), INTERVIEW ANGLE (what interviewers like to ask).\n- **Labs are hands-on.** A dark box is a terminal session: lines beginning with `$` are what you type, the other lines are the output you should see. Output is shown as typical output; IDs, timestamps and offsets on your machine will differ.\n- **About the code.** Every code listing was written against the official documentation for the versions named on the cover and checked for syntax. They were not executed against a live broker while this guide was produced, so treat the first run on your machine as part of the lab: if a command or listing behaves differently, the official docs for your exact version are the final word.\n- **Running example.** Most examples use one fictional online shop, *ShopStream*, with orders, payments, inventory and notifications. Seeing the same domain across chapters lets you focus on Kafka, not on the business problem.\n- **Conventions.** `monospace` is code, a command or a configuration name. Configuration defaults quoted in this guide are those of Kafka 4.2 documentation unless stated. Topic names use lowercase with dots or hyphens."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-1",
+      "type": "concept",
+      "title": "The Problem Kafka Was Built to Solve",
+      "subtopicId": "1-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Imagine you are building ShopStream, an online shop. When a customer clicks **Place order**, a surprising amount of work has to happen. The card must be charged. Stock must be reserved. A confirmation email should go out. The warehouse needs a shipment to pack. The analytics team wants the sale on their dashboard, and the search page should learn which products are selling fast. ShopStream is the running example for this whole book, so it is worth spending a few minutes on how this work should be organised. That question is the reason Kafka exists.\n\n### The direct-call design and its tangle\n\nThe design most teams reach for first is the direct one. `order-service` saves the order and then calls every other system in turn, usually over HTTP."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public void placeOrder(Order order) {\n    orderRepository.save(order);\n    paymentClient.charge(order);           // HTTP call: can be slow, can fail\n    inventoryClient.reserve(order);        // another HTTP call\n    emailClient.sendConfirmation(order);   // and another\n    analyticsClient.recordSale(order);\n    searchClient.updatePopularity(order);\n}",
+          "title": "OrderService.java (the direct-call design, simplified)"
+        },
+        {
+          "type": "markdown",
+          "text": "This works on day one and hurts on day ninety. Look at what `order-service` has to know, and what it has to put up with.\n\n- **It knows every consumer of its data.** Each call hard-codes an address, an API and a payload format. A new interested system, say a fraud checker, means changing and redeploying `order-service`.\n- **Everyone must be awake right now.** If the email service is down, either the order fails or you write retry and fallback code for every single call.\n- **The slowest callee sets the pace.** The customer waits while the analytics call finishes, although the customer does not care about analytics.\n- **The problem multiplies.** `order-service` is only one producer of facts. `payment-service` has facts that others need (a payment was authorised), and so do inventory, shipping and the web front end.\n\nIf N systems produce data and M systems need it, point-to-point wiring needs up to N × M integrations. Each one has its own protocol, data format, error handling, monitoring and owner. Ten producers and fifteen consumers can mean as many as 150 connections to build and keep alive (an illustrative number, but real systems get there faster than anyone plans)."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "BEFORE: point-to-point. Each X is a separate integration to build, secure, monitor and fix.\n\n                    payment  inventory  shipping  email  analytics  search\norder-service          X         X          X        X        X        X\npayment-service        .         X          X        X        X        .\ninventory-service      .         .          X        .        X        X\nweb-frontend           X         X          .        .        X        X\n\n4 producers x 6 consumers: 17 connections here, up to 24 in the worst case"
+        },
+        {
+          "type": "markdown",
+          "text": "### Batch versus real time\n\nThe other classic answer is the **batch job**. Once a night a script extracts yesterday's data from the order database, transforms it, and loads it into a warehouse, a search index and a reporting database. This pattern is called ETL (extract, transform, load). Batch processing is simple, robust and very efficient for large volumes, and it is still the right tool for many jobs, such as monthly revenue reports.\n\nIts weakness is **staleness**: the data is exactly as old as the last run. Some questions can wait until tomorrow. Others cannot. Is this card payment fraudulent? Is the last pair of size-42 red shoes about to sell out? Which products should the home page promote right now? The value of this kind of information decays quickly with age.\n\nBatch extraction also tends to hit the application database directly, which adds load to a system that is busy serving customers, and it couples every job to the internal table layout of the source system.\n\n\"Real time\" in this book does not mean microseconds. It means reacting within seconds, or less, **as events happen**, instead of hours later. What we want is a way to move facts between systems continuously, reliably and without every pair of systems having to know about each other.\n\n### The shared log in the middle\n\nThe idea behind Kafka is to put one durable, ordered, append-only **log** in the middle. A producer does not call anybody. It appends an event describing what happened to the log. Consumers read the log at their own pace, and each consumer keeps its own bookmark that says how far it has read."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "AFTER: everyone talks to the log, never to each other.\n\n producers                                                        consumers\n┌───────────────────┐                                      ┌──────────────────────┐\n│ order-service     │──┐                              ┌───►│ payment-service      │\n└───────────────────┘  │     ┌──────────────────┐     │    └──────────────────────┘\n┌───────────────────┐  │     │                  │     │    ┌──────────────────────┐\n│ payment-service   │──┤     │      Kafka       │     ├───►│ inventory-service    │\n└───────────────────┘  ├────►│ durable, ordered │─────┤    └──────────────────────┘\n┌───────────────────┐  │     │  log of events   │     │    ┌──────────────────────┐\n│ inventory-service │──┤     │                  │     ├───►│ notification-service │\n└───────────────────┘  │     └──────────────────┘     │    └──────────────────────┘\n┌───────────────────┐  │                              │    ┌──────────────────────┐\n│ web-frontend      │──┘                              └───►│ analytics, search ...│\n└───────────────────┘                                      └──────────────────────┘\n\n4 producers + 6 consumers = 10 connections, and all of them look the same."
+        },
+        {
+          "type": "markdown",
+          "text": "Think of a shared notebook in the office. Anyone can write a new line at the bottom, nobody erases lines, and every reader keeps a bookmark at the last line they read. A reader on holiday does not stop anybody else from writing; when they return they simply continue from their bookmark. That picture is surprisingly close to how Kafka behaves, and the \"bookmark\" will come back as the **offset** in the next chapters.\n\nHere is what this buys ShopStream:\n\n- **Decoupling in space.** `order-service` publishes `OrderCreated` once. It does not know, and does not need to know, who reads it.\n- **Decoupling in time.** If `notification-service` is down for an hour, events wait in the log. When the service comes back, it continues from its bookmark. Nothing is lost and nobody else noticed.\n- **Decoupling in speed.** A slow consumer slows only itself. The producer and the other consumers carry on.\n- **History and replay.** A new consumer can start from the beginning of the log. If you find a bug in your analytics code, you fix it, move the bookmark back, and process the history again.\n- **One agreed order.** All consumers see the same events in the same order, so their copies of the truth do not drift apart for ordering reasons.\n\nSix months later the data science team wants fraud scoring. In the direct design they must negotiate with the `order-service` team, wait for a new release, and accept that the new HTTP call slows every checkout. In the log design they write a consumer, start it at the oldest event and let it catch up. The `order-service` code does not change at all.\n\nWhy a *log* and not just a clever queue? Appending to the end of a file and reading it sequentially is what disks, operating systems and CPU caches do best. An append-only structure is also easy to replicate: followers copy the leader's log in the same order. The architecture part of this book shows how much of Kafka's performance and reliability comes from this one design choice."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A log in the middle is not free. You now operate (or pay for) a distributed system. Consumers see data slightly later than the producer wrote it, so the system is **eventually consistent**: the confirmation email may go out a second after the order. Events become a public contract, and changing their shape can break readers you have never met. Debugging a flow means following an event across several services instead of reading one stack trace. And delivery is normally *at* *least once*, so consumers must cope with seeing the same event twice. Later parts show how to handle each of these."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why put a broker such as Kafka between services instead of calling them directly? Because it decouples producers from consumers in space (they do not know each other), in time (a consumer can be down and catch up later) and in speed (a slow consumer does not slow the producer). It also turns N x M point-to-point integrations into N + M, and new consumers can be added years later without touching the producer. Direct calls remain the right tool when the caller needs an answer right now, for example to validate a card before confirming an order."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Point-to-point integration needs up to N × M connections and couples systems in code, in time and in speed.\n- Batch jobs are simple and efficient, but the data they deliver is as old as the last run.\n- Kafka puts a durable, ordered, append-only log in the middle: producers append, consumers read at their own pace and keep their own bookmark.\n- The log gives decoupling, replay and one agreed order, at the price of running a distributed system and of eventual consistency."
+        }
+      ]
+    },
     {
       "id": "ch-1-2",
       "type": "concept",
@@ -78,7 +147,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 179.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M158.0 152.0 L344.9 152.0 C348.2 152.0 350.9 149.3 350.9 146.0 L350.9 8.0 C350.9 4.7 348.2 2.0 344.9 2.0 L158.0 2.0 C154.7 2.0 152.0 4.7 152.0 8.0 L152.0 146.0 C152.0 149.3 154.7 152.0 158.0 152.0 Z\" fill=\"#1f2932\" stroke=\"#6591cd\" stroke-width=\"1.20\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 21.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 69.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 117.0 L152.0 72.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 21.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 69.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 117.0\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 37.0 L99.0 37.0 C100.7 37.0 102.0 35.7 102.0 34.0 L102.0 8.0 C102.0 6.3 100.7 5.0 99.0 5.0 L5.0 5.0 C3.3 5.0 2.0 6.3 2.0 8.0 L2.0 34.0 C2.0 35.7 3.3 37.0 5.0 37.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L150.1 66.3 L146.4 70.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 85.0 L99.0 85.0 C100.7 85.0 102.0 83.7 102.0 82.0 L102.0 56.0 C102.0 54.3 100.7 53.0 99.0 53.0 L5.0 53.0 C3.3 53.0 2.0 54.3 2.0 56.0 L2.0 82.0 C2.0 83.7 3.3 85.0 5.0 85.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.8 69.1 L146.5 74.3 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 133.0 L99.0 133.0 C100.7 133.0 102.0 131.7 102.0 130.0 L102.0 104.0 C102.0 102.3 100.7 101.0 99.0 101.0 L5.0 101.0 C3.3 101.0 2.0 102.3 2.0 104.0 L2.0 130.0 C2.0 131.7 3.3 133.0 5.0 133.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.2 73.7 L149.7 77.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 137.0 L212.0 137.0 C213.6 137.0 215.0 135.7 215.0 134.0 L215.0 35.0 C215.0 33.3 213.6 32.0 212.0 32.0 L165.0 32.0 C163.3 32.0 162.0 33.3 162.0 35.0 L162.0 134.0 C162.0 135.7 163.3 137.0 165.0 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 115.0 L204.0 115.0 C205.6 115.0 207.0 113.7 207.0 112.0 L207.0 100.0 C207.0 98.3 205.6 97.0 204.0 97.0 L173.0 97.0 C171.3 97.0 170.0 98.3 170.0 100.0 L170.0 112.0 C170.0 113.7 171.3 115.0 173.0 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 93.0 L204.0 93.0 C205.6 93.0 207.0 91.7 207.0 90.0 L207.0 78.0 C207.0 76.3 205.6 75.0 204.0 75.0 L173.0 75.0 C171.3 75.0 170.0 76.3 170.0 78.0 L170.0 90.0 C170.0 91.7 171.3 93.0 173.0 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 71.0 L204.0 71.0 C205.6 71.0 207.0 69.7 207.0 68.0 L207.0 56.0 C207.0 54.3 205.6 53.0 204.0 53.0 L173.0 53.0 C171.3 53.0 170.0 54.3 170.0 56.0 L170.0 68.0 C170.0 69.7 171.3 71.0 173.0 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M228.0 137.0 L274.9 137.0 C276.6 137.0 277.9 135.7 277.9 134.0 L277.9 35.0 C277.9 33.3 276.6 32.0 274.9 32.0 L228.0 32.0 C226.3 32.0 225.0 33.3 225.0 35.0 L225.0 134.0 C225.0 135.7 226.3 137.0 228.0 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 115.0 L266.9 115.0 C268.6 115.0 269.9 113.7 269.9 112.0 L269.9 100.0 C269.9 98.3 268.6 97.0 266.9 97.0 L236.0 97.0 C234.3 97.0 233.0 98.3 233.0 100.0 L233.0 112.0 C233.0 113.7 234.3 115.0 236.0 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 93.0 L266.9 93.0 C268.6 93.0 269.9 91.7 269.9 90.0 L269.9 78.0 C269.9 76.3 268.6 75.0 266.9 75.0 L236.0 75.0 C234.3 75.0 233.0 76.3 233.0 78.0 L233.0 90.0 C233.0 91.7 234.3 93.0 236.0 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 71.0 L266.9 71.0 C268.6 71.0 269.9 69.7 269.9 68.0 L269.9 56.0 C269.9 54.3 268.6 53.0 266.9 53.0 L236.0 53.0 C234.3 53.0 233.0 54.3 233.0 56.0 L233.0 68.0 C233.0 69.7 234.3 71.0 236.0 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M290.9 137.0 L337.9 137.0 C339.6 137.0 340.9 135.7 340.9 134.0 L340.9 35.0 C340.9 33.3 339.6 32.0 337.9 32.0 L290.9 32.0 C289.3 32.0 287.9 33.3 287.9 35.0 L287.9 134.0 C287.9 135.7 289.3 137.0 290.9 137.0 Z\" fill=\"#171925\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 115.0 L329.9 115.0 C331.6 115.0 332.9 113.7 332.9 112.0 L332.9 100.0 C332.9 98.3 331.6 97.0 329.9 97.0 L298.9 97.0 C297.3 97.0 295.9 98.3 295.9 100.0 L295.9 112.0 C295.9 113.7 297.3 115.0 298.9 115.0 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 93.0 L329.9 93.0 C331.6 93.0 332.9 91.7 332.9 90.0 L332.9 78.0 C332.9 76.3 331.6 75.0 329.9 75.0 L298.9 75.0 C297.3 75.0 295.9 76.3 295.9 78.0 L295.9 90.0 C295.9 91.7 297.3 93.0 298.9 93.0 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 71.0 L329.9 71.0 C331.6 71.0 332.9 69.7 332.9 68.0 L332.9 56.0 C332.9 54.3 331.6 53.0 329.9 53.0 L298.9 53.0 C297.3 53.0 295.9 54.3 295.9 56.0 L295.9 68.0 C295.9 69.7 297.3 71.0 298.9 71.0 Z\" fill=\"#492c08\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 37.0 L497.9 37.0 C499.6 37.0 500.9 35.7 500.9 34.0 L500.9 8.0 C500.9 6.3 499.6 5.0 497.9 5.0 L383.9 5.0 C382.2 5.0 380.9 6.3 380.9 8.0 L380.9 34.0 C380.9 35.7 382.2 37.0 383.9 37.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 21.0 L375.9 24.3 L380.4 27.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 85.0 L497.9 85.0 C499.6 85.0 500.9 83.7 500.9 82.0 L500.9 56.0 C500.9 54.3 499.6 53.0 497.9 53.0 L383.9 53.0 C382.2 53.0 380.9 54.3 380.9 56.0 L380.9 82.0 C380.9 83.7 382.2 85.0 383.9 85.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 69.0 L375.3 66.9 L375.8 72.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 133.0 L497.9 133.0 C499.6 133.0 500.9 131.7 500.9 130.0 L500.9 104.0 C500.9 102.3 499.6 101.0 497.9 101.0 L383.9 101.0 C382.2 101.0 380.9 102.3 380.9 104.0 L380.9 130.0 C380.9 131.7 382.2 133.0 383.9 133.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 117.0 L380.1 111.1 L375.7 114.0 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"218.5\" y=\"17.0\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"66.0\" lengthAdjust=\"spacingAndGlyphs\">KAFKA CLUSTER</text><text x=\"28.9\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"46.2\" lengthAdjust=\"spacingAndGlyphs\">Order service</text><text x=\"412.2\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"57.4\" lengthAdjust=\"spacingAndGlyphs\">payment-service</text><text x=\"172.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 1</text><text x=\"235.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 2</text><text x=\"297.9\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 3</text><text x=\"170.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"233.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"296.1\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"21.9\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"60.2\" lengthAdjust=\"spacingAndGlyphs\">Web / mobile app</text><text x=\"407.6\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"66.5\" lengthAdjust=\"spacingAndGlyphs\">analytics (Streams)</text><text x=\"175.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"238.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"301.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"175.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"238.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"301.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"32.7\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"38.6\" lengthAdjust=\"spacingAndGlyphs\">IoT devices</text><text x=\"403.6\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"74.6\" lengthAdjust=\"spacingAndGlyphs\">search sink (Connect)</text><text x=\"56.5\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"41.0\" lengthAdjust=\"spacingAndGlyphs\">Producers</text><text x=\"405.2\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"71.4\" lengthAdjust=\"spacingAndGlyphs\">Consumer groups</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 179.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M158.0 152.0 L344.9 152.0 C348.2 152.0 350.9 149.3 350.9 146.0 L350.9 8.0 C350.9 4.7 348.2 2.0 344.9 2.0 L158.0 2.0 C154.7 2.0 152.0 4.7 152.0 8.0 L152.0 146.0 C152.0 149.3 154.7 152.0 158.0 152.0 Z\" fill=\"#1f2932\" stroke=\"#6591cd\" stroke-width=\"1.20\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 21.0 L152.0 72.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 69.0 L152.0 72.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M102.0 117.0 L152.0 72.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 21.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 69.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M350.9 72.0 L380.9 117.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 37.0 L99.0 37.0 C100.7 37.0 102.0 35.7 102.0 34.0 L102.0 8.0 C102.0 6.3 100.7 5.0 99.0 5.0 L5.0 5.0 C3.3 5.0 2.0 6.3 2.0 8.0 L2.0 34.0 C2.0 35.7 3.3 37.0 5.0 37.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L150.1 66.3 L146.4 70.0 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 85.0 L99.0 85.0 C100.7 85.0 102.0 83.7 102.0 82.0 L102.0 56.0 C102.0 54.3 100.7 53.0 99.0 53.0 L5.0 53.0 C3.3 53.0 2.0 54.3 2.0 56.0 L2.0 82.0 C2.0 83.7 3.3 85.0 5.0 85.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.8 69.1 L146.5 74.3 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 133.0 L99.0 133.0 C100.7 133.0 102.0 131.7 102.0 130.0 L102.0 104.0 C102.0 102.3 100.7 101.0 99.0 101.0 L5.0 101.0 C3.3 101.0 2.0 102.3 2.0 104.0 L2.0 130.0 C2.0 131.7 3.3 133.0 5.0 133.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 72.0 L146.2 73.7 L149.7 77.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 137.0 L212.0 137.0 C213.6 137.0 215.0 135.7 215.0 134.0 L215.0 35.0 C215.0 33.3 213.6 32.0 212.0 32.0 L165.0 32.0 C163.3 32.0 162.0 33.3 162.0 35.0 L162.0 134.0 C162.0 135.7 163.3 137.0 165.0 137.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 115.0 L204.0 115.0 C205.6 115.0 207.0 113.7 207.0 112.0 L207.0 100.0 C207.0 98.3 205.6 97.0 204.0 97.0 L173.0 97.0 C171.3 97.0 170.0 98.3 170.0 100.0 L170.0 112.0 C170.0 113.7 171.3 115.0 173.0 115.0 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 93.0 L204.0 93.0 C205.6 93.0 207.0 91.7 207.0 90.0 L207.0 78.0 C207.0 76.3 205.6 75.0 204.0 75.0 L173.0 75.0 C171.3 75.0 170.0 76.3 170.0 78.0 L170.0 90.0 C170.0 91.7 171.3 93.0 173.0 93.0 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M173.0 71.0 L204.0 71.0 C205.6 71.0 207.0 69.7 207.0 68.0 L207.0 56.0 C207.0 54.3 205.6 53.0 204.0 53.0 L173.0 53.0 C171.3 53.0 170.0 54.3 170.0 56.0 L170.0 68.0 C170.0 69.7 171.3 71.0 173.0 71.0 Z\" fill=\"#492c08\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M228.0 137.0 L274.9 137.0 C276.6 137.0 277.9 135.7 277.9 134.0 L277.9 35.0 C277.9 33.3 276.6 32.0 274.9 32.0 L228.0 32.0 C226.3 32.0 225.0 33.3 225.0 35.0 L225.0 134.0 C225.0 135.7 226.3 137.0 228.0 137.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 115.0 L266.9 115.0 C268.6 115.0 269.9 113.7 269.9 112.0 L269.9 100.0 C269.9 98.3 268.6 97.0 266.9 97.0 L236.0 97.0 C234.3 97.0 233.0 98.3 233.0 100.0 L233.0 112.0 C233.0 113.7 234.3 115.0 236.0 115.0 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 93.0 L266.9 93.0 C268.6 93.0 269.9 91.7 269.9 90.0 L269.9 78.0 C269.9 76.3 268.6 75.0 266.9 75.0 L236.0 75.0 C234.3 75.0 233.0 76.3 233.0 78.0 L233.0 90.0 C233.0 91.7 234.3 93.0 236.0 93.0 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M236.0 71.0 L266.9 71.0 C268.6 71.0 269.9 69.7 269.9 68.0 L269.9 56.0 C269.9 54.3 268.6 53.0 266.9 53.0 L236.0 53.0 C234.3 53.0 233.0 54.3 233.0 56.0 L233.0 68.0 C233.0 69.7 234.3 71.0 236.0 71.0 Z\" fill=\"#492c08\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M290.9 137.0 L337.9 137.0 C339.6 137.0 340.9 135.7 340.9 134.0 L340.9 35.0 C340.9 33.3 339.6 32.0 337.9 32.0 L290.9 32.0 C289.3 32.0 287.9 33.3 287.9 35.0 L287.9 134.0 C287.9 135.7 289.3 137.0 290.9 137.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 115.0 L329.9 115.0 C331.6 115.0 332.9 113.7 332.9 112.0 L332.9 100.0 C332.9 98.3 331.6 97.0 329.9 97.0 L298.9 97.0 C297.3 97.0 295.9 98.3 295.9 100.0 L295.9 112.0 C295.9 113.7 297.3 115.0 298.9 115.0 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 93.0 L329.9 93.0 C331.6 93.0 332.9 91.7 332.9 90.0 L332.9 78.0 C332.9 76.3 331.6 75.0 329.9 75.0 L298.9 75.0 C297.3 75.0 295.9 76.3 295.9 78.0 L295.9 90.0 C295.9 91.7 297.3 93.0 298.9 93.0 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M298.9 71.0 L329.9 71.0 C331.6 71.0 332.9 69.7 332.9 68.0 L332.9 56.0 C332.9 54.3 331.6 53.0 329.9 53.0 L298.9 53.0 C297.3 53.0 295.9 54.3 295.9 56.0 L295.9 68.0 C295.9 69.7 297.3 71.0 298.9 71.0 Z\" fill=\"#492c08\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 37.0 L497.9 37.0 C499.6 37.0 500.9 35.7 500.9 34.0 L500.9 8.0 C500.9 6.3 499.6 5.0 497.9 5.0 L383.9 5.0 C382.2 5.0 380.9 6.3 380.9 8.0 L380.9 34.0 C380.9 35.7 382.2 37.0 383.9 37.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 21.0 L375.9 24.3 L380.4 27.0 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 85.0 L497.9 85.0 C499.6 85.0 500.9 83.7 500.9 82.0 L500.9 56.0 C500.9 54.3 499.6 53.0 497.9 53.0 L383.9 53.0 C382.2 53.0 380.9 54.3 380.9 56.0 L380.9 82.0 C380.9 83.7 382.2 85.0 383.9 85.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 69.0 L375.3 66.9 L375.8 72.1 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M383.9 133.0 L497.9 133.0 C499.6 133.0 500.9 131.7 500.9 130.0 L500.9 104.0 C500.9 102.3 499.6 101.0 497.9 101.0 L383.9 101.0 C382.2 101.0 380.9 102.3 380.9 104.0 L380.9 130.0 C380.9 131.7 382.2 133.0 383.9 133.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M380.9 117.0 L380.1 111.1 L375.7 114.0 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"218.5\" y=\"17.0\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"66.0\" lengthAdjust=\"spacingAndGlyphs\">KAFKA CLUSTER</text><text x=\"28.9\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"46.2\" lengthAdjust=\"spacingAndGlyphs\">Order service</text><text x=\"412.2\" y=\"23.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"57.4\" lengthAdjust=\"spacingAndGlyphs\">payment-service</text><text x=\"172.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 1</text><text x=\"235.0\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 2</text><text x=\"297.9\" y=\"45.0\" font-size=\"7.6\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"33.0\" lengthAdjust=\"spacingAndGlyphs\">Broker 3</text><text x=\"170.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"233.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"296.1\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"36.5\" lengthAdjust=\"spacingAndGlyphs\">payments-0</text><text x=\"21.9\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"60.2\" lengthAdjust=\"spacingAndGlyphs\">Web / mobile app</text><text x=\"407.6\" y=\"71.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"66.5\" lengthAdjust=\"spacingAndGlyphs\">analytics (Streams)</text><text x=\"175.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"238.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"301.6\" y=\"86.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-1</text><text x=\"175.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"238.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"301.6\" y=\"108.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"25.7\" lengthAdjust=\"spacingAndGlyphs\">orders-0</text><text x=\"32.7\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"38.6\" lengthAdjust=\"spacingAndGlyphs\">IoT devices</text><text x=\"403.6\" y=\"119.6\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"74.6\" lengthAdjust=\"spacingAndGlyphs\">search sink (Connect)</text><text x=\"56.5\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"41.0\" lengthAdjust=\"spacingAndGlyphs\">Producers</text><text x=\"405.2\" y=\"169.0\" font-size=\"8.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"71.4\" lengthAdjust=\"spacingAndGlyphs\">Consumer groups</text></svg>",
           "width": 503,
           "caption": "The big picture. Producers write to topics stored on a cluster of brokers, consumer groups read them independently, and Kafka Connect and Kafka Streams are simply more clients of the same cluster.",
           "alt": "KAFKA CLUSTER | Order service payment-service | Broker 1 Broker 2 Broker 3 | payments-0 payments-0 payments-0 | Web / mobile app analytics (Streams) | orders-1 orders-1 orders-1 | orders-0 orders-0 orders-0 | IoT devices search sink (Connect) | Producers Consumer groups"
@@ -90,7 +159,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 532.3 132.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M292.0 114.3 L318.0 114.3 L318.0 94.3 L292.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 74.3 L318.0 74.3 L318.0 54.3 L292.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 74.3 L344.0 74.3 L344.0 54.3 L318.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 74.3 L370.0 74.3 L370.0 54.3 L344.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 74.3 L396.0 74.3 L396.0 54.3 L370.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 74.3 L422.0 74.3 L422.0 54.3 L396.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 74.3 L448.0 74.3 L448.0 54.3 L422.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 74.3 L474.0 74.3 L474.0 54.3 L448.0 54.3 Z\" fill=\"#18383a\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 114.3 L344.0 114.3 L344.0 94.3 L318.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 114.3 L370.0 114.3 L370.0 94.3 L344.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 114.3 L396.0 114.3 L396.0 94.3 L370.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 114.3 L422.0 114.3 L422.0 94.3 L396.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 114.3 L448.0 114.3 L448.0 94.3 L422.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 114.3 L474.0 114.3 L474.0 94.3 L448.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M242.0 59.3 L292.0 102.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 79.3 L109.0 79.3 C110.7 79.3 112.0 78.0 112.0 76.3 L112.0 42.3 C112.0 40.7 110.7 39.3 109.0 39.3 L5.0 39.3 C3.3 39.3 2.0 40.7 2.0 42.3 L2.0 76.3 C2.0 78.0 3.3 79.3 5.0 79.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 79.3 L239.0 79.3 C240.7 79.3 242.0 78.0 242.0 76.3 L242.0 42.3 C242.0 40.7 240.7 39.3 239.0 39.3 L155.0 39.3 C153.3 39.3 152.0 40.7 152.0 42.3 L152.0 76.3 C152.0 78.0 153.3 79.3 155.0 79.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 102.3 L289.6 96.8 L286.2 100.8 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 34.3 L318.0 34.3 L318.0 14.3 L292.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 34.3 L344.0 34.3 L344.0 14.3 L318.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 34.3 L370.0 34.3 L370.0 14.3 L344.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 34.3 L396.0 34.3 L396.0 14.3 L370.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 34.3 L422.0 34.3 L422.0 14.3 L396.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 34.3 L448.0 34.3 L448.0 14.3 L422.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 34.3 L474.0 34.3 L474.0 14.3 L448.0 14.3 Z\" fill=\"#122840\" stroke=\"#8a93bd\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 59.3 L152.0 59.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 22.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 62.3\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M152.0 59.3 L146.6 56.7 L146.6 61.9 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 22.3 L286.1 23.4 L289.2 27.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 62.3 L286.8 59.4 L286.5 64.6 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"298.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">p</text><text x=\"302.0\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">t</text><text x=\"302.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">a</text><text x=\"305.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"306.8\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.1\" lengthAdjust=\"spacingAndGlyphs\">rt</text><text x=\"310.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">p</text><text x=\"312.9\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"5.2\" lengthAdjust=\"spacingAndGlyphs\">it</text><text x=\"315.5\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"6.7\" lengthAdjust=\"spacingAndGlyphs\">ic</text><text x=\"318.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.5\" lengthAdjust=\"spacingAndGlyphs\">io</text><text x=\"322.3\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">:</text><text x=\"324.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">n</text><text x=\"327.7\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"331.2\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">0</text><text x=\"332.6\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"21.4\" lengthAdjust=\"spacingAndGlyphs\">rders</text><text x=\"302.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"27.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1001, o-1004</text><text x=\"298.0\" y=\"46.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 1</text><text x=\"40.9\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"32.2\" lengthAdjust=\"spacingAndGlyphs\">Producer</text><text x=\"179.1\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"35.8\" lengthAdjust=\"spacingAndGlyphs\">hash(key)</text><text x=\"32.3\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"49.5\" lengthAdjust=\"spacingAndGlyphs\">key = orderId</text><text x=\"185.6\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"22.8\" lengthAdjust=\"spacingAndGlyphs\">mod 3</text><text x=\"302.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"67.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"22.1\" lengthAdjust=\"spacingAndGlyphs\">o-1002</text><text x=\"298.0\" y=\"86.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 2</text><text x=\"302.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"107.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1003, o-1005</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 532.3 132.2\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M292.0 114.3 L318.0 114.3 L318.0 94.3 L292.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 74.3 L318.0 74.3 L318.0 54.3 L292.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 74.3 L344.0 74.3 L344.0 54.3 L318.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 74.3 L370.0 74.3 L370.0 54.3 L344.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 74.3 L396.0 74.3 L396.0 54.3 L370.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 74.3 L422.0 74.3 L422.0 54.3 L396.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 74.3 L448.0 74.3 L448.0 54.3 L422.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 74.3 L474.0 74.3 L474.0 54.3 L448.0 54.3 Z\" fill=\"#18383a\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 114.3 L344.0 114.3 L344.0 94.3 L318.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 114.3 L370.0 114.3 L370.0 94.3 L344.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 114.3 L396.0 114.3 L396.0 94.3 L370.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 114.3 L422.0 114.3 L422.0 94.3 L396.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 114.3 L448.0 114.3 L448.0 94.3 L422.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 114.3 L474.0 114.3 L474.0 94.3 L448.0 94.3 Z\" fill=\"#1b3723\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M242.0 59.3 L292.0 102.3\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 79.3 L109.0 79.3 C110.7 79.3 112.0 78.0 112.0 76.3 L112.0 42.3 C112.0 40.7 110.7 39.3 109.0 39.3 L5.0 39.3 C3.3 39.3 2.0 40.7 2.0 42.3 L2.0 76.3 C2.0 78.0 3.3 79.3 5.0 79.3 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M155.0 79.3 L239.0 79.3 C240.7 79.3 242.0 78.0 242.0 76.3 L242.0 42.3 C242.0 40.7 240.7 39.3 239.0 39.3 L155.0 39.3 C153.3 39.3 152.0 40.7 152.0 42.3 L152.0 76.3 C152.0 78.0 153.3 79.3 155.0 79.3 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 102.3 L289.6 96.8 L286.2 100.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 34.3 L318.0 34.3 L318.0 14.3 L292.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M318.0 34.3 L344.0 34.3 L344.0 14.3 L318.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.0 34.3 L370.0 34.3 L370.0 14.3 L344.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 34.3 L396.0 34.3 L396.0 14.3 L370.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M396.0 34.3 L422.0 34.3 L422.0 14.3 L396.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 34.3 L448.0 34.3 L448.0 14.3 L422.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M448.0 34.3 L474.0 34.3 L474.0 14.3 L448.0 14.3 Z\" fill=\"#122840\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 59.3 L152.0 59.3\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 22.3\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M242.0 59.3 L292.0 62.3\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M152.0 59.3 L146.6 56.7 L146.6 61.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 22.3 L286.1 23.4 L289.2 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 62.3 L286.8 59.4 L286.5 64.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"298.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">p</text><text x=\"302.0\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">t</text><text x=\"302.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">a</text><text x=\"305.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"306.8\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.1\" lengthAdjust=\"spacingAndGlyphs\">rt</text><text x=\"310.4\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">p</text><text x=\"312.9\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"5.2\" lengthAdjust=\"spacingAndGlyphs\">it</text><text x=\"315.5\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"6.7\" lengthAdjust=\"spacingAndGlyphs\">ic</text><text x=\"318.0\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"6.5\" lengthAdjust=\"spacingAndGlyphs\">io</text><text x=\"322.3\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">:</text><text x=\"324.5\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">n</text><text x=\"327.7\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\">o</text><text x=\"331.2\" y=\"6.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\">0</text><text x=\"332.6\" y=\"7.4\" font-size=\"8.0\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"21.4\" lengthAdjust=\"spacingAndGlyphs\">rders</text><text x=\"302.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"26.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"27.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1001, o-1004</text><text x=\"298.0\" y=\"46.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 1</text><text x=\"40.9\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"32.2\" lengthAdjust=\"spacingAndGlyphs\">Producer</text><text x=\"179.1\" y=\"57.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"35.8\" lengthAdjust=\"spacingAndGlyphs\">hash(key)</text><text x=\"32.3\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"49.5\" lengthAdjust=\"spacingAndGlyphs\">key = orderId</text><text x=\"185.6\" y=\"67.1\" font-size=\"8.0\" fill=\"#e7e9f3\" textLength=\"22.8\" lengthAdjust=\"spacingAndGlyphs\">mod 3</text><text x=\"302.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"66.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"67.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"22.1\" lengthAdjust=\"spacingAndGlyphs\">o-1002</text><text x=\"298.0\" y=\"86.3\" font-size=\"7.0\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"37.6\" lengthAdjust=\"spacingAndGlyphs\">partition 2</text><text x=\"302.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"328.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"354.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"380.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"406.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"432.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">5</text><text x=\"458.7\" y=\"106.9\" font-size=\"7.5\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">6</text><text x=\"482.0\" y=\"107.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.3\" lengthAdjust=\"spacingAndGlyphs\">o-1003, o-1005</text></svg>",
           "width": 532,
           "caption": "The topic orders with three partitions. The producer hashes the key, so every event of the same order lands in the same partition and keeps its order, while different orders spread across the partitions.",
           "alt": "ptaortpiticio:no0rders | 0 1 2 3 4 5 6 o-1001, o-1004 | partition 1 | Producer hash(key) | key = orderId mod 3 0 1 2 3 4 5 6 o-1002 | partition 2 | 0 1 2 3 4 5 6 o-1003, o-1005"
@@ -228,6 +297,103 @@
       ]
     },
     {
+      "id": "ch-1-4",
+      "type": "concept",
+      "title": "Kafka Compared with Other Tools",
+      "subtopicId": "1-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "No tool is best at everything. This chapter places Kafka among the tools it is usually compared with, in design discussions and in interviews. The comparisons are conceptual and avoid performance numbers on purpose: results depend on workload, configuration and hardware, and products change quickly. Always check a product's current documentation and licence before you decide.\n\n### Two classic models and Kafka's hybrid\n\nMessaging systems traditionally offer one of two models. In a **queue**, many consumers compete for messages and each message is processed by exactly one of them, which is ideal for sharing work but means a second application cannot see the same message. In **publish-subscribe**, every subscriber receives every message, which is ideal for broadcasting but gives you no way to share the work inside one subscriber. Kafka's consumer groups combine both: competing consumers inside a group, broadcast between groups."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 493.9 128.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M105.3 92.5 L145.3 92.5 C147.0 92.5 148.3 91.1 148.3 89.5 L148.3 71.5 C148.3 69.8 147.0 68.5 145.3 68.5 L105.3 68.5 C103.6 68.5 102.3 69.8 102.3 71.5 L102.3 89.5 C102.3 91.1 103.6 92.5 105.3 92.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 57.5 L102.3 42.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M52.0 57.5 L102.3 80.5\" fill=\"none\" stroke=\"#3a3a3a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M218.3 57.5 L268.6 42.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M218.3 57.5 L268.6 80.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M384.6 57.5 L434.9 42.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M384.6 57.5 L434.9 80.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 70.5 L49.0 70.5 C50.7 70.5 52.0 69.1 52.0 67.5 L52.0 47.5 C52.0 45.8 50.7 44.5 49.0 44.5 L5.0 44.5 C3.3 44.5 2.0 45.8 2.0 47.5 L2.0 67.5 C2.0 69.1 3.3 70.5 5.0 70.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M105.3 54.5 L145.3 54.5 C147.0 54.5 148.3 53.1 148.3 51.5 L148.3 33.5 C148.3 31.8 147.0 30.5 145.3 30.5 L105.3 30.5 C103.6 30.5 102.3 31.8 102.3 33.5 L102.3 51.5 C102.3 53.1 103.6 54.5 105.3 54.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.3 80.5 L98.5 75.8 L96.3 80.6 Z\" fill=\"#242424\" stroke=\"#3a3a3a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M171.3 70.5 L215.3 70.5 C217.0 70.5 218.3 69.1 218.3 67.5 L218.3 47.5 C218.3 45.8 217.0 44.5 215.3 44.5 L171.3 44.5 C169.6 44.5 168.3 45.8 168.3 47.5 L168.3 67.5 C168.3 69.1 169.6 70.5 171.3 70.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M271.6 54.5 L311.6 54.5 C313.3 54.5 314.6 53.1 314.6 51.5 L314.6 33.5 C314.6 31.8 313.3 30.5 311.6 30.5 L271.6 30.5 C269.9 30.5 268.6 31.8 268.6 33.5 L268.6 51.5 C268.6 53.1 269.9 54.5 271.6 54.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M271.6 92.5 L311.6 92.5 C313.3 92.5 314.6 91.1 314.6 89.5 L314.6 71.5 C314.6 69.8 313.3 68.5 311.6 68.5 L271.6 68.5 C269.9 68.5 268.6 69.8 268.6 71.5 L268.6 89.5 C268.6 91.1 269.9 92.5 271.6 92.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M268.6 80.5 L264.8 75.8 L262.6 80.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M337.6 70.5 L381.6 70.5 C383.3 70.5 384.6 69.1 384.6 67.5 L384.6 47.5 C384.6 45.8 383.3 44.5 381.6 44.5 L337.6 44.5 C335.9 44.5 334.6 45.8 334.6 47.5 L334.6 67.5 C334.6 69.1 335.9 70.5 337.6 70.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M437.9 54.5 L477.9 54.5 C479.6 54.5 480.9 53.1 480.9 51.5 L480.9 33.5 C480.9 31.8 479.6 30.5 477.9 30.5 L437.9 30.5 C436.2 30.5 434.9 31.8 434.9 33.5 L434.9 51.5 C434.9 53.1 436.2 54.5 437.9 54.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M437.9 92.5 L477.9 92.5 C479.6 92.5 480.9 91.1 480.9 89.5 L480.9 71.5 C480.9 69.8 479.6 68.5 477.9 68.5 L437.9 68.5 C436.2 68.5 434.9 69.8 434.9 71.5 L434.9 89.5 C434.9 91.1 436.2 92.5 437.9 92.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M434.9 80.5 L431.1 75.8 L428.9 80.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.3 42.5 L96.4 41.5 L97.9 46.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M268.6 42.5 L262.7 41.5 L264.2 46.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M434.9 42.5 L429.0 41.5 L430.5 46.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"63.3\" y=\"7.5\" font-size=\"8.5\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"27.8\" lengthAdjust=\"spacingAndGlyphs\">Queue</text><text x=\"226.1\" y=\"7.5\" font-size=\"8.5\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"34.8\" lengthAdjust=\"spacingAndGlyphs\">Pub/sub</text><text x=\"383.4\" y=\"7.5\" font-size=\"8.5\" fill=\"#aac2e3\" font-weight=\"700\" textLength=\"52.7\" lengthAdjust=\"spacingAndGlyphs\">Kafka group</text><text x=\"120.7\" y=\"45.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C1</text><text x=\"287.0\" y=\"45.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C1</text><text x=\"453.3\" y=\"45.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C1</text><text x=\"17.8\" y=\"60.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"18.4\" lengthAdjust=\"spacingAndGlyphs\">Topic</text><text x=\"184.1\" y=\"60.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"18.4\" lengthAdjust=\"spacingAndGlyphs\">Topic</text><text x=\"350.4\" y=\"60.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"18.4\" lengthAdjust=\"spacingAndGlyphs\">Topic</text><text x=\"120.7\" y=\"83.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C2</text><text x=\"287.0\" y=\"83.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C2</text><text x=\"453.3\" y=\"83.1\" font-size=\"7.6\" fill=\"#e7e9f3\" textLength=\"9.1\" lengthAdjust=\"spacingAndGlyphs\">C2</text><text x=\"27.3\" y=\"105.5\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"99.7\" lengthAdjust=\"spacingAndGlyphs\">each message to ONE consumer</text><text x=\"203.8\" y=\"105.5\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"79.2\" lengthAdjust=\"spacingAndGlyphs\">every subscriber gets ALL</text><text x=\"327.5\" y=\"105.5\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"164.4\" lengthAdjust=\"spacingAndGlyphs\">each group gets all; inside a group partitions are split</text></svg>",
+          "width": 494,
+          "caption": "A queue delivers each message to one of several competing consumers, publish-subscribe delivers every message to every subscriber, and a Kafka topic with consumer groups does both: work is shared inside a group and every group sees everything.",
+          "alt": "Queue Pub/sub Kafka group | C1 C1 C1 | Topic Topic Topic | C2 C2 C2 | each message to ONE consumer every subscriber gets ALL each group gets all; inside a group partitions are split"
+        },
+        {
+          "type": "markdown",
+          "text": "### Traditional message brokers\n\nClassic brokers such as RabbitMQ and Apache ActiveMQ are built around queues. A producer sends a message, the broker routes it into one or more queues, delivers it to a consumer, waits for an acknowledgement and then deletes the message. The broker tracks the state of every message. Kafka inverts this: the broker stores an ordered log and does not care who has read it, while each consumer group tracks its own position and pulls the records it wants."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Traditional broker (queue)",
+            "Kafka (partitioned log)"
+          ],
+          "rows": [
+            [
+              "After a message is read",
+              "Deleted once acknowledged",
+              "Kept until retention expires"
+            ],
+            [
+              "Delivery",
+              "Broker pushes, limited by a prefetch count",
+              "Consumer pulls with `poll()`"
+            ],
+            [
+              "Who tracks progress",
+              "The broker, per message",
+              "The consumer group, one offset per partition"
+            ],
+            [
+              "Replay of history",
+              "Normally not possible",
+              "Move the offset back and read again"
+            ],
+            [
+              "Several independent readers",
+              "One queue (a copy) per subscriber",
+              "Any number of groups share one log"
+            ],
+            [
+              "Ordering",
+              "Per queue; competing consumers can reorder",
+              "Per partition"
+            ],
+            [
+              "Rich per-message features",
+              "Routing rules, priorities, TTL, delayed delivery",
+              "Keys and headers only; no priorities or delays"
+            ],
+            [
+              "Scaling out",
+              "Mostly more consumers per queue",
+              "More partitions and more consumers"
+            ]
+          ],
+          "caption": "A fair comparison of the two designs. Both columns describe the typical case."
+        },
+        {
+          "type": "markdown",
+          "text": "Be fair to both sides. Brokers excel at flexible routing, per-message TTLs, priorities and request-reply at moderate volume. RabbitMQ has also added a stream type that is a replayable append-only log, which shows how useful the log idea is. Kafka, on the other hand, now offers share groups, which give queue-style consumption of a topic with per-record acknowledgement. The two worlds are moving closer, but their defaults and strengths still differ.\n\n### Kafka and databases\n\nA database stores the **current state** of your data and lets you query it in flexible ways. Kafka stores the **history of** **changes** and lets you read it in order. The two fit together more often than they compete.\n\n- You can rebuild state by replaying a log of changes, and a table is just the latest value for each key in a stream of changes. This stream-table duality is the foundation of Kafka Streams and of compacted topics.\n- A database answers \"which customers in Pune are GOLD tier?\" with an index. Kafka can only read by topic, partition and offset (or find an offset for a timestamp). Anything richer needs a consumer that builds a view of the data.\n- The common production pattern is a database as the system of record and Kafka as the way changes leave it, using change data capture or the outbox pattern, both covered later. Some teams go further and treat the log as the system of record (event sourcing), accepting that every query then needs a projection.\n\n### Managed cloud messaging services\n\nEvery large cloud offers managed messaging. In outline: Amazon SQS is a managed queue, Amazon SNS fans notifications out to subscribers, Amazon Kinesis Data Streams is a managed partitioned stream, Google Cloud Pub/Sub is a managed publish-subscribe service with per-subscription acknowledgements, and Azure Event Hubs is a managed partitioned log. Microsoft's own documentation calls Kafka and Event Hubs \"very similar\", since both are partitioned logs where the client chooses which part of the retained log to read, and Event Hubs exposes a Kafka endpoint so that existing Kafka clients can connect after a configuration change. The same page lists limitations, so test your own workload.\n\nThe trade-off is usually the same. A managed service removes cluster operations and fits neatly into one cloud, but it ties you to that provider's API, limits and pricing. Kafka is an open protocol with many implementations and vendors, runs on your laptop as easily as in any cloud, and has the broader ecosystem of connectors and stream processing. For a small team that lives in one cloud and has modest needs, the native service can be the better choice.\n\n### Pulsar and Redpanda\n\n**Apache Pulsar** is a separate Apache project with a different architecture. Its brokers are stateless, and messages are stored by Apache BookKeeper, a distributed log storage system, so serving and storage can scale separately. Geo-replication and tenant namespaces are part of its design, and it offers several subscription types, including queue-like shared subscriptions. The price is more moving parts to run (brokers, BookKeeper nodes and a metadata store) and a smaller surrounding ecosystem than Kafka's.\n\n**Redpanda** is a Kafka-API-compatible streaming platform implemented in C++, so it runs without a JVM. Existing Kafka clients and many tools can talk to it. Compatibility is a strength, but it is never a guarantee of identical behaviour in every corner (transactions, administration, newer protocol features), so test with your own clients and check the licence terms. The same caution applies to every other system that speaks the Kafka protocol.\n\n### When to use Kafka, and when not to\n\nKafka is a strong choice when:\n\n- Many systems need the same stream of events, and new consumers will appear over time.\n- You need to replay history, or let consumers fall behind and catch up later.\n- Volume is high or growing, and ordering per key matters (partitions scale, keys preserve order).\n- You build event-driven microservices, change data capture pipelines, clickstream, log or metrics pipelines, or stream processing on live data.\n- You want a durable buffer between systems that run at different speeds.\n\nThink twice, or choose something else, when:\n\n- The caller needs an immediate answer. Use HTTP or gRPC, not a log.\n- You have a small job queue that needs delays, priorities or per-message timeouts. A broker, a cloud queue or a database-backed queue fits better (Kafka share groups help with some queue needs, not with these).\n- You need ad hoc queries and multi-row transactions. That is a database's job.\n- Messages are huge blobs. Store them in object storage and send a reference.\n- You need one strict global order of all events. A single partition caps throughput, so rethink the requirement.\n- The volume is tiny, the team is small and nobody can operate a cluster. A managed service or a simpler tool may save you real money and sleep."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Kafka's own \"use cases\" page lists messaging, website activity tracking, metrics, log aggregation, stream processing, event sourcing and commit log. Its \"Powered By\" page mentions, for example, LinkedIn using Kafka for activity stream data and operational metrics, Netflix running a real-time monitoring and event-processing pipeline on it, and Uber treating it as a central part of its infrastructure. Treat such lists as inspiration, not as proof that Kafka suits your problem."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When would you not choose Kafka? When the interaction is request-response, when you need per-message features such as priorities or delays, when you need rich queries or transactions across records, when payloads are very large, or when the volume does not justify operating a cluster. In those cases an RPC call, a message broker or cloud queue, a database or object storage is usually the better fit."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Queues share work between competing consumers; publish-subscribe broadcasts. Kafka's consumer groups do both.\n- Brokers delete messages after acknowledgement and push them; Kafka keeps records, lets consumers pull, and lets them replay.\n- Databases hold current state and answer queries; Kafka holds the history of changes. Use them together.\n- Managed services trade portability for less operations work. Pulsar and Redpanda are real alternatives with different designs, and Kafka-protocol compatibility does not mean identical behaviour."
+        }
+      ]
+    },
+    {
       "id": "ch-1-5",
       "type": "concept",
       "title": "What Kafka Guarantees (and What It Does Not)",
@@ -299,6 +465,319 @@
           "variant": "keypoints",
           "title": "Key points",
           "text": "What to remember from this chapter\n\n- Order is guaranteed inside a partition only, so keys express your ordering requirements.\n- Durability comes from replication: use `acks=all`, a replication factor of 3 and `min.insync.replicas=2`.\n- Delivery is at least once by default, so consumers must tolerate duplicates.\n- Retention, not consumption, decides how long data stays. Kafka stores bytes and does not validate them."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-6",
+      "type": "concept",
+      "title": "A Tour of the Kafka Ecosystem",
+      "subtopicId": "1-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Kafka is a core plus a large ecosystem. Knowing which piece solves which problem keeps you from writing code that a library already provides. This chapter is a map; the later parts of the book are the territory.\n\n### Shipped with Apache Kafka"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Component",
+            "What it does",
+            "Covered in"
+          ],
+          "rows": [
+            [
+              "`Producer and Consumer` `APIs`",
+              "Java client libraries (artifact `kafka-clients`) that write and read records",
+              "the parts on the Java producer and consumer"
+            ],
+            [
+              "`Admin API`",
+              "Creates, inspects and changes topics, configurations, groups and ACLs from code",
+              "the producer and consumer parts, and the labs"
+            ],
+            [
+              "`Kafka Streams`",
+              "A Java library for stateful stream processing that runs inside your own application, with no separate processing cluster",
+              "the part on Kafka Streams"
+            ],
+            [
+              "`Kafka Connect`",
+              "A runtime with a REST API that runs source and sink connectors to move data between Kafka and other systems",
+              "the part on Kafka Connect"
+            ],
+            [
+              "`MirrorMaker 2`",
+              "Replicates topics between clusters, built on Kafka Connect",
+              "the Connect part and the production part"
+            ],
+            [
+              "`Command-line tools`",
+              "The `bin/kafka-*.sh` scripts for topics, groups, configs, logs and more",
+              "the hands-on part"
+            ],
+            [
+              "`Share groups`",
+              "Queue-like consumption of a topic with per-record acknowledgement",
+              "the architecture part and the Spring production part"
+            ]
+          ],
+          "caption": "The parts that come in the Apache Kafka download."
+        },
+        {
+          "type": "markdown",
+          "text": "### Around Kafka"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Category",
+            "Examples and what they do",
+            "Covered in"
+          ],
+          "rows": [
+            [
+              "Schema registries",
+              "Confluent Schema Registry is the best known; Apicurio Registry and Karapace are open alternatives. They store schemas and check compatibility",
+              "the serialization part"
+            ],
+            [
+              "SQL on streams",
+              "ksqlDB lets you write continuous queries in SQL on its own servers",
+              "the part on Kafka Streams and ksqlDB"
+            ],
+            [
+              "Change data capture",
+              "Debezium provides connectors that turn database changes into Kafka events",
+              "the Connect and CDC part"
+            ],
+            [
+              "Spring integration",
+              "Spring for Apache Kafka (`KafkaTemplate`, `@KafkaListener`)",
+              "the Spring parts"
+            ],
+            [
+              "Other stream engines",
+              "Apache Flink and Apache Spark can read from and write to Kafka",
+              "not covered"
+            ],
+            [
+              "Other languages",
+              "Clients based on the C library librdkafka, and pure-language clients for Go, Python, Node.js and more, exist",
+              "not covered"
+            ],
+            [
+              "Managed services",
+              "Amazon MSK, Confluent Cloud, Aiven for Apache Kafka and the Kafka endpoint of Azure Event Hubs, among others",
+              "the production part"
+            ],
+            [
+              "Kubernetes",
+              "Strimzi is an operator that runs Kafka on Kubernetes",
+              "the production part"
+            ],
+            [
+              "UIs and tools",
+              "Community and commercial web UIs (for example AKHQ, Kafdrop, Kafbat UI) to browse topics and groups",
+              "the Docker Compose chapter"
+            ],
+            [
+              "Monitoring",
+              "JMX metrics exported to Prometheus and Grafana; Cruise Control (an open-source tool from LinkedIn) helps to rebalance partitions",
+              "the production part"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*These are separate projects or products. Check their current status and licence before you adopt them.*\n\nThe official documentation says there are \"a plethora of tools that integrate with Kafka outside the main distribution\" and keeps a community list on the project wiki. Treat every third-party tool as a dependency: look at its release activity, its licence, and whether it supports Kafka 4.x before you build on it."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "When a problem sounds like a pipeline, look for a connector first. Copying rows from a database into Kafka, or topics into a search index, is almost never worth custom consumer code. Kafka Connect already handles offsets, retries, scaling and error routing. Write your own code for business logic, and use Connect for plumbing."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Apache Kafka ships the clients, Kafka Streams, Kafka Connect, MirrorMaker 2 and the command-line tools.\n- Schema registries, ksqlDB, Debezium, UIs, operators and managed services are separate projects: check licence, maintenance and Kafka 4.x support.\n- Use Connect for data movement and Streams for processing before you write consumers by hand."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-7",
+      "type": "concept",
+      "title": "A Short History and the Kafka 4.x Era",
+      "subtopicId": "1-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### From LinkedIn to the Apache Software Foundation\n\nKafka was created at LinkedIn by a team that included Jay Kreps, Neha Narkhede and Jun Rao, to collect and distribute activity stream data and operational metrics. It was open-sourced in 2011 and became a top-level Apache project in\n\n1. Several of its creators later founded Confluent, a company that builds\n\nproducts around Kafka. The name is a reference to the writer Franz Kafka. Today Kafka is developed in the open under the Apache Software Foundation by contributors from many companies, and changes are discussed as **Kafka** **Improvement Proposals** (KIPs), each with a number such as KIP-500 or KIP-848.\n\n### From ZooKeeper to KRaft\n\nFor most of its life Kafka stored its cluster metadata (topics, partitions, leaders, configuration) in Apache ZooKeeper, a separate coordination service. That meant running and securing two distributed systems, and the metadata design limited how many partitions a cluster could handle and how fast it recovered from a controller failure. **KIP-500**, \"Replace ZooKeeper with a Self-Managed Metadata Quorum\", proposed that Kafka manage its own metadata in an internal replicated log, using a Raft-based protocol that became known as **KRaft**.\n\nThe road took several years: KRaft arrived as early access in Kafka 2.8, was declared production-ready in Kafka 3.3, and ZooKeeper mode was deprecated in Kafka 3.5. Kafka 3.9 was the last release that could still run with ZooKeeper, and Kafka 4.0 removed it. Since then KRaft is the only mode, which is why this book never mentions ZooKeeper again, except when you meet it in older material.\n\n### What each 4.x release added"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Release",
+            "Announced",
+            "Highlights"
+          ],
+          "rows": [
+            [
+              "`4.0`",
+              "March 2025",
+              "First release without ZooKeeper. The new consumer rebalance protocol (KIP-848) is generally available: broker side on by default, clients opt in with `group.protocol=consumer`. Share groups in early access (KIP-932). Brokers, Connect and tools need Java 17; clients and Streams need Java 11. Old protocol versions removed (KIP-896). Message formats v0 and v1, MirrorMaker 1 and `poll(long)` removed. Logging moves to Log4j 2"
+            ],
+            [
+              "`4.1`",
+              "September 2025",
+              "Share groups in preview. Streams rebalance protocol (KIP-1071) in early access. Eligible leader replicas (ELR, KIP-966) enabled by default for new clusters"
+            ],
+            [
+              "`4.2`",
+              "February 2026",
+              "Share groups production-ready. Streams rebalance protocol production-ready for its core features. Dead-letter-queue support in Kafka Streams exception handlers (KIP-1034). RENEW acknowledgement for share consumers (KIP-1222). Java 25 support. Consistent command-line option names (KIP-1147)"
+            ],
+            [
+              "`4.3`",
+              "May 2026",
+              "Cordoning of brokers and log directories, so that no new partitions are placed there (KIP-1066). More configuration for share groups (KIP-1240). Partition size percentage metrics for storage monitoring (KIP-1257). Streams: a setting to remove stale state directories at startup (KIP-1259) and headers in state stores (KIP-1271). Follower fetch from a tiered offset (KIP-1023). The Scala wrapper for Kafka Streams is deprecated (KIP-1244)"
+            ]
+          ],
+          "caption": "Highlights of the Kafka 4.x releases (each KIP number is the proposal you can look up)."
+        },
+        {
+          "type": "markdown",
+          "text": "At the time of writing (October 2026) the supported lines are 4.3 (latest patch 4.3.1), 4.2 (4.2.2) and 4.1 (4.1.2). The book uses 4.3.1 for broker examples, and quotes defaults from the 4.2 documentation, which matches 4.3 unless stated.\n\n### Versioning and compatibility\n\nKafka versions are written major.minor.patch. A minor release (4.2, 4.3) adds features and arrives every few months; the four feature releases above were spread over about fourteen months. Patch releases (4.3.1) fix bugs. Features and removals are announced first as **deprecations**: the 4.2 release notes, for example, say that the old command-line spellings and some other items \"will be removed in Kafka 5.0\", which tells you today what to avoid.\n\nThe compatibility rules you should know are these.\n\n- **Clients and brokers.** Since Kafka 4.0, a broker accepts only clients that are version 2.1 or newer, and 4.x clients need brokers of version 2.1 or newer (KIP-896). Clients from the 3.x line are fully compatible with 4.x brokers, and clients between 2.1 and 2.8 work with limits.\n- **Java.** Brokers, Connect and the tools need Java 17 or newer. The Java clients and Kafka Streams need Java 11 or newer. Java 8 support ended with 4.0.\n- **Upgrades.** A rolling upgrade restarts brokers one at a time and is finished by raising the feature level with `kafka-features.sh`; metadata downgrades are not supported. The production part walks through it.\n\nWhere to look things up: the **downloads page** (`kafka.apache.org/downloads`) links the release notes of each version, the **blog** (`kafka.apache.org/blog`) has a readable announcement for every release, the **upgrade guide** in the documentation lists every behaviour change, and the **KIP pages** on the Apache wiki explain why a change was made."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Documentation is versioned. The documentation lives under a version-specific path, for example `kafka.apache.org/42/` for 4.2. When a setting or a behaviour surprises you, check the page that matches your broker version."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Kafka began at LinkedIn, was open-sourced in 2011 and became an Apache top-level project in 2012.\n- KIP-500 replaced ZooKeeper by KRaft: early access in 2.8, production-ready in 3.3, deprecated ZooKeeper in 3.5, removed in 4.0.\n- 4.x brought the new rebalance protocol, share groups (production-ready in 4.2) and many operational improvements.\n- Clients and brokers must be 2.1 or newer to interoperate with 4.x; brokers need Java 17, clients Java 11."
+        }
+      ]
+    },
+    {
+      "id": "ch-1-8",
+      "type": "concept",
+      "title": "How to Study This Book",
+      "subtopicId": "1-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This book is built for a learner who has never used Kafka and wants three things at the end: a mental model that survives interview questions, the ability to build real applications, and enough operational sense to run a cluster without fear. The path below gets you there in the order in which the ideas depend on each other.\n\n### The learning path"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 62.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 48.0 L68.8 48.0 C70.5 48.0 71.8 46.7 71.8 45.0 L71.8 5.0 C71.8 3.3 70.5 2.0 68.8 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.8 25.0 L86.8 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M158.6 25.0 L172.6 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M244.4 25.0 L258.4 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M330.3 25.0 L344.3 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M416.1 25.0 L430.1 25.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M86.8 25.0 L81.4 22.4 L81.4 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M90.8 48.0 L154.6 48.0 C156.3 48.0 157.6 46.7 157.6 45.0 L157.6 5.0 C157.6 3.3 156.3 2.0 154.6 2.0 L90.8 2.0 C89.2 2.0 87.8 3.3 87.8 5.0 L87.8 45.0 C87.8 46.7 89.2 48.0 90.8 48.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M172.6 25.0 L167.2 22.4 L167.2 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M176.6 48.0 L240.4 48.0 C242.1 48.0 243.4 46.7 243.4 45.0 L243.4 5.0 C243.4 3.3 242.1 2.0 240.4 2.0 L176.6 2.0 C175.0 2.0 173.6 3.3 173.6 5.0 L173.6 45.0 C173.6 46.7 175.0 48.0 176.6 48.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M258.4 25.0 L253.0 22.4 L253.0 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.4 48.0 L326.3 48.0 C327.9 48.0 329.3 46.7 329.3 45.0 L329.3 5.0 C329.3 3.3 327.9 2.0 326.3 2.0 L262.4 2.0 C260.8 2.0 259.4 3.3 259.4 5.0 L259.4 45.0 C259.4 46.7 260.8 48.0 262.4 48.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M344.3 25.0 L338.9 22.4 L338.9 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M348.3 48.0 L412.1 48.0 C413.7 48.0 415.1 46.7 415.1 45.0 L415.1 5.0 C415.1 3.3 413.7 2.0 412.1 2.0 L348.3 2.0 C346.6 2.0 345.3 3.3 345.3 5.0 L345.3 45.0 C345.3 46.7 346.6 48.0 348.3 48.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M430.1 25.0 L424.7 22.4 L424.7 27.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M434.1 48.0 L497.9 48.0 C499.6 48.0 500.9 46.7 500.9 45.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L434.1 2.0 C432.4 2.0 431.1 3.3 431.1 5.0 L431.1 45.0 C431.1 46.7 432.4 48.0 434.1 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"22.2\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"29.3\" lengthAdjust=\"spacingAndGlyphs\">Concepts</text><text x=\"190.6\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"35.9\" lengthAdjust=\"spacingAndGlyphs\">Java clients</text><text x=\"275.9\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"36.8\" lengthAdjust=\"spacingAndGlyphs\">Spring Boot</text><text x=\"367.0\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"26.3\" lengthAdjust=\"spacingAndGlyphs\">Patterns</text><text x=\"449.1\" y=\"23.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"33.8\" lengthAdjust=\"spacingAndGlyphs\">Production</text><text x=\"108.9\" y=\"27.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"27.7\" lengthAdjust=\"spacingAndGlyphs\">Internals</text><text x=\"25.1\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"23.6\" lengthAdjust=\"spacingAndGlyphs\">and CLI</text><text x=\"187.7\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"41.7\" lengthAdjust=\"spacingAndGlyphs\">and schemas</text><text x=\"266.2\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"56.2\" lengthAdjust=\"spacingAndGlyphs\">Streams, Connect</text><text x=\"360.6\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"39.1\" lengthAdjust=\"spacingAndGlyphs\">and projects</text><text x=\"442.8\" y=\"31.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"46.3\" lengthAdjust=\"spacingAndGlyphs\">and interviews</text></svg>",
+          "width": 503,
+          "caption": "The route through the book. Fundamentals, hands-on work and internals build the mental model; the Java and Spring parts teach you to build; Streams, Connect, patterns and projects broaden and apply it; production and the revision kit finish the job.",
+          "alt": "Concepts Java clients Spring Boot Patterns Production | Internals | and CLI and schemas Streams, Connect and projects and interviews"
+        },
+        {
+          "type": "markdown",
+          "text": "Each part answers one question. What is Kafka and when do I use it? How do I run it and poke at it? How does it work inside? How do I write a producer and a consumer in plain Java? How do I model and evolve data? How do I do all of that with Spring Boot? How do I handle failure in production code? How do I process streams and move data in and out? Which design patterns are proven? Where is Kafka used? How do I put it all together? How do I operate it? And finally, how do I revise for an interview?\n\n### A four-week plan\n\nThe plan assumes about fifteen hours a week of reading and lab work. If you study part-time, stretch each week to two."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Week",
+            "Focus",
+            "Outcome"
+          ],
+          "rows": [
+            [
+              "1",
+              "Kafka fundamentals, the hands-on labs, the architecture and internals",
+              "You can explain partitions, offsets, consumer groups, replication and the in-sync replica set from memory, and you ran every lab"
+            ],
+            [
+              "2",
+              "The Java producer and consumer, serialization and schemas",
+              "You wrote a producer and a consumer, chose acknowledgements and commit strategies on purpose, and evolved a schema safely"
+            ],
+            [
+              "3",
+              "Spring Boot with Spring Kafka, errors, retries and testing, then Kafka Streams",
+              "A Spring service publishes and consumes events with retries and a dead-letter topic; a Streams topology aggregates page views"
+            ],
+            [
+              "4",
+              "Kafka Connect and CDC, design patterns, use cases, one end-to-end project, production, the revision kit",
+              "You can design an outbox or saga flow, you built one project, and you can answer the interview questions"
+            ]
+          ],
+          "caption": "A suggested four-week schedule. Do the labs, they are the point."
+        },
+        {
+          "type": "markdown",
+          "text": "In a hurry before an interview? Read the fundamentals and the architecture parts, the reliability chapters of the producer and consumer parts, the patterns part, and then work through the revision kit. Spring-first reader? Do the fundamentals and the hands-on labs, then jump to the Spring parts and come back to the Java clients when something confuses you.\n\n### How the labs and listings work\n\n- **Labs** are the amber banners. Each has a goal, numbered steps in dark terminal boxes, an explanation of what just happened, and a \"try it yourself\" exercise. Predict the output before you press Enter; the gap between your prediction and reality is where learning happens.\n- **Terminal output** is typical output. Ids, offsets, timestamps and column spacing on your machine will differ.\n- **Listings** use the package `com.shopstream` and the event names introduced in this book. Complete files include their imports; fragments say so.\n- **Versions.** Broker examples use Kafka 4.3.1, plain Java uses `kafka-clients` 4.3.1, and the Spring examples take versions from Spring Boot 4.1.x and its Spring for Apache Kafka 4.1.x.\n\n### What to install"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "Version",
+            "Why"
+          ],
+          "rows": [
+            [
+              "`JDK`",
+              "21 (17 is the minimum for brokers and tools)",
+              "Runs Kafka's tools and all the Java and Spring examples"
+            ],
+            [
+              "`Apache Kafka`",
+              "4.3.1, Scala 2.13 binary",
+              "The command-line tools and a local broker"
+            ],
+            [
+              "`Docker with Compose`",
+              "A current Docker Desktop or Docker Engine with the Compose plugin",
+              "Single-node and three-node clusters for the labs"
+            ],
+            [
+              "`Maven`",
+              "A recent 3.9 or newer",
+              "Builds the Java and Spring projects (Gradle works too)"
+            ],
+            [
+              "`IDE`",
+              "IntelliJ IDEA or VS Code",
+              "Writing and debugging the examples"
+            ],
+            [
+              "`Git, curl, jq`",
+              "Any recent version",
+              "Fetching code, calling REST APIs, reading JSON"
+            ]
+          ],
+          "caption": "Everything you need, and why. Install the first four before the hands-on part."
+        },
+        {
+          "type": "markdown",
+          "text": "Kafka's tools are shell scripts. On Windows, use WSL 2 or run the tools inside the Docker container. A laptop with several gigabytes of free memory is enough for everything except the three-node cluster, which starts six JVMs; close other heavy applications when you run it."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Keep a learning log. After every chapter write three lines: what problem it solves, one thing that surprised you, and one question you cannot yet answer. Review the questions at the start of the next session. The interview boxes in each chapter are a ready-made quiz: cover the answer and say yours out loud first."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What to remember from this chapter\n\n- Study in dependency order: fundamentals, hands-on labs, internals, then the clients, then Spring, then Streams and Connect.\n- Run every lab, and predict the output before you run it.\n- Install a JDK 21, the Kafka 4.3.1 tarball, Docker with Compose and Maven before you start the hands-on part."
         }
       ]
     }

@@ -1,0 +1,526 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "205-219"
+  },
+  "sections": [
+    {
+      "id": "ch-6-1",
+      "type": "concept",
+      "title": "Choosing a Java client",
+      "subtopicId": "6-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Redis speaks a simple text protocol (RESP) over TCP, so in principle you could talk to it with a raw socket. In practice you use a client library that opens connections, encodes commands, parses replies, follows cluster redirects, reconnects after failures and maps Redis types onto Java types. Java has three mature, widely used client libraries, and one framework layer (Spring Data Redis) that sits on top of two of them. This chapter helps you choose, and the rest of the Part shows each one in working code.\n\n### The candidates at a glance"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Library",
+            "What it is",
+            "Programming model",
+            "Typical reason to pick it"
+          ],
+          "rows": [
+            [
+              "`Lettuce`",
+              "Netty-based client, the Spring Boot default",
+              "Sync, async (CompletionStage) and reactive (Project Reactor) on one thread-safe connection",
+              "You use Spring, or you want one shared connection and non-blocking I/O"
+            ],
+            [
+              "`Jedis`",
+              "Small, blocking client; one socket per borrowed connection",
+              "Synchronous; pipelines and transactions as objects",
+              "You want simple, predictable, easy-to-debug code and a pool"
+            ],
+            [
+              "`Redisson`",
+              "Client plus a large library of distributed Java objects",
+              "Sync, async and reactive; objects such as `RMap`, `RLock`, `RRateLimiter`",
+              "You want ready-made distributed locks, semaphores and collections"
+            ],
+            [
+              "`Spring Data Redis`",
+              "Abstraction (templates, repositories, cache, messaging)",
+              "`RedisTemplate`, `StringRedisTemplate`, repositories",
+              "You build a Spring application and want idiomatic integration"
+            ]
+          ],
+          "caption": "The Java Redis ecosystem in one table."
+        },
+        {
+          "type": "markdown",
+          "text": "Spring Data Redis is not a competitor to the other three. It is a layer that talks to Redis *through* Lettuce (the default) or Jedis. Redisson also ships Spring integrations, which is why you will sometimes see an application using both Spring Data Redis and Redisson side by side.\n\n### How to decide\n\nUse a short decision path rather than a feature checklist.\n\n1. **Building a Spring Boot application?** Start with `spring-boot-starter-data-redis`. You get Lettuce, a configured connection factory and `StringRedisTemplate` without writing any client code. Drop down to the native client only for features the template does not expose.\n2. **Need distributed locks, rate limiters, semaphores or a local cache with invalidation, and do not want** **to write the Lua yourself?** Add Redisson for those objects (see the chapter on Redisson in this Part). Keep ordinary caching and data access on Spring Data Redis.\n3. **Writing a plain Java service, a CLI tool or a batch job?** Lettuce or Jedis both work. Choose Jedis if the team prefers blocking code and a connection pool; choose Lettuce if you want one connection shared by many threads or you are already on Reactor.\n4. **Need reactive end to end?** Lettuce (directly or through `ReactiveRedisTemplate`). Jedis has no reactive API.\n\n### Lettuce versus Jedis: the real difference\n\nThe architectural difference matters more than any feature list. Jedis uses one TCP connection per in-flight caller: a thread borrows a connection from a pool, sends a command, blocks until the reply arrives, and returns the connection. Concurrency therefore equals the pool size, and the instance of a raw connection must never be shared between threads.\n\nLettuce is built on Netty. A single `StatefulRedisConnection` is thread-safe: many threads can submit commands to it concurrently, the commands are written to the socket in order, and replies are matched back to callers in order. Because Redis executes commands on one thread anyway, one well-used connection can keep a server busy. Lettuce still needs extra connections for blocking commands (`BLPOP`, `XREAD BLOCK`) and for transactions, because those occupy the connection.\n\n**Two ways to use a connection**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Jedis (pool)                                  Lettuce (shared connection)\n\n thread A ──borrow──► conn 1 ──► Redis         thread A ─┐\n thread B ──borrow──► conn 2 ──► Redis         thread B ─┼─► one connection ──► Redis\n thread C ──borrow──► conn 3 ──► Redis         thread C ─┘     (commands queued, pipelined)\n thread D ──waits for a free conn\n\n concurrency = pool size                       concurrency = commands in flight on the socket"
+        },
+        {
+          "type": "markdown",
+          "text": "Neither model is \"faster\" in general. A shared Lettuce connection automatically pipelines concurrent callers, which helps throughput; a Jedis pool gives each caller an independent connection, which makes blocking commands and per-connection state trivial. The thing that most often hurts in production is not the model but mis-sized pools and missing timeouts, covered in the chapter on connection management."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Version names change quickly. Jedis 7.2 introduced a new entry-point API (`RedisClient`, `RedisClusterClient`, `RedisSentinelClient`) that replaces `JedisPooled`, `JedisPool`, `JedisCluster` and `JedisSentinelPool`, which are now deprecated but still widely used in existing code. This book shows the new API first and points out the legacy names. Always check the release notes of the version you actually use."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Lettuce or Jedis, and why is a Lettuce connection thread-safe? Spring Boot defaults to Lettuce. A `StatefulRedisConnection` is thread-safe because Netty serialises writes onto an event loop and Lettuce matches replies to a queue of pending commands, so many threads can share one socket. Jedis connections are not thread-safe; you borrow one per operation from a pool. Blocking commands and transactions need a dedicated connection in Lettuce."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Spring Data Redis is a layer over Lettuce or Jedis, not a third client.\n- Lettuce shares one thread-safe connection and offers sync, async and reactive APIs; Jedis borrows a blocking connection per call from a pool.\n- Redisson adds distributed objects (locks, rate limiters, maps) on top of Redis.\n- In a Spring Boot app, start with the starter and reach for native clients only when needed.\n- Check which Jedis generation you are on: 7.2 deprecated the older entry classes."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-2",
+      "type": "concept",
+      "title": "Lettuce",
+      "subtopicId": "6-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Lettuce is the client you meet first in a Spring Boot project, so it is worth knowing it directly. This chapter uses the plain library (no Spring) so you see exactly which object does what. Add the dependency `io.lettuce:lettuce-core` to your build; the Redis documentation at the time of writing shows a 6.7.x release in its examples, so use the current release from Maven Central.\n\n### The four objects you must know\n\n- `RedisURI`: the address and options for a connection (host, port, database, credentials, SSL, timeout). It can be built with a builder or parsed from a string such as `redis://localhost:6379/0`.\n- `RedisClient`: the factory and owner of the heavy resources (Netty event loops, thread pools). Create **one** per application and shut it down at the end.\n- `StatefulRedisConnection<K, V>`: one connection to Redis, thread-safe. You obtain command APIs from it.\n- The command APIs: `connection.sync()`, `connection.async()` and `connection.reactive()` return `RedisCommands`, `RedisAsyncCommands` and `RedisReactiveCommands`. They all use the same underlying connection."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.RedisURI;\nimport io.lettuce.core.api.StatefulRedisConnection;\nimport io.lettuce.core.api.sync.RedisCommands;\n\npublic class LettuceHello {\n\n    public static void main(String[] args) {\n        RedisURI uri = RedisURI.Builder.redis(\"localhost\", 6379).build();\n        RedisClient client = RedisClient.create(uri);\n        try (StatefulRedisConnection<String, String> connection = client.connect()) {\n            RedisCommands<String, String> redis = connection.sync();\n            redis.set(\"greeting\", \"hello\");\n            System.out.println(redis.get(\"greeting\"));\n            redis.hset(\"product:42\", \"name\", \"Kettle\");\n            System.out.println(redis.hgetall(\"product:42\"));\n        } finally {\n            client.shutdown();\n        }\n    }\n}",
+          "title": "LettuceHello.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the generic parameters `<String, String>` say that keys and values are Strings; they come from the *codec* (below). Command method names follow the Redis command in lower case (`hset`, `hgetall`, `zadd`), which makes the API easy to guess.\n\n### Sync, async and reactive on the same connection\n\nThe synchronous API blocks the calling thread until the reply arrives. The asynchronous API returns a `RedisFuture<T>`, which implements `CompletionStage`, so you can chain with `thenApply`, `thenCombine` and so on. The reactive API returns Project Reactor `Mono` and `Flux` types, which only run when subscribed."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.RedisFuture;\nimport io.lettuce.core.api.StatefulRedisConnection;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ExecutionException;\nimport reactor.core.publisher.Mono;\n\npublic class ThreeApis {\n\n    public static void main(String[] args) throws ExecutionException, InterruptedException {\n        RedisClient client = RedisClient.create(\"redis://localhost:6379\");\n        try (StatefulRedisConnection<String, String> connection = client.connect()) {\n\n            // 1. synchronous\n            String a = connection.sync().get(\"stock:sku-1\");\n\n            // 2. asynchronous: fire several commands without waiting, then collect\n            RedisFuture<String> f1 = connection.async().get(\"stock:sku-1\");\n            RedisFuture<String> f2 = connection.async().get(\"stock:sku-2\");\n            CompletableFuture<String> both =\n                f1.toCompletableFuture().thenCombine(f2, (x, y) -> x + \"/\" + y);\n            System.out.println(both.get());\n            // 3. reactive: nothing happens until subscribe/block\n            Mono<String> m = connection.reactive().get(\"stock:sku-1\");\n            System.out.println(m.block());\n            System.out.println(a);\n        } finally {\n            client.shutdown();\n        }\n    }\n}",
+          "title": "ThreeApis.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Because all three APIs share one connection, firing many async commands back to back is effectively pipelining: Lettuce writes them to the socket without waiting for replies, which cuts round trips (see the chapter on pipelining in the Redis Inside Part for the arithmetic). By default Lettuce flushes each command as it is issued. To batch explicitly, call `connection.setAutoFlushCommands(false)`, queue commands, then call `connection.flushCommands()`; remember to restore auto-flush, and do not do this on a connection shared with other threads."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Do not call `block()` or `get()` inside a reactive or Netty callback. A reactive chain may run on a Netty event-loop thread. Blocking that thread stalls every command on every connection it serves, and Lettuce or Reactor may throw an exception telling you that blocking is not allowed there. Keep blocking work off the event loop or stay reactive all the way."
+        },
+        {
+          "type": "markdown",
+          "text": "### Codecs: what goes over the wire\n\nRedis stores bytes. A `RedisCodec<K, V>` converts your key and value types to bytes and back. The default for `client.connect()` is `StringCodec.UTF8`, which is why you saw `<String, String>`. You can ask for other codecs:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.api.StatefulRedisConnection;\nimport io.lettuce.core.codec.ByteArrayCodec;\nimport io.lettuce.core.codec.RedisCodec;\nimport io.lettuce.core.codec.StringCodec;\n\npublic class Codecs {\n\n    public static void main(String[] args) {\n        RedisClient client = RedisClient.create(\"redis://localhost:6379\");\n\n        // String keys, byte[] values: a common choice when you serialize objects yourself\n        RedisCodec<String, byte[]> mixed = RedisCodec.of(StringCodec.UTF8, ByteArrayCodec.INSTANCE);\n        try (StatefulRedisConnection<String, byte[]> connection = client.connect(mixed)) {\n            connection.sync().set(\"blob:1\", new byte[] {1, 2, 3});\n        } finally {\n            client.shutdown();\n        }\n    }\n}",
+          "title": "Codecs.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For Java objects you normally serialize to JSON (or another format) yourself and store a String or `byte[]`. Spring Data Redis wraps this idea in its serializers (see the Spring Part).\n\n### Thread safety, blocking commands and pooling\n\nA `StatefulRedisConnection` can be shared by all threads for ordinary commands. Three situations need more than one connection:\n\n- **Blocking commands** (`BLPOP`, `BRPOPLPUSH`, `XREAD` with `BLOCK`, `XREADGROUP` with `BLOCK`) hold the connection until they return. Use a dedicated connection for them.\n- **Transactions** (`MULTI`/`EXEC`) and `WATCH`: the connection is in a stateful mode between `MULTI` and `EXEC`, so other threads must not interleave. Use a dedicated connection per transaction.\n- **Pub/Sub subscriptions** switch a connection into subscriber mode; Lettuce provides `StatefulRedisPubSubConnection` for this.\n\nIf you need many connections, Lettuce integrates with Apache Commons Pool 2 (add `org.apache.commons:commons-pool2`):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.api.StatefulRedisConnection;\nimport io.lettuce.core.support.ConnectionPoolSupport;\nimport org.apache.commons.pool2.impl.GenericObjectPool;\nimport org.apache.commons.pool2.impl.GenericObjectPoolConfig;\n\npublic class LettucePool {\n\n    public static void main(String[] args) throws Exception {\n        RedisClient client = RedisClient.create(\"redis://localhost:6379\");\n        GenericObjectPoolConfig<StatefulRedisConnection<String, String>> config =\n            new GenericObjectPoolConfig<>();\n        config.setMaxTotal(8);\n\n        try (GenericObjectPool<StatefulRedisConnection<String, String>> pool =\n                 ConnectionPoolSupport.createGenericObjectPool(client::connect, config)) {\n            try (StatefulRedisConnection<String, String> connection = pool.borrowObject()) {\n                connection.sync().set(\"k\", \"v\");\n            } // close() returns the connection to the pool\n        } finally {\n            client.shutdown();\n        }\n    }\n}",
+          "title": "LettucePool.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Closing a pooled connection *returns* it to the pool rather than closing the socket. Do not pool for ordinary traffic: one shared connection is the intended design, and a pool of idle connections only adds sockets on the server.\n\n### Client options, timeouts and reconnection\n\n`ClientOptions` controls behaviour. These facts are from the Lettuce reference: `autoReconnect` is on by default (when a connection is lost without being closed on purpose, the client reconnects and re-issues the queued commands), the default connect timeout in `SocketOptions` is 10 seconds with no keep-alive and no TCP no-delay, and by default **commands do not time out** (`TimeoutOptions` default). That last default surprises people: a command that never gets a reply waits forever unless you set a timeout."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.ClientOptions;\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.SocketOptions;\nimport io.lettuce.core.TimeoutOptions;\nimport java.time.Duration;\n\npublic class LettuceOptions {\n\n    public static RedisClient create() {\n        RedisClient client = RedisClient.create(\"redis://localhost:6379\");\n        client.setOptions(ClientOptions.builder()\n            .autoReconnect(true)\n            .socketOptions(SocketOptions.builder()\n                .connectTimeout(Duration.ofSeconds(2))\n                .keepAlive(true)\n                .build())\n            .timeoutOptions(TimeoutOptions.enabled(Duration.ofMillis(500)))\n            .build());\n        return client;\n    }\n}",
+          "title": "LettuceOptions.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `TimeoutOptions.enabled(Duration)` turns on a per-command timeout; without it a lost reply blocks the caller for ever. The `ClientOptions` built-in setting for what happens to commands issued while the connection is down (queued, or rejected immediately) is `disconnectedBehavior`; for latency-sensitive services you usually prefer to reject quickly rather than queue, so a Redis outage becomes a fast error instead of a growing backlog. Check the Javadoc of your Lettuce version for the exact enum values.\n\n### Sentinel, master/replica and cluster\n\nLettuce discovers topology for you. You hand it addresses; it works out where the primary is."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport io.lettuce.core.ReadFrom;\nimport io.lettuce.core.RedisClient;\nimport io.lettuce.core.RedisURI;\nimport io.lettuce.core.api.StatefulRedisConnection;\nimport io.lettuce.core.cluster.ClusterClientOptions;\nimport io.lettuce.core.cluster.ClusterTopologyRefreshOptions;\nimport io.lettuce.core.cluster.RedisClusterClient;\nimport io.lettuce.core.cluster.api.StatefulRedisClusterConnection;\nimport io.lettuce.core.codec.StringCodec;\nimport io.lettuce.core.masterreplica.MasterReplica;\nimport io.lettuce.core.masterreplica.StatefulRedisMasterReplicaConnection;\nimport java.util.concurrent.TimeUnit;\nimport io.lettuce.core.cluster.ClusterTopologyRefreshOptions.RefreshTrigger;\n\npublic class Topologies {\n\n    // Sentinel-managed primary with replica reads\n    static StatefulRedisMasterReplicaConnection<String, String> sentinel() {\n        RedisURI uri = RedisURI.Builder.sentinel(\"sentinel-1\", 26379, \"mymaster\")\n            .withSentinel(\"sentinel-2\", 26379)\n            .withSentinel(\"sentinel-3\", 26379)\n            .build();\n        RedisClient client = RedisClient.create();\n        StatefulRedisMasterReplicaConnection<String, String> connection =\n            MasterReplica.connect(client, StringCodec.UTF8, uri);\n        connection.setReadFrom(ReadFrom.REPLICA_PREFERRED);\n        return connection;\n    }\n\n    // Redis Cluster with topology refresh\n    static StatefulRedisClusterConnection<String, String> cluster() {\n        RedisURI seed = RedisURI.create(\"redis://node-1:6379\");\n        RedisClusterClient client = RedisClusterClient.create(seed);\n        ClusterTopologyRefreshOptions refresh = ClusterTopologyRefreshOptions.builder()\n            .enablePeriodicRefresh(30, TimeUnit.SECONDS)\n            .enableAdaptiveRefreshTrigger(RefreshTrigger.MOVED_REDIRECT,\n                                          RefreshTrigger.PERSISTENT_RECONNECTS)\n            .build();\n        client.setOptions(ClusterClientOptions.builder()\n            .topologyRefreshOptions(refresh)\n            .build());\n        return client.connect();\n    }\n}",
+          "title": "Topologies.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The `ReadFrom` settings are `MASTER`, `MASTER_PREFERRED`, `REPLICA`, `REPLICA_PREFERRED`, `LOWEST_LATENCY`, `ANY` and `ANY_REPLICA`. (Some library versions have started to say *upstream* instead of *master* in newer names; use the constants your version offers.) Reading from replicas can return stale data because replication is asynchronous, so use it only for reads that tolerate lag.\n\nFor cluster mode, the cluster client keeps a map of slot to node and sends each command to the right node. The map is refreshed when you ask it to. **Periodic refresh is off by default**, so without the options above a client may learn about a failover only after it receives a `MOVED` redirect. Adaptive triggers refresh on `MOVED` redirects or repeated reconnect failures, and a periodic refresh is a cheap safety net.\n\n### TLS and authentication\n\nUse `rediss://` in the URI (or `RedisURI.Builder.withSsl(true)`) for TLS, and supply credentials with `withAuthentication(username, password)`. With ACLs enabled, give each application its own user (see the security chapter in the Redis Inside Part). Never put passwords in source files; read them from configuration."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Default Lettuce settings are tuned for convenience, not for outages. No command timeout, a 10-second connect timeout and queueing of commands while disconnected can turn a short Redis incident into thread pile-ups and an out-of-memory error in the client. Set command timeouts, decide what should happen while disconnected, and test by stopping Redis."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does Lettuce find the new primary after a Sentinel failover? With a Sentinel `RedisURI`, the client asks the sentinels for the primary address and subscribes to their events, then reconnects to the new primary. In cluster mode, it uses cached slot maps, which are refreshed on `MOVED` redirects, on adaptive triggers, or periodically if you enabled periodic refresh."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- One `RedisClient`, one shared `StatefulRedisConnection` for ordinary commands; use extra connections for blocking commands, transactions and Pub/Sub.\n- Sync, async and reactive APIs share a connection; async commands are effectively pipelined.\n- Codecs decide the wire format; the default is UTF-8 strings.\n- Commands have no timeout by default; set `TimeoutOptions` yourself.\n- For cluster, enable periodic and adaptive topology refresh. Read from replicas only if stale data is acceptable."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-3",
+      "type": "concept",
+      "title": "Jedis",
+      "subtopicId": "6-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Jedis is the oldest and most straightforward Java client. Each call sends a command over a socket and blocks until the reply comes back. There is little to learn, which is its main strength: stack traces are short and behaviour is easy to reason about.\n\n### Two generations of API\n\nJedis 7.2 introduced new entry classes, and the documentation now marks the older ones as deprecated:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Newer API (7.2 and later)",
+            "Older API",
+            "Use case"
+          ],
+          "rows": [
+            [
+              "`RedisClient`",
+              "`JedisPooled, JedisPool,` `UnifiedJedis`",
+              "A single server with automatic connection pooling"
+            ],
+            [
+              "`RedisClusterClient`",
+              "`JedisCluster`",
+              "Redis Cluster"
+            ],
+            [
+              "`RedisSentinelClient`",
+              "`JedisSentinelPool`",
+              "Sentinel-managed primary and replicas"
+            ]
+          ],
+          "caption": "Jedis entry classes."
+        },
+        {
+          "type": "markdown",
+          "text": "If your project is on an older release, or you are reading existing code, you will see `JedisPooled` and `JedisPool`. The ideas are identical; only the class names changed.\n\n### Basic usage and the connection pool"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport java.time.Duration;\nimport redis.clients.jedis.ConnectionPoolConfig;\nimport redis.clients.jedis.RedisClient;\n\npublic class JedisHello {\n\n    public static void main(String[] args) {\n        ConnectionPoolConfig pool = new ConnectionPoolConfig();\n        pool.setMaxTotal(16);\n        pool.setMaxIdle(16);\n        pool.setMinIdle(2);\n        pool.setBlockWhenExhausted(true);\n        pool.setMaxWait(Duration.ofMillis(500));\n        pool.setTestWhileIdle(true);\n\n        try (RedisClient jedis = RedisClient.builder()\n                .hostAndPort(\"localhost\", 6379)\n                .poolConfig(pool)\n                .build()) {\n            jedis.set(\"greeting\", \"hello\");\n            System.out.println(jedis.get(\"greeting\"));\n            jedis.zadd(\"lb:bestsellers:daily\", 12.0, \"sku-1\");\n            System.out.println(jedis.zrevrangeWithScores(\"lb:bestsellers:daily\", 0, 2));\n        }\n    }\n}",
+          "title": "JedisHello.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the `RedisClient` object is thread-safe and meant to be shared; each call borrows a connection from the internal pool and returns it. The pool defaults to 8 connections (`maxTotal` and `maxIdle` 8, `minIdle` 0) according to the Jedis docs. `setMaxWait` bounds how long a caller waits for a free connection when all are in use; without a limit threads queue up behind a slow Redis. A short form for scripts is `RedisClient.create(\"redis://localhost:6379\")`.\n\nWith the legacy API the same code looks like this (shown only so you recognise it):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// legacy API, still common in existing code\nJedisPooled jedis = new JedisPooled(\"localhost\", 6379);\njedis.set(\"greeting\", \"hello\");\nString value = jedis.get(\"greeting\");",
+          "title": "LegacyJedis.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Pipelining and transactions\n\nA pipeline buffers commands and sends them in one go; replies are collected when you call `sync()`. Each pipelined call returns a `Response<T>` whose value is available only after `sync()`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport java.util.List;\nimport redis.clients.jedis.AbstractPipeline;\nimport redis.clients.jedis.AbstractTransaction;\nimport redis.clients.jedis.RedisClient;\nimport redis.clients.jedis.Response;\n\npublic class JedisPipeline {\n\n    static void pipeline(RedisClient jedis) {\n        try (AbstractPipeline pipe = jedis.pipelined()) {\n            Response<String> a = pipe.get(\"stock:sku-1\");\n            Response<String> b = pipe.get(\"stock:sku-2\");\n            pipe.sync();\n            System.out.println(a.get() + \" \" + b.get());\n        }\n    }\n\n    static void transaction(RedisClient jedis) {\n        try (AbstractTransaction trans = jedis.multi()) {\n            trans.incrBy(\"counter:orders\", 1);\n            trans.incrBy(\"counter:items\", 3);\n            List<Object> results = trans.exec();\n            System.out.println(results);\n        }\n    }\n\n    static boolean optimistic(RedisClient jedis) {\n        try (AbstractTransaction trans = jedis.transaction(false)) {\n            trans.watch(\"cart:7:version\");\n            trans.multi();\n            Response<Long> r = trans.incr(\"cart:7:version\");\n            List<Object> results = trans.exec();\n            return results != null && r.get() != null; // null results means aborted: retry\n        }\n    }\n}",
+          "title": "JedisPipeline.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: always close the pipeline or transaction (try-with-resources) so the connection returns to the pool. `exec()` returns `null` when a `WATCH`ed key changed, and production code retries. A transaction in Redis is atomic with respect to other clients but has no rollback; see the transactions chapter in the Redis Inside Part. In Jedis, pipelining and transactions are separate modes and cannot be mixed on one object."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The sample above follows the pipelining page of the Jedis documentation (`AbstractPipeline`, `AbstractTransaction`, `jedis.transaction(false)` for `WATCH`). On older Jedis versions the types are called `Pipeline` and `Transaction`."
+        },
+        {
+          "type": "markdown",
+          "text": "### Cluster and Sentinel\n\nFor cluster, `RedisClusterClient.create(nodes)` takes a set of seed nodes, discovers the slot map and routes commands. Multi-key commands must still respect the same-slot rule (use hash tags like `{cart:7}`). For Sentinel, `RedisSentinelClient` (legacy `JedisSentinelPool`) takes the master name and the sentinel addresses and connects to the current primary. Because the exact builder methods have changed between releases, take the call shape from the Javadoc of the version you depend on; the concepts do not change.\n\n### Error handling\n\nWhen the connection is lost, a command throws `JedisConnectionException`. Jedis does not silently retry for you in the basic client; a caller that wants to retry must run the command again (the pool will provide a fresh connection) and should use backoff. The Jedis documentation shows a loop with a bounded number of attempts and growing sleeps. Never retry non-idempotent commands blindly: if the failure happened after Redis executed `INCR` but before you read the reply, a retry increments twice."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Forgetting to close what you borrowed. A leaked connection never returns to the pool. After `maxTotal` leaks, every caller blocks for `maxWait` and then fails. Use try-with-resources for pipelines, transactions and any low-level `Jedis` instance you obtain from a pool."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Jedis is simple and blocking; share the pooled `RedisClient` (or legacy `JedisPooled`) across threads.\n- Size the pool deliberately and always set a bounded wait.\n- Pipelines return `Response` objects filled in by `sync()`; transactions return `null` from `exec()` when a watched key changed.\n- Jedis 7.2 deprecated the older entry classes; know both names.\n- Retry only idempotent operations, with backoff."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-4",
+      "type": "concept",
+      "title": "Redisson",
+      "subtopicId": "6-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Lettuce and Jedis give you Redis commands as Java methods. Redisson takes a different view: it gives you **Java** **objects that happen to live in Redis**. You ask for an `RMap`, an `RLock` or an `RRateLimiter` by name, and it implements the Java-style interface (`java.util.Map`, `java.util.concurrent.locks.Lock`) on top of Redis commands, Lua scripts and Pub/Sub. For distributed coordination in particular, this saves you from writing and testing tricky scripts yourself.\n\n### Creating a client"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport org.redisson.Redisson;\nimport org.redisson.api.RedissonClient;\nimport org.redisson.config.Config;\n\npublic class RedissonSetup {\n\n    public static RedissonClient create() {\n        Config config = new Config();\n        config.useSingleServer()\n            .setAddress(\"redis://localhost:6379\");\n        return Redisson.create(config);\n    }\n}",
+          "title": "RedissonSetup.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`useSingleServer()` is one of several modes: `useSentinelServers()`, `useClusterServers()`, `useMasterSlaveServers()` and `useReplicatedServers()` cover the other topologies. Maven coordinates for the open-source edition are group `org.redisson`, artifact `redisson`. There is also a Spring Boot starter; check the Redisson documentation for its current artifact name and the properties it reads. A `RedissonClient` is thread-safe and expensive to create: build one per application and shut it down (`shutdown()`) at the end.\n\nRedisson's defaults differ from the other clients and are worth knowing (values from the Redisson configuration page; verify them for your version): a 3000 ms command `timeout`, 4 `retryAttempts` with a jittered delay, a 10000 ms `connectTimeout`, a single-server connection pool of 64, and a `lockWatchdogTimeout` of 30000 ms. Unlike Lettuce, Redisson retries failed commands on its own, which is convenient but means a non-idempotent command can be sent more than once after a timeout.\n\n### A tour of the objects"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Object",
+            "Java analogue",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`RBucket`",
+              "A holder for one value",
+              "`set`, `get`; values are encoded by the configured codec"
+            ],
+            [
+              "`RMap`",
+              "`ConcurrentMap`",
+              "Stored as a Redis hash; `RMapCache` adds per-entry TTL"
+            ],
+            [
+              "`RAtomicLong`",
+              "`AtomicLong`",
+              "Backed by a Redis counter"
+            ],
+            [
+              "`RLock`",
+              "`Lock`",
+              "Reentrant distributed lock with an automatic lease-renewing watchdog"
+            ],
+            [
+              "`RRateLimiter`",
+              "(none)",
+              "Distributed rate limiter, token-bucket style"
+            ],
+            [
+              "`RSemaphore,` `RCountDownLatch`",
+              "`Semaphore`, `CountDownLatch`",
+              "Distributed coordination"
+            ],
+            [
+              "`RTopic`",
+              "Pub/Sub topic",
+              "Typed messages through Redis Pub/Sub"
+            ],
+            [
+              "`RLocalCachedMap`",
+              "`Map` with a local near-cache",
+              "Invalidated across JVMs through Pub/Sub"
+            ]
+          ],
+          "caption": "A few commonly used Redisson objects."
+        },
+        {
+          "type": "markdown",
+          "text": "The Redisson documentation says there are more than fifty such objects and services; the table is a sample.\n\n### Locks\n\nThe lock is the most used feature. The core API looks like `java.util.concurrent.locks.Lock`:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport java.util.concurrent.TimeUnit;\nimport org.redisson.api.RLock;\nimport org.redisson.api.RedissonClient;\n\npublic class RedissonLockDemo {\n\n    private final RedissonClient redisson;\n\n    public RedissonLockDemo(RedissonClient redisson) {\n        this.redisson = redisson;\n    }\n\n    public void processOrder(String orderId) throws InterruptedException {\n        RLock lock = redisson.getLock(\"lock:order:\" + orderId);\n        // wait up to 2 s to get the lock; with no lease time the watchdog keeps renewing it\n        if (lock.tryLock(2, TimeUnit.SECONDS)) {\n            try {\n                // critical section\n            } finally {\n                lock.unlock();\n            }\n        } else {\n            throw new IllegalStateException(\"order \" + orderId + \" is being processed\");\n        }\n    }\n}",
+          "title": "RedissonLockDemo.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: if you call `tryLock(wait, unit)` without a lease time, Redisson's **watchdog** extends the lock's expiry in the background while the owning JVM is alive (default lock timeout 30 seconds, configurable through `Config.lockWatchdogTimeout`). If the JVM dies, renewals stop and the lock expires, so it cannot be held forever. If you pass an explicit lease time, as in `tryLock(100, 10, TimeUnit.SECONDS)`, there is no renewal and the lock is released after the lease even if your work is still running. Unlocking from a thread that does not own the lock throws `IllegalMonitorStateException`. The patterns chapter on distributed locks explains the failure scenarios (pauses, clock behaviour, fencing tokens) that apply to every Redis lock, Redisson included.\n\n### Rate limiter and collections"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport java.time.Duration;\nimport org.redisson.api.RMap;\nimport org.redisson.api.RRateLimiter;\nimport org.redisson.api.RateType;\nimport org.redisson.api.RedissonClient;\n\npublic class RedissonMore {\n\n    static boolean allow(RedissonClient redisson, String apiKey) {\n        RRateLimiter limiter = redisson.getRateLimiter(\"rl:api:\" + apiKey);\n        // 100 permits per second across all clients; only sets the rate if not set already\n        limiter.trySetRate(RateType.OVERALL, 100, Duration.ofSeconds(1));\n        return limiter.tryAcquire();\n    }\n\n    static void cartExample(RedissonClient redisson) {\n        RMap<String, Integer> cart = redisson.getMap(\"cart:42\");\n        cart.put(\"sku-1\", 2);\n        int qty = cart.get(\"sku-1\");\n        System.out.println(qty);\n    }\n}",
+          "title": "RedissonMore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`RateType.OVERALL` shares the rate across all clients; `PER_CLIENT` applies it per client instance. The `Duration` overload of `trySetRate` is the current one; the overload with a `RateIntervalUnit` is deprecated.\n\n### Serialization: a trap\n\nRedisson encodes values with a *codec*. The default in the configuration page I checked is `Kryo5Codec`, a compact binary format that is not human-readable and not readable from other languages or from `redis-cli`. If other systems must read your data, or you want to evolve classes safely, configure a JSON or string-based codec (for example Redisson's Jackson-based codecs) and test round trips. Changing the codec later makes existing values unreadable.\n\n### When to use Redisson, and when not to\n\nUse it when you want distributed locks, semaphores, rate limiters or a near-cache with invalidation without writing Lua, and you accept a larger dependency with its own configuration and defaults. Think twice when you only need `GET`/`SET`/`HSET`: Spring Data Redis or a plain client gives you readable keys and standard formats, and `redis-cli` will show you what is stored. Mixing both is common: Spring Cache and templates for data, Redisson for locks and rate limits. Keep keys and codecs consistent so each side's data stays inspectable."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Licensing and editions. Redisson has a free open-source edition and a commercial PRO edition (different Maven group id) with additional features. Check which features your code depends on before assuming they are in the free edition."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does Redisson's lock avoid being held forever by a crashed process? Every lock is a Redis key with an expiry. While the owner is alive, a watchdog task renews the expiry (default timeout 30 seconds). If the process crashes the renewals stop and the key expires. The lock is reentrant: it stores the owner id and a hold count in a hash, and unlocking checks ownership."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Redisson exposes Redis as distributed Java objects: `RMap`, `RLock`, `RRateLimiter`, `RTopic` and many more.\n- Create one `RedissonClient` per application; it retries failed commands by default.\n- A lock without a lease time is renewed by the watchdog; an explicit lease time disables renewal.\n- Check the codec: the default is binary, not JSON.\n- Use it for coordination primitives; use Spring Data Redis or a plain client for ordinary data."
+        }
+      ]
+    },
+    {
+      "id": "ch-6-5",
+      "type": "concept",
+      "title": "Connection management and resilience",
+      "subtopicId": "6-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Redis is fast, so developers tend to treat it like a local method call. It is not. It is a network service that can be slow, restarting, failing over, overloaded or unreachable, and the client code decides whether that becomes a one-second blip or an outage of the whole application. This chapter lists the settings and design habits that make the difference. They apply to Lettuce, Jedis, Redisson and Spring alike, even though the setting names differ.\n\n### The four timeouts"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Timeout",
+            "What it bounds",
+            "Typical failure if missing"
+          ],
+          "rows": [
+            [
+              "Connect timeout",
+              "Opening a TCP connection",
+              "Threads hang for the OS default while a node is down"
+            ],
+            [
+              "Command (response) timeout",
+              "Waiting for a reply to one command",
+              "A stalled server blocks callers indefinitely"
+            ],
+            [
+              "Pool wait timeout",
+              "Waiting for a free pooled connection",
+              "Threads pile up behind exhausted pools"
+            ],
+            [
+              "Overall deadline",
+              "The whole user request, including retries",
+              "Retries multiply latency beyond what the caller will wait"
+            ]
+          ],
+          "caption": "The timeouts to set deliberately."
+        },
+        {
+          "type": "markdown",
+          "text": "Pick values from your latency budget, not from convenience. If a user request has a 1-second budget and a Redis lookup is only an optimisation, a 50 to 200 ms command timeout is reasonable; if Redis answers normally in under a millisecond, a 500 ms timeout already means something is badly wrong. (These numbers are illustrations, not recommendations for your system.) Remember the Lettuce default of **no command timeout**, and that Spring Boot exposes `spring.data.redis.timeout` and `spring.data.redis.connect-timeout` for the common cases (the Spring Part shows them).\n\n### Reconnection and failover\n\nA good client reconnects by itself. Lettuce does so by default (`autoReconnect`). What you control is what happens in the meantime:\n\n- Commands issued while disconnected can be queued (and may later be executed late) or rejected immediately. For caching and rate limiting, prefer to reject fast.\n- During a Sentinel failover or a cluster failover, writes fail for a few seconds until a replica is promoted. Plan for errors in that window rather than hoping for none.\n- In cluster mode, make sure topology refresh is enabled (see the Lettuce chapter), otherwise the client keeps talking to a demoted node until redirects teach it otherwise.\n- DNS and load balancers: if you connect through a DNS name or proxy, remember that the JVM and the client may cache addresses.\n\n### Retries: useful, dangerous, bounded\n\nRetry only when the operation is idempotent or you have made it so. `GET`, `SET` of a fixed value and `DEL` are safe. `INCR`, `LPUSH` and `XADD` are not: if the reply was lost after Redis executed the command, a retry applies it twice (an idempotency key, covered in the patterns Part, is the fix). Use exponential backoff with jitter and a hard cap on attempts and total time. Unbounded or tight-loop retries against a struggling Redis amplify the incident (a retry storm).\n\n### Pool sizing\n\nYou need a pool when the client is connection-per-call (Jedis) or when you use blocking commands and transactions. A first estimate comes from Little's law: connections in use ≈ requests per second × time each request holds a connection. If 2,000 requests per second each hold a connection for 2 ms, about 4 connections are busy on average. Add headroom for bursts and slow commands, then cap the total so that *all your application instances together* stay well below the server's `maxclients` (default 10000 in a typical configuration; check your server). Forty instances with a pool of 200 each is 8,000 connections, which is a lot of memory and file descriptors for the server.\n\nSymptoms of getting it wrong:\n\n- Pool too small: threads wait for connections, latency rises with load while Redis itself looks idle.\n- Pool too large: many idle sockets, connection storms after a restart, and a server that spends effort on connection handling.\n- Leaks: the pool slowly drains to zero (see the Jedis chapter).\n\n### Graceful degradation\n\nDecide, per use of Redis, what the application does when Redis is not available. The answer is different for each role in ShopStream:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Role",
+            "If Redis is down",
+            "Reasonable policy"
+          ],
+          "rows": [
+            [
+              "Catalogue cache",
+              "Reads can go to the database",
+              "Fall back to the database, but protect it (rate limit, short circuit) so it is not flooded"
+            ],
+            [
+              "Sessions",
+              "Users cannot be identified",
+              "Fail the request or force a re-login; do not invent sessions"
+            ],
+            [
+              "Rate limiter",
+              "No counters",
+              "Decide fail-open (allow) or fail-closed (reject); public APIs often choose fail-open, payments often fail-closed"
+            ],
+            [
+              "Flash-sale stock",
+              "No atomic decrement",
+              "Fail closed: refuse the purchase rather than oversell"
+            ],
+            [
+              "Distributed lock",
+              "Cannot guarantee exclusion",
+              "Fail the operation, or rely on a database constraint as the final guard"
+            ],
+            [
+              "Leaderboard",
+              "Stale or empty",
+              "Show cached or empty data; it is not critical"
+            ]
+          ],
+          "caption": "ShopStream roles and their failure behaviour."
+        },
+        {
+          "type": "markdown",
+          "text": "The shape of a fallback is simple enough to write by hand:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.demo;\n\nimport java.util.Optional;\nimport java.util.function.Function;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.dao.DataAccessException;\nimport org.springframework.data.redis.core.StringRedisTemplate;\n\npublic class CatalogLookup {\n\n    private static final Logger log = LoggerFactory.getLogger(CatalogLookup.class);\n\n    private final StringRedisTemplate redis;\n    private final Function<String, String> database;\n\n    public CatalogLookup(StringRedisTemplate redis, Function<String, String> database) {\n        this.redis = redis;\n        this.database = database;\n    }\n\n    public String findProductJson(String id) {\n        String key = \"product:\" + id;\n        Optional<String> cached = readQuietly(key);\n        if (cached.isPresent()) {\n            return cached.get();\n        }\n        return database.apply(id); // source of truth; may be slower\n    }\n\n    private Optional<String> readQuietly(String key) {\n        try {\n            return Optional.ofNullable(redis.opsForValue().get(key));\n        } catch (DataAccessException e) {\n            log.warn(\"Redis read failed for {}: {}\", key, e.getMessage());\n            return Optional.empty(); // degrade: treat as a cache miss\n        }\n    }\n}",
+          "title": "CatalogLookup.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: a cache failure is converted into a miss, logged without a stack trace flood, and the code carries on. Real systems add a **circuit breaker** (for example with Resilience4j, which Spring Boot supports) so that after repeated failures the application stops calling Redis for a while instead of making every request wait for its timeout; this also protects the database from a simultaneous stampede."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A cache fallback can take the database down. When Redis fails, every request becomes a database request. If the database was sized for a 95% cache hit ratio, the sudden 20-fold increase can bring it down, turning a cache incident into a total outage. Combine the fallback with load shedding, per-key request coalescing and a circuit breaker."
+        },
+        {
+          "type": "markdown",
+          "text": "### Observability and testing resilience\n\nLog or meter client-side command latency, timeouts, reconnects and pool usage. Lettuce supports Micrometer metrics and tracing natively (the Spring Part covers wiring). Then test the failure paths: stop the Redis container, pause it (`docker pause`), add network delay, and fail over a Sentinel setup while a load test runs. Many resilience bugs only show up this way."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a typical production incident review, the root cause is rarely \"Redis crashed\". It is a missing command timeout, a pool that was too small, or a retry loop that turned a 10-second failover into a minute-long outage."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What do you do in the application when Redis is unavailable? It depends on the role. A cache falls back to the source of truth with load protection; sessions fail or re-authenticate; a rate limiter chooses fail-open or fail-closed by business risk; stock and locks fail closed. In all cases: short timeouts, bounded retries for idempotent calls only, a circuit breaker and alerts."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Set connect, command, pool-wait and overall timeouts explicitly; Lettuce has no command timeout by default.\n- Retry only idempotent commands, with backoff, jitter and limits.\n- Size pools with Little's law and keep the total across instances below `maxclients`.\n- Decide fail-open or fail-closed for each Redis role before the incident.\n- Protect the database behind a cache with circuit breakers and load shedding, and test by actually killing Redis."
+        }
+      ]
+    }
+  ]
+}

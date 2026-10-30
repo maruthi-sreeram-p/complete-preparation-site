@@ -1,7 +1,7 @@
 {
   "source": {
     "document": "Redis_Complete_Guide.pdf",
-    "pages": "69-91",
+    "pages": "69-122",
     "planDays": "26"
   },
   "sections": [
@@ -256,6 +256,162 @@
           "variant": "keypoints",
           "title": "Key points",
           "text": "- A string is a binary-safe byte buffer up to 512 MB; keep real values small.\n- `SET` with `NX`, `XX`, `GET`, `EX`, `PX`, `KEEPTTL` replaces `SETNX`, `SETEX`, `GETSET`; a bare `SET` clears the TTL.\n- `INCR`, `INCRBY`, `DECR` and `INCRBYFLOAT` are atomic, which makes them safe counters under concurrency.\n- `GETEX` and `GETDEL` read and change a key in one step; `MSET` and `MGET` save round trips.\n- Redis 8.4 adds `IFEQ`, `IFNE`, `IFDEQ`, `IFDNE` to `SET` and the `DELEX` command for compare-and-set and compare-and-delete.\n- Encodings are `int`, `embstr` and `raw`; check with `OBJECT ENCODING`."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-2",
+      "type": "concept",
+      "title": "Lists",
+      "subtopicId": "3-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A Redis list is an ordered sequence of strings, optimized for adding and removing at the two ends. Think of it as a double-ended queue (a \"deque\") that lives on the server and is shared by every client. Pushing to either end is O(1) no matter how long the list is. That single property makes lists the natural structure for queues, stacks, activity feeds and \"latest N items\" views.\n\nLists solve the problem of ordering and hand-off between processes. A web request pushes a job; a worker in another process pops it. The list holds the work in between, and Redis guarantees that each element is popped by exactly one caller.\n\n### The basic commands\n\nElements are added with `LPUSH` (to the head, the left end) and `RPUSH` (to the tail, the right end). They are removed with `LPOP` and `RPOP`, which also accept a count since Redis 6.2. `LRANGE key start stop` reads a slice using inclusive indexes, where negative indexes count from the tail, so `0 -1` means \"everything\". A list that becomes empty is deleted automatically, and popping from a missing key returns `(nil)`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> RPUSH queue:emails a b c\n(integer) 3\n127.0.0.1:6379> LPUSH queue:emails z\n(integer) 4\n127.0.0.1:6379> LRANGE queue:emails 0 -1\n1) \"z\"\n2) \"a\"\n3) \"b\"\n4) \"c\"\n127.0.0.1:6379> LPOP queue:emails\n\"z\"\n127.0.0.1:6379> RPOP queue:emails 2\n1) \"c\"\n2) \"b\"\n127.0.0.1:6379> LLEN queue:emails\n(integer) 1\n127.0.0.1:6379> LPOP queue:emails\n\"a\"\n127.0.0.1:6379> LPOP queue:emails\n(nil)\n127.0.0.1:6379> EXISTS queue:emails\n(integer) 0",
+          "title": "Push, pop and range"
+        },
+        {
+          "type": "markdown",
+          "text": "Notice the order produced by pushing several values at once. `LPUSH recent a b c` pushes `a`, then `b`, then `c` to the head, so the list reads `c b a`. Each value goes to the head in turn.\n\nTwo cheap helpers are worth knowing. `RPUSHX` and `LPUSHX` push only if the list already exists (they return `0` otherwise). `LLEN` returns the length in O(1).\n\n### Reaching into the middle\n\nLists are not designed for random access, but Redis lets you do it, and you should know what it costs. All of the commands below walk the list from an end, so they are O(N) in the distance travelled."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`LINDEX key i`",
+              "Element at index i (negative counts from tail)",
+              "O(N)"
+            ],
+            [
+              "`LSET key i v`",
+              "Replace element at index i; error if out of range",
+              "O(N)"
+            ],
+            [
+              "`LINSERT key` `BEFORE|AFTER pivot v`",
+              "Insert next to the first element equal to pivot",
+              "O(N)"
+            ],
+            [
+              "`LREM key count v`",
+              "Remove up to count occurrences (count 0 means all; negative counts from the tail)",
+              "O(N)"
+            ],
+            [
+              "`LPOS key v [RANK r]` `[COUNT n] [MAXLEN m]`",
+              "Find the index (or indexes) of matching elements",
+              "O(N)"
+            ],
+            [
+              "`LTRIM key start stop`",
+              "Keep only the given range, drop the rest",
+              "O(N), N removed"
+            ]
+          ],
+          "caption": "Index-based list commands."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> RPUSH l x y z y\n(integer) 4\n127.0.0.1:6379> LPOS l y\n(integer) 1\n127.0.0.1:6379> LPOS l y RANK 2\n(integer) 3\n127.0.0.1:6379> LPOS l y COUNT 0\n1) (integer) 1\n2) (integer) 3\n127.0.0.1:6379> LINSERT l BEFORE z mid\n(integer) 5\n127.0.0.1:6379> LRANGE l 0 -1\n1) \"x\"\n2) \"y\"\n3) \"mid\"\n4) \"z\"\n5) \"y\"\n127.0.0.1:6379> LREM l 1 y\n(integer) 1\n127.0.0.1:6379> LRANGE l 0 -1\n1) \"x\"\n2) \"mid\"\n3) \"z\"\n4) \"y\"\n127.0.0.1:6379> LSET l 100 a\n(error) ERR index out of range",
+          "title": "LPOS, LINSERT, LREM"
+        },
+        {
+          "type": "markdown",
+          "text": "`LPOS` arrived in Redis 6.0.6 and replaces the old pattern of scanning with `LRANGE` on the client. `RANK` selects the n-th match, `COUNT 0` returns all matches, and `MAXLEN` bounds the scan so a huge list cannot hold up the server."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Avoid `LINDEX`, `LSET`, `LINSERT`, `LREM` and `LPOS` on long lists in hot code paths. Redis executes commands one at a time on a single thread. A scan across a list of a million elements blocks every other client for as long as it runs. If you find yourself indexing into a list a lot, you probably want a sorted set (ordered by score) or a hash (addressed by field) instead."
+        },
+        {
+          "type": "markdown",
+          "text": "### Pattern 1: a capped \"latest N\" list\n\nA very common use of lists is a rolling window of recent items: the last 10 searches of a user, the last 100 log lines, the newest 20 notifications. The recipe is `LPUSH` followed by `LTRIM`, which together keep the list bounded."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LPUSH recent:asha \"red shoes\"\n(integer) 1\n127.0.0.1:6379> LPUSH recent:asha \"usb cable\"\n(integer) 2\n127.0.0.1:6379> LPUSH recent:asha \"desk lamp\"\n(integer) 3\n127.0.0.1:6379> LPUSH recent:asha \"phone case\"\n(integer) 4\n127.0.0.1:6379> LPUSH recent:asha \"monitor\"\n(integer) 5\n127.0.0.1:6379> LPUSH recent:asha \"keyboard\"\n(integer) 6\n127.0.0.1:6379> LTRIM recent:asha 0 4\nOK\n127.0.0.1:6379> LRANGE recent:asha 0 -1\n1) \"keyboard\"\n2) \"monitor\"\n3) \"phone case\"\n4) \"desk lamp\"\n5) \"usb cable\"",
+          "title": "Recent searches, capped at 5"
+        },
+        {
+          "type": "markdown",
+          "text": "If two clients run this at the same moment the list can briefly exceed the cap, but the next `LTRIM` fixes it. To make the pair atomic, send both commands in a `MULTI`/`EXEC` transaction or a pipeline. A newer item that repeats an old one should first be removed with `LREM recent:asha 0 \"monitor\"` so the list does not hold duplicates.\n\n### Pattern 2: a work queue\n\nThe producer pushes to one end, the consumer pops from the other. Use `LPUSH` + `RPOP` (or `RPUSH` + `LPOP`); the direction does not matter as long as you are consistent.\n\nPolling in a loop wastes CPU and adds latency. The blocking variants wait on the server until data arrives:\n\n- `BLPOP key [key ...] timeout` and `BRPOP` block until one of the lists has an element, or the timeout in seconds passes (`0` means wait forever). They return a two-element array: the key name and the value, so that you know which of several lists woke you.\n- `BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT n]` (Redis 7.0) is the modern general form: it can pop several elements at once from the first non-empty list.\n- `LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT n]` is the non-blocking twin."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "# terminal 1: waits, no CPU used, no busy loop\n127.0.0.1:6379> BLPOP queue:emails 30\n# terminal 2:\n127.0.0.1:6380> RPUSH queue:emails \"welcome:u42\"\n(integer) 1\n# terminal 1 wakes immediately:\n1) \"queue:emails\"\n2) \"welcome:u42\"\n(4.21s)",
+          "title": "A blocked consumer and a producer (two terminals)"
+        },
+        {
+          "type": "markdown",
+          "text": "Blocking commands block only the calling client, not the server. If several consumers wait on the same list, Redis serves them in the order in which they started waiting, one element each. This is the \"competing consumers\" model: add workers to add throughput.\n\n#### The weakness: a popped job is gone\n\n`BLPOP` removes the element before your code has processed it. If the worker crashes after the pop, the job is lost. For anything that matters you want a reliable queue, and lists support one with `LMOVE`.\n\n`LMOVE source destination LEFT|RIGHT LEFT|RIGHT` atomically pops from one list and pushes onto another, and returns the element. Move each job from `jobs` to a per-worker `jobs:processing` list, do the work, then remove it from the processing list with `LREM` when finished. If a worker dies, a janitor process can find stale entries in the processing lists and push them back. `BLMOVE` is the blocking version. The older `RPOPLPUSH` and `BRPOPLPUSH` do the same thing with fixed directions and are deprecated."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> RPUSH jobs \"email:101\" \"email:102\" \"email:103\"\n(integer) 3\n127.0.0.1:6379> LMOVE jobs jobs:processing:w1 LEFT RIGHT\n\"email:101\"\n127.0.0.1:6379> LRANGE jobs:processing:w1 0 -1\n1) \"email:101\"\n# ... the worker sends the e-mail, then acknowledges:\n127.0.0.1:6379> LREM jobs:processing:w1 1 \"email:101\"\n(integer) 1\n127.0.0.1:6379> LRANGE jobs:processing:w1 0 -1\n(empty array)\n127.0.0.1:6379> LRANGE jobs 0 -1\n1) \"email:102\"\n2) \"email:103\"",
+          "title": "Reliable queue with LMOVE"
+        },
+        {
+          "type": "markdown",
+          "text": "This pattern gives at-least-once delivery: after a crash the same job may run twice, so job handlers must be idempotent. It has no built-in retry counter, delay, or visibility timeout. When you need those, or several independent consumer groups reading the same data, use a stream instead; the streams chapter and the queues chapter in the Patterns Part compare the options.\n\n### Pattern 3: a stack, and a message inbox\n\nA stack is the same list used LIFO: `LPUSH` and `LPOP` on the same end. \"Undo history\" and \"back button\" data fit this. For a per-user inbox that is read often and capped, `LPUSH` to add, `LRANGE inbox:u42 0 19` for the first page, and `LTRIM` to bound it. Beyond a few hundred entries or when you need paging by time, prefer a sorted set whose score is a timestamp.\n\n### How lists are stored\n\nInternally, a list is stored as a **quicklist**: a linked list whose nodes each hold a compact array called a **listpack** (the memory-efficient successor of the ziplist). Small lists in recent versions are kept as a single listpack with no linked-list overhead at all. You can check with `OBJECT ENCODING key`, which returns `listpack` or `quicklist` depending on the version and size. Redis 7.0 reports `quicklist` even for a tiny list, while newer versions can report `listpack` for small ones.\n\nThe design is a compromise. A plain linked list wastes memory on a pointer pair per element; a plain array makes pushes at the front expensive. A linked list of small arrays gives O(1) pushes at both ends with low overhead per element."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Directive",
+            "Default",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`list-max-listpack-size`",
+              "-2",
+              "Maximum size of one node. A negative value is a byte limit: -2 means 8 KB per node (-1 is 4 KB, up to -5 for 64 KB). A positive value limits the number of entries"
+            ],
+            [
+              "`list-compress-depth`",
+              "0",
+              "Number of nodes at each end left uncompressed. 0 disables compression; 1 keeps the head and tail nodes plain and compresses the middle"
+            ]
+          ],
+          "caption": "List configuration directives."
+        },
+        {
+          "type": "markdown",
+          "text": "Compression pays off only for very long lists whose middle is rarely touched (because the ends are what you read). For a typical queue it is better left off.\n\n### Big-list gotchas\n\n- **Unbounded growth.** A queue whose consumers are slower than its producers grows until memory runs out. Cap lists with `LTRIM` where the content is disposable, and alert on `LLEN` for queues.\n- `LRANGE 0 -1` **on a long list.** It copies the whole list into one reply. Page with ranges such as `0 99`, then `100 199`.\n- **One giant key.** A list of ten million elements lives in one key, on one shard, and deleting it can stall the server. `UNLINK` frees it in a background thread; `DEL` does it inline. In a cluster, consider splitting a queue across several keys (`queue:emails:{0}`, `queue:emails:{1}`) with a client-side choice.\n- **Treating it as a database.** Lists cannot answer \"which job has id 7\" without a scan. Keep an index (a hash from job id to payload) if you need lookups.\n- **Lost jobs on** `BLPOP`**.** Covered above: use `LMOVE`, or a stream with acknowledgements."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you build a reliable task queue on Redis lists, and where does it fall short? Use `LMOVE` (or `BLMOVE`) to atomically move each job from the pending list to a per-worker processing list, delete it with `LREM` after success, and run a reaper that requeues entries stuck in processing too long. That gives at-least-once delivery, so handlers must be idempotent. It falls short on retries with backoff, delayed jobs, per-job visibility timeouts, dead-letter handling and multiple independent consumers. Streams with consumer groups or a sorted-set delay queue handle those better."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In ShopStream, the notification-service keeps `recent:{userId}` as a capped list of the last 20 product views for the \"recently viewed\" strip: `LPUSH`, `LREM` of a duplicate, `LTRIM 0 19`, all in one pipeline. Order events themselves go to a stream, not a list, because several services must read them independently and acknowledge them."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Lists are deques: O(1) push and pop at both ends, O(N) access in the middle.\n- `LPUSH` + `LTRIM` gives a capped \"latest N\" list; `LPUSH` + `BRPOP` gives a simple blocking queue.\n- `LMOVE`/`BLMOVE` plus a processing list gives an at-least-once queue; streams are better when you need more.\n- `LMPOP` and `BLMPOP` (7.0) pop several elements from the first non-empty of many lists.\n- Storage is a quicklist of listpacks; tune `list-max-listpack-size` rarely, and never let a list grow without a bound.\n- Page large reads and delete big lists with `UNLINK`."
         }
       ]
     },
@@ -653,7 +809,7 @@
         {
           "type": "diagram",
           "format": "svg",
-          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 123.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M22.0 106.5 L52.0 106.5 L52.0 93.5 L22.0 93.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 78.5 L52.0 78.5 L52.0 65.5 L22.0 65.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 78.5 L112.0 78.5 L112.0 65.5 L52.0 65.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 78.5 L152.0 78.5 L152.0 65.5 L112.0 65.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 92.5 L52.0 92.5 L52.0 79.5 L22.0 79.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 92.5 L112.0 92.5 L112.0 79.5 L52.0 79.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 92.5 L152.0 92.5 L152.0 79.5 L112.0 79.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 106.5 L112.0 106.5 L112.0 93.5 L52.0 93.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 106.5 L152.0 106.5 L152.0 93.5 L112.0 93.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 75.5 L222.0 70.5\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M225.0 82.5 L439.0 82.5 C440.7 82.5 442.0 81.1 442.0 79.5 L442.0 55.5 C442.0 53.8 440.7 52.5 439.0 52.5 L225.0 52.5 C223.3 52.5 222.0 53.8 222.0 55.5 L222.0 79.5 C222.0 81.1 223.3 82.5 225.0 82.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 64.5 L52.0 64.5 L52.0 51.5 L22.0 51.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 64.5 L112.0 64.5 L112.0 51.5 L52.0 51.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 64.5 L152.0 64.5 L152.0 51.5 L112.0 51.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 50.5 L222.0 30.5\" fill=\"none\" stroke=\"#8a93bd\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 42.5 L74.6 37.1 L69.4 37.1 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M225.0 42.5 L439.0 42.5 C440.7 42.5 442.0 41.1 442.0 39.5 L442.0 15.5 C442.0 13.8 440.7 12.5 439.0 12.5 L225.0 12.5 C223.3 12.5 222.0 13.8 222.0 15.5 L222.0 39.5 C222.0 41.1 223.3 42.5 225.0 42.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 30.5 L216.1 29.4 L217.5 34.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 70.5 L216.4 68.3 L216.8 73.5 Z\" fill=\"#667085\" stroke=\"#8a93bd\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 30.5 L139.0 30.5 C140.7 30.5 142.0 29.1 142.0 27.5 L142.0 15.5 C142.0 13.8 140.7 12.5 139.0 12.5 L5.0 12.5 C3.3 12.5 2.0 13.8 2.0 15.5 L2.0 27.5 C2.0 29.1 3.3 30.5 5.0 30.5 Z\" fill=\"#23282e\" stroke=\"#8a93bd\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"27.2\" y=\"6.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"89.6\" lengthAdjust=\"spacingAndGlyphs\">ZADD lb:daily 1520 asha</text><text x=\"50.3\" y=\"24.0\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"43.4\" lengthAdjust=\"spacingAndGlyphs\">game events</text><text x=\"271.7\" y=\"25.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"120.6\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANGE lb:daily 0 2 WITHSCORES</text><text x=\"299.2\" y=\"34.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"65.5\" lengthAdjust=\"spacingAndGlyphs\">top 3 in O(log N + 3)</text><text x=\"42.4\" y=\"50.5\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"89.2\" lengthAdjust=\"spacingAndGlyphs\">sorted set, ordered by score</text><text x=\"34.9\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"73.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">ravi</text><text x=\"123.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1830</text><text x=\"293.8\" y=\"65.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"76.4\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANK lb:daily asha</text><text x=\"34.9\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"73.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">asha</text><text x=\"123.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1520</text><text x=\"297.7\" y=\"74.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"68.5\" lengthAdjust=\"spacingAndGlyphs\">position of one player</text><text x=\"34.9\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"71.5\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"21.1\" lengthAdjust=\"spacingAndGlyphs\">meera</text><text x=\"123.6\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1490</text><text x=\"34.9\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"75.7\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"12.6\" lengthAdjust=\"spacingAndGlyphs\">joe</text><text x=\"123.6\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1100</text></svg>",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 123.4\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M22.0 106.5 L52.0 106.5 L52.0 93.5 L22.0 93.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 78.5 L52.0 78.5 L52.0 65.5 L22.0 65.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 78.5 L112.0 78.5 L112.0 65.5 L52.0 65.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 78.5 L152.0 78.5 L152.0 65.5 L112.0 65.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 92.5 L52.0 92.5 L52.0 79.5 L22.0 79.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 92.5 L112.0 92.5 L112.0 79.5 L52.0 79.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 92.5 L152.0 92.5 L152.0 79.5 L112.0 79.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 106.5 L112.0 106.5 L112.0 93.5 L52.0 93.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 106.5 L152.0 106.5 L152.0 93.5 L112.0 93.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 75.5 L222.0 70.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M225.0 82.5 L439.0 82.5 C440.7 82.5 442.0 81.1 442.0 79.5 L442.0 55.5 C442.0 53.8 440.7 52.5 439.0 52.5 L225.0 52.5 C223.3 52.5 222.0 53.8 222.0 55.5 L222.0 79.5 C222.0 81.1 223.3 82.5 225.0 82.5 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M22.0 64.5 L52.0 64.5 L52.0 51.5 L22.0 51.5 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M52.0 64.5 L112.0 64.5 L112.0 51.5 L52.0 51.5 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M112.0 64.5 L152.0 64.5 L152.0 51.5 L112.0 51.5 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M152.0 50.5 L222.0 30.5\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M72.0 42.5 L74.6 37.1 L69.4 37.1 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M225.0 42.5 L439.0 42.5 C440.7 42.5 442.0 41.1 442.0 39.5 L442.0 15.5 C442.0 13.8 440.7 12.5 439.0 12.5 L225.0 12.5 C223.3 12.5 222.0 13.8 222.0 15.5 L222.0 39.5 C222.0 41.1 223.3 42.5 225.0 42.5 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 30.5 L216.1 29.4 L217.5 34.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 70.5 L216.4 68.3 L216.8 73.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 30.5 L139.0 30.5 C140.7 30.5 142.0 29.1 142.0 27.5 L142.0 15.5 C142.0 13.8 140.7 12.5 139.0 12.5 L5.0 12.5 C3.3 12.5 2.0 13.8 2.0 15.5 L2.0 27.5 C2.0 29.1 3.3 30.5 5.0 30.5 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"27.2\" y=\"6.5\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"89.6\" lengthAdjust=\"spacingAndGlyphs\">ZADD lb:daily 1520 asha</text><text x=\"50.3\" y=\"24.0\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"43.4\" lengthAdjust=\"spacingAndGlyphs\">game events</text><text x=\"271.7\" y=\"25.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"120.6\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANGE lb:daily 0 2 WITHSCORES</text><text x=\"299.2\" y=\"34.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"65.5\" lengthAdjust=\"spacingAndGlyphs\">top 3 in O(log N + 3)</text><text x=\"42.4\" y=\"50.5\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"89.2\" lengthAdjust=\"spacingAndGlyphs\">sorted set, ordered by score</text><text x=\"34.9\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"73.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">ravi</text><text x=\"123.6\" y=\"60.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1830</text><text x=\"293.8\" y=\"65.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"76.4\" lengthAdjust=\"spacingAndGlyphs\">ZREVRANK lb:daily asha</text><text x=\"34.9\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">2</text><text x=\"73.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">asha</text><text x=\"123.6\" y=\"74.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1520</text><text x=\"297.7\" y=\"74.3\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"68.5\" lengthAdjust=\"spacingAndGlyphs\">position of one player</text><text x=\"34.9\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">3</text><text x=\"71.5\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"21.1\" lengthAdjust=\"spacingAndGlyphs\">meera</text><text x=\"123.6\" y=\"88.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1490</text><text x=\"34.9\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">4</text><text x=\"75.7\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"12.6\" lengthAdjust=\"spacingAndGlyphs\">joe</text><text x=\"123.6\" y=\"102.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"16.9\" lengthAdjust=\"spacingAndGlyphs\">1100</text></svg>",
           "width": 444,
           "caption": "The sorted set keeps members ordered by score; rank and range queries touch only the part you ask for.",
           "alt": "ZADD lb:daily 1520 asha | game events ZREVRANGE lb:daily 0 2 WITHSCORES | top 3 in O(log N + 3) | sorted set, ordered by score | 1 ravi 1830 | ZREVRANK lb:daily asha | 2 asha 1520 position of one player | 3 meera 1490 | 4 joe 1100"
@@ -824,6 +980,1361 @@
           "variant": "keypoints",
           "title": "Key points",
           "text": "- Choose by the question you must answer: lookup by key, order, uniqueness, range, counting, or hand-off.\n- Strings for values and counters, hashes for records, lists for queues at the ends, sets for membership, sorted sets for anything ranked or time-ordered.\n- Prefer many medium keys over a few giant ones; give each key a TTL or a trim rule.\n- If two structures can do the job, pick the one with the cheaper operations for your hottest query."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-7",
+      "type": "concept",
+      "title": "Streams",
+      "subtopicId": "3-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "ShopStream emits an event every time something happens to an order: created, paid, packed, shipped. Several services care about those events. The notification service sends e-mails, the inventory service adjusts stock, the analytics job counts revenue. You need a place to put the events so that each service can read them at its own pace, none of them loses an event when it restarts, and a slow reader does not hold up a fast one.\n\nA list can act as a queue, but one consumer pops an item and it is gone. Pub/Sub can fan out to many readers, but it keeps nothing: a subscriber that is down misses the message forever (the next chapter shows this). What you want is a **log**: an append-only sequence of entries that stays in Redis, that readers walk through at their own position, and that can be shared out among a team of workers. That is the Redis **stream**, introduced in Redis 5.0 and extended in nearly every release since.\n\n### The core idea: an append-only log with IDs\n\nA stream is a key whose value is an ordered sequence of **entries**. Each entry has a unique **ID** and a set of field-value pairs, much like a small hash. You only ever append to the end (and trim from the front); entries are not updated in place."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "stream:orders\n  ID                  fields\n  1760000000000-0     orderId=1001  userId=7  total=59.90\n  1760000000000-1     orderId=1002  userId=9  total=12.00\n  1760000000500-0     orderId=1003  userId=7  total=5.25      ← newest, appended at the tail"
+        },
+        {
+          "type": "markdown",
+          "text": "The ID has two parts, `<milliseconds>-<sequence>`. When you let Redis generate it (by passing `*`), the first part is the server time in milliseconds and the second part is a counter that distinguishes entries created in the same millisecond. IDs always increase, so the stream is automatically ordered by time of insertion, and you can ask for \"everything since this ID\" cheaply. Internally a stream is a radix tree of listpacks (compact blocks of entries), which gives O(1) append and fast lookup by ID.\n\n#### Adding entries with XADD"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XADD stream:orders * orderId 1001 userId 7 total 59.90\n\"1760000000000-0\"\n127.0.0.1:6379> XADD stream:orders * orderId 1002 userId 9 total 12.00\n\"1760000000000-1\"\n127.0.0.1:6379> XLEN stream:orders\n(integer) 2",
+          "title": "Append and measure"
+        },
+        {
+          "type": "markdown",
+          "text": "`XADD key id field value [field value ...]` returns the ID it assigned. You may supply the ID yourself, but it must be greater than the last one or you get an error (`ERR The ID specified in XADD is equal or smaller than the` `target stream top item`). A partial ID such as `5-*` fixes the millisecond part and lets Redis choose the sequence. Explicit IDs are useful when importing data or in tests; production code almost always passes `*`.\n\n`XADD` is O(1) when it only appends. Adding `NOMKSTREAM` prevents the command from creating the stream if the key does not exist.\n\n#### Reading by range: XRANGE and XREVRANGE\n\n`XRANGE key start end [COUNT n]` returns entries between two IDs, inclusive. The special IDs `-` and `+` mean \"the smallest possible\" and \"the largest possible\". A millisecond-only bound such as `1760000000000` matches every sequence number in that millisecond."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XRANGE stream:orders - + COUNT 2\n1) 1) \"1760000000000-0\"\n   2) 1) \"orderId\"\n      2) \"1001\"\n      3) \"userId\"\n      4) \"7\"\n      5) \"total\"\n      6) \"59.90\"\n2) 1) \"1760000000000-1\"\n   2) 1) \"orderId\"\n      2) \"1002\"\n      3) \"userId\"\n      4) \"9\"\n      5) \"total\"\n      6) \"12.00\"\n127.0.0.1:6379> XRANGE stream:orders (1760000000000-1 + COUNT 100",
+          "title": "Range queries"
+        },
+        {
+          "type": "markdown",
+          "text": "A `(` in front of an ID makes the bound **exclusive**. That is how you page through a stream: remember the last ID you processed and ask for `(lastId +`. `XREVRANGE key end start` walks backwards, which is the easy way to fetch the latest N entries (`XREVRANGE stream:orders + - COUNT 10`).\n\n### Reading as a stream: XREAD\n\n`XRANGE` is a query. To **follow** a stream, like `tail -f`, use `XREAD`, which takes one or more keys and, for each, the last ID you have seen. It returns entries with greater IDs."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XREAD COUNT 2 STREAMS stream:orders 1760000000000-1\n1) 1) \"stream:orders\"\n   2) 1) 1) \"1760000000500-0\"\n         2) 1) \"orderId\"\n            2) \"1003\"\n            3) \"userId\"\n            4) \"7\"\n            5) \"total\"\n            6) \"5.25\"\n127.0.0.1:6379> XREAD BLOCK 5000 STREAMS stream:orders $\n(nil)",
+          "title": "Follow a stream, with blocking"
+        },
+        {
+          "type": "markdown",
+          "text": "Two details matter. First, `BLOCK 5000` makes the command wait up to 5000 ms for new data instead of returning immediately with an empty result; `BLOCK 0` waits forever. A blocked client costs almost nothing, so many consumers can wait on one stream. Second, the special ID `$` means \"only entries added after this command starts\". Use `$` for the first call, then switch to the real last-seen ID for every call after that. A classic bug is to pass `$` on every loop iteration, which silently skips every entry that arrived between two calls.\n\nPlain `XREAD` has no memory: every reader keeps its own cursor and every reader sees every entry. For fan-out of the full stream to independent readers (an audit logger, a cache warmer), that is exactly right. For sharing work among a team it is not, and that is what consumer groups are for.\n\n### Consumer groups: sharing the work\n\nA **consumer group** is a named cursor on a stream, plus bookkeeping, shared by a set of **consumers**. The group remembers the ID of the last entry it handed out. Each new entry is delivered to exactly one consumer in the group, so adding consumers scales processing out. Different groups on the same stream are independent: the `notifier` group and the `inventory` group each see every order."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 498.9 147.6\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M191.0 98.7 L295.0 98.7 C296.7 98.7 298.0 97.4 298.0 95.7 L298.0 79.7 C298.0 78.0 296.7 76.7 295.0 76.7 L191.0 76.7 C189.3 76.7 188.0 78.0 188.0 79.7 L188.0 95.7 C188.0 97.4 189.3 98.7 191.0 98.7 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M142.0 64.7 L188.0 59.7\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M142.0 80.7 L188.0 87.7\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M298.0 59.7 L328.0 64.7\" fill=\"none\" stroke=\"#e25850\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 90.7 L139.0 90.7 C140.7 90.7 142.0 89.4 142.0 87.7 L142.0 53.7 C142.0 52.0 140.7 50.7 139.0 50.7 L5.0 50.7 C3.3 50.7 2.0 52.0 2.0 53.7 L2.0 87.7 C2.0 89.4 3.3 90.7 5.0 90.7 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M191.0 70.7 L295.0 70.7 C296.7 70.7 298.0 69.4 298.0 67.7 L298.0 51.7 C298.0 50.0 296.7 48.7 295.0 48.7 L191.0 48.7 C189.3 48.7 188.0 50.0 188.0 51.7 L188.0 67.7 C188.0 69.4 189.3 70.7 191.0 70.7 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M188.0 59.7 L182.3 57.7 L182.9 62.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M188.0 87.7 L183.1 84.3 L182.3 89.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M331.0 88.7 L493.9 88.7 C495.6 88.7 496.9 87.4 496.9 85.7 L496.9 51.7 C496.9 50.0 495.6 48.7 493.9 48.7 L331.0 48.7 C329.3 48.7 328.0 50.0 328.0 51.7 L328.0 85.7 C328.0 87.4 329.3 88.7 331.0 88.7 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M328.0 64.7 L323.1 61.2 L322.2 66.4 Z\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M2.0 32.7 L38.0 32.7 L38.0 14.7 L2.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M38.0 32.7 L74.0 32.7 L74.0 14.7 L38.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M74.0 32.7 L110.0 32.7 L110.0 14.7 L74.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M110.0 32.7 L146.0 32.7 L146.0 14.7 L110.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M146.0 32.7 L182.0 32.7 L182.0 14.7 L146.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M182.0 32.7 L218.0 32.7 L218.0 14.7 L182.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M218.0 32.7 L254.0 32.7 L254.0 14.7 L218.0 14.7 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M260.0 23.7 L288.0 23.7\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M288.0 23.7 L282.6 21.1 L282.6 26.3 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"2.0\" y=\"6.7\" font-size=\"7.5\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"54.2\" lengthAdjust=\"spacingAndGlyphs\">stream:orders</text><text x=\"15.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#1</text><text x=\"51.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#2</text><text x=\"87.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#3</text><text x=\"123.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#4</text><text x=\"159.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#5</text><text x=\"195.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#6</text><text x=\"231.8\" y=\"26.1\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\" textLength=\"8.4\" lengthAdjust=\"spacingAndGlyphs\">#7</text><text x=\"296.3\" y=\"27.7\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"47.3\" lengthAdjust=\"spacingAndGlyphs\">XADD appends</text><text x=\"210.3\" y=\"62.1\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"65.3\" lengthAdjust=\"spacingAndGlyphs\">consumer c1: #3 #5</text><text x=\"48.2\" y=\"68.6\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"47.6\" lengthAdjust=\"spacingAndGlyphs\">group: notifier</text><text x=\"385.0\" y=\"66.7\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"54.9\" lengthAdjust=\"spacingAndGlyphs\">Pending list (PEL)</text><text x=\"35.2\" y=\"77.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"73.6\" lengthAdjust=\"spacingAndGlyphs\">last-delivered-id = #5</text><text x=\"374.1\" y=\"75.5\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"76.7\" lengthAdjust=\"spacingAndGlyphs\">delivered, not yet acked</text><text x=\"216.0\" y=\"90.1\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"54.1\" lengthAdjust=\"spacingAndGlyphs\">consumer c2: #4</text><text x=\"2.0\" y=\"116.7\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"373.2\" lengthAdjust=\"spacingAndGlyphs\">XREADGROUP &gt; delivers new entries; XACK removes from the PEL; XAUTOCLAIM takes over entries a dead consumer left</text><text x=\"2.0\" y=\"130.7\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"213.3\" lengthAdjust=\"spacingAndGlyphs\">an entry stays in the stream after ack until you trim it (XTRIM / XDEL)</text></svg>",
+          "width": 499,
+          "caption": "A stream with two consumer groups. Notice that each group has its own last-delivered position and its own list of pending (delivered but not yet acknowledged) entries.",
+          "alt": "stream:orders | #1 #2 #3 #4 #5 #6 #7 XADD appends | consumer c1: #3 #5 | group: notifier Pending list (PEL) | last-delivered-id = #5 delivered, not yet acked | consumer c2: #4 | XREADGROUP > delivers new entries; XACK removes from the PEL; XAUTOCLAIM takes over entries a dead consumer left | an entry stays in the stream after ack until you trim it (XTRIM / XDEL)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### The delivery cycle\n\n1. Create the group once with `XGROUP CREATE key group id [MKSTREAM]`. The ID says where the group starts: `0` means \"from the beginning of the stream\", `$` means \"only new entries\". `MKSTREAM` creates the stream if it does not exist yet.\n2. Each worker calls `XREADGROUP GROUP group consumer ... STREAMS key >`. The special ID `>` means \"entries never delivered to any consumer in this group\". Consumers do not need to be registered in advance; the first call creates them.\n3. Redis records every delivered entry in the group's **Pending Entries List (PEL)**, with the consumer name, the delivery time and a delivery counter.\n4. When the worker has finished the job it calls `XACK key group id [id ...]`, which removes the entries from the PEL."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XGROUP CREATE stream:orders notifier 0\nOK\n127.0.0.1:6379> XREADGROUP GROUP notifier worker-1 COUNT 2 STREAMS stream:orders >\n1) 1) \"stream:orders\"\n   2) 1) 1) \"1760000000000-0\"\n         2) 1) \"orderId\"\n            2) \"1001\"\n            3) \"userId\"\n            4) \"7\"\n            5) \"total\"\n            6) \"59.90\"\n      2) 1) \"1760000000000-1\"\n         2) 1) \"orderId\"\n            2) \"1002\"\n            3) \"userId\"\n            4) \"9\"\n            5) \"total\"\n            6) \"12.00\"\n127.0.0.1:6379> XPENDING stream:orders notifier\n1) (integer) 2\n2) \"1760000000000-0\"\n3) \"1760000000000-1\"\n4) 1) 1) \"worker-1\"\n      2) \"2\"\n127.0.0.1:6379> XACK stream:orders notifier 1760000000000-0\n(integer) 1",
+          "title": "Create a group, read, inspect, acknowledge"
+        },
+        {
+          "type": "markdown",
+          "text": "The summary form of `XPENDING` shows how many entries are pending, the smallest and largest pending IDs, and how many each consumer holds. The extended form `XPENDING key group [IDLE min-idle-ms] start end count` `[consumer]` lists individual entries: ID, consumer, milliseconds since the last delivery, and the number of times it has been delivered."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XPENDING stream:orders notifier - + 10\n1) 1) \"1760000000000-1\"\n   2) \"worker-1\"\n   3) (integer) 184233\n   4) (integer) 1",
+          "title": "Pending entries in detail"
+        },
+        {
+          "type": "markdown",
+          "text": "Read that as: entry `...-1` was given to `worker-1` 184 seconds ago and has been delivered once. If worker-1 crashed, this entry will sit there forever unless someone takes it over.\n\n### At-least-once delivery and recovery\n\nThe PEL is what turns a stream into a reliable queue. A message is only forgotten when a worker explicitly acknowledges it. If the worker dies before acknowledging, the entry stays pending and can be handed to another worker. This gives **at-least-once** delivery: every entry is processed at least once, and sometimes twice (a worker may finish the work and crash before sending `XACK`). Your handler must therefore be idempotent, a topic the patterns part of the book returns to.\n\n#### Taking over abandoned entries\n\n`XAUTOCLAIM key group consumer min-idle-time start [COUNT n]` scans the PEL starting at `start`, transfers every entry that has been idle at least `min-idle-time` ms to `consumer`, and returns them with a cursor for the next call. It replaces the older two-step recipe of `XPENDING` followed by `XCLAIM` for most uses."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XAUTOCLAIM stream:orders notifier worker-2 60000 0-0 COUNT 10\n1) \"0-0\"\n2) 1) 1) \"1760000000000-1\"\n      2) 1) \"orderId\"\n         2) \"1002\"\n         3) \"userId\"\n         4) \"9\"\n         5) \"total\"\n         6) \"12.00\"\n3) (empty array)",
+          "title": "Claim entries idle for more than 60 seconds"
+        },
+        {
+          "type": "markdown",
+          "text": "The first element is the cursor to pass as `start` on the next call; `0-0` means the scan reached the end of the PEL. The last element lists IDs that were in the PEL but no longer exist in the stream (trimmed or deleted); Redis removes those dangling references for you. Claiming resets the idle timer and increments the delivery counter, so an entry that keeps crashing workers shows an ever-growing counter.\n\n#### Claiming while reading (Redis 8.4)\n\nRedis 8.4 added `CLAIM min-idle-time` to `XREADGROUP`. With it, a single call first returns pending entries that have been idle at least that long (longest idle first), then fills the rest with new entries when you read with `>`. Claimed entries carry two extra values: the milliseconds since last delivery and the delivery count. This lets one worker loop do both jobs:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "XREADGROUP GROUP notifier worker-2 COUNT 10 BLOCK 2000 CLAIM 60000 STREAMS stream:orders >"
+        },
+        {
+          "type": "markdown",
+          "text": "The reply layout for claimed entries is slightly different from a normal reply, so verify it against your client library before parsing it by hand. On servers older than 8.4 use `XAUTOCLAIM` in a periodic housekeeping task instead.\n\n#### Re-reading your own pending entries\n\nIf a worker restarts it should first look at what it already owns. `XREADGROUP ... STREAMS stream:orders 0` (an ID instead of `>`) returns that consumer's own pending entries rather than new ones. A typical worker loop reads with `0` until the reply is empty, then switches to `>`.\n\n#### Poison messages and dead letters\n\nSome entries can never succeed: malformed payloads, a bug that throws every time. The delivery counter in `XPENDING` tells you how many attempts an entry has had. Redis has no built-in dead-letter queue, so the usual pattern is: when the counter passes a limit (say 5), the worker copies the entry to a second stream such as `stream:orders:dead` with `XADD`, then acknowledges the original. A human or a repair job looks at the dead stream later."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never skip the acknowledgement path A worker that reads with `XREADGROUP` and never calls `XACK` makes the PEL grow without bound, and the stream cannot be trimmed safely. Acknowledge after the work is done (not before), and alert on `XPENDING` counts and on the oldest pending idle time."
+        },
+        {
+          "type": "markdown",
+          "text": "### Keeping a stream from growing forever\n\nA stream keeps its entries until you remove them. Reading, even acknowledging, does not delete anything: acknowledgement only affects the group's PEL. Left alone, a busy stream eats all your memory. There are three tools."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Tool",
+            "What it does",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`XADD ... MAXLEN ~ N`",
+              "Keep roughly the newest N entries",
+              "Capped event log"
+            ],
+            [
+              "`XADD ... MINID ~ id`",
+              "Drop entries with IDs older than id",
+              "Time-based retention"
+            ],
+            [
+              "`XTRIM key MAXLEN or` `MINID`",
+              "Trim on a schedule instead of on every add",
+              "Housekeeping job"
+            ],
+            [
+              "`XDEL key id`",
+              "Delete specific entries (O(1) each)",
+              "Privacy / cleanup"
+            ]
+          ],
+          "caption": "Ways to bound a stream."
+        },
+        {
+          "type": "markdown",
+          "text": "The `~` in `MAXLEN ~ 1000` asks for **approximate** trimming. Redis stores entries in macro nodes and only removes whole nodes, so the stream may keep slightly more than 1000 entries but trimming is far cheaper. Exact trimming (`=`, the default) can cut inside a node and costs more. For retention by time, compute the cutoff yourself, since an ID starts with milliseconds: to keep 7 days, pass `MINID ~ <nowMillis minus 604800000>`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Trimming does not know about your consumers Plain `MAXLEN` and `MINID` remove entries even when a consumer group has not read them yet or still has them pending. A slow group then finds its entries gone, and `XAUTOCLAIM` reports them as deleted. Size the cap with the slowest consumer in mind, or use the group-aware options below."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Group-aware deletion (Redis 8.2)\n\nRedis 8.2 added three ways to decide what happens to consumer group references when entries are deleted or trimmed. `XADD` and `XTRIM` accept an optional `KEEPREF | DELREF | ACKED` flag (default `KEEPREF`), and two new commands require one:\n\n- `XDELEX key [KEEPREF | DELREF | ACKED] IDS numids id [id ...]` deletes entries.\n- `XACKDEL key group [KEEPREF | DELREF | ACKED] IDS numids id [id ...]` acknowledges in the given group and deletes in one atomic step.\n\nThe three policies mean:\n\n- **KEEPREF** (default): delete the entry but leave existing references in every group's PEL, like plain `XDEL`.\n- **DELREF**: delete the entry and also remove its references from all PELs.\n- **ACKED**: delete only entries that every consumer group has read and acknowledged. Entries still pending in some group stay.\n\nBoth commands reply with one integer per ID: `1` deleted, `-1` no such entry, `2` not deleted because references still exist (`ACKED` only)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XACKDEL stream:orders notifier ACKED IDS 1 1760000000000-1\n1) (integer) 2",
+          "title": "Acknowledge and delete only when all groups are done"
+        },
+        {
+          "type": "markdown",
+          "text": "With two groups, the `notifier` group acknowledges the entry, but the `inventory` group has not, so the reply is `2`: acknowledged, not deleted. When `inventory` later runs the same command, the entry is gone. If you use several groups on one stream, `XACKDEL ... ACKED` replaces the error-prone pair `XACK` plus `XDEL`.\n\n### Monitoring a stream with XINFO\n\n`XINFO STREAM key` reports the length, first and last entries, the last generated ID and group count. `XINFO GROUPS key` shows each group's state and `XINFO CONSUMERS key group` shows each consumer."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XINFO GROUPS stream:orders\n1)  1) \"name\"\n    2) \"notifier\"\n    3) \"consumers\"\n    4) (integer) 2\n    5) \"pending\"\n    6) (integer) 1\n    7) \"last-delivered-id\"\n    8) \"1760000000000-1\"\n    9) \"entries-read\"\n   10) (integer) 2\n   11) \"lag\"\n   12) (integer) 1",
+          "title": "Group health at a glance"
+        },
+        {
+          "type": "markdown",
+          "text": "`pending` is the size of the PEL; `lag` is how many entries the group has not been delivered yet. Together they say \"how far behind is this group\" and \"is anything stuck\". `XINFO CONSUMERS` adds an `idle` time per consumer, useful for noticing dead workers.\n\n### Idempotent producers (Redis 8.6)\n\nProducers also fail: a client sends `XADD`, the network drops before the reply arrives, and the client retries. Without protection the event appears twice. Redis 8.6 added producer-side deduplication to `XADD`:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "XADD stream:orders IDMP order-service ord-1001-created * orderId 1001 total 59.90\nXADD stream:orders IDMPAUTO order-service * orderId 1001 total 59.90\nXCFGSET stream:orders IDMP-DURATION 300 IDMP-MAXSIZE 1000"
+        },
+        {
+          "type": "markdown",
+          "text": "`IDMP producer-id idempotent-id` tells Redis that this producer has a unique key for this message. If the same pair was used recently, `XADD` adds nothing and returns the ID of the original entry. `IDMPAUTO producer-id` lets Redis derive the idempotent ID from the content. Both work only with an auto-generated entry ID (`*`). `XCFGSET` sets how long (`IDMP-DURATION`, seconds) and how many (`IDMP-MAXSIZE`) idempotent IDs the stream remembers per producer. The window is bounded, so this protects against retries, not against duplicates hours apart.\n\n### Streams, lists and Kafka"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "List (LMOVE queue)",
+            "Stream + group",
+            "Kafka"
+          ],
+          "rows": [
+            [
+              "Retention Gone once popped",
+              "Kept until trimmed",
+              "Kept by time or size policy"
+            ],
+            [
+              "Several independent No readers",
+              "Yes, one group each",
+              "Yes"
+            ],
+            [
+              "Work sharing in a Yes group",
+              "Yes",
+              "Yes (partitions)"
+            ],
+            [
+              "Acknowledge and Manual with a second list retry",
+              "Built in (PEL, XAUTOCLAIM)",
+              "Offsets"
+            ],
+            [
+              "Replay from the past No",
+              "Yes, by ID",
+              "Yes"
+            ],
+            [
+              "Scale limit One node's RAM",
+              "One node's RAM per key",
+              "Disk, many brokers"
+            ],
+            [
+              "Operational weight Tiny",
+              "Tiny (already have Redis)",
+              "A cluster to run"
+            ]
+          ],
+          "caption": "Choosing a messaging structure."
+        },
+        {
+          "type": "markdown",
+          "text": "Streams sit between a simple list and a full log platform. They are an excellent fit when the volume fits in memory, retention is hours or days, and you already run Redis. They are not a substitute for Kafka when you need terabytes of retained history, strict ordering across many partitions, or a large ecosystem of connectors. One more caveat: persistence and replication follow the usual Redis rules, so with default settings a crash can lose the most recent entries (see the persistence chapters)."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "ShopStream's order events `order-service` appends to `stream:orders` with `MAXLEN ~ 100000`. The `notification-service` runs three worker instances in group `notifier`; `inventory-service` has its own group. A scheduled task in each service calls `XAUTOCLAIM` every 30 seconds with a 60-second idle limit, and moves entries delivered more than five times to `stream:orders:dead`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do Redis Streams give at-least-once delivery, and what happens when a consumer crashes? A group's PEL records every entry delivered to a consumer until it calls `XACK`. If the consumer crashes, its entries stay pending. Another consumer takes them over with `XAUTOCLAIM` (or `XCLAIM`, or `XREADGROUP ... CLAIM` on 8.4+) after a minimum idle time, and the delivery counter increases. Because a crash after the work but before the `XACK` causes reprocessing, handlers must be idempotent."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between a Redis stream and Pub/Sub? Pub/Sub is fire-and-forget: messages are pushed to whoever is connected at that moment and are not stored. A stream stores entries, supports replay by ID, remembers each group's position and tracks acknowledgements."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A stream is an append-only log of entries with increasing IDs of the form `ms-seq`; append with `XADD`, read ranges with `XRANGE`, follow with `XREAD BLOCK`.\n- A consumer group shares entries among workers; every delivered entry sits in the PEL until `XACK`, which gives at-least-once delivery.\n- Recover from dead workers with `XAUTOCLAIM`; watch `XPENDING`, `XINFO GROUPS` lag and delivery counts, and send poison messages to a dead-letter stream yourself.\n- Streams grow until you trim them: use `MAXLEN ~` or `MINID ~`, and on 8.2+ `XACKDEL ... ACKED` when several groups share a stream.\n- Redis 8.6 adds `IDMP` and `IDMPAUTO` on `XADD` so producer retries do not create duplicates."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-8",
+      "type": "concept",
+      "title": "Pub/Sub and Keyspace Notifications",
+      "subtopicId": "3-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Sometimes you do not need a log. You need to tell whoever is listening right now that something happened: a cache entry changed, a chat message was typed, a configuration flag flipped. **Publish/subscribe** (Pub/Sub) is Redis's lightweight broadcast mechanism for exactly that. Senders publish a message to a named **channel**; every client currently subscribed to that channel receives a copy. The sender and receivers never know about each other."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 447.1 104.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M315.0 90.0 L409.0 90.0 C410.7 90.0 412.0 88.7 412.0 87.0 L412.0 69.0 C412.0 67.3 410.7 66.0 409.0 66.0 L315.0 66.0 C313.3 66.0 312.0 67.3 312.0 69.0 L312.0 87.0 C312.0 88.7 313.3 90.0 315.0 90.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 61.0 L312.0 14.0\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M252.0 61.0 L312.0 46.0\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M252.0 61.0 L312.0 78.0\" fill=\"none\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M92.0 47.0 L132.0 47.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 62.0 L89.0 62.0 C90.7 62.0 92.0 60.7 92.0 59.0 L92.0 35.0 C92.0 33.3 90.7 32.0 89.0 32.0 L5.0 32.0 C3.3 32.0 2.0 33.3 2.0 35.0 L2.0 59.0 C2.0 60.7 3.3 62.0 5.0 62.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M136.0 82.0 L248.0 82.0 C250.2 82.0 252.0 80.2 252.0 78.0 L252.0 16.0 C252.0 13.8 250.2 12.0 248.0 12.0 L136.0 12.0 C133.8 12.0 132.0 13.8 132.0 16.0 L132.0 78.0 C132.0 80.2 133.8 82.0 136.0 82.0 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M147.0 72.0 L237.0 72.0 C238.7 72.0 240.0 70.7 240.0 69.0 L240.0 53.0 C240.0 51.3 238.7 50.0 237.0 50.0 L147.0 50.0 C145.3 50.0 144.0 51.3 144.0 53.0 L144.0 69.0 C144.0 70.7 145.3 72.0 147.0 72.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 58.0 L409.0 58.0 C410.7 58.0 412.0 56.7 412.0 55.0 L412.0 37.0 C412.0 35.3 410.7 34.0 409.0 34.0 L315.0 34.0 C313.3 34.0 312.0 35.3 312.0 37.0 L312.0 55.0 C312.0 56.7 313.3 58.0 315.0 58.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.0 46.0 L307.1 45.0 L308.2 49.2 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.0 78.0 L308.3 74.7 L307.1 78.9 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M132.0 47.0 L126.6 44.4 L126.6 49.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 26.0 L409.0 26.0 C410.7 26.0 412.0 24.7 412.0 23.0 L412.0 5.0 C412.0 3.3 410.7 2.0 409.0 2.0 L315.0 2.0 C313.3 2.0 312.0 3.3 312.0 5.0 L312.0 23.0 C312.0 24.7 313.3 26.0 315.0 26.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M312.0 14.0 L307.1 15.1 L309.8 18.5 Z\" fill=\"#0e7c86\" stroke=\"#46deec\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"341.7\" y=\"16.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"40.7\" lengthAdjust=\"spacingAndGlyphs\">Subscriber 1</text><text x=\"180.3\" y=\"23.0\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"23.4\" lengthAdjust=\"spacingAndGlyphs\">Redis</text><text x=\"31.7\" y=\"44.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"30.7\" lengthAdjust=\"spacingAndGlyphs\">Publisher</text><text x=\"341.7\" y=\"48.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"40.7\" lengthAdjust=\"spacingAndGlyphs\">Subscriber 2</text><text x=\"19.1\" y=\"54.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"55.9\" lengthAdjust=\"spacingAndGlyphs\">PUBLISH news hi</text><text x=\"168.7\" y=\"63.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"46.6\" lengthAdjust=\"spacingAndGlyphs\">channel: news</text><text x=\"341.7\" y=\"80.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"40.7\" lengthAdjust=\"spacingAndGlyphs\">Subscriber 3</text><text x=\"278.9\" y=\"96.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"166.2\" lengthAdjust=\"spacingAndGlyphs\">fire and forget: offline subscribers miss the message</text></svg>",
+          "width": 447,
+          "caption": "Publishers and subscribers meet only at a channel name. The server keeps no copy of the message after delivering it.",
+          "alt": "Subscriber 1 | Redis | Publisher | Subscriber 2 | PUBLISH news hi | channel: news | Subscriber 3 | fire and forget: offline subscribers miss the message"
+        },
+        {
+          "type": "markdown",
+          "text": "### The basic commands\n\n`SUBSCRIBE channel [channel ...]` puts a connection into subscriber mode. `PUBLISH channel message` sends a message and returns the number of subscribers that received it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SUBSCRIBE shop:events\nReading messages... (press Ctrl-C to quit)\n1) \"subscribe\"\n2) \"shop:events\"\n3) (integer) 1\n1) \"message\"\n2) \"shop:events\"\n3) \"price-changed:sku-42\"",
+          "title": "Terminal 1: subscriber"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> PUBLISH shop:events \"price-changed:sku-42\"\n(integer) 1\n127.0.0.1:6379> PUBLISH shop:nobody-listens \"hello\"\n(integer) 0",
+          "title": "Terminal 2: publisher"
+        },
+        {
+          "type": "markdown",
+          "text": "The subscriber sees a three-element push: the type (`message`), the channel and the payload. The publisher's reply is the receiver count; `0` is not an error, it means the message was dropped because nobody was listening.\n\n#### Pattern subscriptions\n\n`PSUBSCRIBE pattern [pattern ...]` subscribes to every channel matching a glob-style pattern. `PSUBSCRIBE shop:*` hears `shop:events`, `shop:alerts` and so on. Messages arrive as four elements, type `pmessage`, then the pattern that matched, the channel and the payload."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> PSUBSCRIBE shop:*\nReading messages... (press Ctrl-C to quit)\n1) \"psubscribe\"\n2) \"shop:*\"\n3) (integer) 1\n1) \"pmessage\"\n2) \"shop:*\"\n3) \"shop:events\"\n4) \"price-changed:sku-42\"",
+          "title": "Pattern subscriber"
+        },
+        {
+          "type": "markdown",
+          "text": "Pattern matching costs CPU on every publish, because Redis checks the channel against every active pattern. A handful of patterns is fine; thousands is a design smell. Prefer exact channel names where you can.\n\n`UNSUBSCRIBE` and `PUNSUBSCRIBE` end subscriptions. Introspect with `PUBSUB CHANNELS [pattern]` (active channels), `PUBSUB NUMSUB channel ...` (subscriber counts) and `PUBSUB NUMPAT` (active pattern count).\n\n### Delivery semantics: at most once\n\nPub/Sub provides **at-most-once** delivery, and the Redis documentation says so plainly: a message is delivered once if at all. There is no queue, no acknowledgement and no replay. Consider the failure cases:\n\n- A subscriber that is disconnected, restarting or slow to reconnect misses everything published in the gap.\n- A subscriber whose connection is too slow does not slow the publisher down; instead Redis closes the connection when that client's output buffer grows beyond the limit set by `client-output-buffer-limit pubsub`. The default is moderate (check the configuration reference for your version) and the effect is a silent loss of that subscriber.\n- Messages are not written to the AOF or RDB and are not stored anywhere on the server. (They are propagated to replicas and, in a classic cluster, to all nodes.)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not use Pub/Sub for events you cannot lose Orders, payments and anything that must be processed exactly once belong in a stream (or a real message broker), not in Pub/Sub. Use Pub/Sub for hints and live updates where the receiver can recover by other means, for example by re-reading state from Redis when it reconnects."
+        },
+        {
+          "type": "markdown",
+          "text": "A good mental rule: if the subscriber could fetch the truth afterwards with a normal read, Pub/Sub is a fine \"something changed\" nudge. If the message itself is the truth, store it.\n\n### Subscriber mode and connections\n\nIn the classic protocol (RESP2), a connection that has subscribed can only issue `SUBSCRIBE`, `PSUBSCRIBE`, `SSUBSCRIBE` and their un-variants, plus `PING`, `QUIT` and `RESET`. It cannot run `GET` or `SET`. So an application needs a **dedicated** **connection** for subscriptions, separate from the connection it uses for commands. Client libraries handle this for you (Lettuce uses a separate pub/sub connection; Spring's listener container manages one). With RESP3 (`HELLO 3`) a connection may run other commands while subscribed, because pushes are a distinct message type.\n\nPub/Sub ignores database numbers. Publishing while connected to database 10 is heard by a subscriber on database 1. To keep environments apart, put the environment in the channel name (`prod:shop:events`), or better, use separate Redis instances.\n\n### Sharded Pub/Sub for clusters\n\nIn a classic Pub/Sub on a Redis Cluster, every `PUBLISH` is forwarded to every node over the cluster bus, because any node might have a subscriber. That does not scale: more nodes means more bus traffic per message.\n\nRedis 7.0 added **sharded Pub/Sub**: `SSUBSCRIBE`, `SUNSUBSCRIBE` and `SPUBLISH`. A shard channel is hashed to a slot with the same CRC16 algorithm as keys, and the message stays inside the shard (the primary and its replicas) that owns that slot. A client subscribes through the node that owns the slot, or one of its replicas."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SSUBSCRIBE shop:cart:7\nSPUBLISH shop:cart:7 \"item-added\""
+        },
+        {
+          "type": "markdown",
+          "text": "Consequences: in a cluster, sharded channels scale by adding shards, and a client needs a connection per shard it subscribes through. Pattern subscription does not exist for sharded channels. On a single node, sharded and classic Pub/Sub behave alike, so only use the sharded form when you run (or plan to run) Cluster.\n\n### Keyspace notifications\n\nRedis can publish a Pub/Sub message whenever a key changes. This is called **keyspace notification**, and it lets you react to events such as \"this key expired\" or \"this hash was modified\" without polling. It is off by default because it costs CPU. You turn it on with the `notify-keyspace-events` setting, which takes a string of flag characters."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Flag",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`K`",
+              "Keyspace channel: `__keyspace@<db>__:<key>`, payload is the event name"
+            ],
+            [
+              "`E`",
+              "Keyevent channel: `__keyevent@<db>__:<event>`, payload is the key"
+            ],
+            [
+              "`g`",
+              "Generic commands (`DEL`, `EXPIRE`, `RENAME`, ...)"
+            ],
+            [
+              "`$`",
+              "String commands"
+            ],
+            [
+              "`l, s, h, z, t`",
+              "List, set, hash, sorted set and stream commands"
+            ],
+            [
+              "`x`",
+              "Expired events (generated when Redis deletes an expired key)"
+            ],
+            [
+              "`e`",
+              "Evicted events (a key removed by maxmemory eviction)"
+            ],
+            [
+              "`m, n`",
+              "Key miss and new key events (not part of A)"
+            ],
+            [
+              "`A`",
+              "Alias for all the main classes except m and n (and the newer o, c)"
+            ]
+          ],
+          "caption": "Common flags for notify-keyspace-events."
+        },
+        {
+          "type": "markdown",
+          "text": "At least one of `K` or `E` must be present, or nothing is published. The newer `o` (overwritten) and `c` (type changed) flags exist in recent releases; they are not included in `A`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG SET notify-keyspace-events Ex\nOK\n127.0.0.1:6379> PSUBSCRIBE __keyevent@0__:expired\nReading messages... (press Ctrl-C to quit)\n1) \"psubscribe\"\n2) \"__keyevent@0__:expired\"\n3) (integer) 1\n1) \"pmessage\"\n2) \"__keyevent@0__:expired\"\n3) \"__keyevent@0__:expired\"\n4) \"session:abc123\"",
+          "title": "Watch for expirations"
+        },
+        {
+          "type": "markdown",
+          "text": "Before this, another client ran `SET session:abc123 x EX 5`. Five seconds later (roughly) the subscriber learns that `session:abc123` expired. With `K` instead of `E` you would subscribe to `__keyspace@0__:session:abc123` and receive the event name `expired` as the payload."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "expired events are not on time Redis generates `expired` when it actually deletes the key, either lazily when a command touches it or when the background expiry cycle finds it. If a key is never accessed and the server has many keys with TTLs, the event can arrive well after the TTL passed. You also lose events if no subscriber is connected at that moment. Never build a precise scheduler or an exactly-once cleanup on `expired` events. The chapter on delayed tasks in the patterns part shows a sorted-set design that is reliable."
+        },
+        {
+          "type": "markdown",
+          "text": "Keyspace notifications are also not stored: they have all the limits of Pub/Sub. They are good for cache invalidation hints and for debugging (\"who is touching this key?\"), and poor for anything where a missed event is a bug. Hash field expiration (Redis 7.4+) generates its own `hexpired` events as fields expire.\n\n### Practical limits and tuning\n\n- **Fan-out cost.** One `PUBLISH` to 10,000 subscribers means 10,000 socket writes done by the single command thread. Large fan-outs can raise latency for everyone. Keep messages small, and shard channels across keys or use several servers for very large audiences.\n- **Message size.** The payload is a binary-safe string; keep it to identifiers and small JSON, and let subscribers fetch details.\n- **Slow subscribers.** Watch `CLIENT LIST` for subscriber connections with large output buffers (`omem`). The `pubsub` limit protects the server by disconnecting them.\n- **Reconnects.** Client libraries re-subscribe automatically after a reconnect, but the messages in between are lost. Decide what the subscriber should do on reconnect (usually: refresh its state).\n- **Naming.** Use hierarchical channel names (`shop:inventory:sku-42`) so patterns stay useful."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why might a Redis Pub/Sub subscriber miss messages, and what would you use instead? Pub/Sub is at-most-once: the server pushes each message only to connections that are subscribed at that instant and keeps no copy. A disconnect, a restart, or being disconnected for a full output buffer drops messages. When messages must not be lost, use Redis Streams with a consumer group (or a broker), which store entries and track acknowledgements."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `PUBLISH` sends to all current subscribers of a channel and returns how many there were; `SUBSCRIBE` and `PSUBSCRIBE` (glob patterns) receive.\n- Delivery is at-most-once with no storage or replay; use it for nudges and live updates, not for critical events.\n- In RESP2 a subscribed connection cannot run normal commands, so use a dedicated connection.\n- In a cluster prefer sharded Pub/Sub (`SPUBLISH`, `SSUBSCRIBE`) so traffic stays within a shard.\n- Keyspace notifications (`notify-keyspace-events`) publish key events such as `expired`, but expiry events can be late and are never guaranteed."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-9",
+      "type": "concept",
+      "title": "Bitmaps and Bitfields",
+      "subtopicId": "3-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Suppose ShopStream wants to know which of its ten million registered users were active today. A set of user IDs would work, but at tens of bytes per member it costs hundreds of megabytes. A **bitmap** answers the same question in about one bit per user: ten million users fit in roughly 1.2 MB.\n\nA bitmap in Redis is not a separate data type. It is an ordinary **string** that you treat as an array of bits. Bit number 0 is the highest bit of the first byte, bit 8 is the highest bit of the second byte, and so on. Because strings are binary-safe and can reach 512 MB, a bitmap can hold up to 2^32 bits (about 4.3 billion).\n\n### The basic commands"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`SETBIT key offset 0/1`",
+              "Set one bit, return the old value",
+              "O(1)"
+            ],
+            [
+              "`GETBIT key offset`",
+              "Read one bit",
+              "O(1)"
+            ],
+            [
+              "`BITCOUNT key [start end` `[BYTE|BIT]]`",
+              "Count bits set to 1",
+              "O(N)"
+            ],
+            [
+              "`BITPOS key bit [start [end` `[BYTE|BIT]]]`",
+              "Position of the first 0 or 1",
+              "O(N)"
+            ],
+            [
+              "`BITOP op dest key [key ...]`",
+              "Bitwise operation across strings",
+              "O(N)"
+            ],
+            [
+              "`BITFIELD key ...`",
+              "Read/write integers packed in the string",
+              "O(1) per op"
+            ]
+          ],
+          "caption": "Core bitmap commands."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SETBIT dau:2026-10-10 7 1\n(integer) 0\n127.0.0.1:6379> SETBIT dau:2026-10-10 1001 1\n(integer) 0\n127.0.0.1:6379> GETBIT dau:2026-10-10 7\n(integer) 1\n127.0.0.1:6379> GETBIT dau:2026-10-10 8\n(integer) 0\n127.0.0.1:6379> BITCOUNT dau:2026-10-10\n(integer) 2\n127.0.0.1:6379> BITPOS dau:2026-10-10 1\n(integer) 7\n127.0.0.1:6379> STRLEN dau:2026-10-10\n(integer) 126",
+          "title": "Daily active users, one bit per user ID"
+        },
+        {
+          "type": "markdown",
+          "text": "`SETBIT` returns the previous bit value, so one call tells you both \"mark user 7 active\" and \"was this the first time today\". Reading a bit past the end of the string returns 0. Setting a high offset allocates the whole string up to that byte, filled with zeros: setting bit 1001 made the key 126 bytes long. That is why user IDs used as offsets should be dense, small integers. If your IDs are sparse (UUIDs, or 64-bit snowflake IDs), a bitmap wastes memory or fails; map users to a compact sequential number first, or use a set or a HyperLogLog.\n\n### Combining bitmaps with BITOP\n\n`BITOP AND|OR|XOR|NOT dest key [key ...]` combines whole bitmaps and stores the result in `dest`. Shorter inputs are treated as padded with zero bytes. The reply is the length in bytes of the stored result."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SETBIT dau:2026-10-11 7 1\n(integer) 0\n127.0.0.1:6379> SETBIT dau:2026-10-11 9 1\n(integer) 0\n127.0.0.1:6379> BITOP AND dau:both dau:2026-10-10 dau:2026-10-11\n(integer) 126\n127.0.0.1:6379> BITCOUNT dau:both\n(integer) 1\n127.0.0.1:6379> BITOP OR dau:either dau:2026-10-10 dau:2026-10-11\n(integer) 126\n127.0.0.1:6379> BITCOUNT dau:either\n(integer) 3",
+          "title": "Active on both days, and on either day"
+        },
+        {
+          "type": "markdown",
+          "text": "With a key per day you can answer retention questions with two commands: AND of today and yesterday gives returning users, `BITCOUNT` counts them. A weekly active count is an OR of seven keys.\n\n#### New operators in Redis 8.2\n\nRedis 8.2 added four `BITOP` operators for set-style logic. With `X` the first source key and `Y1, Y2, ...` the rest:\n\n- `DIFF`: bits set in `X` but in none of the `Y` keys. \"Active today but never before\" when X is today.\n- `DIFF1`: bits set in at least one `Y` but not in `X`.\n- `ANDOR`: bits set in `X` and also in at least one `Y`.\n- `ONE`: bits set in exactly one of the source keys."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# new users today: active today, not active on any of the previous 6 days\nBITOP DIFF dau:new dau:2026-10-10 dau:2026-10-09 dau:2026-10-08 dau:2026-10-07 \\\n  dau:2026-10-06 dau:2026-10-05 dau:2026-10-04\nBITCOUNT dau:new"
+        },
+        {
+          "type": "markdown",
+          "text": "On servers before 8.2 you build the same result from `NOT` and `AND` with temporary keys.\n\n### BITFIELD: small integers in a string\n\n`BITFIELD` treats the string as a sequence of fixed-width integers and lets you read, write and increment them atomically. A type is written `u8` (unsigned 8-bit) or `i16` (signed 16-bit); widths go up to `u63` and `i64`. An offset like `#2` means \"the third field of this width\", while a plain number is a bit offset."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> BITFIELD stats:u1 SET u8 0 200 INCRBY u8 0 100 OVERFLOW SAT INCRBY u8 0 100 GET u8 0\n1) (integer) 0\n2) (integer) 44\n3) (integer) 144\n4) (integer) 144",
+          "title": "Packed counters with overflow control"
+        },
+        {
+          "type": "markdown",
+          "text": "Four sub-commands, four replies. `SET u8 0 200` returned the old value 0. The first `INCRBY u8 0 100` pushed 200 past the 8-bit maximum of 255 and, with the default `OVERFLOW WRAP`, wrapped around to 44. `OVERFLOW SAT` then changed the policy to saturate: 44 + 100 = 144 fits, so the increment returned 144. The `OVERFLOW` option applies only to the `INCRBY` operations after it and can be `WRAP`, `SAT` or `FAIL` (the operation returns nil). Use bitfields for many tiny counters, for example per-user 4-bit feature flags, where a hash would cost far more memory."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Big offsets allocate big strings `SETBIT dau:today 4000000000 1` makes Redis allocate roughly 500 MB at once, and zero-filling it blocks the server for a noticeable time. Validate offsets in your application and keep user numbers dense. Also remember that `BITCOUNT` and `BITOP` on huge strings are O(N) and run on the single command thread; limit key size, or split one bitmap per day into chunks (for example per million users) for very large user bases."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you count daily active users and retention for 50 million users in Redis? Use one bitmap per day with the user's sequential ID as the offset: about 6 MB per day. `SETBIT` on each activity, `BITCOUNT` for the daily number, `BITOP` `AND` of two days for retention. If exact membership is not needed and IDs are sparse, a HyperLogLog gives a count in 12 KB with about 0.81% error."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A bitmap is a string treated as bits: `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS`, `BITOP`, all on one ordinary key.\n- It is extremely compact for dense integer IDs (about 1 bit per user) and wasteful for sparse ones.\n- `BITOP` combines days or segments; Redis 8.2 adds `DIFF`, `DIFF1`, `ANDOR` and `ONE`.\n- `BITFIELD` packs small integers with explicit overflow behaviour (`WRAP`, `SAT`, `FAIL`).\n- Large offsets allocate large strings and block while zero-filling; bound them."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-10",
+      "type": "concept",
+      "title": "HyperLogLog",
+      "subtopicId": "3-10",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Counting **distinct** things is expensive. How many different visitors came to ShopStream today? With a set you add each visitor ID and call `SCARD`, but memory grows with every new visitor: millions of members, hundreds of megabytes per day. Often you do not need the exact number, a figure within a percent is enough for a dashboard. That is the trade a **HyperLogLog** (HLL) makes.\n\n### The idea\n\nA HyperLogLog is a probabilistic data structure. Each element is hashed to a long bit string. Looking at the hash values, the algorithm tracks how rare the patterns are: seeing a hash that starts with many zero bits is unlikely unless you have seen very many different elements, roughly 2^k distinct elements are needed before a run of k leading zeros shows up. Redis splits the hash space into 16,384 registers, keeps in each register the longest run seen, and combines them with a harmonic mean to estimate the count. The registers are all you store, and elements themselves are never stored.\n\nThe results:\n\n- **Fixed memory.** At most about 12 KB per HLL, whether it counted a hundred or a billion elements. Redis stores small HLLs in a sparse form that is smaller still, and converts to the dense 12 KB form as it fills.\n- **Standard error 0.81%.** The estimate is typically within a percent or so of the truth, never exact.\n- **No membership queries.** You cannot ask \"have I seen user 42?\" or list the members. You can only add and count.\n\n### Commands"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does"
+          ],
+          "rows": [
+            [
+              "`PFADD key element [element ...]`",
+              "Add elements; returns 1 if the estimate changed, else 0"
+            ],
+            [
+              "`PFCOUNT key [key ...]`",
+              "Estimated distinct count (several keys: count of their union)"
+            ],
+            [
+              "`PFMERGE dest source [source ...]`",
+              "Store the union of HLLs in dest"
+            ]
+          ],
+          "caption": "HyperLogLog commands."
+        },
+        {
+          "type": "markdown",
+          "text": "(The `PF` prefix honours Philippe Flajolet, who co-invented the algorithm.) A HyperLogLog is stored as a string with a special header, so `TYPE` reports `string`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> PFADD uv:2026-10-10 u1 u2 u3\n(integer) 1\n127.0.0.1:6379> PFADD uv:2026-10-10 u3\n(integer) 0\n127.0.0.1:6379> PFCOUNT uv:2026-10-10\n(integer) 3\n127.0.0.1:6379> PFADD uv:2026-10-11 u3 u4\n(integer) 1\n127.0.0.1:6379> PFCOUNT uv:2026-10-10 uv:2026-10-11\n(integer) 4\n127.0.0.1:6379> PFMERGE uv:week uv:2026-10-10 uv:2026-10-11\nOK\n127.0.0.1:6379> PFCOUNT uv:week\n(integer) 4",
+          "title": "Unique visitors per day"
+        },
+        {
+          "type": "markdown",
+          "text": "Adding `u3` a second time returned 0 because the sketch did not change. Counting two keys at once returns the number of distinct elements across both, so `u3` is counted once. This union property is what makes HLLs so useful for rolling windows: keep one per day with a TTL, and `PFCOUNT` over the last seven keys, or `PFMERGE` them into a weekly sketch. Small counts like these are in practice exact; the error shows up only at large cardinalities.\n\nContrast with the bitmap: a bitmap gives exact counts and membership but needs dense integer IDs and about one bit per possible user; an HLL accepts any string, uses at most 12 KB, and gives an estimate only."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "An HLL is a string in disguise `PFCOUNT` caches the computed estimate inside the key, so even a read may modify the stored value. Counting several keys merges them on the fly, which is slower than counting one. Because an HLL is a string, `GET` on it returns binary junk, and an accidental `SET` or `APPEND` on the key corrupts it; later `PF` commands then fail with an error about a corrupted HLL object. Give HLL keys their own prefix and never write to them with string commands."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Unique visitors at ShopStream The gateway runs `PFADD uv:<date> <visitorId>` on each page view (one command, no matter how many visitors) and sets a 40-day TTL on the key. The dashboard calls `PFCOUNT` for today, and for the month passes the daily keys to one `PFCOUNT`. Billing or fraud decisions never use this number, because it is approximate."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A HyperLogLog counts distinct elements in at most about 12 KB with a standard error of 0.81%.\n- Use `PFADD`, `PFCOUNT` and `PFMERGE`; counting several keys gives the union without double counting.\n- It cannot list or test members, and results are estimates; use sets or bitmaps when exactness matters.\n- Keep one HLL per time bucket with a TTL to build rolling unique-visitor windows."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-11",
+      "type": "concept",
+      "title": "Geospatial Indexes",
+      "subtopicId": "3-11",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "\"Which ShopStream pickup stores are within 5 km of me?\" is a question about places on the surface of the Earth. Redis answers it with **geospatial indexes**, and the most interesting thing about them is how little there is to them: a geo index is just a **sorted set**.\n\n### How geo works\n\n`GEOADD` converts each longitude/latitude pair into a single 52-bit integer using a **geohash**-style interleaving of the bits of both coordinates. That integer is used as the score of a sorted set member. Points close to each other on the map tend to share a prefix and so have nearby scores, which means a radius query becomes a handful of sorted set range queries over a few neighbouring cells, followed by an exact distance filter. All the usual sorted set tools (`ZRANGE`, `ZREM`, `ZCARD`, `TYPE`) work on the key, and removing a location is a `ZREM`."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 420.2 117.8\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M369.4 59.9 C369.4 38.9 352.4 21.9 331.4 21.9 C310.5 21.9 293.4 38.9 293.4 59.9 C293.4 80.9 310.5 97.9 331.4 97.9 C352.4 97.9 369.4 80.9 369.4 59.9\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.0 44.9 L102.0 44.9\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 64.9 L69.0 64.9 C70.7 64.9 72.0 63.6 72.0 61.9 L72.0 27.9 C72.0 26.3 70.7 24.9 69.0 24.9 L5.0 24.9 C3.3 24.9 2.0 26.3 2.0 27.9 L2.0 61.9 C2.0 63.6 3.3 64.9 5.0 64.9 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M105.0 64.9 L189.0 64.9 C190.7 64.9 192.0 63.6 192.0 61.9 L192.0 27.9 C192.0 26.3 190.7 24.9 189.0 24.9 L105.0 24.9 C103.3 24.9 102.0 26.3 102.0 27.9 L102.0 61.9 C102.0 63.6 103.3 64.9 105.0 64.9 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 44.9 L96.6 42.3 L96.6 47.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M334.6 59.9 C334.6 58.2 333.2 56.7 331.4 56.7 C329.7 56.7 328.2 58.2 328.2 59.9 C328.2 61.7 329.7 63.1 331.4 63.1 C333.2 63.1 334.6 61.7 334.6 59.9\" fill=\"#2e8b57\" stroke=\"#66cc93\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M352.6 48.9 C352.6 47.2 351.2 45.7 349.4 45.7 C347.7 45.7 346.2 47.2 346.2 48.9 C346.2 50.7 347.7 52.1 349.4 52.1 C351.2 52.1 352.6 50.7 352.6 48.9\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M319.6 70.9 C319.6 69.2 318.2 67.7 316.4 67.7 C314.7 67.7 313.2 69.2 313.2 70.9 C313.2 72.7 314.7 74.1 316.4 74.1 C318.2 74.1 319.6 72.7 319.6 70.9\" fill=\"#2f6db5\" stroke=\"#5d95d5\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M374.6 19.9 C374.6 18.2 373.2 16.7 371.4 16.7 C369.7 16.7 368.2 18.2 368.2 19.9 C368.2 21.7 369.7 23.1 371.4 23.1 C373.2 23.1 374.6 21.7 374.6 19.9\" fill=\"#b3261e\" stroke=\"#e25850\" stroke-width=\"1.00\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"65.6\" y=\"7.0\" font-size=\"7.8\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"112.2\" lengthAdjust=\"spacingAndGlyphs\">HyperLogLog: count distinct</text><text x=\"344.1\" y=\"7.0\" font-size=\"7.8\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"74.1\" lengthAdjust=\"spacingAndGlyphs\">Geo: radius search</text><text x=\"25.0\" y=\"43.0\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"24.1\" lengthAdjust=\"spacingAndGlyphs\">user ids</text><text x=\"125.8\" y=\"42.9\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"42.4\" lengthAdjust=\"spacingAndGlyphs\">12 KB sketch</text><text x=\"14.7\" y=\"51.5\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"44.7\" lengthAdjust=\"spacingAndGlyphs\">u1 u7 u1 u9 ...</text><text x=\"136.0\" y=\"51.9\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"22.0\" lengthAdjust=\"spacingAndGlyphs\">PFADD</text><text x=\"65.0\" y=\"85.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"133.4\" lengthAdjust=\"spacingAndGlyphs\">PFCOUNT -&gt; about 41,872 (error ~0.81%)</text><text x=\"283.1\" y=\"109.0\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"96.7\" lengthAdjust=\"spacingAndGlyphs\">GEOSEARCH ... BYRADIUS 5 km</text></svg>",
+          "width": 420,
+          "caption": "Left: HyperLogLog registers estimating a count. Right: points on a map encoded into one-dimensional geohash scores.",
+          "alt": "HyperLogLog: count distinct Geo: radius search | user ids 12 KB sketch | u1 u7 u1 u9 ... PFADD | PFCOUNT -> about 41,872 (error ~0.81%) | GEOSEARCH ... BYRADIUS 5 km"
+        },
+        {
+          "type": "markdown",
+          "text": "### Commands"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> GEOADD geo:stores 77.5946 12.9716 blr-central 77.6408 12.9784 blr-indiranagar \\\n  72.8777 19.0760 mumbai-bkc\n(integer) 3\n127.0.0.1:6379> GEOPOS geo:stores blr-central\n1) 1) \"77.59459823369979858\"\n   2) \"12.97159902243186025\"\n127.0.0.1:6379> GEODIST geo:stores blr-central blr-indiranagar km\n\"5.0647\"\n127.0.0.1:6379> GEOSEARCH geo:stores FROMLONLAT 77.60 12.97 BYRADIUS 10 km ASC WITHDIST COUNT 5\n1) 1) \"blr-central\"\n   2) \"0.6119\"\n2) 1) \"blr-indiranagar\"\n   2) \"4.5200\"\n127.0.0.1:6379> GEOSEARCH geo:stores FROMMEMBER blr-central BYBOX 20 20 km ASC\n1) \"blr-central\"\n2) \"blr-indiranagar\"",
+          "title": "A store locator"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Order is longitude first, then latitude.** This is the opposite of how most people say coordinates. Swapping them is the most common geo bug.\n- `GEOPOS` returns slightly different digits than you stored, because coordinates are quantised into 52 bits (error well under a metre).\n- `GEODIST key m1 m2 [m|km|ft|mi]` gives the distance along the Earth's surface assuming a sphere.\n- `GEOSEARCH key FROMMEMBER member | FROMLONLAT lon lat BYRADIUS r unit | BYBOX w h unit [ASC|DESC]` `[COUNT n [ANY]] [WITHCOORD] [WITHDIST] [WITHHASH]` is the search command (Redis 6.2+). It searches from a member or a point, inside a circle or a rectangle.\n- `GEOSEARCHSTORE dest source ...` writes results into another key; add `STOREDIST` to store distances as scores.\n- `GEOHASH` returns the standard 11-character geohash strings, which you can paste into other tools.\n\n`GEORADIUS` and `GEORADIUSBYMEMBER` are the older query commands and are deprecated; use `GEOSEARCH`. `GEOADD` also accepts `NX`, `XX` and `CH` like `ZADD`.\n\n### Limits to know\n\n- Valid longitudes are -180 to 180, and latitudes -85.05112878 to 85.05112878; points near the poles are rejected.\n- Distance uses a spherical Earth model, with an error up to about 0.5%, fine for a store locator and not for surveying.\n- A search must examine all points in the covered cells. `COUNT n` stops early only with `ANY` (any n matches, not the nearest); without `ANY`, Redis still has to look at all candidates, so a huge radius over a dense area is slow.\n- A geo index is a single key, which lives on one shard. Millions of points are fine, but a single hot key can become a bottleneck. For global data, shard by region in the key name (`geo:stores:in`, `geo:stores:us`).\n- You can attach other information to a member by keeping a hash such as `store:blr-central` next to the geo key.\n- For polygons, geofencing with shapes and rich filtering, use the Query Engine's `GEO` and `GEOSHAPE` field types (see the chapter on secondary indexes and search)."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Moving objects For vehicles or couriers, `GEOADD` repeatedly overwrites the same member with its new position, and a TTL is not possible per member. Delete stale entries with `ZREM`, or keep a second sorted set scored by last update time and `ZREMRANGEBYSCORE` the old ones periodically."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A geo index is a sorted set whose score is a 52-bit geohash; `TYPE` shows `zset`.\n- `GEOADD` takes longitude before latitude; `GEOSEARCH` (by radius or box, from a member or a point) replaces the deprecated `GEORADIUS` family.\n- Distances assume a sphere; coordinates near the poles are not accepted.\n- Everything lives in one key: shard by region if the data or traffic is huge."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-12",
+      "type": "concept",
+      "title": "Iterating Safely: SCAN and Friends",
+      "subtopicId": "3-12",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Sooner or later you want to ask \"which keys exist?\" Maybe to clean up `session:` keys, or find everything that belongs to one user. The obvious command is `KEYS pattern`. It is also an outage waiting to happen.\n\n### Why not KEYS\n\n`KEYS product:*` walks the entire keyspace in one go. Redis runs commands one at a time on a single thread, so while it scans ten million keys nothing else gets served: every other client waits, and latency spikes into seconds. `KEYS` is fine on your laptop and in a tiny test database; in production it is an anti-pattern. The same applies to commands that return a whole big collection at once: `SMEMBERS`, `HGETALL` and `LRANGE 0 -1` on a million-element value.\n\n### SCAN: a cursor over the keyspace\n\n`SCAN cursor [MATCH pattern] [COUNT hint] [TYPE type]` returns a small batch of keys plus a new cursor. You start with cursor `0` and call again with the cursor you got back, until the server returns cursor `0`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SCAN 0 MATCH product:* COUNT 5\n1) \"10\"\n2) 1) \"product:2\"\n   2) \"product:11\"\n   3) \"product:4\"\n   4) \"product:7\"\n127.0.0.1:6379> SCAN 10 MATCH product:* COUNT 5\n1) \"7\"\n2) 1) \"product:5\"\n   2) \"product:1\"",
+          "title": "Iterating with SCAN"
+        },
+        {
+          "type": "markdown",
+          "text": "Each call does a small, bounded amount of work, so other clients get served between calls. The command line has a wrapper: `redis-cli --scan --pattern 'product:*'` loops for you.\n\n#### Properties you must understand\n\n- **COUNT is a hint, not a limit.** It sets roughly how many hash-table slots to examine per call (default 10). A call can return fewer keys than `COUNT`, even none, and still not be finished. A cursor of `0` is the only end signal.\n- `MATCH` **filters after the work is done.** Redis still visits keys and discards non-matching ones, so a rare pattern means many empty replies. The filter reduces network traffic, not server work.\n- `TYPE type` (6.0+) filters by type, for example `SCAN 0 TYPE hash`.\n- **Guarantee:** every element that was present for the whole iteration is returned at least once. Elements added or removed during the iteration may or may not appear.\n- **Duplicates are possible.** The same key can come back more than once (for example while the hash table is being resized). Your code must tolerate it, such as by collecting into a set or by making the action idempotent.\n- **The cursor is opaque.** It is not an index. Do not do arithmetic on it, and do not store it across a server restart.\n- **There is no snapshot.** If you need an exactly consistent view, `SCAN` is the wrong tool.\n\n### SSCAN, HSCAN and ZSCAN\n\nBig collections get the same treatment: `SSCAN key cursor [MATCH pattern] [COUNT n]`, `HSCAN key cursor [MATCH` `pattern] [COUNT n] [NOVALUES]` and `ZSCAN key cursor [MATCH pattern] [COUNT n]`. `HSCAN` returns field-value pairs (`NOVALUES`, from 7.4, returns only fields) and `ZSCAN` returns member-score pairs."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSCAN product:h 0\n1) \"0\"\n2) 1) \"a\"\n   2) \"1\"\n   3) \"b\"\n   4) \"2\"\n   5) \"c\"\n   6) \"3\"",
+          "title": "Scanning a hash"
+        },
+        {
+          "type": "markdown",
+          "text": "Small collections (listpack or intset encoded, see the chapters on each type) are stored compactly in one block, so a scan returns everything in a single call with cursor `0`. The cursor behaviour only appears once the value has become a real hash table or skiplist.\n\n### Practical advice"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.cleanup;\n\nimport java.util.HashSet;\nimport java.util.Set;\nimport org.springframework.data.redis.core.Cursor;\nimport org.springframework.data.redis.core.ScanOptions;\nimport org.springframework.data.redis.core.StringRedisTemplate;\n\npublic class KeyCleaner {\n\n    private final StringRedisTemplate redis;\n\n    public KeyCleaner(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    /** Deletes all keys matching a pattern, in small batches. */\n    public long deleteSessions(String pattern) {\n        ScanOptions options = ScanOptions.scanOptions().match(pattern).count(500).build();\n        long deleted = 0;\n        Set<String> batch = new HashSet<>();\n        try (Cursor<String> cursor = redis.scan(options)) {\n            while (cursor.hasNext()) {\n                batch.add(cursor.next());\n                if (batch.size() >= 500) {\n                    deleted += flush(batch);\n                }\n            }\n        }\n        return deleted + flush(batch);\n    }\n\n    private long flush(Set<String> batch) {\n        if (batch.isEmpty()) {\n            return 0;\n        }\n        Long n = redis.unlink(batch);\n        batch.clear();\n        return n == null ? 0 : n;\n    }\n}",
+          "title": "KeyCleaner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The loop collects keys into small batches and removes them with `UNLINK` (an asynchronous `DEL` that frees memory in the background). In a Redis Cluster, `SCAN` covers only the node it is sent to, so a full cleanup must scan every primary (how to do that depends on your client library), and multi-key commands such as `UNLINK` with keys from different slots need the client to split them; deleting key by key is the simple, safe option there.\n\nBetter than scanning is to avoid needing it. If you must find \"all keys of one user\", maintain an index: add each key to a set `user:7:keys` when you create it. If you need to expire a family of keys at once, include a version in the key name (`catalog:v12:product:3`) and bump the version."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not scan in a hot path A `SCAN` over a large database is a background job, not something to call per request. Run it from a scheduled task, add a small pause between batches, and make it resumable. If a user-facing feature needs lookup by attribute, build a secondary index (sets, sorted sets or the Query Engine)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is `KEYS *` dangerous in production, and what do you use instead? `KEYS` is O(N) over all keys and blocks the single command thread until it completes, stalling every client. Use `SCAN` with a cursor, which does a bounded amount of work per call (`COUNT` as a hint), tolerates concurrent changes, may return duplicates, and ends when the cursor returns to 0. For collections, use `SSCAN`, `HSCAN` and `ZSCAN`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `KEYS`, `SMEMBERS` on huge sets, `HGETALL` on huge hashes block the server; avoid them on big data.\n- `SCAN` iterates incrementally with a cursor; `COUNT` is a hint, `MATCH` filters after the work, and the end is cursor `0`.\n- Expect duplicates and concurrent changes; make the per-key action idempotent.\n- `SSCAN`, `HSCAN` and `ZSCAN` do the same for big collections; small ones come back in one call.\n- Prefer an explicit index or key versioning over scanning for lookups."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-13",
+      "type": "concept",
+      "title": "JSON Documents",
+      "subtopicId": "3-13",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Everything so far stored flat values: strings, or hashes whose fields are strings. Real application data is often nested. A ShopStream product has a name and a price, but also a list of tags, a set of variants (size, colour, stock) and a nested `seller` object. You can serialize that to a JSON string and `SET` it, which is simple, but then changing one field means reading the whole document, parsing it in your application, modifying it and writing it back. Two services doing that at the same time overwrite each other.\n\nThe **JSON** data type stores a JSON document natively in Redis and lets you read and change parts of it atomically on the server. Before Redis 8 it was a separate module (RedisJSON, part of Redis Stack). In Redis Open Source 8.0 and later it is built in: no module to load.\n\n### Storing and reading\n\nA JSON value lives under a normal key. You address parts of it with a **path**. A path starting with `$` uses JSONPath syntax: `$` is the root, `.name` or `[\"name\"]` picks a field, `[0]` an array element, `[*]` all elements, `..` searches recursively, and `[?(@.price < 20)]` filters."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> JSON.SET product:42 $ '{\"name\":\"Trail Shoe\",\"price\":59.9,\"stock\":120}'\nOK\n127.0.0.1:6379> JSON.SET product:42 $.tags '[\"running\",\"outdoor\"]'\nOK\n127.0.0.1:6379> JSON.SET product:42 $.seller '{\"id\":7,\"city\":\"Pune\"}'\nOK\n127.0.0.1:6379> JSON.GET product:42 $.name\n\"[\\\"Trail Shoe\\\"]\"\n127.0.0.1:6379> JSON.GET product:42 $.seller.city $.price\n\"{\\\"$.seller.city\\\":[\\\"Pune\\\"],\\\"$.price\\\":[59.9]}\"\n127.0.0.1:6379> JSON.GET product:42 $.seller\n\"[{\\\"id\\\":7,\\\"city\\\":\\\"Pune\\\"}]\"\n127.0.0.1:6379> TYPE product:42\nReJSON-RL",
+          "title": "Create and read a product"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- With a `$` path the reply is always an **array**, because a JSONPath can match many places. `$.name` returns `[\"Trail` `Shoe\"]`, not `\"Trail Shoe\"`. If you ask for several paths, you get an object keyed by path. Older \"legacy\" paths that do not start with `$` (such as `.name`) return a bare value and only act on the first match; use `$` paths in new code.\n- `redis-cli` shows the reply as a quoted string, so inner quotes are escaped. Your client library will give you the JSON text.\n- `TYPE` reports `ReJSON-RL`, the internal name of the type.\n\n### Changing parts of a document"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> JSON.NUMINCRBY product:42 $.price -5\n\"[54.9]\"\n127.0.0.1:6379> JSON.NUMINCRBY product:42 $.stock -1\n\"[119]\"\n127.0.0.1:6379> JSON.ARRAPPEND product:42 $.tags '\"sale\"'\n1) (integer) 3\n127.0.0.1:6379> JSON.SET product:42 $.seller.city '\"Mumbai\"'\nOK\n127.0.0.1:6379> JSON.SET product:42 $.discount 0.1 NX\nOK\n127.0.0.1:6379> JSON.ARRLEN product:42 $.tags\n1) (integer) 3\n127.0.0.1:6379> JSON.STRLEN product:42 $.name\n1) (integer) 10\n127.0.0.1:6379> JSON.DEL product:42 $.discount\n(integer) 1",
+          "title": "Atomic partial updates"
+        },
+        {
+          "type": "markdown",
+          "text": "Each command is atomic, like every Redis command, and changes only the part you address. `JSON.NUMINCRBY` is the JSON counterpart of `HINCRBYFLOAT`: two services decrementing `stock` never lose an update. `JSON.SET` has `NX` (only if the path does not exist) and `XX` (only if it does). Other useful commands:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`JSON.SET key path value [NX|XX]`",
+              "Write a value at a path (path `$` replaces the whole document)"
+            ],
+            [
+              "`JSON.GET key [path ...]`",
+              "Read one or more paths"
+            ],
+            [
+              "`JSON.MGET key [key ...] path`",
+              "Read the same path from many documents"
+            ],
+            [
+              "`JSON.DEL key [path]`",
+              "Delete a path, or the whole key"
+            ],
+            [
+              "`JSON.NUMINCRBY / JSON.NUMMULTBY`",
+              "Arithmetic on numbers"
+            ],
+            [
+              "`JSON.STRAPPEND / JSON.STRLEN`",
+              "Append to or measure strings"
+            ],
+            [
+              "`JSON.ARRAPPEND / ARRINSERT / ARRPOP` `/ ARRTRIM / ARRLEN / ARRINDEX`",
+              "Array operations"
+            ],
+            [
+              "`JSON.OBJKEYS / JSON.OBJLEN`",
+              "Inspect objects"
+            ],
+            [
+              "`JSON.TYPE key path`",
+              "The JSON type at a path"
+            ],
+            [
+              "`JSON.TOGGLE key path`",
+              "Flip a boolean"
+            ]
+          ],
+          "caption": "JSON commands you will use most."
+        },
+        {
+          "type": "markdown",
+          "text": "Filters let one command touch many elements. Given an `items` array of order lines, `JSON.NUMINCRBY order:9` `'$.items[?(@.sku==\"A1\")].qty' 1` adds one to the quantity of every line with that SKU. Quote the path in the shell, because it contains characters the shell would interpret.\n\n### JSON from Java\n\nWith Spring Data Redis you can store JSON text through `StringRedisTemplate` and send the JSON commands as raw commands through the connection's `execute` method, but a client with native support is more convenient: Jedis, for example, has JSON methods such as `jsonSet` and `jsonGet`. The simplest approach that always works is to keep the document as a JSON string in a plain key (or hash field) and accept read-modify-write; use the native type when you need partial updates, server-side arithmetic, or indexing with the Query Engine (next chapter).\n\n### JSON, hash or string?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "String holding JSON",
+            "Hash",
+            "JSON type"
+          ],
+          "rows": [
+            [
+              "Nesting Yes, opaque to Redis",
+              "No (flat fields)",
+              "Yes"
+            ],
+            [
+              "Update one field Read, parse, write whole",
+              "`HSET`, atomic",
+              "`JSON.SET path`, atomic"
+            ],
+            [
+              "Atomic numeric No update",
+              "`HINCRBY`",
+              "`JSON.NUMINCRBY`"
+            ],
+            [
+              "Memory Smallest for read-only blobs",
+              "Very compact when small",
+              "Larger (tree of nodes)"
+            ],
+            [
+              "Field TTL No",
+              "Yes (7.4+)",
+              "No"
+            ],
+            [
+              "Indexing by field No",
+              "Yes, Query Engine",
+              "Yes, Query Engine"
+            ],
+            [
+              "Arrays inside In the blob",
+              "No",
+              "Yes"
+            ]
+          ],
+          "caption": "Three ways to store a product."
+        },
+        {
+          "type": "markdown",
+          "text": "A good default: use a **hash** for flat records (sessions, carts, simple products) because it is smaller and has per-field TTL; use **JSON** when the data is genuinely nested or contains arrays you need to modify in place, or when you plan to search into nested fields; use a **string** when the whole value is always read and written together (a cached API response). Resist the temptation to store everything as JSON just because it is convenient, since the native JSON type uses noticeably more memory than a compact hash for the same fields."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Wrong-type surprises `JSON.GET` on a key that holds a string returns a `WRONGTYPE` error, and `GET` on a JSON key does too. If your path matches nothing, many commands return an empty array or `nil` instead of an error. Check what your client returns before relying on it."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The JSON type stores nested documents natively and is built into Redis 8 (no module needed).\n- Use `$` paths (JSONPath): replies are arrays; `JSON.SET`, `JSON.GET`, `JSON.NUMINCRBY` and `JSON.ARRAPPEND` change or read only the addressed part, atomically.\n- Choose hash for flat records, JSON for nested or array data and indexing, a plain string for blobs read whole.\n- JSON documents can be indexed and searched by the Query Engine."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-14",
+      "type": "concept",
+      "title": "The Query Engine: Secondary Indexes and Search",
+      "subtopicId": "3-14",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Redis finds data by key. That is why it is fast, and also its biggest limitation. \"Give me product 42\" is easy. \"Give me running shoes under 60 dollars from sellers in Pune, cheapest first\" is not: you would have to maintain sets and sorted sets by hand for every field you might filter on (tags, price, city) and intersect them yourself. A **secondary index** removes that burden: you declare which fields of which keys to index, and Redis keeps the index up to date as the data changes.\n\nIn Redis 8 this capability, called the **Query Engine** (formerly RediSearch), is part of the server. It indexes hashes and JSON documents and supports full-text search, exact matching, numeric ranges, geo filters, vector similarity, and aggregations. The commands start with `FT.`."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 84.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M255.0 52.0 L339.0 52.0 C340.7 52.0 342.0 50.7 342.0 49.0 L342.0 33.0 C342.0 31.3 340.7 30.0 339.0 30.0 L255.0 30.0 C253.3 30.0 252.0 31.3 252.0 33.0 L252.0 49.0 C252.0 50.7 253.3 52.0 255.0 52.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M92.0 22.0 L122.0 22.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M222.0 22.0 L252.0 14.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M222.0 26.0 L252.0 41.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M342.0 14.0 L372.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M342.0 41.0 L372.0 24.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 42.0 L89.0 42.0 C90.7 42.0 92.0 40.7 92.0 39.0 L92.0 5.0 C92.0 3.3 90.7 2.0 89.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 39.0 C2.0 40.7 3.3 42.0 5.0 42.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M125.0 42.0 L219.0 42.0 C220.7 42.0 222.0 40.7 222.0 39.0 L222.0 5.0 C222.0 3.3 220.7 2.0 219.0 2.0 L125.0 2.0 C123.3 2.0 122.0 3.3 122.0 5.0 L122.0 39.0 C122.0 40.7 123.3 42.0 125.0 42.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 24.0 L339.0 24.0 C340.7 24.0 342.0 22.7 342.0 21.0 L342.0 5.0 C342.0 3.3 340.7 2.0 339.0 2.0 L255.0 2.0 C253.3 2.0 252.0 3.3 252.0 5.0 L252.0 21.0 C252.0 22.7 253.3 24.0 255.0 24.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M375.0 42.0 L497.9 42.0 C499.6 42.0 500.9 40.7 500.9 39.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L375.0 2.0 C373.3 2.0 372.0 3.3 372.0 5.0 L372.0 39.0 C372.0 40.7 373.3 42.0 375.0 42.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M122.0 22.0 L116.6 19.4 L116.6 24.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 14.0 L246.1 12.9 L247.5 17.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 41.0 L248.3 36.2 L246.0 40.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M372.0 20.0 L367.2 16.4 L366.2 21.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M372.0 24.0 L366.0 24.4 L368.6 28.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"269.5\" y=\"15.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"55.0\" lengthAdjust=\"spacingAndGlyphs\">text, tag, numeric</text><text x=\"24.7\" y=\"20.0\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"44.7\" lengthAdjust=\"spacingAndGlyphs\">Hashes / JSON</text><text x=\"162.8\" y=\"19.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"18.4\" lengthAdjust=\"spacingAndGlyphs\">Index</text><text x=\"424.3\" y=\"19.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"24.3\" lengthAdjust=\"spacingAndGlyphs\">Results</text><text x=\"32.2\" y=\"28.8\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"29.6\" lengthAdjust=\"spacingAndGlyphs\">product:*</text><text x=\"153.8\" y=\"29.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"36.3\" lengthAdjust=\"spacingAndGlyphs\">FT.CREATE</text><text x=\"417.8\" y=\"29.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"37.3\" lengthAdjust=\"spacingAndGlyphs\">FT.SEARCH</text><text x=\"277.4\" y=\"43.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"39.3\" lengthAdjust=\"spacingAndGlyphs\">vector (KNN)</text><text x=\"156.9\" y=\"72.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"189.1\" lengthAdjust=\"spacingAndGlyphs\">new keys with the indexed prefix are indexed automatically</text></svg>",
+          "width": 503,
+          "caption": "An index sits beside the data. The application queries the index, which returns matching keys and fields.",
+          "alt": "text, tag, numeric | Hashes / JSON Index Results | product:* FT.CREATE FT.SEARCH | vector (KNN) | new keys with the indexed prefix are indexed automatically"
+        },
+        {
+          "type": "markdown",
+          "text": "### Creating an index\n\nAn index is defined with `FT.CREATE`. You give it a name, say whether it covers hashes or JSON, choose a key prefix so it only watches the keys you care about, and list the fields (the schema) with their types."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Type",
+            "Use it for"
+          ],
+          "rows": [
+            [
+              "`TEXT`",
+              "Full-text search: tokenization, stemming, ranking (names, descriptions)"
+            ],
+            [
+              "`TAG`",
+              "Exact-match categories and IDs (colour, brand, status, city). Fast, no stemming"
+            ],
+            [
+              "`NUMERIC`",
+              "Range filters and sorting (price, stock, timestamp)"
+            ],
+            [
+              "`GEO`",
+              "Radius queries on a \"longitude,latitude\" point"
+            ],
+            [
+              "`VECTOR`",
+              "Similarity search on embeddings (next chapter)"
+            ],
+            [
+              "`GEOSHAPE`",
+              "Polygon and shape queries"
+            ]
+          ],
+          "caption": "Field types."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# Index the product hashes (keys product:<id>)\nFT.CREATE idx:product ON HASH PREFIX 1 product: SCHEMA \\\n  name TEXT WEIGHT 2.0 \\\n  description TEXT \\\n  brand TAG \\\n  city TAG \\\n  price NUMERIC SORTABLE \\\n  stock NUMERIC\n\n# Index JSON documents; the identifier is a JSON path, AS gives it a name\nFT.CREATE idx:productjson ON JSON PREFIX 1 pj: SCHEMA \\\n  $.name AS name TEXT \\\n  $.tags[*] AS tags TAG \\\n  $.price AS price NUMERIC SORTABLE \\\n  $.seller.city AS city TAG"
+        },
+        {
+          "type": "markdown",
+          "text": "Existing keys with the prefix are indexed in the background right after creation, and every later `HSET`, `JSON.SET`, `DEL` or expiry updates the index automatically. `SORTABLE` keeps the field in a column-like structure so sorting and aggregating on it is fast; add it only to fields you sort or group by, because it costs memory. Indexing a field you never query wastes memory too, so index only what you need. Run `FT.INFO idx:product` to see the schema, the number of documents and indexing progress, and `FT.DROPINDEX idx:product` to remove an index (the data stays unless you add `DD`).\n\n### Querying with FT.SEARCH"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:1 name \"Trail Running Shoe\" brand nike city Pune price 59.9 stock 120\n(integer) 5\n127.0.0.1:6379> HSET product:2 name \"Road Running Shoe\" brand adidas city Mumbai price 79 stock 40\n(integer) 5\n127.0.0.1:6379> FT.SEARCH idx:product \"@name:running @city:{Pune} @price:[0 70]\" \\\n  RETURN 2 name price SORTBY price ASC LIMIT 0 10\n1) (integer) 1\n2) \"product:1\"\n3) 1) \"name\"\n   2) \"Trail Running Shoe\"\n   3) \"price\"\n   4) \"59.9\"",
+          "title": "Search products"
+        },
+        {
+          "type": "markdown",
+          "text": "The reply starts with the total number of matches, followed by each matching key and a flat list of its returned fields. The query string has its own small language:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Query",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`running shoe`",
+              "Both words anywhere in any TEXT field (implicit AND)"
+            ],
+            [
+              "`@name:running`",
+              "Word in the `name` field"
+            ],
+            [
+              "`@name:(trail road)`",
+              "Both words inside the `name` field"
+            ],
+            [
+              "`@name:\"running shoe\"`",
+              "Exact phrase"
+            ],
+            [
+              "`@name:run*`",
+              "Prefix match"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Query",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`%runnig%`",
+              "Fuzzy match (edit distance 1)"
+            ],
+            [
+              "`-@name:road`",
+              "Exclude documents matching the term"
+            ],
+            [
+              "`@brand:{nike}`",
+              "TAG field equals this value"
+            ],
+            [
+              "`@price:[10 70]`",
+              "Numeric range, inclusive (use `(` for exclusive: `[(10 70]`)"
+            ],
+            [
+              "`@price:[-inf 70]`",
+              "Open-ended range"
+            ],
+            [
+              "`@loc:[77.6 12.97 5 km]`",
+              "GEO radius (longitude latitude radius unit)"
+            ]
+          ],
+          "caption": "Query syntax."
+        },
+        {
+          "type": "markdown",
+          "text": "The pipe character means OR: `@name:(trail|road)` matches either word and `@brand:{nike|adidas}` matches either brand. Spaces between clauses mean AND.\n\nImportant options of `FT.SEARCH`:\n\n- `RETURN n field [AS alias] ...` limits which fields come back (and may take JSON paths). `NOCONTENT` returns only keys.\n- `SORTBY field [ASC|DESC]` sorts by a field; declare it `SORTABLE` for speed.\n- `LIMIT offset count` pages the results. The default is `LIMIT 0 10`, which surprises people who expect all matches. `LIMIT 0 0` only counts.\n- `PARAMS n name value ...` passes values by name (`$name` in the query), which avoids string concatenation and is required for vector queries. It needs `DIALECT 2` or higher.\n- `DIALECT n` chooses the query language version. Newer dialects change syntax details and multi-value JSON results, so state it explicitly in queries you write, and check the configured default on your server with `FT.CONFIG GET` `DEFAULT_DIALECT`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never build queries by concatenating user input Characters like `|`, `@`, `{`, `-` and `*` have meaning in the query language. A product name typed by a user can change the query, in the same way SQL injection does. Pass user text as a `PARAMS` value, or escape punctuation with a backslash, and limit the allowed characters. Likewise, tokenization splits on punctuation: searching for an e-mail address or a SKU such as `AB-1002` in a TEXT field needs care, and a TAG field with escaped punctuation is usually the right choice for IDs."
+        },
+        {
+          "type": "markdown",
+          "text": "### Aggregations\n\n`FT.AGGREGATE` runs a pipeline over the matching documents: group, reduce, sort, transform."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> FT.AGGREGATE idx:product \"*\" GROUPBY 1 @brand \\\n  REDUCE COUNT 0 AS items REDUCE AVG 1 @price AS avg_price \\\n  SORTBY 2 @items DESC LIMIT 0 5\n1) (integer) 2\n2) 1) \"brand\"\n   2) \"nike\"\n   3) \"items\"\n   4) \"1\"\n   5) \"avg_price\"\n   6) \"59.9\"\n3) 1) \"brand\"\n   2) \"adidas\"\n   3) \"items\"\n   4) \"1\"\n   5) \"avg_price\"\n   6) \"79\"",
+          "title": "Average price and count per brand"
+        },
+        {
+          "type": "markdown",
+          "text": "Each clause feeds the next: `GROUPBY 1 @brand` groups by one property, `REDUCE` computes per-group values (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and more), `SORTBY` orders the groups, and `APPLY expr AS name` creates computed properties. `LOAD` can pull in fields that are not `SORTABLE`, but it is much slower, so mark aggregated fields `SORTABLE` instead. For paging through huge aggregation results, use `WITHCURSOR`.\n\n### Hybrid search (Redis 8.4)\n\nKeyword search (BM25-style text scoring) finds documents that contain your words; vector search finds documents that mean something similar. Real search boxes want both. Redis 8.4 added `FT.HYBRID`, which runs a text query and a vector similarity query together and fuses the two ranked lists, by default with **Reciprocal Rank Fusion (RRF)**, which scores each document by its rank in each list instead of trying to compare incomparable scores."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "FT.HYBRID idx:docs \\\n  SEARCH \"@title:(return policy)\" \\\n  VSIM @embedding $query_vec \\\n  COMBINE RRF 2 WINDOW 40 \\\n  LOAD 2 title url \\\n  LIMIT 0 10 \\\n  PARAMS 2 query_vec \"<binary float32 blob>\""
+        },
+        {
+          "type": "markdown",
+          "text": "The clauses are `SEARCH` (the text part, same syntax as above), `VSIM` (the vector field and the query vector parameter), `COMBINE` (`RRF`, or `LINEAR` with weights) and the usual `LIMIT`, `SORTBY`, `LOAD` and `PARAMS`. Note that the numbers after `COMBINE RRF` and similar options count the tokens that follow, a convention of this command. The exact grammar is detailed in the command reference and may change between 8.x releases; vector blobs are covered in the next chapter.\n\n### What the Query Engine is not\n\n- **It is not SQL.** There are no joins across indexes, no foreign keys and no multi-document transactions. It indexes one document at a time.\n- **Indexes cost memory and write time.** Every indexed write updates the index. Measure with `FT.INFO` before you index a big dataset.\n- **The key is the source of truth.** Treat the index as a derived view: after you write a document, do not assume a search issued at the same instant sees it, and fetch the document by key when you need the exact current value.\n- **Scaling.** On a single node it just works. Check the documentation for how the Query Engine behaves on Redis Cluster before you rely on it there; many teams run search on a dedicated instance.\n- **Deep paging is expensive.** Large `LIMIT` offsets get slower and slower; use `FT.AGGREGATE` with `WITHCURSOR`, or sort by a unique field and continue from the last value."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you query Redis data by something other than the key? Either maintain your own secondary indexes with sets and sorted sets (tag sets for equality, a sorted set for range queries), which is fast but you must keep them consistent in application code or Lua; or use the Query Engine: declare an index with `FT.CREATE` on hashes or JSON, and query with `FT.SEARCH` or `FT.AGGREGATE`. The engine keeps the index in sync with writes, and supports text, tag, numeric, geo and vector fields."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "ShopStream's catalogue search The catalogue cache keeps `product:{id}` hashes for fast lookups by ID. A search index `idx:product` on the same hashes backs the \"filter by brand, price and city\" sidebar. The authoritative data still lives in the relational database; if the index is ever lost, `FT.CREATE` rebuilds it from the cached hashes."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The Query Engine adds secondary indexes to Redis 8: define them with `FT.CREATE` on hashes or JSON, with TEXT, TAG, NUMERIC, GEO and VECTOR fields.\n- `FT.SEARCH` filters, sorts and pages; the default limit is 10 results; pass user input via `PARAMS`.\n- `FT.AGGREGATE` runs group, reduce and sort pipelines; mark aggregated fields `SORTABLE`.\n- `FT.HYBRID` (8.4) fuses keyword and vector results, by default with RRF.\n- Index only what you query; indexes cost memory and are not a substitute for a relational database."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-15",
+      "type": "concept",
+      "title": "Vector Search and Vector Sets",
+      "subtopicId": "3-15",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Keyword search matches words. Ask a keyword index for \"waterproof jacket for hiking\" and it will miss a product described as \"rain shell for trekking\", because the words differ even though the meaning is the same. **Vector search** matches meaning. A machine-learning model called an **embedding model** turns a piece of content (a sentence, a product description, an image) into a list of numbers, a **vector**, typically a few hundred to a few thousand floats long. Content with similar meaning ends up as nearby points in that space. To search, you embed the query with the same model and ask for the stored vectors closest to it. That operation is called **nearest-neighbour** search, or **KNN** when you want the K closest.\n\nRedis can store the vectors and run this search in two ways: as a `VECTOR` field in a Query Engine index (flexible, combined with filters and text), and as the dedicated **vector set** data type (simple, new, in beta in Redis 8). Redis does not create embeddings; your application calls an embedding model (a hosted API or a local model) and sends the numbers to Redis.\n\n### Distance metrics and index types\n\n\"Close\" needs a definition. The Query Engine supports three metrics:\n\n- `COSINE`: compares the angle between vectors and ignores their length. Distance 0 means the same direction. A common default for text embeddings.\n- `L2`: straight-line (Euclidean) distance.\n- `IP`: inner product (dot product). For vectors normalised to length 1 it gives the same ranking as cosine.\n\nUse the metric your embedding model recommends. An index also needs an algorithm:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Algorithm",
+            "How it works",
+            "When to choose it"
+          ],
+          "rows": [
+            [
+              "`FLAT`",
+              "Compares the query with every vector (exact, brute force)",
+              "Small data sets (thousands to a few hundred thousand), or when you need perfect recall"
+            ],
+            [
+              "`HNSW`",
+              "Builds a layered graph of neighbours and walks it (approximate)",
+              "Large data sets; trades a little accuracy for much lower latency"
+            ]
+          ],
+          "caption": "Vector index algorithms."
+        },
+        {
+          "type": "markdown",
+          "text": "HNSW (Hierarchical Navigable Small World) is **approximate**: it may miss a true neighbour. You tune the trade-off with `M` (edges per node, default 16), `EF_CONSTRUCTION` (effort while building, default 200) and `EF_RUNTIME` (effort while searching, default 10; raise it for better recall and slower queries).\n\n### Vectors in a Query Engine index\n\nStore the vector as a binary string of little-endian 32-bit floats in a hash field, or as an array of numbers in a JSON document. The index declares its type and size, and every vector must match exactly."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "FT.CREATE idx:docs ON HASH PREFIX 1 doc: SCHEMA \\\n  title TEXT \\\n  brand TAG \\\n  embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 384 DISTANCE_METRIC COSINE"
+        },
+        {
+          "type": "markdown",
+          "text": "The `6` after `HNSW` is the number of attribute tokens that follow (three name-value pairs). `DIM` must equal your model's output size. The query pattern is \"filter, then rank by distance\":"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# Top 5 nearest products, restricted to brand nike. $vec is a binary blob passed in PARAMS.\nFT.SEARCH idx:docs \"(@brand:{nike})=>[KNN 5 @embedding $vec AS dist]\" \\\n  PARAMS 2 vec \"<384 float32 values as bytes>\" \\\n  RETURN 2 title dist SORTBY dist DIALECT 2"
+        },
+        {
+          "type": "markdown",
+          "text": "The part before `=>` is an ordinary filter (`*` means no filter); the part in brackets is the nearest-neighbour request. `AS` `dist` names the distance so you can return and sort by it, a smaller value meaning closer for `COSINE` and `L2`. `DIALECT 2` (or higher) is required. Remember that the default `LIMIT` is 10, so ask for more than that with `LIMIT 0 n` when you use a larger K.\n\n#### Producing the blob in Java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.search;\n\nimport java.nio.ByteBuffer;\nimport java.nio.ByteOrder;\n\npublic final class VectorBytes {\n\n    private VectorBytes() {\n    }\n\n    /** Encodes floats as the little-endian FLOAT32 blob Redis expects. */\n    public static byte[] toBlob(float[] vector) {\n        ByteBuffer buffer = ByteBuffer.allocate(vector.length * Float.BYTES)\n                .order(ByteOrder.LITTLE_ENDIAN);\n        for (float value : vector) {\n            buffer.putFloat(value);\n        }\n        return buffer.array();\n    }\n\n    public static float[] fromBlob(byte[] blob) {\n        ByteBuffer buffer = ByteBuffer.wrap(blob).order(ByteOrder.LITTLE_ENDIAN);\n        float[] vector = new float[blob.length / Float.BYTES];\n        for (int i = 0; i < vector.length; i++) {\n            vector[i] = buffer.getFloat();\n        }\n        return vector;\n    }\n}",
+          "title": "VectorBytes.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the byte order must be little-endian (Java's `ByteBuffer` defaults to big-endian), and the blob length must be exactly `DIM` times 4 bytes. A wrong size gives an error; a wrong byte order gives no error but nonsense results. Store the blob with a binary-safe write (a `byte[]` hash field), not through a string serializer.\n\n### Vector sets (beta)\n\nRedis 8.0 introduced **vector sets**, a data type resembling a sorted set, but each element carries a vector instead of a score. There is no schema or index to declare: you add elements and query by similarity. The set is built on the HNSW algorithm. Vector sets are marked beta in the Redis 8 materials, so treat the API as subject to change and re-check the command pages when you upgrade."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "VADD products VALUES 3 0.1 1.2 0.5 sku:1001\nVADD products VALUES 3 0.2 1.1 0.4 sku:1002\nVADD products VALUES 3 0.9 0.1 0.0 sku:2001\nVSETATTR products sku:1001 '{\"brand\":\"nike\",\"price\":59}'\nVSIM products VALUES 3 0.1 1.2 0.4 WITHSCORES COUNT 2\nVSIM products ELE sku:1001 FILTER '.brand == \"nike\" && .price < 100' COUNT 5\nVCARD products\nVDIM products"
+        },
+        {
+          "type": "markdown",
+          "text": "- `VADD key [REDUCE dim] (FP32 | VALUES num) vector element [Q8 | NOQUANT | BIN] ...` adds an element, either from a binary float blob (`FP32`) or from `num` numbers written out. `REDUCE` projects to fewer dimensions to save memory. The quantization options store vectors in 8 bits, full precision, or one bit per dimension; lower precision saves memory and costs some accuracy.\n- `VSIM key (ELE element | FP32 blob | VALUES num ...)` returns the most similar elements: use `ELE` to search by an element already in the set. `WITHSCORES` returns similarity from 1 (identical) down to 0, `COUNT` limits results, and `EF` raises search effort.\n- `VSETATTR`/`VGETATTR` attach a JSON attribute to an element, and `FILTER` in `VSIM` restricts results with a small expression over those attributes.\n- `VCARD` gives the element count, `VDIM` the dimensions, `VREM` removes an element, and `TYPE` reports `vectorset`.\n\nChoose by need. A Query Engine index gives you text + tags + numbers + vectors in one query, hybrid search and aggregation. A vector set is lighter when you only need \"nearest neighbours of this vector, optionally with simple attribute filters\", for example recommendations by item similarity.\n\n### Semantic cache and RAG, a preview\n\nTwo popular uses show why vectors live in Redis:\n\n- **Semantic cache.** Calling a large language model (LLM) is slow and costs money. Many users ask the same thing in different words. Store each question's embedding with the model's answer (and a TTL). For a new question, run a KNN query with K = 1; if the nearest cached question is closer than a threshold you chose, return the stored answer instead of calling the model. Choose the threshold by testing with real questions: too loose returns wrong answers, too strict never hits.\n- **Retrieval-augmented generation (RAG).** To answer questions about your own documents, split them into chunks, embed each chunk, and store chunk text plus vector. At question time embed the question, fetch the top K chunks with a vector (or hybrid) query, and put them into the model's prompt as context. Redis is the fast retrieval layer; filters (tenant, language, access rights) narrow what the model may see.\n\nLater parts of the book build on this in the patterns and use-case chapters; here the point is the building block."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Dimensions, model and metric are a contract If you change the embedding model, every stored vector is invalid, since vectors from different models (or different sizes) cannot be compared. Version the index name and the key prefix (`doc:v2:`), re-embed in the background, and switch over when ready. Also keep memory in mind: 1,000,000 vectors of 1536 float32 numbers take about 6 GB for the vectors alone, before the HNSW graph overhead."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- An embedding turns content into a vector; nearby vectors mean similar meaning. Redis stores vectors and searches them, but your application produces the embeddings.\n- In the Query Engine, declare a `VECTOR` field (`FLAT` exact or `HNSW` approximate) with `TYPE`, `DIM` and `DISTANCE_METRIC`, and query with `=>[KNN k @field $blob AS dist]` and `DIALECT 2`.\n- Vectors are little-endian float32 blobs; byte order and length must match.\n- Vector sets (`VADD`, `VSIM`, `VSETATTR`) are a simpler beta type for similarity search with attribute filters.\n- Typical uses: semantic caching of LLM answers and retrieval for RAG; changing the model means re-embedding everything."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-16",
+      "type": "concept",
+      "title": "Probabilistic Data Structures",
+      "subtopicId": "3-16",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Sets are exact, and exactness costs memory. Sometimes \"almost right, in tiny space\" is the better bargain. Probabilistic data structures answer questions about large streams of data using small, fixed memory in return for a bounded, known error. You have already met one: the HyperLogLog counts distinct items. Redis 8 includes five more families: **Bloom filter**, **Cuckoo filter**, **Count-Min Sketch**, **Top-K** and **t-digest**. Before Redis 8 these came from the separate RedisBloom module; now the commands exist in the server, with the prefixes `BF.`, `CF.`, `CMS.`, `TOPK.` and `TDIGEST.`."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 444.0 102.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M105.0 64.0 L153.0 64.0 C154.7 64.0 156.0 62.7 156.0 61.0 L156.0 49.0 C156.0 47.3 154.7 46.0 153.0 46.0 L105.0 46.0 C103.3 46.0 102.0 47.3 102.0 49.0 L102.0 61.0 C102.0 62.7 103.3 64.0 105.0 64.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M202.0 48.0 L222.0 48.0 L222.0 30.0 L202.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M222.0 48.0 L242.0 48.0 L242.0 30.0 L222.0 30.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M242.0 48.0 L262.0 48.0 L262.0 30.0 L242.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.0 48.0 L282.0 48.0 L282.0 30.0 L262.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M282.0 48.0 L302.0 48.0 L302.0 30.0 L282.0 30.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 48.0 L322.0 48.0 L322.0 30.0 L302.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M322.0 48.0 L342.0 48.0 L342.0 30.0 L322.0 30.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M342.0 48.0 L362.0 48.0 L362.0 30.0 L342.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M362.0 48.0 L382.0 48.0 L382.0 30.0 L362.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M382.0 48.0 L402.0 48.0 L402.0 30.0 L382.0 30.0 Z\" fill=\"#44140e\" stroke=\"#e25850\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M402.0 48.0 L422.0 48.0 L422.0 30.0 L402.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M422.0 48.0 L442.0 48.0 L442.0 30.0 L422.0 30.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M72.0 33.0 L102.0 11.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M72.0 33.0 L102.0 33.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M72.0 33.0 L102.0 55.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M156.0 11.0 L232.0 30.0\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M156.0 33.0 L292.0 30.0\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M156.0 55.0 L332.0 30.0\" fill=\"none\" stroke=\"#e09952\" stroke-width=\"0.70\" stroke-linejoin=\"round\"/><path d=\"M5.0 48.0 L69.0 48.0 C70.7 48.0 72.0 46.7 72.0 45.0 L72.0 21.0 C72.0 19.3 70.7 18.0 69.0 18.0 L5.0 18.0 C3.3 18.0 2.0 19.3 2.0 21.0 L2.0 45.0 C2.0 46.7 3.3 48.0 5.0 48.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M105.0 42.0 L153.0 42.0 C154.7 42.0 156.0 40.7 156.0 39.0 L156.0 27.0 C156.0 25.3 154.7 24.0 153.0 24.0 L105.0 24.0 C103.3 24.0 102.0 25.3 102.0 27.0 L102.0 39.0 C102.0 40.7 103.3 42.0 105.0 42.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 33.0 L98.4 31.3 L98.4 34.7 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 55.0 L100.1 51.5 L98.1 54.3 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M232.0 30.0 L228.9 27.4 L228.1 30.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 30.0 L288.4 28.3 L288.4 31.8 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M332.0 30.0 L328.2 28.8 L328.7 32.2 Z\" fill=\"#d9822b\" stroke=\"#e09952\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M105.0 20.0 L153.0 20.0 C154.7 20.0 156.0 18.7 156.0 17.0 L156.0 5.0 C156.0 3.3 154.7 2.0 153.0 2.0 L105.0 2.0 C103.3 2.0 102.0 3.3 102.0 5.0 L102.0 17.0 C102.0 18.7 103.3 20.0 105.0 20.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M102.0 11.0 L98.1 11.7 L100.1 14.5 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"118.7\" y=\"13.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"20.5\" lengthAdjust=\"spacingAndGlyphs\">hash 1</text><text x=\"29.5\" y=\"30.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"15.0\" lengthAdjust=\"spacingAndGlyphs\">item</text><text x=\"118.7\" y=\"35.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"20.5\" lengthAdjust=\"spacingAndGlyphs\">hash 2</text><text x=\"23.7\" y=\"40.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"26.7\" lengthAdjust=\"spacingAndGlyphs\">sku-991</text><text x=\"209.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"229.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"249.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"269.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"289.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"309.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"329.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"349.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"369.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"389.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">1</text><text x=\"409.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"429.9\" y=\"41.4\" font-size=\"7.0\" fill=\"#e7e9f3\" font-family=\"JetBrains Mono Variable, ui-monospace, monospace\" font-weight=\"700\">0</text><text x=\"118.7\" y=\"57.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"20.5\" lengthAdjust=\"spacingAndGlyphs\">hash 3</text><text x=\"277.0\" y=\"62.0\" font-size=\"7.0\" fill=\"#abe3c4\" font-style=\"italic\" textLength=\"89.9\" lengthAdjust=\"spacingAndGlyphs\">all k bits set: maybe present</text><text x=\"279.6\" y=\"76.0\" font-size=\"7.0\" fill=\"#efa39f\" font-style=\"italic\" textLength=\"84.8\" lengthAdjust=\"spacingAndGlyphs\">any bit 0: definitely absent</text></svg>",
+          "width": 444,
+          "caption": "A Bloom filter: each item sets several bits chosen by hash functions. A lookup that finds any of its bits at 0 is definitely absent; all bits at 1 means probably present.",
+          "alt": "hash 1 | item | hash 2 | sku-991 0 1 0 0 1 0 1 0 0 1 0 0 | hash 3 | all k bits set: maybe present | any bit 0: definitely absent"
+        },
+        {
+          "type": "markdown",
+          "text": "### Bloom filter: \"have I seen this?\"\n\nA Bloom filter answers set membership: is X in the set? Its answer is one of two things: **definitely not** or **probably** **yes**. It never gives a false negative; it sometimes gives a false positive, at a rate you choose. Internally it is a bit array and several hash functions: adding an item sets a few bits, and a lookup checks the same bits.\n\nShopStream's catalogue service gets requests for product IDs that do not exist (typos, scrapers). Each one misses the cache and hits the database. A Bloom filter holding every valid product ID rejects most of those requests before they reach the database, a defence against cache penetration discussed in the patterns part."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> BF.RESERVE bf:products 0.01 1000000\nOK\n127.0.0.1:6379> BF.ADD bf:products product:42\n(integer) 1\n127.0.0.1:6379> BF.ADD bf:products product:42\n(integer) 0\n127.0.0.1:6379> BF.EXISTS bf:products product:42\n(integer) 1\n127.0.0.1:6379> BF.EXISTS bf:products product:99999\n(integer) 0\n127.0.0.1:6379> BF.MADD bf:products product:1 product:2 product:3\n1) (integer) 1\n2) (integer) 1\n3) (integer) 1\n127.0.0.1:6379> BF.MEXISTS bf:products product:1 product:77\n1) (integer) 1\n2) (integer) 0",
+          "title": "Create, add, check"
+        },
+        {
+          "type": "markdown",
+          "text": "`BF.RESERVE key error_rate capacity [EXPANSION n] [NONSCALING]` creates a filter: here a 1% false-positive rate for an expected one million items. `BF.ADD` returns 1 when the item was newly added and 0 when it probably existed already. If you call `BF.ADD` without reserving first, Redis creates a filter with default settings, which is rarely what you want, so always reserve explicitly.\n\n**Sizing.** A Bloom filter needs roughly 9.6 bits per item at 1% error and about 14.4 bits per item at 0.1%. One million items at 1% error therefore take about 1.2 MB, compared with tens of megabytes for a set of IDs. If you add more items than `capacity`, a scaling filter (the default) adds another, larger sub-filter, growing by `EXPANSION` (default 2) each time, and the real error rate drifts up slowly; `NONSCALING` returns an error instead. You cannot delete items from a Bloom filter, and you cannot list them.\n\n### Cuckoo filter: membership with deletes\n\nA Cuckoo filter answers the same question as a Bloom filter but stores small fingerprints of items in a table, which allows `CF.DEL`. It is often a bit faster on lookups and can use less space at low error rates, but inserts can fail when the table is full."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "CF.RESERVE cf:active-sessions 100000\nCF.ADD cf:active-sessions session:abc\nCF.EXISTS cf:active-sessions session:abc\nCF.DEL cf:active-sessions session:abc"
+        },
+        {
+          "type": "markdown",
+          "text": "Choose Bloom when you only add; choose Cuckoo when items must be removed (and delete only items you know you added, since deleting an item that was never added can remove a different item's fingerprint).\n\n### Count-Min Sketch: \"how often?\"\n\nA Count-Min Sketch estimates how many times each item occurred in a stream, in fixed memory, using a small matrix of counters and several hash functions. It can **over-estimate** (hash collisions add to counters) but never under-estimates."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "CMS.INITBYDIM cms:views 2000 5\nCMS.INCRBY cms:views product:42 1 product:7 3\nCMS.QUERY cms:views product:42 product:7"
+        },
+        {
+          "type": "markdown",
+          "text": "`CMS.INITBYDIM key width depth` sets the matrix size: more width reduces the size of the error, more depth reduces the chance of a large error. `CMS.INITBYPROB key error probability` lets you state the accuracy instead. `CMS.INCRBY` adds counts and `CMS.QUERY` reads estimates. Use a sketch when the number of distinct items is too large to keep a counter for each.\n\n### Top-K: the heavy hitters\n\nTop-K keeps the K most frequent items of a stream. It uses a compact structure that remembers only candidates likely to be in the top K. Which products are viewed most, right now?"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> TOPK.RESERVE topk:views 3\nOK\n127.0.0.1:6379> TOPK.ADD topk:views p42 p42 p7 p99 p42 p7\n1) (nil)\n2) (nil)\n3) (nil)\n4) (nil)\n5) (nil)\n6) (nil)\n127.0.0.1:6379> TOPK.LIST topk:views\n1) \"p42\"\n2) \"p7\"\n3) \"p99\"\n127.0.0.1:6379> TOPK.QUERY topk:views p42 p1000\n1) (integer) 1\n2) (integer) 0",
+          "title": "Track the top 3 viewed products"
+        },
+        {
+          "type": "markdown",
+          "text": "`TOPK.ADD` returns, for each added item, the item that was pushed out of the top K (or nil if none was). `TOPK.LIST` returns the current list and `TOPK.QUERY` tells whether items are in it. The counts are approximate; the width, depth and decay (the probability that a counter shrinks when a competing item arrives) can be tuned in `TOPK.RESERVE`, and the defaults are fine to start. For exact top lists over bounded data, a sorted set with `ZINCRBY` is simpler and exact; use Top-K when the item universe is unbounded.\n\n### t-digest: percentiles\n\nAverages hide pain; engineers want the 95th and 99th percentile of a response time. Keeping every sample is expensive. A **t-digest** keeps a compressed summary of a distribution that is very accurate near the extremes (the tails, where percentiles like p99 live)."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "TDIGEST.CREATE td:latency\nTDIGEST.ADD td:latency 12 15 11 230 14 13 16 18\nTDIGEST.QUANTILE td:latency 0.5 0.95 0.99\nTDIGEST.CDF td:latency 100\nTDIGEST.MIN td:latency\nTDIGEST.MAX td:latency"
+        },
+        {
+          "type": "markdown",
+          "text": "`TDIGEST.QUANTILE` takes fractions from 0 to 1 and returns one estimated value for each; `TDIGEST.CDF` answers the reverse question (what fraction of observations are at or below 100?). Digests can be merged with `TDIGEST.MERGE`, so you can keep one per minute or per instance and combine them later.\n\n### Choosing among them"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Structure",
+            "Guarantee"
+          ],
+          "rows": [
+            [
+              "Have I seen this item?",
+              "Bloom (or Cuckoo if deletes)",
+              "No false negatives, few false positives"
+            ],
+            [
+              "How many distinct items?",
+              "HyperLogLog",
+              "About 0.81% standard error"
+            ],
+            [
+              "How often did this item occur?",
+              "Count-Min Sketch",
+              "Never under-counts"
+            ],
+            [
+              "Which items are most frequent?",
+              "Top-K",
+              "Approximate heavy hitters"
+            ],
+            [
+              "What is the p99 of this metric?",
+              "t-digest",
+              "Accurate tails"
+            ]
+          ],
+          "caption": "Which structure for which question."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Probabilistic means plan for the error A false positive from a Bloom filter in front of a database only costs an unnecessary lookup, which is harmless. The same false positive used to decide \"this user has already redeemed the coupon\" would wrongly refuse a customer. Use these structures where an error is cheap and the savings are large, and keep an exact check behind them wherever a wrong answer matters. Also reserve the filter with realistic capacity and error rate up front, because resizing means rebuilding it."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How does a Bloom filter protect a database from cache penetration? The filter holds every valid key (here, product IDs). A request for an ID is first checked with `BF.EXISTS`. A \"no\" is certain, so the request is rejected without touching the cache or database. A \"yes\" may be a false positive, so it continues the normal path and may then find nothing. The filter must be filled at start-up and updated when new products are created because it cannot remove items, and it must be rebuilt periodically if deletions are common."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Probabilistic structures trade exactness for small, bounded memory; they are built into Redis 8 (`BF.`, `CF.`, `CMS.`, `TOPK.`, `TDIGEST.`).\n- Bloom: membership with no false negatives and no deletes; Cuckoo adds deletes. Reserve with a realistic capacity and error rate.\n- Count-Min Sketch estimates frequencies (only over-estimates); Top-K tracks heavy hitters; t-digest estimates quantiles such as p99.\n- Use them where an error is cheap, and keep an exact check where it is not."
+        }
+      ]
+    },
+    {
+      "id": "ch-3-17",
+      "type": "concept",
+      "title": "Time Series",
+      "subtopicId": "3-17",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A time series is a sequence of measurements stamped with a time: the temperature of a warehouse sensor every ten seconds, the number of orders per minute, the response time of an API. The workload has a clear shape. Writes arrive in time order, almost never change, and the questions are about ranges (\"the last hour\"), aggregates (\"average per five minutes\") and retention (\"keep fine detail for a day, summaries for a year\"). You can model this with sorted sets, but a dedicated type does the compression, aggregation and expiry for you. Redis 8 includes the **time series** data type (formerly RedisTimeSeries), with commands starting with `TS.`.\n\n### Creating a series and adding samples\n\nA series is a key holding **samples**: a timestamp (milliseconds since the Unix epoch, a 64-bit integer) and a floating-point value. Create it with options, or let the first `TS.ADD` create it with defaults."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "TS.CREATE sensor:wh1:temp RETENTION 86400000 DUPLICATE_POLICY LAST \\\n  LABELS site wh1 metric temp"
+        },
+        {
+          "type": "markdown",
+          "text": "- `RETENTION` is in milliseconds: samples older than that (relative to the newest sample) are dropped. `0` (the default unless the server config says otherwise) keeps samples forever.\n- `ENCODING COMPRESSED` is the default and compresses chunks heavily; `UNCOMPRESSED` is rarely needed.\n- `DUPLICATE_POLICY` says what to do if a sample arrives with an existing timestamp: `BLOCK` (error, the default), `FIRST`, `LAST`, `MIN`, `MAX` or `SUM`.\n- `LABELS` attach key-value metadata (`site wh1`) used to find series later, like a tiny secondary index.\n- `CHUNK_SIZE` sets the internal chunk size in bytes (default 4096); you rarely change it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> TS.ADD sensor:wh1:temp 1760000000000 21.5\n(integer) 1760000000000\n127.0.0.1:6379> TS.ADD sensor:wh1:temp * 21.7\n(integer) 1760000012345\n127.0.0.1:6379> TS.MADD sensor:wh1:temp 1760000060000 21.9 sensor:wh1:temp 1760000120000 22.4\n1) (integer) 1760000060000\n2) (integer) 1760000120000\n127.0.0.1:6379> TS.GET sensor:wh1:temp\n1) (integer) 1760000120000\n2) 22.4\n127.0.0.1:6379> TS.INCRBY orders:count 1 TIMESTAMP *\n(integer) 1760000130001",
+          "title": "Add and read samples"
+        },
+        {
+          "type": "markdown",
+          "text": "`TS.ADD key timestamp value` returns the timestamp of the sample; the timestamp `*` means \"now\" according to the server. `TS.MADD` adds samples to several series in one call. `TS.INCRBY` and `TS.DECRBY` add to the latest sample's value, handy for counters. Samples normally arrive in time order; inserting an older sample is possible within the retention window, subject to the duplicate policy.\n\n### Querying ranges and aggregating\n\n`TS.RANGE key from to` returns samples between two timestamps, where `-` and `+` mean earliest and latest. `TS.REVRANGE` returns them newest first. Add `AGGREGATION` to get one value per time bucket:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> TS.RANGE sensor:wh1:temp - + AGGREGATION avg 300000\n1) 1) (integer) 1759999800000\n   2) 21.7\n2) 1) (integer) 1760000100000\n   2) 22.4",
+          "title": "Average temperature per five minutes"
+        },
+        {
+          "type": "markdown",
+          "text": "`AGGREGATION avg 300000` groups samples into 300,000 ms (5 minute) buckets, aligned to the Unix epoch by default, and averages each. Other aggregators include `sum`, `count`, `min`, `max`, `range`, `first`, `last`, `std.p`, `std.s`, `var.p`, `var.s` and `twa` (time-weighted average). Useful options: `COUNT n` limits the number of samples or buckets returned, `FILTER_BY_VALUE min max` drops outliers (like a sensor's error value) before aggregating, `ALIGN` changes how buckets line up, `BUCKETTIMESTAMP` chooses whether a bucket is labelled by its start, middle or end, and `EMPTY` reports empty buckets. You can also pass several aggregators separated by commas with no spaces (`avg,min,max`).\n\n#### Many series at once\n\nBecause each series is its own key, a dashboard often needs the same metric from all sensors. `TS.MRANGE` queries many series selected by their **labels**, and can group them:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "TS.MRANGE - + AGGREGATION avg 300000 FILTER metric=temp site=wh1\nTS.MRANGE - + AGGREGATION max 3600000 FILTER metric=temp GROUPBY site REDUCE max\nTS.QUERYINDEX metric=temp"
+        },
+        {
+          "type": "markdown",
+          "text": "`FILTER` takes label expressions such as `metric=temp`, `site!=wh2` or `site=(wh1,wh2)`. At least one equality filter is required. `TS.QUERYINDEX` lists the keys that match, without data. In a Redis Cluster each series is a separate key on some slot, so check how multi-series queries behave on your cluster setup before depending on them.\n\n### Retention and compaction rules\n\nRaw samples are expensive to keep for a year. The usual design is a **downsampling** cascade: keep raw data for a short time, plus automatically computed summaries kept longer. A compaction rule does that on write."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "TS.CREATE sensor:wh1:temp:1m RETENTION 2592000000 LABELS site wh1 metric temp res 1m\nTS.CREATERULE sensor:wh1:temp sensor:wh1:temp:1m AGGREGATION avg 60000"
+        },
+        {
+          "type": "markdown",
+          "text": "The destination series must exist first. Each time a bucket (here a minute) completes in the source, the aggregate is appended to the destination, which has its own, longer retention (30 days in this sketch, written in milliseconds). Queries over long ranges then read the small, summarised series instead of the raw one. Create one rule per resolution and per aggregation type you need (an average rule does not give you the maximum).\n\n### When to use Redis time series"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Good fit",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Recent metrics, dashboards, rate and counters, sub-millisecond reads",
+              "Redis time series",
+              "In memory, compressed, built-in aggregation"
+            ],
+            [
+              "Years of history, huge cardinality, ad hoc SQL",
+              "A dedicated time-series or analytics database",
+              "Disk-based storage and richer query languages"
+            ],
+            [
+              "Just counting events per minute",
+              "`INCR` on bucketed keys, or `TS.INCRBY`",
+              "No extra structure needed"
+            ],
+            [
+              "Event log you replay",
+              "Streams",
+              "Ordering and consumer groups, not aggregation"
+            ]
+          ],
+          "caption": "Time series storage options."
+        },
+        {
+          "type": "markdown",
+          "text": "Memory is the limit: everything lives in RAM, so combine short retention with compaction rules, and measure with `MEMORY USAGE` on a realistic series. Compression works well for regular timestamps and slowly varying values."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Samples are doubles Values are 64-bit floating-point numbers, so keep money out of time series as raw floats if exactness matters (store cents as integers; they fit exactly below 2^53). Newer versions also support `NaN` samples and the aggregators `countNaN` and `countAll`."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you keep one year of per-second sensor data in Redis without running out of memory? You wouldn't keep the raw seconds for a year. Keep raw samples with a retention of hours or days, and add compaction rules (`TS.CREATERULE`) that produce minute and hourly aggregates into destination series with longer retention. Dashboards read the aggregated series. If the raw data must be kept, archive it to a disk-based store."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The time series type stores timestamp-value samples with compression, retention and labels; built into Redis 8, commands begin with `TS.`.\n- `TS.ADD` (timestamp `*` = now), `TS.MADD`, `TS.INCRBY`, `TS.GET`, `TS.RANGE` with `AGGREGATION`, and `TS.MRANGE` with label `FILTER`.\n- `DUPLICATE_POLICY` decides what happens on equal timestamps; `RETENTION` bounds the age of samples.\n- Compaction rules (`TS.CREATERULE`) downsample automatically so long ranges are cheap.\n- Everything is in RAM: plan retention and resolutions, and archive long history elsewhere."
         }
       ]
     }

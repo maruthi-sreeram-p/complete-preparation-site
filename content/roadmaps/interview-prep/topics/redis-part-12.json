@@ -1,0 +1,1267 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "422-442"
+  },
+  "sections": [
+    {
+      "id": "ch-12-1",
+      "type": "concept",
+      "title": "The One-Page Mental Model",
+      "subtopicId": "12-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This chapter compresses the whole book into one picture. If you can explain every box below from memory, you understand Redis well enough to build with it and to defend your choices in an interview.\n\n### What Redis is, in five sentences\n\nRedis is an in-memory data structure server: clients send commands over TCP (the RESP protocol), and the server keeps strings, hashes, lists, sets, sorted sets, streams and more in RAM. One main thread executes commands one at a time, so each command is atomic and there are no locks inside the engine. Because data lives in memory, typical operations take microseconds, and the network round trip usually dominates. Durability is optional and tunable (RDB snapshots, the append-only file, or both). Scale-out and availability come from replication, Sentinel and Cluster, each with its own trade-offs.\n\n### The map\n\n**The whole book on one page**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "CLIENTS (Lettuce / Jedis / Redisson / Spring Data Redis)\n    |  RESP over TCP, pipelining, pooling or one shared connection\n    v\n+--------------------------- ONE REDIS SERVER ---------------------------+\n|  event loop: read -> parse -> execute (single thread) -> reply          |\n|  I/O threads (optional): socket read/write only                         |\n|  background threads: lazy free, AOF fsync, close                        |\n|                                                                         |\n|  keyspace (db 0..15; Cluster: db 0 only)                                |\n|    key -> value of one TYPE, stored in one ENCODING                     |\n|    string | list | hash | set | zset | stream | bitmap | HLL | geo       |\n|    JSON | Search | time series | Bloom/Cuckoo/CMS/Top-K | vector set    |\n|                                                                         |\n|  per-key: TTL (lazy + active expiry)     global: maxmemory + eviction   |\n|  atomic extras: MULTI/EXEC/WATCH, Lua (EVAL), Functions (FCALL)         |\n+-----------------------+----------------------+--------------------------+\n                        |                      |\n             persistence (disk)          replication (network)\n             RDB snapshot / AOF          async primary -> replicas\n                                                |\n                             Sentinel: failover for ONE shard\n                             Cluster: 16384 slots over MANY shards"
+        },
+        {
+          "type": "markdown",
+          "text": "### Five laws worth memorising\n\n1. **One thread, so slow commands hurt everyone.** An `O(N)` command on a big key blocks all clients. Avoid `KEYS`, huge `SMEMBERS`, long Lua scripts.\n2. **Memory is the budget.** Everything is in RAM, so you size for data plus overhead plus fork headroom, and you decide what happens at `maxmemory` (eviction or errors).\n3. **Replication is asynchronous.** A failover can lose the last acknowledged writes. `WAIT` narrows the window but does not make Redis a consensus system.\n4. **Persistence is a dial, not a switch.** No persistence, RDB, AOF with `everysec`, AOF with `always`: each has a different data-loss window and cost.\n5. **Redis is usually a cache or a fast secondary store.** Keep a system of record elsewhere unless you have deliberately designed and tested the durability story.\n\n### ShopStream in one table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Type",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`product:{id}`",
+              "`hash or JSON`",
+              "Catalogue cache (cache-aside, TTL with jitter)"
+            ],
+            [
+              "`session:{sid}`",
+              "`hash + TTL`",
+              "Login sessions"
+            ],
+            [
+              "`cart:{userId}`",
+              "`hash`",
+              "Shopping cart"
+            ],
+            [
+              "`stock:{sku}`",
+              "`string counter`",
+              "Flash-sale stock, decremented atomically in Lua"
+            ],
+            [
+              "`rl:{ip}:{route}`",
+              "`string or hash`",
+              "Rate limit state"
+            ],
+            [
+              "`lb:bestsellers:daily`",
+              "`sorted set`",
+              "Leaderboard"
+            ],
+            [
+              "`stream:orders`",
+              "`stream + group notifier`",
+              "Order events, at-least-once processing"
+            ],
+            [
+              "`uv:{date}`",
+              "`HyperLogLog`",
+              "Unique visitors"
+            ],
+            [
+              "`geo:stores`",
+              "`geo (sorted set)`",
+              "Store locator"
+            ],
+            [
+              "`idem:{key}`",
+              "`string NX + TTL`",
+              "Idempotency keys"
+            ],
+            [
+              "`lock:order:{id}`",
+              "`string NX PX`",
+              "Short distributed lock"
+            ]
+          ],
+          "caption": "Redis roles in the running example."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Redis = single-threaded command execution over in-memory structures, with optional persistence and asynchronous replication.\n- Every design question reduces to: which structure, how big, how long it lives, what happens when memory is full, and what you can afford to lose.\n- Atomicity comes from the single thread: single commands, `MULTI/EXEC`, Lua and Functions are all executed without interleaving."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-2",
+      "type": "concept",
+      "title": "Command Cheat Sheets by Structure",
+      "subtopicId": "12-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Complexity is shown as Big-O where `N` is the size of the collection and `M` the number of elements touched. Commands marked \"legacy\" still work but have a modern replacement.\n\n### Keys, expiry and server basics"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`DEL key / UNLINK key`",
+              "Delete a key (`UNLINK` frees memory in a background thread)",
+              "O(1) / O(N) for DEL on big values"
+            ],
+            [
+              "`EXISTS key`",
+              "Count how many of the given keys exist",
+              "O(1) per key"
+            ],
+            [
+              "`TYPE key`",
+              "Type name of the value",
+              "O(1)"
+            ],
+            [
+              "`EXPIRE key sec / PEXPIRE`",
+              "Set TTL (options NX, XX, GT, LT)",
+              "O(1)"
+            ],
+            [
+              "`TTL key / PTTL key`",
+              "Remaining time; -1 no TTL, -2 no key",
+              "O(1)"
+            ],
+            [
+              "`PERSIST key`",
+              "Remove the TTL",
+              "O(1)"
+            ],
+            [
+              "`SCAN cursor MATCH p COUNT n`",
+              "Incremental iteration, safe for production",
+              "O(1) per call"
+            ],
+            [
+              "`RENAME a b / COPY a b`",
+              "Rename or copy a key",
+              "O(1) / O(N)"
+            ],
+            [
+              "`OBJECT ENCODING key`",
+              "Internal encoding (listpack, hashtable, ...)",
+              "O(1)"
+            ],
+            [
+              "`MEMORY USAGE key`",
+              "Bytes used by a key and its value",
+              "O(N)"
+            ]
+          ],
+          "caption": "Generic key commands."
+        },
+        {
+          "type": "markdown",
+          "text": "### Strings and counters"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`SET k v [NX or XX] [EX s or PX` `ms or KEEPTTL] [GET]`",
+              "Store a value with optional condition and expiry",
+              "O(1)"
+            ],
+            [
+              "`GET k / GETDEL k / GETEX k EX s`",
+              "Read; read and delete; read and change TTL",
+              "O(1)"
+            ],
+            [
+              "`MSET / MGET`",
+              "Many keys in one round trip",
+              "O(N)"
+            ],
+            [
+              "`INCR / INCRBY / DECR /` `INCRBYFLOAT`",
+              "Atomic counters",
+              "O(1)"
+            ],
+            [
+              "`APPEND / STRLEN / GETRANGE /` `SETRANGE`",
+              "Byte-level edits",
+              "O(1) or O(N)"
+            ],
+            [
+              "`SETBIT / GETBIT / BITCOUNT /` `BITOP`",
+              "Bitmaps (DAU, flags)",
+              "O(1) / O(N)"
+            ],
+            [
+              "`SETEX, SETNX, GETSET (legacy)`",
+              "Replaced by `SET` options",
+              "O(1)"
+            ]
+          ],
+          "caption": "String commands."
+        },
+        {
+          "type": "markdown",
+          "text": "### Hashes, lists and sets"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`HSET k f v [f v ...]`",
+              "Set fields (`HMSET` is legacy)",
+              "O(N) fields given"
+            ],
+            [
+              "`HGET / HMGET / HGETALL`",
+              "Read one, some, or all fields",
+              "O(1) / O(N)"
+            ],
+            [
+              "`HDEL / HEXISTS / HLEN / HKEYS /` `HVALS`",
+              "Field maintenance and listing",
+              "O(N) for listing"
+            ],
+            [
+              "`HINCRBY / HINCRBYFLOAT`",
+              "Atomic field counters",
+              "O(1)"
+            ],
+            [
+              "`HSCAN`",
+              "Incremental field iteration",
+              "O(1) per call"
+            ],
+            [
+              "`HEXPIRE / HPEXPIRE / HTTL`",
+              "Per-field TTL (7.4+)",
+              "O(N) fields"
+            ],
+            [
+              "`HGETEX / HSETEX / HGETDEL`",
+              "Read or write fields together with TTL changes (8.0+)",
+              "O(N) fields"
+            ]
+          ],
+          "caption": "Hash commands."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`LPUSH / RPUSH`",
+              "Add at head or tail",
+              "O(1) per element"
+            ],
+            [
+              "`LPOP / RPOP [count]`",
+              "Remove from head or tail",
+              "O(1) per element"
+            ],
+            [
+              "`LRANGE k start stop`",
+              "Read a slice (0 -1 means all)",
+              "O(S+N)"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`LLEN / LINDEX / LSET / LREM /` `LTRIM`",
+              "Inspect and edit",
+              "LINDEX is O(N)"
+            ],
+            [
+              "`BLPOP / BRPOP / BLMOVE`",
+              "Blocking pop and reliable move",
+              "O(1)"
+            ],
+            [
+              "`LMOVE src dst LEFT RIGHT`",
+              "Atomic move between lists (reliable queue)",
+              "O(1)"
+            ]
+          ],
+          "caption": "List commands."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`SADD / SREM / SISMEMBER`",
+              "Add, remove, test membership",
+              "O(1) per element"
+            ],
+            [
+              "`SMEMBERS / SCARD / SSCAN`",
+              "List all (careful), count, iterate",
+              "O(N) / O(1)"
+            ],
+            [
+              "`SINTER / SUNION / SDIFF` `(+STORE)`",
+              "Set algebra",
+              "O(N\\*M) worst case"
+            ],
+            [
+              "`SINTERCARD numkeys keys...`",
+              "Size of the intersection, no materialisation",
+              "O(N\\*M)"
+            ],
+            [
+              "`SPOP / SRANDMEMBER`",
+              "Random elements",
+              "O(1) or O(N)"
+            ]
+          ],
+          "caption": "Set commands."
+        },
+        {
+          "type": "markdown",
+          "text": "### Sorted sets and streams"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`ZADD k [NX or XX] [GT or LT]` `score member`",
+              "Add or update with a score",
+              "O(log N)"
+            ],
+            [
+              "`ZINCRBY k inc member`",
+              "Atomic score change",
+              "O(log N)"
+            ],
+            [
+              "`ZRANK / ZREVRANK / ZSCORE`",
+              "Position and score of a member",
+              "O(log N) / O(1)"
+            ],
+            [
+              "`ZRANGE k start stop [REV]` `[BYSCORE or BYLEX] [LIMIT]` `[WITHSCORES]`",
+              "Unified range query (since 6.2)",
+              "O(log N + M)"
+            ],
+            [
+              "`ZREM / ZREMRANGEBYRANK /` `ZREMRANGEBYSCORE`",
+              "Remove",
+              "O(log N + M)"
+            ],
+            [
+              "`ZCARD / ZCOUNT`",
+              "Size, count in score range",
+              "O(1) / O(log N)"
+            ],
+            [
+              "`ZPOPMIN / ZPOPMAX / BZPOPMIN`",
+              "Pop extremes (priority queue)",
+              "O(log N)"
+            ],
+            [
+              "`ZUNIONSTORE / ZINTERSTORE`",
+              "Combine sets with weights",
+              "O(N) + O(M log M)"
+            ]
+          ],
+          "caption": "Sorted set commands."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`XADD k [MAXLEN ~ n] * f v ...`",
+              "Append an entry, auto-generated ID",
+              "O(1)"
+            ],
+            [
+              "`XRANGE / XREVRANGE`",
+              "Read by ID range",
+              "O(N)"
+            ],
+            [
+              "`XREAD [BLOCK ms] STREAMS k id`",
+              "Read as a plain log",
+              "O(N)"
+            ],
+            [
+              "`XGROUP CREATE k g id [MKSTREAM]`",
+              "Create a consumer group",
+              "O(1)"
+            ],
+            [
+              "`XREADGROUP GROUP g c [COUNT n]` `[BLOCK ms] STREAMS k >`",
+              "Read new entries for a consumer",
+              "O(M)"
+            ],
+            [
+              "`XACK k g id`",
+              "Acknowledge, remove from the PEL",
+              "O(1) per ID"
+            ],
+            [
+              "`XPENDING / XCLAIM / XAUTOCLAIM`",
+              "Inspect and take over stuck entries",
+              "varies"
+            ],
+            [
+              "`XTRIM / XLEN / XINFO`",
+              "Trim, length, introspection",
+              "varies"
+            ]
+          ],
+          "caption": "Stream commands."
+        },
+        {
+          "type": "markdown",
+          "text": "### Probabilistic, geo and other types"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "What it does",
+            "Cost"
+          ],
+          "rows": [
+            [
+              "`PFADD / PFCOUNT / PFMERGE`",
+              "HyperLogLog unique count, about 0.81% standard error",
+              "O(1)"
+            ],
+            [
+              "`GEOADD / GEOSEARCH / GEODIST`",
+              "Geospatial index on a sorted set",
+              "O(log N)"
+            ],
+            [
+              "`BF.ADD / BF.EXISTS / BF.RESERVE`",
+              "Bloom filter (no false negatives)",
+              "O(k)"
+            ],
+            [
+              "`JSON.SET / JSON.GET`",
+              "JSON documents with path access",
+              "depends on path"
+            ],
+            [
+              "`FT.CREATE / FT.SEARCH /` `FT.AGGREGATE`",
+              "Query engine: full text, tags, vectors",
+              "depends on query"
+            ],
+            [
+              "`TS.ADD / TS.RANGE`",
+              "Time series",
+              "O(1) / O(N)"
+            ]
+          ],
+          "caption": "Other commands."
+        },
+        {
+          "type": "markdown",
+          "text": "### Transactions, scripting, pub/sub, admin"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Command",
+            "Use"
+          ],
+          "rows": [
+            [
+              "`MULTI / EXEC / DISCARD / WATCH`",
+              "Queue commands and run them without interleaving; `WATCH` gives optimistic locking; no rollback"
+            ],
+            [
+              "`EVAL script numkeys keys... args...` `/ EVALSHA`",
+              "Run Lua atomically; pass key names as `KEYS`, values as `ARGV`"
+            ],
+            [
+              "`FUNCTION LOAD / FCALL`",
+              "Named, versioned server-side functions (7.0+)"
+            ],
+            [
+              "`PUBLISH / SUBSCRIBE / PSUBSCRIBE`",
+              "Fire-and-forget messaging, no persistence"
+            ],
+            [
+              "`SPUBLISH / SSUBSCRIBE`",
+              "Sharded pub/sub (7.0+)"
+            ],
+            [
+              "`INFO [section] / CONFIG GET /` `CONFIG SET`",
+              "Observe and tune a running server"
+            ],
+            [
+              "`SLOWLOG GET / LATENCY DOCTOR`",
+              "Find slow commands and latency spikes"
+            ],
+            [
+              "`CLIENT LIST / CLIENT KILL`",
+              "Connections and their state"
+            ],
+            [
+              "`BGSAVE / BGREWRITEAOF / LASTSAVE`",
+              "Persistence control"
+            ],
+            [
+              "`REPLICAOF host port / WAIT n ms`",
+              "Replication control, wait for replica acks"
+            ],
+            [
+              "`ACL SETUSER / ACL LIST / ACL WHOAMI`",
+              "Users and permissions"
+            ]
+          ],
+          "caption": "Everything else."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Learn complexity per command: `O(1)` and `O(log N)` are safe; `O(N)` on unbounded collections is where incidents come from.\n- Prefer the modern forms: `SET` options over `SETNX/SETEX`, `HSET` over `HMSET`, `ZRANGE` over `ZREVRANGE`, `SCAN` over `KEYS`.\n- When unsure, look at the command page: `COMMAND DOCS name` in redis-cli prints a summary and the complexity."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-3",
+      "type": "concept",
+      "title": "Configuration and Metrics Cheat Sheet",
+      "subtopicId": "12-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Configuration directives you must know"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Directive",
+            "Default",
+            "Why it matters"
+          ],
+          "rows": [
+            [
+              "`bind / protected-mode`",
+              "`local / yes`",
+              "Keep Redis off public networks"
+            ],
+            [
+              "`port`",
+              "`6379`",
+              "Cluster bus uses port + 10000"
+            ],
+            [
+              "`requirepass / ACL`",
+              "`none`",
+              "Authentication; prefer ACL users"
+            ],
+            [
+              "`maxmemory`",
+              "`0 (unlimited)`",
+              "Set it, or the OS OOM killer decides"
+            ],
+            [
+              "`maxmemory-policy`",
+              "`noeviction`",
+              "Writes fail at the limit unless you choose an eviction policy"
+            ],
+            [
+              "`maxmemory-samples`",
+              "`5`",
+              "Accuracy of approximated LRU/LFU"
+            ],
+            [
+              "`appendonly`",
+              "`no`",
+              "Turns the AOF on"
+            ],
+            [
+              "`appendfsync`",
+              "`everysec`",
+              "always, everysec or no"
+            ],
+            [
+              "`auto-aof-rewrite-percentage`",
+              "`100`",
+              "Rewrite when the AOF doubles"
+            ],
+            [
+              "`auto-aof-rewrite-min-size`",
+              "`64mb`",
+              "Do not rewrite tiny files"
+            ],
+            [
+              "`save`",
+              "`3600 1 300 100 60` `10000`",
+              "RDB snapshot rules (seconds, changes)"
+            ],
+            [
+              "`repl-backlog-size`",
+              "`1mb`",
+              "Larger backlog lets replicas do partial resyncs"
+            ],
+            [
+              "`min-replicas-to-write`",
+              "`0`",
+              "Refuse writes when too few replicas are in sync"
+            ],
+            [
+              "`cluster-enabled`",
+              "`no`",
+              "Starts the node in cluster mode"
+            ],
+            [
+              "`cluster-require-full-coverage`",
+              "`yes`",
+              "Stop serving if any slot is uncovered"
+            ],
+            [
+              "`maxclients`",
+              "`10000`",
+              "Connection limit (also bounded by file descriptors)"
+            ],
+            [
+              "`slowlog-log-slower-than`",
+              "`10000`",
+              "Microseconds; commands slower than this are logged"
+            ],
+            [
+              "`io-threads`",
+              "`1`",
+              "Extra threads for socket I/O only"
+            ],
+            [
+              "`lazyfree-lazy-eviction and` `friends`",
+              "`see docs`",
+              "Free memory in the background"
+            ],
+            [
+              "`hash-max-listpack-entries`",
+              "`512`",
+              "Compact encoding threshold for hashes"
+            ]
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "*Core configuration directives (defaults as documented for recent releases; verify with CONFIG GET on your build).*"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Defaults change between releases. The `save` default and some `lazyfree-*` defaults differ across versions, so check `CONFIG GET` on the server you actually run and the release notes before relying on a number from this table."
+        },
+        {
+          "type": "markdown",
+          "text": "### Metrics worth watching"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field (section)",
+            "Look for",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`used_memory /` `used_memory_rss (memory)`",
+              "RSS far above used\\_memory",
+              "Fragmentation or allocator overhead"
+            ],
+            [
+              "`mem_fragmentation_ratio` `(memory)`",
+              "above about 1.5 or below 1.0",
+              "Fragmentation, or swapping if below 1"
+            ],
+            [
+              "`evicted_keys (stats)`",
+              "rising",
+              "Memory pressure; check policy and sizing"
+            ],
+            [
+              "`expired_keys (stats)`",
+              "trend",
+              "Normal TTL activity"
+            ],
+            [
+              "`keyspace_hits /` `keyspace_misses (stats)`",
+              "hit ratio = hits / (hits + misses)",
+              "Cache effectiveness"
+            ],
+            [
+              "`instantaneous_ops_per_sec` `(stats)`",
+              "sudden drop or spike",
+              "Load change or blocked server"
+            ],
+            [
+              "`connected_clients /` `blocked_clients (clients)`",
+              "growth",
+              "Connection leaks or blocking commands"
+            ],
+            [
+              "`rejected_connections (stats)`",
+              "any value above 0",
+              "`maxclients` reached"
+            ],
+            [
+              "`latest_fork_usec (stats)`",
+              "large values",
+              "Fork stall on big datasets"
+            ],
+            [
+              "`rdb_last_bgsave_status /` `aof_last_write_status` `(persistence)`",
+              "not ok",
+              "Persistence is failing"
+            ],
+            [
+              "`master_repl_offset,` `slave_repl_offset` `(replication)`",
+              "gap",
+              "Replication lag in bytes"
+            ],
+            [
+              "`connected_slaves` `(replication)`",
+              "fewer than expected",
+              "A replica dropped (field name kept for compatibility)"
+            ]
+          ],
+          "caption": "INFO fields and what they tell you."
+        },
+        {
+          "type": "markdown",
+          "text": "### First-aid commands"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# What is slow right now?\nSLOWLOG GET 10\nLATENCY DOCTOR\n# Who is connected and what are they doing?\nCLIENT LIST\n# Where is the memory?\nMEMORY DOCTOR\nMEMORY USAGE product:42\n# Big keys, from the shell:  redis-cli --bigkeys   (uses SCAN, safe-ish)\nINFO memory\nINFO stats\nINFO replication"
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Always set `maxmemory` and a deliberate `maxmemory-policy`.\n- Hit ratio, evictions, latency, fragmentation, replication offset gap and persistence status are the six numbers to graph.\n- Verify defaults on your own build with `CONFIG GET` instead of trusting memory."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-4",
+      "type": "concept",
+      "title": "Decision Guides",
+      "subtopicId": "12-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Which data structure?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "You need",
+            "Use",
+            "Why"
+          ],
+          "rows": [
+            [
+              "Opaque value, counter, flag, lock token",
+              "`String`",
+              "Simplest, atomic `INCR`, `SET NX`"
+            ],
+            [
+              "An object with several fields, partial updates",
+              "`Hash`",
+              "Field-level access, compact when small"
+            ],
+            [
+              "Queue, recent items, capped history",
+              "`List or Stream`",
+              "List is simple, Stream adds groups and acks"
+            ],
+            [
+              "Unique membership, tags, set algebra",
+              "`Set`",
+              "O(1) membership"
+            ],
+            [
+              "Ranking, priority, time-ordered index, range by score",
+              "`Sorted set`",
+              "Order maintained on write"
+            ],
+            [
+              "Durable event log with consumers",
+              "`Stream`",
+              "Consumer groups, pending list, replay"
+            ],
+            [
+              "Approximate unique count",
+              "`HyperLogLog`",
+              "12 KB at most, small error"
+            ],
+            [
+              "Yes/no per user id",
+              "`Bitmap`",
+              "1 bit per id"
+            ],
+            [
+              "Nearby places",
+              "`Geo`",
+              "Radius and box search"
+            ],
+            [
+              "Existence check with tolerated false positives",
+              "`Bloom filter`",
+              "No false negatives"
+            ],
+            [
+              "Nested document with queries",
+              "`JSON + Search`",
+              "Query without a separate engine"
+            ]
+          ],
+          "caption": "Choosing a structure."
+        },
+        {
+          "type": "markdown",
+          "text": "### Which persistence mode?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Choice",
+            "Data-loss window"
+          ],
+          "rows": [
+            [
+              "Pure cache, can be rebuilt",
+              "None, or RDB for warm restarts",
+              "Everything on crash (acceptable)"
+            ],
+            [
+              "Fast restarts, some loss acceptable",
+              "RDB only",
+              "Minutes since last snapshot"
+            ],
+            [
+              "Typical primary data store use",
+              "AOF `everysec` (with RDB preamble)",
+              "About one second"
+            ],
+            [
+              "Strict durability",
+              "AOF `always`",
+              "Last command at most, slower writes"
+            ],
+            [
+              "Maximum safety",
+              "AOF + replicas + backups",
+              "Depends on replica lag and failover"
+            ]
+          ],
+          "caption": "Choosing persistence."
+        },
+        {
+          "type": "markdown",
+          "text": "### Which topology?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Topology",
+            "Main trade-off"
+          ],
+          "rows": [
+            [
+              "Dev, test, small cache",
+              "Single node",
+              "No failover"
+            ],
+            [
+              "Read scaling, a hot standby",
+              "Primary + replicas",
+              "Manual failover, stale reads possible"
+            ],
+            [
+              "Automatic failover, data fits one node",
+              "Sentinel",
+              "Still one write node; async replication"
+            ],
+            [
+              "Data or throughput beyond one node",
+              "Cluster",
+              "Multi-key limits to one slot, client must be cluster aware"
+            ],
+            [
+              "Managed operations",
+              "Cloud service",
+              "Cost, feature differences, vendor limits"
+            ]
+          ],
+          "caption": "Choosing a topology."
+        },
+        {
+          "type": "markdown",
+          "text": "### Which cache pattern?"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "Use when",
+            "Watch out for"
+          ],
+          "rows": [
+            [
+              "Cache-aside",
+              "Default; reads dominate; app owns the logic",
+              "Stampede, stale data after writes"
+            ],
+            [
+              "Read-through",
+              "A library should hide loading",
+              "Less control, same stampede risk"
+            ],
+            [
+              "Write-through",
+              "Reads must see fresh data",
+              "Slower writes, cache churn"
+            ],
+            [
+              "Write-behind",
+              "Very high write rate, tolerates loss",
+              "Data loss on crash, ordering"
+            ],
+            [
+              "Refresh-ahead",
+              "Hot, predictable keys",
+              "Wasted refreshes"
+            ]
+          ],
+          "caption": "Choosing a caching pattern."
+        },
+        {
+          "type": "markdown",
+          "text": "### Lock or no lock?\n\nAsk in this order, and stop at the first yes:\n\n1. Can a single atomic command or a Lua script do the job (`INCR`, `SET NX`, stock decrement)? Use that, no lock.\n2. Can the database enforce it (unique constraint, optimistic version column)? Use that.\n3. Is the consequence of two holders running at once only wasted work (a cache rebuild)? A simple `SET NX PX` lock with a token is enough.\n4. Does correctness depend on mutual exclusion (money, inventory ledgers)? Do not trust a timed lock alone; add fencing tokens checked by the protected resource, or serialise through a queue."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Choose structures by access pattern, not by habit.\n- Persistence and topology choices are about what you can afford to lose and how long you can afford to be down.\n- The best lock is the one you designed away."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-5",
+      "type": "concept",
+      "title": "Interview Q&A: Fundamentals",
+      "subtopicId": "12-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "How to use the next chapters: cover the answer, say yours out loud in under a minute, then compare. Each answer is deliberately short; in a real interview add one example from a project. Questions are numbered within their group only by order, never by a fixed number, so you can shuffle them.\n\n#### Q: What is Redis, and what problem does it solve?\n\nRedis is an in-memory data structure server. It stores values such as strings, hashes, lists, sets, sorted sets and streams under keys and exposes operations on those structures as commands. It solves the problem of needing very low latency access to shared state (caches, sessions, counters, queues, leaderboards) that would be too slow or too contended in a disk-based relational database. It is usually deployed beside a primary database, not instead of it.\n\n#### Q: Why is Redis fast?\n\nData lives in RAM, so no disk seek is needed for reads. Data structures are chosen so that common operations are `O(1)` or `O(log N)`. Command execution is single-threaded, which removes lock contention and context switching. The protocol is simple and supports pipelining, and I/O multiplexing (`epoll`) lets one thread serve thousands of connections. In practice the network round trip is the dominant cost.\n\n#### Q: If Redis is single-threaded, how does it handle many clients?\n\nOne event loop multiplexes all sockets: it reads ready sockets, parses commands, executes them one by one, and writes replies. Because each command is short, the queue drains quickly. Since Redis 6 you can enable `io-threads` to parallelise socket reading and writing, but commands still execute on the main thread. Background threads handle things like lazy freeing of big values, closing files and AOF fsync.\n\n#### Q: What is the downside of single-threaded execution?\n\nAny slow command blocks every client. A `KEYS *` on millions of keys, `SMEMBERS` on a huge set, `DEL` of a giant key, or a long Lua script stalls the whole server. You mitigate with `SCAN`, `UNLINK`, small keys, short scripts and monitoring `SLOWLOG`. Also, one instance uses one core for commands, so scaling CPU means sharding with Cluster.\n\n#### Q: Is Redis a cache or a database?\n\nBoth, depending on configuration and use. With no persistence and an eviction policy it is a cache. With AOF persistence, replication and backups it can be a primary store for data that fits in memory and tolerates its consistency model. The honest answer: it is a data structure server; you decide the role, and for important data you should know exactly what you can lose.\n\n#### Q: What are the main use cases?\n\nCaching, session storage, rate limiting, counters and analytics (including HyperLogLog), leaderboards with sorted sets, queues and event streams, pub/sub, distributed locks, geospatial lookups, and with the query engine, JSON documents, full-text and vector search for AI applications.\n\n#### Q: What is RESP?\n\nThe Redis Serialization Protocol: a simple, text-framed binary-safe protocol with typed replies (simple strings, errors, integers, bulk strings, arrays). RESP3 (enabled with `HELLO 3`) adds richer types such as maps, sets and doubles, and push messages, which client-side caching uses for invalidations. It is easy to implement and to debug with `telnet` or `redis-cli`.\n\n#### Q: What is pipelining and when do you use it?\n\nPipelining sends many commands without waiting for each reply, then reads all the replies. It removes the per-command network round trip, which is often 100 times larger than server execution time. Use it for bulk loads and independent commands. It is not atomic: other clients' commands can interleave. For atomicity use `MULTI/EXEC` or Lua.\n\n#### Q: What are the logical databases?\n\nA standalone Redis has 16 numbered databases (0 to 15), selected with `SELECT`. They share the same process, memory and config, so they provide namespacing only, not isolation. Cluster supports only database 0. Most teams use key prefixes (`cart:42`) rather than numbered databases.\n\n#### Q: How do you name keys?\n\nUse a consistent hierarchy with colons, such as `entity:id:field` (`user:42:profile`). Keep keys short but readable, because keys cost memory on every copy and in replication. Include a version or tenant when needed (`v2:product:7`). In Cluster, use hash tags (`{user:42}:cart`) when several keys must live in one slot.\n\n#### Q: What happens when Redis runs out of memory?\n\nIt depends on `maxmemory` and `maxmemory-policy`. With the default `noeviction`, write commands that would need more memory return an `OOM` error while reads continue. With a policy such as `allkeys-lru` or `allkeys-lfu`, Redis evicts keys to stay under the limit. If `maxmemory` is unset, the process keeps growing until the operating system kills it or starts swapping.\n\n#### Q: How do you check that Redis is alive and healthy?\n\n`PING` returns `PONG` for liveness. `INFO` gives memory, clients, persistence, replication and stats. For deeper checks: `SLOWLOG GET`, `LATENCY DOCTOR`, `MEMORY DOCTOR`, and metrics exported to Prometheus. A good health check also writes and reads a test key, because a replica in a bad state can still answer `PING`.\n\n#### Q: What is the difference between Redis and Memcached?\n\nMemcached is a simple, multi-threaded key-value cache for opaque strings. Redis offers rich structures, persistence options, replication, Sentinel and Cluster, scripting, pub/sub and streams. Pick Memcached only when you need a pure, simple cache and its multi-threaded model; Redis covers most other needs.\n\n#### Q: What is the licensing situation?\n\nRedis changed its license in March 2024 (version 7.4) to a source-available dual license (RSALv2 and SSPLv1), and added AGPLv3 as an option with Redis 8. Valkey is a Linux Foundation fork of the last BSD-licensed code. For commercial use, read the current license terms for the exact version you ship.\n\n#### Q: What is new in Redis 8?\n\nRedis 8.0 merged Redis Stack into Redis Open Source, so JSON, the query engine (search and vector), time series and the probabilistic structures are built in, and it added hash-field commands such as `HGETEX` and `HSETEX`. Later releases added things like `XDELEX` and atomic cluster slot migration (8.4), and performance and memory improvements plus new eviction policies (8.6). Check the release notes for your exact version.\n\n#### Q: How do you secure a Redis instance?\n\nBind to private interfaces and keep `protected-mode` on, never expose it to the internet, use ACL users with minimal permissions instead of a shared password, enable TLS between clients and servers, restrict dangerous commands (`FLUSHALL`, `CONFIG`, `DEBUG`, `KEYS`) through ACLs, and isolate the network with firewalls or security groups."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Fundamentals answers revolve around: in-memory, single-threaded command execution, rich types, optional persistence.\n- Always mention the trade-off after the benefit: speed versus memory cost, simplicity versus the blocking risk."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-6",
+      "type": "concept",
+      "title": "Interview Q&A: Data Structures",
+      "subtopicId": "12-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Q: Name the core data types and one use for each.\n\nString (counters, tokens, cached blobs), list (queues, recent items), hash (objects, carts), set (tags, unique members), sorted set (leaderboards, delayed jobs), stream (event log with consumer groups), bitmap (daily active users), HyperLogLog (approximate unique counts), geo (nearby search). Redis 8 adds built-in JSON, time series, Bloom filters and more.\n\n#### Q: What is the maximum size of a string value?\n\n512 MB. In practice keep values small (kilobytes), because a large value blocks the single thread while it is copied and serialised, and it hurts replication and memory fragmentation.\n\n#### Q: How do you implement an atomic counter?\n\n`INCR key` (or `INCRBY`). It is atomic because command execution is serial, so there are no lost updates even with thousands of concurrent clients. Add `EXPIRE` for windows, usually in a Lua script or by setting the TTL only when the result is 1.\n\n#### Q: Hash versus storing JSON in a string?\n\nA hash gives field-level reads, writes and atomic increments (`HINCRBY`) without rewriting the whole object, and small hashes use a compact encoding. A JSON string is simplest when you always read and write the whole object and need nested structure. With Redis 8 the JSON type adds path-based access. Hashes cannot nest.\n\n#### Q: List versus stream for a queue?\n\nA list gives a simple FIFO with `LPUSH/BRPOP`, but a popped item is gone, so a crashed worker loses it unless you use the reliable `LMOVE` pattern. A stream keeps entries, supports consumer groups, tracks pending entries until acknowledged (`XACK`), allows replay and reclaiming (`XAUTOCLAIM`). Use streams when you need at-least-once delivery.\n\n#### Q: How does a sorted set work internally and what is its complexity?\n\nSmall sorted sets use a listpack; larger ones use a skip list plus a hash table. The skip list keeps members ordered by score, giving `O(log N)` insert, rank and range start; the hash table gives `O(1)` score lookup by member. Ranges cost `O(log N + M)` for M returned elements.\n\n#### Q: How would you build a leaderboard?\n\nA sorted set per board: `ZINCRBY lb:daily 10 user:42` to add points, `ZREVRANGE` or `ZRANGE ... REV WITHSCORES` for the top N, `ZREVRANK` for a user's position. For \"around me\" fetch a window from rank minus k to rank plus k. For ties, encode a tiebreaker into the score or use lexicographic ordering. Reset daily boards by key name (date in the key) with a TTL.\n\n#### Q: What is a HyperLogLog and what are its trade-offs?\n\nA probabilistic structure for counting distinct elements in a fixed small memory (up to about 12 KB) with a standard error of about 0.81%. `PFADD` adds, `PFCOUNT` estimates, `PFMERGE` unions. You cannot list members or remove them. Great for unique visitors; not for exact billing.\n\n#### Q: When use a bitmap?\n\nFor dense boolean data indexed by small integers, such as \"did user N log in on this date\". One bit per user: 10 million users take about 1.2 MB. `SETBIT`, `GETBIT`, `BITCOUNT` and `BITOP` combine days (for example users active on all 7 days). It wastes space for sparse or huge ids.\n\n#### Q: What is a Bloom filter and where does it help?\n\nA compact probabilistic set with no false negatives but a tunable false-positive rate. In Redis 8 it is built in (`BF.RESERVE`, `BF.ADD`, `BF.EXISTS`). It protects a database from cache penetration: if the filter says an id definitely does not exist, skip the lookup.\n\n#### Q: How does Geo work?\n\nGeo commands store members in a sorted set with a score derived from a 52-bit geohash of longitude and latitude. `GEOADD` inserts, `GEOSEARCH` finds members within a radius or box, `GEODIST` computes distance. Because it is a sorted set, you can also use `ZREM` and `ZRANGE`.\n\n#### Q: Why is SMEMBERS or HGETALL dangerous?\n\nThey return the entire collection in one command, `O(N)`. With a million elements that blocks the server and floods the output buffer. Use `SSCAN`/`HSCAN` for incremental iteration, or design so collections stay small.\n\n#### Q: How does SCAN guarantee anything while keys change?\n\n`SCAN` returns a cursor and a batch. It guarantees that every element present for the entire iteration is returned at least once, but it may return an element several times and may or may not return elements added or deleted during the scan. Your processing must be idempotent. `COUNT` is a hint, not a limit.\n\n#### Q: What is an encoding, and how do you see it?\n\nAn encoding is the internal representation of a value, e.g. `listpack` for small hashes and sorted sets, `quicklist` for lists, `hashtable`, `skiplist`, `intset`, `embstr`, `int`. `OBJECT ENCODING key` shows it. Redis converts automatically as data grows past thresholds like `hash-max-listpack-entries`.\n\n#### Q: Can you store the same object as a hash and index it for queries?\n\nWith plain commands you maintain secondary indexes yourself (sets or sorted sets pointing to keys). With Redis 8's built-in query engine you create an index with `FT.CREATE` over hashes or JSON documents and query with `FT.SEARCH`. Spring Data Redis repositories (`@Indexed`) do simple equality indexes with sets, which is rarely worth it for large data."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- For every structure be ready with: use case, main commands, complexity, and the failure mode (big key, O(N) command).\n- Show that you pick structures by access pattern, and that you know encodings explain memory behaviour."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-7",
+      "type": "concept",
+      "title": "Interview Q&A: Internals and Persistence",
+      "subtopicId": "12-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Q: How does Redis execute a command, step by step?\n\nThe event loop sees a readable socket, reads bytes into the client's query buffer, parses a command, looks it up in the command table, checks ACLs, memory and state, executes it on the main thread, appends the reply to the client's output buffer, propagates writes to the AOF and replicas, and later writes the reply to the socket (optionally by an I/O thread).\n\n#### Q: How do expiry and eviction differ?\n\nExpiry removes keys whose TTL passed; it is about time. Eviction removes keys when memory exceeds `maxmemory`; it is about space. Expiry happens lazily (when a key is accessed) and actively (a periodic sampler deletes expired keys). Eviction picks victims by a policy such as LRU, LFU, random or TTL.\n\n#### Q: Are LRU and LFU exact in Redis?\n\nNo, they are approximations. Redis samples `maxmemory-samples` keys (default 5) and evicts the best candidate among them, saving the memory of a global ordering. Raising the sample count improves accuracy at some CPU cost. LFU keeps a small logarithmic counter with decay, which handles frequency better than recency for skewed workloads.\n\n#### Q: Which eviction policy should you choose for a cache?\n\nUsually `allkeys-lru` or `allkeys-lfu` when every key is cacheable. Use `volatile-*` policies only if you mix cache keys (with TTL) and keys that must never be evicted, and remember that if nothing has a TTL they behave like `noeviction`. Redis 8.6 adds least-recently-modified variants (`allkeys-lrm`, `volatile-lrm`).\n\n#### Q: Explain RDB.\n\nRDB writes a compact point-in-time snapshot of the dataset to a file. `BGSAVE` forks a child process, which writes the snapshot while the parent keeps serving, using copy-on-write memory pages. It is compact, fast to load and good for backups, but you lose everything since the last snapshot, and the fork of a large dataset can pause the server briefly.\n\n#### Q: Explain AOF.\n\nThe append-only file logs every write command. On restart Redis replays the log. `appendfsync` controls durability: `always` (fsync each write, safest, slowest), `everysec` (default, lose up to about a second), `no` (let the OS decide). The log grows, so Redis rewrites it in the background (`BGREWRITEAOF`) into a minimal equivalent; since 7.0 it is a multi-part AOF with a base file, incremental files and a manifest.\n\n#### Q: RDB or AOF?\n\nRDB alone: fast restarts, simple backups, minutes of possible loss. AOF with `everysec`: about a second of loss, larger files, slower restart. Many production systems enable both: the AOF for durability (with an RDB preamble to speed loading) and periodic RDB files for backups. A pure cache may use neither.\n\n#### Q: What is copy-on-write and why does it affect memory sizing?\n\nAfter `fork`, parent and child share memory pages. When the parent modifies a page, the OS copies it. With heavy writes during a snapshot, many pages get copied, so peak memory can approach twice the dataset in the worst case. Leave headroom beyond `maxmemory` and watch `latest_fork_usec` and RSS.\n\n#### Q: Can Redis lose acknowledged writes even with AOF?\n\nYes. With `everysec` a crash can lose the last second. Even with `always`, a replica-based failover can lose writes that the primary acknowledged but had not replicated. Persistence protects against restarts of one node; replication is asynchronous, so it does not give zero loss either. `WAIT` improves the odds but does not guarantee consensus.\n\n#### Q: What are Redis transactions, and is there rollback?\n\n`MULTI` starts queueing; `EXEC` runs the queue atomically, without interleaving from other clients. There is no rollback: if one command fails at run time (wrong type), the others still run; syntax errors at queue time abort the whole transaction. `WATCH` adds optimistic locking: if a watched key changes before `EXEC`, the transaction aborts and you retry.\n\n#### Q: Lua scripts versus MULTI/EXEC?\n\nBoth are atomic. A transaction cannot read a value and branch on it in the middle; a Lua script can. So read-modify-write logic (token bucket, compare-and-delete lock release, stock decrement) belongs in Lua or a Function. Scripts must be short, deterministic in effect and declare keys via `KEYS` so Cluster can route them.\n\n#### Q: What are Redis Functions?\n\nIntroduced in 7.0, Functions are named libraries loaded with `FUNCTION LOAD` and called with `FCALL`. Unlike `EVAL` scripts, they are part of the dataset (persisted and replicated), versioned by library, and do not depend on each client caching script SHAs.\n\n#### Q: What is a big key and why is it a problem?\n\nA key holding a very large value or collection (a list with millions of items, a 50 MB string). Reading, deleting or expiring it blocks the single thread, it creates replication and network spikes, and it unbalances Cluster shards. Find them with `redis-cli --bigkeys` or `--memkeys`; split them; delete with `UNLINK`.\n\n#### Q: What is a hot key?\n\nA key accessed far more than others, which saturates one thread or one Cluster shard. Fixes: replicate the value across several keys (suffix 1..N) and read a random one, add a local in-process cache, use client-side caching, or move the logic out of Redis. Redis 8.6 adds a `HOTKEYS` command to help find them.\n\n#### Q: What does fragmentation mean here?\n\n`mem_fragmentation_ratio` is RSS divided by `used_memory`. A ratio well above 1 means the allocator holds memory it cannot return to the OS (after many deletes of varied sizes). Active defragmentation (`activedefrag yes`) can reclaim it. A ratio below 1 can mean swapping, which is disastrous for latency.\n\n#### Q: How do you debug a latency spike?\n\nCheck `SLOWLOG GET` for slow commands, `LATENCY DOCTOR` and `LATENCY LATEST` for events, `INFO stats` for `latest_fork_usec`, `INFO persistence` for AOF fsync delays, the `transparent huge pages` setting, swapping, and client side issues such as connection storms or network RTT. Compare client-measured latency with server-side execution time."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Internals answers: one thread, approximated LRU/LFU, fork plus copy-on-write, AOF fsync policies, and no rollback in transactions.\n- State the data-loss window every time you discuss persistence."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-8",
+      "type": "concept",
+      "title": "Interview Q&A: Scaling and High Availability",
+      "subtopicId": "12-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Q: How does replication work?\n\nA replica connects to its primary with `REPLICAOF`. On first contact it does a full sync: the primary produces an RDB snapshot (written to disk or streamed directly with diskless replication) and sends it, buffering new writes meanwhile; then the replica receives the stream of write commands. After a short disconnect it attempts a partial resync using the replication ID, offset and the primary's backlog buffer (`repl-backlog-size`).\n\n#### Q: Is replication synchronous?\n\nNo, it is asynchronous: the primary acknowledges the client before replicas confirm. `WAIT numreplicas timeout` blocks until enough replicas have acknowledged, which narrows the loss window but is not a guarantee against all failure sequences. `min-replicas-to-write` makes the primary refuse writes when too few replicas are healthy.\n\n#### Q: Can you read from replicas?\n\nYes, but reads may be stale because of replication lag. Use replica reads for data that tolerates staleness (catalogue cache) and not for read-your-writes flows such as \"update then immediately show\". Client libraries expose read preferences (Lettuce `ReadFrom`).\n\n#### Q: What does Sentinel do?\n\nSentinel is a set of processes that monitor a primary and its replicas, detect failure, elect a leader sentinel, promote a replica and reconfigure the others, and tell clients where the current primary is (`SENTINEL get-master-addr-by-name`). It provides high availability for a single shard; it does not shard data.\n\n#### Q: What is the difference between quorum and majority in Sentinel?\n\nThe quorum is the number of sentinels that must agree the primary is unreachable to mark it objectively down (ODOWN). To actually start a failover, a sentinel must also be authorised by a majority of all sentinels. So deploy at least three sentinels on independent failure domains.\n\n#### Q: What is split-brain and how do you limit it?\n\nA network partition leaves the old primary alive with some clients while a new primary is promoted elsewhere; both accept writes and the old one's writes are lost when it rejoins as a replica. Limit it with `min-replicas-to-write` and `min-replicas-max-lag`, so an isolated primary stops accepting writes, and with sentinels placed sensibly.\n\n#### Q: How does Redis Cluster shard data?\n\nThe keyspace is divided into 16384 hash slots. A key's slot is `CRC16(key) mod 16384`; each primary owns a subset of slots. Clients cache the slot map and send each command to the right node; a wrong node replies `MOVED`, and during migration `ASK`. Each primary can have replicas for failover.\n\n#### Q: What are hash tags?\n\nIf a key contains `{...}`, only the part inside the first braces is hashed. `{user:42}:cart` and `{user:42}:profile` land in the same slot, so multi-key commands, transactions and scripts that touch both work. Overuse creates hot shards.\n\n#### Q: What limitations does Cluster impose?\n\nMulti-key commands and scripts need all keys in one slot (otherwise `CROSSSLOT`); only database 0 exists; clients must be cluster-aware; pub/sub is broadcast across the cluster (sharded pub/sub since 7.0 scales better); and `cluster-require-full-coverage yes` stops serving writes if any slot has no owner.\n\n#### Q: How does Cluster detect failures and fail over?\n\nNodes gossip over the cluster bus (port + 10000). If a node is unreachable for `cluster-node-timeout`, others flag it as possibly failing (PFAIL); when a majority of primaries agree, it is marked FAIL. Its replicas then hold an election and one is promoted. If a shard loses both primary and replicas, its slots are uncovered.\n\n#### Q: How do you add capacity to a Cluster?\n\nAdd new nodes, then move slots with `redis-cli --cluster reshard` or `rebalance`. Slot migration moves keys in batches with `MIGRATE`, and clients are redirected with `ASK` meanwhile. Redis 8.4 introduced atomic slot migration (`CLUSTER MIGRATION`) that moves whole slots as a unit with less disruption.\n\n#### Q: Sentinel or Cluster?\n\nSentinel when the dataset and write throughput fit a single node and you want automatic failover with simple semantics (multi-key operations everywhere). Cluster when you need to scale memory or writes horizontally and can design keys around slots. Many apps are fine on one primary with replicas for years.\n\n#### Q: How do clients find the primary in each topology?\n\nStandalone: a fixed address. Sentinel: the client asks the sentinels for the current primary address and follows changes. Cluster: the client connects to seed nodes, downloads the slot map with `CLUSTER SHARDS` (or `CLUSTER SLOTS`) and refreshes it on `MOVED` or periodically.\n\n#### Q: How do managed services like ElastiCache differ?\n\nThey handle provisioning, patching, backups and failover, often with their own limits and sometimes different feature sets than open source Redis. Check version, supported modules and commands, persistence options and pricing model before depending on a feature.\n\n#### Q: How do you scale reads versus writes?\n\nReads: add replicas and route read-only traffic to them, or add a local cache. Writes: shard with Cluster, or reduce write volume (batching, pipelining, coarser counters). There is no way to scale writes of a single key beyond one core, so split hot counters into sub-keys.\n\n#### Q: What happens to a replica that is too far behind?\n\nIf the primary's backlog no longer contains the replica's offset, partial resync fails and a full sync starts, which costs a fork, disk or network bandwidth, and memory. Size `repl-backlog-size` for the longest outage you want to survive with partial resync, and watch replication offsets."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Replication is asynchronous; Sentinel gives HA without sharding; Cluster gives sharding with 16384 slots and per-slot key constraints.\n- Always connect a topology answer to its failure mode and to what the client must do."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-9",
+      "type": "concept",
+      "title": "Interview Q&A: Caching and Patterns",
+      "subtopicId": "12-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Q: Explain cache-aside.\n\nThe application checks the cache first; on a miss it reads the database, writes the result into the cache with a TTL, and returns it. On writes it updates the database and then deletes (or updates) the cache entry. It is the default pattern because the cache is optional: if Redis is down the application still works, only slower.\n\n#### Q: Why delete the cache entry on write instead of updating it?\n\nDeleting is simpler and avoids a race where two concurrent writers update the database in one order and the cache in another, leaving a stale value until the TTL. After a delete the next read repopulates from the database. It still has a small race (a reader loading an old row just before the write commits), which is why a TTL is always the safety net.\n\n#### Q: What is a cache stampede and how do you prevent it?\n\nWhen a hot key expires, many requests miss at once and all hit the database. Prevent it with single-flight per key (an in-process lock, or a short `SET NX PX` lock in Redis so one caller rebuilds), TTL jitter so keys do not expire together, probabilistic early refresh, or serving stale data while one caller refreshes.\n\n#### Q: What is cache penetration?\n\nRequests for keys that do not exist in the database bypass the cache every time, so each one reaches the database. Fix with negative caching (store a short-lived \"not found\" marker), input validation, and a Bloom filter of valid ids in front of the cache.\n\n#### Q: What is cache avalanche?\n\nMany keys expire at the same moment, or the cache goes down, and the database is hit by the combined load. Add random jitter to TTLs, warm important keys, use replicas or Sentinel/Cluster for availability, and protect the database with rate limits and circuit breakers.\n\n#### Q: Write-through versus write-behind?\n\nWrite-through writes to the cache and the database synchronously, so reads are fresh but writes are slower. Write-behind acknowledges after writing to the cache and flushes to the database asynchronously, which is fast but can lose data if Redis fails before the flush and complicates ordering and failure handling. Use it only when that risk is acceptable.\n\n#### Q: How do you choose a TTL?\n\nBalance staleness tolerance against hit ratio and database load. Ask how wrong the data can be and for how long. Use short TTLs for volatile data, longer for reference data, add jitter, and combine with explicit invalidation for data that must change quickly. Measure hit ratio before and after changes.\n\n#### Q: How do you keep cache and database consistent?\n\nYou cannot get perfect consistency with two independent stores without distributed transactions. Practical options: delete-after-write plus a TTL, delayed double delete, invalidation driven by change data capture or an outbox, and versioned keys or values. State the tolerated staleness explicitly.\n\n#### Q: How do you implement a distributed lock?\n\n`SET lock:key <random-token> NX PX 30000` acquires it; release with a Lua script that deletes the key only if the stored token equals yours, so you never delete someone else's lock. Handle expiry during long work with renewal (a watchdog) or by keeping the work short.\n\n#### Q: Is a Redis lock safe for correctness?\n\nNot on its own. With an expiry, a paused process (long GC, network delay) can keep working after its lock expired while another process holds it. Fencing tokens, where the protected resource rejects stale lock holders, solve this. Redlock (locks on several independent nodes) is debated: critics say timing assumptions make it unsafe for strict correctness, defenders say it is fine for efficiency use cases. For money or inventory, prefer database constraints or serialisation.\n\n#### Q: How would you implement rate limiting?\n\nFixed window: `INCR` a key per window with `EXPIRE`; simple but allows bursts at window edges. Sliding window log with a sorted set is accurate but memory heavy. Sliding window counter approximates using two windows. Token bucket in Lua allows bursts and a steady rate. Do the check-and-update atomically in a script and return remaining tokens for response headers.\n\n#### Q: How do you make an API idempotent with Redis?\n\nThe client sends an idempotency key. The server does `SET idem:<key> in-progress NX EX 86400`; if it succeeds, process and store the result under the key; if it fails, return the stored result or a conflict while in progress. Redis helps with the fast path; the database must still enforce uniqueness for money-critical operations.\n\n#### Q: Pub/Sub versus Streams?\n\nPub/Sub is fire-and-forget: subscribers that are offline miss messages and nothing is stored. Streams persist entries, support consumer groups, acknowledgement and replay. Use pub/sub for ephemeral notifications such as cache invalidation or live UI updates, and streams for work that must not be lost.\n\n#### Q: How do you build a delayed job queue?\n\nPut job ids in a sorted set scored by due timestamp. A worker polls with `ZRANGE ... BYSCORE` for due items and claims each atomically (a Lua script that removes from the zset and pushes to a ready list). Avoid relying on key expiry notifications, which are not guaranteed delivery.\n\n#### Q: How would you prevent overselling in a flash sale?\n\nKeep stock in a Redis counter and decrement it in a Lua script that checks `stock > 0` and decrements in one atomic step; reject if zero. Record the reservation (with a TTL) and emit an order event to a stream; confirm against the database asynchronously. Use idempotency keys so retries do not double-reserve.\n\n#### Q: What are the common Redis anti-patterns?\n\n`KEYS` in production, huge keys and values, no TTL on cache data, unbounded lists or streams, using Redis as the only copy of important data without persistence, blocking Lua, wrong eviction policy, N+1 round trips instead of pipelines, and fire-and-forget pub/sub for critical events."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- For every cache question, mention TTL as a safety net, the stampede risk, and how stale the data may be.\n- For every concurrency question, ask \"is there a single atomic command or script that does this?\" before reaching for a lock."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-10",
+      "type": "concept",
+      "title": "Interview Q&A: Java and Spring",
+      "subtopicId": "12-10",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Q: Lettuce versus Jedis versus Redisson?\n\nLettuce (Spring's default) is built on Netty, supports sync, async and reactive APIs, and a single connection is thread-safe and can be shared. Jedis is a simple blocking client; a `Jedis` connection is not thread-safe, so you use a pool (`JedisPool`, or `JedisPooled`). Redisson adds distributed objects and services (locks, maps, rate limiters, queues) on top of Redis. Choose Lettuce by default, Redisson when you want its higher-level structures.\n\n#### Q: Why does Lettuce not need a connection pool by default?\n\nIts connections are thread-safe and multiplexed with pipelining at the protocol level, so one connection can serve many threads. A pool is only needed for blocking or transactional operations that hold a connection exclusively (`BLPOP`, `MULTI` on a shared connection). Spring Boot enables pooling only when `commons-pool2` is on the classpath and pool settings are configured.\n\n#### Q: What is the difference between StringRedisTemplate and RedisTemplate?\n\n`StringRedisTemplate` uses string serializers for keys and values, which is what you want for plain strings and for inspecting data in `redis-cli`. `RedisTemplate` is generic; its default serializer is JDK serialization, which produces unreadable, class-coupled bytes. Configure explicit serializers, typically a string key serializer and a JSON value serializer.\n\n#### Q: How do you serialise objects as JSON with Spring Data Redis 4?\n\nUse the Jackson 3 based serializers: `JacksonJsonRedisSerializer` for a known type, or `GenericJacksonJsonRedisSerializer` for generic values. The older Jackson 2 serializers are deprecated. Default typing is not enabled by default in the generic one, so enable it deliberately and restrict allowed types, since polymorphic deserialization is a security risk.\n\n#### Q: How does Spring's cache abstraction work with Redis?\n\n`@EnableCaching` activates proxies. `@Cacheable` checks the cache before calling the method, `@CachePut` always writes, `@CacheEvict` removes. A `RedisCacheManager` creates `RedisCache` instances; keys look like `cacheName::key`. Configure TTL per cache with `RedisCacheConfiguration.entryTtl`, choose serializers, and decide on null caching.\n\n#### Q: What are the common pitfalls of @Cacheable?\n\nSelf-invocation (calling a cached method from the same class bypasses the proxy), caching without TTL, default JDK serialization, caching huge collections, unstable key generation (non-`equals` objects), caching nulls unintentionally, and stampedes. `sync = true` adds per-key locking, but only inside one JVM.\n\n#### Q: How do you listen to Pub/Sub or Streams in Spring?\n\nPub/Sub: register a `MessageListener` with a `RedisMessageListenerContainer` for channel or pattern topics. Streams: use a `StreamMessageListenerContainer` with a consumer group and `Consumer.from(group, name)`, acknowledge with `XACK` after successful processing, and handle pending entries with claim logic. Make handlers idempotent.\n\n#### Q: How do you execute a Lua script from Spring?\n\nWrap it in a `DefaultRedisScript<T>` with the result type and call `redisTemplate.execute(script, keys, args...)`. The template uses `EVALSHA` and falls back to `EVAL` if the script is not cached. Keep scripts in resource files, and keep key names in `KEYS` for Cluster compatibility.\n\n#### Q: How does a transaction work with RedisTemplate?\n\n`MULTI/EXEC` must run on one connection. Use a `SessionCallback` so all commands share a connection, or enable transaction support on the template. Remember: reads inside `MULTI` return null until `EXEC`, so read-modify-write logic should be Lua or use `WATCH`.\n\n#### Q: How do you test code that uses Redis?\n\nUse Testcontainers with a real `redis:8` container (a generic container exposing 6379) and point `spring.data.redis.host/port` at it, using Spring Boot's dynamic property or service-connection support. Avoid embedded fake Redis servers: they differ in behaviour, especially for Lua, streams and Cluster.\n\n#### Q: What should happen if Redis is down?\n\nDecide per feature. A cache should degrade: catch connection errors, log, and read from the database (with a circuit breaker so you do not wait on timeouts). Rate limiting may fail open or closed depending on risk. Sessions or locks may need to fail the request. Always set connect and command timeouts so threads are not blocked indefinitely.\n\n#### Q: How do you size timeouts and pools?\n\nSet a command timeout a few times above your p99 latency (often hundreds of milliseconds, not seconds), a short connect timeout, and enable topology refresh for Sentinel/Cluster so clients follow failovers. For pools, size by the number of concurrent blocking operations, not by request volume.\n\n#### Q: What is Spring Session with Redis?\n\nIt stores HTTP sessions in Redis instead of the servlet container's memory, so any application instance can serve any user and sessions survive restarts. The session is stored as a hash with a TTL. Cost: serialisation overhead and a Redis dependency on the login path."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- In Java answers, name the client, its thread-safety model, the serializer and the timeout policy.\n- Never leave `RedisTemplate` on JDK serialization in an answer you would defend."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-11",
+      "type": "concept",
+      "title": "System-Design Scenarios",
+      "subtopicId": "12-11",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Each scenario below follows one shape you can reuse on a whiteboard: requirements, Redis structures, the critical operation, failure modes, and what you would say about scale.\n\n### Design a rate limiter\n\nRequirements: 100 requests per minute per API key, low overhead, correct across many gateway instances. Use a token bucket stored in a hash (`rl:{apiKey}` with `tokens` and `ts`), updated by a Lua script so refill and take are atomic."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = bucket key; ARGV = capacity, refill per second, now (ms), cost\nlocal capacity = tonumber(ARGV[1])\nlocal rate = tonumber(ARGV[2])\nlocal now = tonumber(ARGV[3])\nlocal cost = tonumber(ARGV[4])\nlocal state = redis.call('HMGET', KEYS[1], 'tokens', 'ts')\nlocal tokens = tonumber(state[1]) or capacity\nlocal ts = tonumber(state[2]) or now\ntokens = math.min(capacity, tokens + (now - ts) / 1000 * rate)\nlocal allowed = 0\nif tokens >= cost then\n  tokens = tokens - cost\n  allowed = 1\nend\nredis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)\nredis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) + 1000)\nreturn {allowed, math.floor(tokens)}",
+          "title": "token_bucket.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "Trade-offs: pass the time from the application (or use `TIME` inside the script) and be aware of clock skew between gateways. In Cluster, the single key keeps the script on one slot. If Redis fails, choose fail-open for public traffic or fail-closed for sensitive endpoints. Return `X-RateLimit-Remaining` and `Retry-After` headers.\n\n### Design a leaderboard\n\nUse one sorted set per board and period (`lb:bestsellers:2026-10-10`). Update with `ZINCRBY`, read the top 100 with `ZRANGE key 0 99 REV WITHSCORES`, find a user with `ZREVRANK`. Daily boards expire by TTL; all-time boards can be rebuilt from the database. Paginate by rank. Around-me queries fetch rank plus or minus 5. At very large scale, shard the board by region and merge top-N lists, because one sorted set lives on one node. Persist the source of truth (events) elsewhere.\n\n### Design a URL shortener cache\n\nReads vastly outnumber writes. The database stores `code -> longUrl`; Redis caches `url:{code}` as a string with a TTL of hours plus jitter. Generate codes with an atomic `INCR` encoded in base 62 (collision free) or random codes checked with `SET NX`. Add negative caching for unknown codes and a Bloom filter to keep scanners from hitting the database. Hot links: add an in-process cache in front. Analytics clicks: `INCR` counters or a stream consumed in batches, never a database write per click.\n\n### Design a session store\n\nStore `session:{sid}` as a hash with a sliding TTL (`EXPIRE` on each access, say 30 minutes). Use a long random session id (at least 128 bits). Persistence: AOF `everysec` plus replicas so a restart does not log everyone out; accept that a failover may lose the last second of updates. Index user to sessions with a set (`user:42:sessions`) for \"log out everywhere\". Serialize compactly and avoid storing large objects.\n\n### Design a distributed lock service\n\nFor efficiency locks (avoid duplicate work), use `SET NX PX` with a random token and Lua release; renew while working. For correctness, add a fencing token (an `INCR` counter value returned with the lock) that the downstream resource checks and rejects if older than the last seen. Mention Redlock and its critique, mention that the best design avoids needing the lock, and describe behaviour on failover: a lock acquired on the primary but not yet replicated can be granted twice.\n\n### Design a flash sale\n\nPre-load stock into `stock:{sku}`. A Lua script atomically checks and decrements; a `reservation:{orderId}` key with a TTL holds the item for the payment window; a stream `stream:orders` carries order events to workers in a consumer group. Idempotency keys stop duplicate submissions. A rate limiter and a waiting-room queue protect the system. Reconcile stock with the database afterwards; when a reservation expires, a compensating script returns the unit. Expect hot-key pressure on one SKU: shard the counter into buckets if needed.\n\n### Design a news feed\n\nFan-out on write: for each post, push the post id into followers' timelines (`feed:{userId}` as a capped list or sorted set scored by time, trimmed with `LTRIM` or `ZREMRANGEBYRANK`). Fan-out on read: build the feed at request time by merging recent posts from followed accounts. Hybrid: fan-out on write for ordinary users and on read for celebrities with millions of followers. Store post bodies in a cache or database, and only ids in the timelines. Timelines are rebuildable, so persistence can be light."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A good design answer names the structure, the atomic operation, the TTL and the failure behaviour.\n- Say what you would measure: hit ratio, p99 latency, memory growth, evictions and replication lag."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-12",
+      "type": "concept",
+      "title": "Common Mistakes and Myths",
+      "subtopicId": "12-12",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Myth",
+            "Reality"
+          ],
+          "rows": [
+            [
+              "Redis is single-threaded, so it cannot use many cores",
+              "Commands run on one thread, but I/O threads and background threads exist, and Cluster uses one process per shard"
+            ],
+            [
+              "Redis is not durable",
+              "It is as durable as you configure: AOF with `always` or `everysec`, plus replicas and backups"
+            ],
+            [
+              "Replication gives zero data loss",
+              "It is asynchronous; failover can lose acknowledged writes"
+            ],
+            [
+              "`KEYS` is fine if the dataset is small",
+              "Datasets grow; use `SCAN`"
+            ],
+            [
+              "Transactions roll back on error",
+              "There is no rollback in `MULTI/EXEC`"
+            ],
+            [
+              "A TTL guarantees prompt deletion",
+              "Expired keys are removed lazily and by sampling; memory is not freed at the exact second"
+            ],
+            [
+              "LRU evicts the true least recently used key",
+              "It samples a few keys"
+            ],
+            [
+              "Cluster gives you transparent scaling",
+              "Multi-key operations are limited to a slot, and keys must be designed for it"
+            ],
+            [
+              "More replicas always mean more safety",
+              "They add read capacity and copies, but not consensus"
+            ],
+            [
+              "Redis is only a cache",
+              "It is a general data structure server with streams, JSON, search and more"
+            ],
+            [
+              "Pub/Sub never loses messages",
+              "Offline subscribers miss them; there is no storage"
+            ]
+          ],
+          "caption": "Myths and their corrections."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Mistakes seen in real projects\n\n- Running without `maxmemory` and finding the host killed by the OS.\n- Caching without TTLs so the cache slowly becomes a stale second database.\n- Using one giant hash or list for everything, creating a big key and a hot key.\n- Using `RedisTemplate` with default JDK serialization and then being unable to read keys from other services.\n- Holding a lock around a slow remote call with a TTL shorter than the call.\n- Treating pub/sub as a queue.\n- Using `FLUSHALL` on the wrong environment because dev and prod share a network.\n- Forgetting that `INFO` fields and defaults differ between versions and cloud providers."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Most Redis incidents come from unbounded growth, slow commands, missing TTLs or unexamined durability assumptions.\n- A candidate who names these unprompted sounds like someone who has operated Redis."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-13",
+      "type": "concept",
+      "title": "A 30-Day Study Plan",
+      "subtopicId": "12-13",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This plan assumes about 90 minutes a day. Each week ends with a build task so you do not just read. Chapter names point to this book; \"Lab\" means the hands-on labs and \"Project\" means the end-to-end projects."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Week",
+            "Learn",
+            "Build or practice"
+          ],
+          "rows": [
+            [
+              "1",
+              "Fundamentals; install Redis with Docker; `redis-cli` tour; strings, hashes, lists, sets",
+              "Complete the first labs; implement a visit counter, a todo list with a hash and a list, and unique tags with a set"
+            ],
+            [
+              "2",
+              "Sorted sets, streams, bitmaps, HyperLogLog, geo; expiry and eviction; RDB and AOF",
+              "Build a leaderboard; run a producer and a consumer group; restart the server with RDB then AOF and observe what survives"
+            ],
+            [
+              "3",
+              "Transactions, Lua, pipelining; replication, Sentinel, Cluster; security",
+              "Write the token bucket script; start a primary with a replica and kill the primary; start a 3-shard Cluster and trigger `MOVED`"
+            ],
+            [
+              "4",
+              "Java and Spring Data Redis; caching patterns; operations; the interview chapters",
+              "Work through the catalogue cache Project and the rate limiter Project; then do the flash-sale Project if time allows"
+            ]
+          ],
+          "caption": "Four-week plan."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Daily rhythm\n\n1. 30 minutes reading a chapter, taking notes in your own words.\n2. 40 minutes in `redis-cli` or code: type every example, then change it and predict the result.\n3. 20 minutes answering three interview questions out loud from the previous chapters, without looking.\n\n#### Exercises that pay off\n\n- Fill a database with a million keys, then compare `MEMORY USAGE` for the same data as strings, hashes and JSON.\n- Set `maxmemory` low and watch evictions under each policy; chart `evicted_keys`.\n- Kill -9 the server under `appendfsync always`, `everysec` and with no AOF; count lost writes.\n- Run `redis-benchmark` with and without pipelining and explain the difference.\n- Inject a 2-second delay on a replica link (for example with a proxy) and watch `master_repl_offset`.\n- Write a stampede test: 200 threads loading one expired key, once with and once without single-flight.\n\n#### Before an interview\n\nRe-read the decision guides, the system-design scenarios and the myths table. Practise one scenario aloud with a timer. Prepare two short stories from your own projects: one where Redis solved a problem, and one where a design choice (TTL, eviction, locking) had a trade-off you can explain."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Consistency beats intensity: type the commands, break things on purpose, and explain trade-offs aloud.\n- Finish with one project you can demo and discuss for ten minutes."
+        }
+      ]
+    }
+  ]
+}

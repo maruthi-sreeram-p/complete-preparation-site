@@ -76,6 +76,22 @@ describe('computeLayout', () => {
     expect(rows.size).toBeGreaterThan(1)
   })
 
+  it('tree layout centres each level on one spine and puts a heading at each new stage', () => {
+    const cats = [{ id: 'c', title: 'C' }, { id: 'd', title: 'D' }]
+    const list = [t('a'), t('b', ['a']), t('e', ['a']), t('f', ['b', 'e'])]
+    list.push({ id: 'm', title: 'm', category: 'd', requires: ['f'] })
+    const r = buildRoadmap({ layout: 'tree', categories: cats, topics: list }, { id: 'r' })
+    const { positions, stages } = computeLayout(r)
+    expect(r.sequence).toEqual(['a', 'b', 'e', 'f', 'm'])
+    expect(stages.map((s) => s.categoryId)).toEqual(['c', 'd'])
+    expect(positions.b.y).toBe(positions.e.y)
+    expect(positions.b.y).toBeGreaterThan(positions.a.y)
+    expect(positions.a.x + NODE_SIZE.width / 2).toBe(0)
+    expect((positions.b.x + positions.e.x + NODE_SIZE.width) / 2).toBe(0)
+    expect(stages[1].y).toBeGreaterThan(positions.f.y)
+    expect(positions.m.y).toBeGreaterThan(stages[1].y)
+  })
+
   it('respects explicit positions', () => {
     const r = build(raw([t('a', [], { position: { x: 5, y: 7 } })]))
     expect(computeLayout(r).positions.a).toEqual({ x: 5, y: 7 })

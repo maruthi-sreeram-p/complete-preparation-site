@@ -1,7 +1,8 @@
-import { Children, Fragment } from 'react'
+import { Children, Fragment, useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import CodeBlock from './CodeBlock.jsx'
+import { expandInlineListings } from '@/lib/content/prettyCode.js'
 
 const remarkPlugins = [remarkGfm]
 
@@ -35,6 +36,7 @@ const components = {
 /** Markdown (GitHub-flavoured). `inline` renders without paragraph wrappers, for table cells and similar. */
 export default function Markdown({ children, inline = false }) {
   const text = typeof children === 'string' ? children : ''
+  const expanded = useMemo(() => (inline ? text : expandInlineListings(text)), [text, inline])
   if (inline) {
     return (
       <ReactMarkdown remarkPlugins={remarkPlugins} components={{ ...components, p: Fragment }}>
@@ -45,7 +47,7 @@ export default function Markdown({ children, inline = false }) {
   return (
     <div className="doc">
       <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
-        {text}
+        {expanded}
       </ReactMarkdown>
     </div>
   )

@@ -1,0 +1,1155 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "350-397"
+  },
+  "sections": [
+    {
+      "id": "ch-10-1",
+      "type": "concept",
+      "title": "How to Work Through the Projects",
+      "subtopicId": "10-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The earlier Parts explained Redis one idea at a time. This Part puts the ideas together. You will build four small but complete services, each one a slice of ShopStream: a catalogue service with a hardened cache, a rate limiter, a flash-sale service that must never oversell, and a leaderboard with live notifications. Each project is small enough to finish in an evening and realistic enough to teach you the problems you will meet at work.\n\nEvery project follows the same shape, so you always know where you are:\n\n1. **Goal and requirements**: what the service must do, stated so you can test it.\n2. **Architecture and layout**: a sketch and the file tree.\n3. **Build and run files**: `pom.xml` dependencies, `docker-compose.yml`, `application.yml`.\n4. **The code**: the key classes in full, followed by \"what to notice\".\n5. **Verify with redis-cli**: look at the keys your code created.\n6. **Tests**: integration tests against a real Redis in a container (Testcontainers).\n7. **Demo and extensions**: a behaviour or load demo, then ideas to push further.\n\n### Common setup for all four projects\n\nAll four projects use Java 21, Maven, Spring Boot 4.1 and Spring Data Redis 4.1 with the default Lettuce client. You need a JDK 21, Maven 3.9+ and Docker. Each project is a separate Maven module with its own `pom.xml`; they share nothing except the conventions below, so you can build them in any order."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Convention",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`Package root`",
+              "`com.shopstream.<project>`, for example `com.shopstream.catalog`"
+            ],
+            [
+              "`Redis image`",
+              "`redis:8`, which includes the Bloom filter, JSON and Search commands without extra modules"
+            ],
+            [
+              "`Key names`",
+              "`entity:id:field` with colons; every project documents its keys in a table"
+            ],
+            [
+              "`Redis access`",
+              "`StringRedisTemplate` for strings, counters and Lua; JSON is written by hand with the Boot-provided `JsonMapper`"
+            ],
+            [
+              "`Tests`",
+              "`@SpringBootTest` plus a Redis container declared as a bean with `@ServiceConnection`"
+            ]
+          ],
+          "caption": "Conventions shared by the projects."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Version numbers in the `pom.xml` listings are the ones the Spring Boot parent manages. Use the latest 4.1.x patch release of `spring-boot-starter-parent`; do not pin Spring Data Redis, Lettuce, Micrometer or Testcontainers yourself."
+        },
+        {
+          "type": "markdown",
+          "text": "Two choices recur and are worth explaining once. First, we call Lua scripts through `DefaultRedisScript` with only string arguments. `StringRedisTemplate` serialises script arguments with its string serializer, so a `Long` argument would fail; always pass `String.valueOf(n)`. Second, our tests start a real Redis through Testcontainers rather than mocking `StringRedisTemplate`. A mock cannot tell you whether your Lua script, your key expiry or your Bloom filter command works, and those are the parts that break."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Type the code yourself the first time, at least for the core classes. The compile errors and the first failing test teach more than a pasted listing does. Compare with the listing afterwards."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Each project is a vertical slice: HTTP endpoint, Redis data model, atomic logic, tests.\n\n- Run Redis in Docker; run the service on your machine so you can use a debugger.\n- Document every key you create; a service whose keys you cannot list is a service you cannot operate.\n- Test against a real Redis; mock only the slow database.\n- Pass only strings to scripts executed through `StringRedisTemplate`."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-2",
+      "type": "concept",
+      "title": "Project A: A Production-Grade Catalogue Cache",
+      "subtopicId": "10-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal and requirements\n\nShopStream's catalog-service answers `GET /api/products/{id}` thousands of times per second, and the product database is slow (we will simulate 50 ms per lookup). The cache-aside pattern from the Patterns Part is the starting point. In this project we harden it against the four failures that bite real caches."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Requirement",
+            "What it means"
+          ],
+          "rows": [
+            [
+              "Cache-aside read",
+              "Look in Redis first, load from the database on a miss, store the result"
+            ],
+            [
+              "TTL with jitter",
+              "Base TTL 10 minutes plus or minus 20 percent, so keys loaded together do not expire together"
+            ],
+            [
+              "Negative caching",
+              "A product that does not exist is remembered for 60 seconds as a marker value"
+            ],
+            [
+              "Bloom filter",
+              "Ids that were never created are rejected before they reach the cache or the database"
+            ],
+            [
+              "Stampede protection",
+              "When a hot key expires, only one request reloads it; the rest wait briefly and read the result"
+            ],
+            [
+              "Metrics",
+              "Counters for hit, miss, negative and Bloom rejections, and a counter of database loads"
+            ]
+          ],
+          "caption": "Requirements."
+        },
+        {
+          "type": "markdown",
+          "text": "The last metric is the one that proves the work. If 200 concurrent requests for a cold key cause exactly one database load, the design works.\n\n### Architecture"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "GET /api/products/{id}\n       │\n       ▼\n┌───────────────┐  definitely absent   ┌──────────────┐\n│ Bloom filter  │ ───────────────────► │ 404, no I/O  │\n│ bf:product:ids│                      └──────────────┘\n└───────┬───────┘\n        │ maybe present\n        ▼\n┌───────────────┐  hit / negative hit  ┌──────────────┐\n│ GET product:id│ ───────────────────► │ 200 or 404   │\n└───────┬───────┘                      └──────────────┘\n        │ miss\n        ▼\n┌─────────────────────┐ lock lost ┌─────────────────────────┐\n│ SET lock:product:id │ ────────► │ poll the cache up to    │\n│ NX PX 5000          │           │ 500 ms, then fall back  │\n└───────┬─────────────┘           └─────────────────────────┘\n        │ lock won\n        ▼\n  re-check cache → load from DB → SET product:id EX ttl±jitter → unlock (Lua)"
+        },
+        {
+          "type": "markdown",
+          "text": "The Bloom filter has one-sided error: it can say \"maybe present\" for an id that does not exist (a false positive), but it never says \"absent\" for an id that was added. That is exactly the property we need to shield the database from random ids, and the negative cache covers the false positives.\n\n### Project layout"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "catalog-cache/\n├── pom.xml\n├── docker-compose.yml\n└── src\n    ├── main\n    │   ├── java/com/shopstream/catalog\n    │   │   ├── CatalogApplication.java\n    │   │   ├── CatalogProperties.java\n    │   │   ├── Product.java\n    │   │   ├── ProductRepository.java\n    │   │   ├── SlowProductRepository.java\n    │   │   ├── BloomFilter.java\n    │   │   ├── SingleFlightLock.java\n    │   │   ├── ProductCache.java\n    │   │   ├── CatalogService.java\n    │   │   ├── CatalogMetrics.java\n    │   │   └── ProductController.java\n    │   └── resources/application.yml\n    └── test/java/com/shopstream/catalog\n        ├── RedisTestConfig.java\n        └── CatalogServiceIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Build and run files\n\nThe `pom.xml` below shows only the parts you must write; the parent and `<properties>` (Java 21) are the usual Boot boilerplate."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<parent>\n  <groupId>org.springframework.boot</groupId>\n  <artifactId>spring-boot-starter-parent</artifactId>\n  <version>4.1.0</version>\n</parent>\n<properties><java.version>21</java.version></properties>\n\n<dependencies>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-webmvc</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-data-redis</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-actuator</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-test</artifactId>\n    <scope>test</scope>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-testcontainers</artifactId>\n    <scope>test</scope>\n  </dependency>\n</dependencies>",
+          "title": "pom.xml (dependencies)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Spring Boot 4 split its auto-configuration into smaller modules and renamed some starters (the web starter is now `spring-boot-starter-webmvc`, with a matching `spring-boot-starter-webmvc-test`). If a tutorial written for Boot 3 does not compile, check starter names and test-annotation packages first. The listings in this Part avoid MockMvc-style test slices so they depend on as little of that as possible."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  redis:\n    image: redis:8\n    container_name: shopstream-redis\n    ports:\n      - \"6379:6379\"\n    command: [\"redis-server\", \"--appendonly\", \"no\", \"--maxmemory\", \"256mb\",\n              \"--maxmemory-policy\", \"allkeys-lru\"]\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 5s\n      timeout: 2s\n      retries: 10",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "We set `maxmemory` and an eviction policy because a cache without a memory limit is not a cache, it is a slow memory leak. `allkeys-lru` is the usual choice for a pure cache. Note it can also evict the Bloom filter and lock keys; the extension ideas at the end of the chapter show how to cope."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  application:\n    name: catalog-cache\n  data:\n    redis:\n      host: localhost\n      port: 6379\n      timeout: 500ms\n\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,metrics\n\ncatalog:\n  ttl: 10m\n  ttl-jitter: 0.2\n  negative-ttl: 60s\n  lock-ttl: 5s\n  wait-max: 500ms\n  db-latency-ms: 50\n  seed-products: 1000",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "### The domain and the slow database"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\nimport java.math.BigDecimal;\npublic record Product(String id, String name, BigDecimal price, int stock) {\n}",
+          "title": "Product.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\nimport java.util.Collection;\nimport java.util.Optional;\npublic interface ProductRepository {\n    Optional<Product> findById(String id);\n    void save(Product product);\n    Collection<String> allIds();\n    /** How many times findById ran. Tests use this to count database loads. */\n    int loadCount();\n}",
+          "title": "ProductRepository.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.math.BigDecimal;\nimport java.util.Collection;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.concurrent.ConcurrentHashMap;\nimport java.util.concurrent.atomic.AtomicInteger;\nimport org.springframework.stereotype.Repository;\n\n@Repository\npublic class SlowProductRepository implements ProductRepository {\n\n    private final Map<String, Product> table = new ConcurrentHashMap<>();\n    private final AtomicInteger loads = new AtomicInteger();\n    private final long latencyMs;\n\n    public SlowProductRepository(CatalogProperties props) {\n        this.latencyMs = props.dbLatencyMs();\n        for (int i = 1; i <= props.seedProducts(); i++) {\n            String id = \"p-\" + i;\n            table.put(id, new Product(id, \"Product \" + i, BigDecimal.valueOf(i * 3L, 2), 100));\n        }\n    }\n\n    @Override\n    public Optional<Product> findById(String id) {\n        loads.incrementAndGet();\n        try {\n            Thread.sleep(latencyMs);\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n        return Optional.ofNullable(table.get(id));\n    }\n\n    @Override\n    public void save(Product product) {\n        table.put(product.id(), product);\n    }\n\n    @Override\n    public Collection<String> allIds() {\n        return table.keySet();\n    }\n\n    @Override\n    public int loadCount() {\n        return loads.get();\n    }\n}",
+          "title": "SlowProductRepository.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport org.springframework.boot.context.properties.ConfigurationProperties;\n\n@ConfigurationProperties(prefix = \"catalog\")\npublic record CatalogProperties(\n        Duration ttl,\n        double ttlJitter,\n        Duration negativeTtl,\n        Duration lockTtl,\n        Duration waitMax,\n        long dbLatencyMs,\n        int seedProducts) {\n}",
+          "title": "CatalogProperties.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### The Bloom filter and the lock\n\nBoth helpers are thin wrappers over commands run through Lua scripts. Going through `execute(RedisScript, ...)` gives us a typed result (`Long`) without touching low-level connection APIs. The Bloom filter commands (`BF.RESERVE`, `BF.ADD`, `BF.EXISTS`) are built into Redis 8."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.util.List;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class BloomFilter {\n\n    static final String KEY = \"bf:product:ids\";\n\n    // BF.RESERVE fails with \"item exists\" when the key exists, so ignore that error.\n    private static final DefaultRedisScript<Long> RESERVE = new DefaultRedisScript<>(\"\"\"\n            pcall(redis.call, 'BF.RESERVE', KEYS[1], ARGV[1], ARGV[2])\n            return 1\n            \"\"\", Long.class);\n\n    private static final DefaultRedisScript<Long> ADD = new DefaultRedisScript<>(\n            \"return redis.call('BF.ADD', KEYS[1], ARGV[1])\", Long.class);\n\n    private static final DefaultRedisScript<Long> EXISTS = new DefaultRedisScript<>(\n            \"return redis.call('BF.EXISTS', KEYS[1], ARGV[1])\", Long.class);\n\n    private final StringRedisTemplate redis;\n\n    public BloomFilter(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    /** Create the filter sized for 'capacity' ids at the given false-positive rate. */\n    public void reserve(double errorRate, long capacity) {\n        redis.execute(RESERVE, List.of(KEY), String.valueOf(errorRate), String.valueOf(capacity));\n    }\n\n    public void add(String id) {\n        redis.execute(ADD, List.of(KEY), id);\n    }\n\n    public boolean mightContain(String id) {\n        Long r = redis.execute(EXISTS, List.of(KEY), id);\n        return r != null && r == 1L;\n    }\n}",
+          "title": "BloomFilter.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "If the Bloom key does not exist (for example it was evicted, or you flushed the database), `BF.EXISTS` returns 0 for everything and your service would answer 404 for every product. The startup runner below rebuilds the filter, but in production you also want an alert on `EXISTS bf:product:ids` and a way to rebuild it without a restart. Either exclude the key from eviction by using a `volatile-*` policy (it has no TTL) or run the filter on a Redis that never evicts."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.UUID;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class SingleFlightLock {\n\n    // Delete the lock only if we still own it (compare token, then delete, atomically).\n    private static final DefaultRedisScript<Long> RELEASE = new DefaultRedisScript<>(\"\"\"\n            if redis.call('GET', KEYS[1]) == ARGV[1] then\n              return redis.call('DEL', KEYS[1])\n            end\n            return 0\n            \"\"\", Long.class);\n\n    private final StringRedisTemplate redis;\n    private final Duration ttl;\n\n    public SingleFlightLock(StringRedisTemplate redis, CatalogProperties props) {\n        this.redis = redis;\n        this.ttl = props.lockTtl();\n    }\n\n    /** Returns an owner token if we got the lock, otherwise null. */\n    public String tryAcquire(String productId) {\n        String token = UUID.randomUUID().toString();\n        Boolean ok = redis.opsForValue().setIfAbsent(key(productId), token, ttl);\n        return Boolean.TRUE.equals(ok) ? token : null;\n    }\n\n    public void release(String productId, String token) {\n        redis.execute(RELEASE, List.of(key(productId)), token);\n    }\n\n    private static String key(String productId) {\n        return \"lock:product:\" + productId;\n    }\n}",
+          "title": "SingleFlightLock.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `setIfAbsent(key, value, Duration)` sends a single `SET key value NX PX ms` command, so the lock and its expiry are set atomically. The lock has a TTL (5 seconds) so a crashed instance cannot block a key forever, and the release script checks the token so a slow request cannot delete a lock that has since passed to someone else. This is the single-key lock from the distributed locking chapter, deliberately kept simple: here a lost or expired lock only means one extra database read, not corrupted data.\n\n### The cache layer\n\n`ProductCache` knows how products are stored: as JSON text under `product:{id}`, with a short marker for \"this product does not exist\". It returns a three-state result, so the caller can tell \"not cached\" from \"cached as absent\"."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.Optional;\nimport java.util.concurrent.ThreadLocalRandom;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.stereotype.Component;\nimport tools.jackson.databind.json.JsonMapper;\n\n@Component\npublic class ProductCache {\n\n    static final String ABSENT = \"__absent__\";\n\n    public enum Status { MISS, HIT, NEGATIVE }\n\n    public record Lookup(Status status, Product product) {\n        static final Lookup MISS = new Lookup(Status.MISS, null);\n        static final Lookup NEGATIVE = new Lookup(Status.NEGATIVE, null);\n\n        public Optional<Product> asOptional() {\n            return Optional.ofNullable(product);\n        }\n    }\n\n    private final StringRedisTemplate redis;\n    private final JsonMapper json;\n    private final CatalogProperties props;\n    public ProductCache(StringRedisTemplate redis, JsonMapper json, CatalogProperties props) {\n        this.redis = redis;\n        this.json = json;\n        this.props = props;\n    }\n\n    public Lookup get(String id) {\n        String raw = redis.opsForValue().get(key(id));\n        if (raw == null) {\n            return Lookup.MISS;\n        }\n        if (ABSENT.equals(raw)) {\n            return Lookup.NEGATIVE;\n        }\n        return new Lookup(Status.HIT, json.readValue(raw, Product.class));\n    }\n\n    public void put(Product product) {\n        redis.opsForValue().set(key(product.id()), json.writeValueAsString(product),\n                withJitter(props.ttl(), props.ttlJitter()));\n    }\n\n    public void putAbsent(String id) {\n        redis.opsForValue().set(key(id), ABSENT, props.negativeTtl());\n    }\n\n    public void evict(String id) {\n        redis.delete(key(id));\n    }\n\n    static Duration withJitter(Duration base, double fraction) {\n        double factor = 1.0 + ThreadLocalRandom.current().nextDouble(-fraction, fraction);\n        return Duration.ofMillis(Math.round(base.toMillis() * factor));\n    }\n\n    static String key(String id) {\n        return \"product:\" + id;\n    }\n}",
+          "title": "ProductCache.java"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Jackson 3 lives in the `tools.jackson` packages, and its exceptions are unchecked, which is why `readValue` needs no `throws` clause. Spring Boot 4 auto-configures a `JsonMapper` bean, so we simply inject it. Java records are supported by Jackson without extra annotations."
+        },
+        {
+          "type": "markdown",
+          "text": "Jitter deserves a number. With a fixed 600-second TTL, 10,000 products loaded in the same minute would all expire in the same minute, and the database would see a wave of 10,000 loads. With plus or minus 20 percent the expiry times spread over a 240-second window (480 to 720 seconds), which flattens the wave to roughly 40 loads per second on average. The exact figures are illustrative; the idea is to turn a spike into a slope.\n\n### The service: putting the defences in order\n\nThe order of the checks matters: cheapest and most selective first."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport java.time.Duration;\nimport java.util.Optional;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class CatalogService {\n\n    private final ProductRepository repository;\n    private final ProductCache cache;\n    private final BloomFilter bloom;\n    private final SingleFlightLock lock;\n    private final CatalogMetrics metrics;\nprivate final Duration waitMax;\n\npublic CatalogService(ProductRepository repository, ProductCache cache, BloomFilter bloom,\n                      SingleFlightLock lock, CatalogMetrics metrics, CatalogProperties props) {\n    this.repository = repository;\n    this.cache = cache;\n    this.bloom = bloom;\n    this.lock = lock;\n    this.metrics = metrics;\n    this.waitMax = props.waitMax();\n}\n\npublic Optional<Product> find(String id) {\n    if (!bloom.mightContain(id)) {\n        metrics.result(\"bloom_reject\");\n        return Optional.empty();\n    }\n    ProductCache.Lookup first = cache.get(id);\n    if (first.status() != ProductCache.Status.MISS) {\n        metrics.result(first.status() == ProductCache.Status.HIT ? \"hit\" : \"negative\");\n        return first.asOptional();\n    }\n    metrics.result(\"miss\");\n    return loadOnce(id);\n}\n\nprivate Optional<Product> loadOnce(String id) {\n    String token = lock.tryAcquire(id);\n    if (token != null) {\n        try {\n            ProductCache.Lookup again = cache.get(id);   // someone may have filled it\n            if (again.status() != ProductCache.Status.MISS) {\n                return again.asOptional();\n            }\n            return loadFromDatabase(id);\n        } finally {\n            lock.release(id, token);\n        }\n    }\n    return waitForOwner(id);\n}\n\nprivate Optional<Product> waitForOwner(String id) {\n    long deadline = System.nanoTime() + waitMax.toNanos();\n    while (System.nanoTime() < deadline) {\n        try {\n            Thread.sleep(20);\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n            break;\n        }\n        ProductCache.Lookup l = cache.get(id);\n        if (l.status() != ProductCache.Status.MISS) {\n            return l.asOptional();\n        }\n    }\n    return loadFromDatabase(id);          // owner was too slow or died: do the work ourselves\n}\n\nprivate Optional<Product> loadFromDatabase(String id) {\n    Optional<Product> found = metrics.timeDbLoad(() -> repository.findById(id));\n    if (found.isPresent()) {\n        cache.put(found.get());\n    } else {\n        cache.putAbsent(id);\n    }\n    return found;\n}\n\npublic Product save(Product product) {\n    repository.save(product);\n    bloom.add(product.id());      // a new id must pass the filter\n        cache.evict(product.id());    // delete after the write; the next read repopulates\n        return product;\n    }\n}",
+          "title": "CatalogService.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport io.micrometer.core.instrument.MeterRegistry;\nimport io.micrometer.core.instrument.Timer;\nimport java.util.function.Supplier;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class CatalogMetrics {\n\n    private final MeterRegistry registry;\n    private final Timer dbTimer;\n\n    public CatalogMetrics(MeterRegistry registry) {\n        this.registry = registry;\n        this.dbTimer = Timer.builder(\"catalog.db.loads\").register(registry);\n    }\n\n    public void result(String kind) {\n        registry.counter(\"catalog.cache\", \"result\", kind).increment();\n    }\n\n    public <T> T timeDbLoad(Supplier<T> work) {\n        return dbTimer.record(work);\n    }\n}",
+          "title": "CatalogMetrics.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice in `CatalogService`:\n\n- **Bloom first.** One cheap `BF.EXISTS` round trip protects the cache and database from ids that were never valid.\n- **Double-check after winning the lock.** Between our cache miss and our lock acquisition another request may have finished loading. Without this second `get`, every request that queued behind the first would reload the same row one after another.\n- **Waiters poll, they do not block on the lock.** A waiter checks the cache every 20 ms for up to `wait-max`. If the owner is slow or dead, the waiter falls back to loading itself, so the lock can only make things faster, never wedge a request.\n- **Write path deletes, it does not update.** After `save` we delete the cached entry and let the next read repopulate it. This is simpler than writing the new value and avoids storing a value computed from stale data.\n- `Timer.record(Supplier)` counts every database load, and its `count` statistic is our proof of single-flight behaviour."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Delete-after-write still has a tiny race: a reader that loaded the old row just before the write can put the old value back just after your delete. The jittered TTL bounds the damage (the stale entry expires), and for most catalogues that is acceptable. If it is not, version the entries or use short TTLs for frequently edited products."
+        },
+        {
+          "type": "markdown",
+          "text": "### The HTTP layer and startup warm-up"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PutMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/api/products\")\npublic class ProductController {\n\n    private final CatalogService service;\n\n    public ProductController(CatalogService service) {\n        this.service = service;\n    }\n\n    @GetMapping(\"/{id}\")\n    public ResponseEntity<Product> get(@PathVariable String id) {\n        return service.find(id)\n                .map(ResponseEntity::ok)\n                .orElseGet(() -> ResponseEntity.notFound().build());\n    }\n\n    @PutMapping(\"/{id}\")\n    public Product put(@PathVariable String id, @RequestBody Product body) {\n        return service.save(new Product(id, body.name(), body.price(), body.stock()));\n    }\n}",
+          "title": "ProductController.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.boot.ApplicationRunner;\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\nimport org.springframework.boot.context.properties.EnableConfigurationProperties;\nimport org.springframework.context.annotation.Bean;\n\n@SpringBootApplication\n@EnableConfigurationProperties(CatalogProperties.class)\npublic class CatalogApplication {\n\n    public static void main(String[] args) {\n        SpringApplication.run(CatalogApplication.class, args);\n    }\n\n    /** Rebuilds the Bloom filter from the database every time the service starts. */\n    @Bean\n    ApplicationRunner warmBloomFilter(ProductRepository repository, BloomFilter bloom) {\n        return args -> {\n            bloom.reserve(0.01, 100_000);\n            repository.allIds().forEach(bloom::add);\n        };\n    }\n}",
+          "title": "CatalogApplication.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The filter is sized for 100,000 ids at a 1 percent false-positive rate. If more ids are added later, the filter auto-scales by creating sub-filters (the default unless `NONSCALING` is passed), at the cost of a somewhat higher combined error rate and more memory.\n\n### Verify with redis-cli\n\nStart Redis with `docker compose up -d`, start the service with `mvn spring-boot:run`, then:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s localhost:8080/api/products/p-42\n{\"id\":\"p-42\",\"name\":\"Product 42\",\"price\":1.26,\"stock\":100}\n$ curl -s -o /dev/null -w \"%{http_code}\\n\" localhost:8080/api/products/zzz-unknown\n404\n$ docker exec -it shopstream-redis redis-cli\n127.0.0.1:6379> GET product:p-42\n\"{\\\"id\\\":\\\"p-42\\\",\\\"name\\\":\\\"Product 42\\\",\\\"price\\\":1.26,\\\"stock\\\":100}\"\n127.0.0.1:6379> TTL product:p-42\n(integer) 541\n127.0.0.1:6379> BF.EXISTS bf:product:ids p-42\n(integer) 1\n127.0.0.1:6379> BF.EXISTS bf:product:ids zzz-unknown\n(integer) 0\n127.0.0.1:6379> EXISTS product:zzz-unknown\n(integer) 0",
+          "title": "Watch the cache fill and the negative cache work"
+        },
+        {
+          "type": "markdown",
+          "text": "The unknown id left no trace: the Bloom filter rejected it, so there is no `product:zzz-unknown` key and no database load. Now simulate a deleted product, which is in the filter but not in the table. Remove it from the repository (or use a false-positive id) and request it twice; the second request is answered from the marker:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> GET product:p-999999\n\"__absent__\"\n127.0.0.1:6379> TTL product:p-999999\n(integer) 57",
+          "title": "Negative marker"
+        },
+        {
+          "type": "markdown",
+          "text": "### Tests with Testcontainers\n\nThe test configuration declares the Redis container as a Spring bean. Spring Boot's `@ServiceConnection` then points `spring.data.redis.host` and `port` at the mapped container port automatically. Because `GenericContainer` does not reveal which service it runs, we give the hint with `name = \"redis\"`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport org.springframework.boot.test.context.TestConfiguration;\nimport org.springframework.boot.testcontainers.service.connection.ServiceConnection;\nimport org.springframework.context.annotation.Bean;\nimport org.testcontainers.containers.GenericContainer;\n\n@TestConfiguration(proxyBeanMethods = false)\npublic class RedisTestConfig {\n\n    @Bean\n    @ServiceConnection(name = \"redis\")\n    GenericContainer<?> redisContainer() {\n        return new GenericContainer<>(\"redis:8\").withExposedPorts(6379);\n    }\n}",
+          "title": "RedisTestConfig.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.catalog;\n\nimport static org.assertj.core.api.Assertions.assertThat;\n\nimport java.util.List;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.stream.IntStream;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.context.annotation.Import;\nimport org.springframework.data.redis.core.StringRedisTemplate;\n@SpringBootTest(properties = {\"catalog.seed-products=50\", \"catalog.db-latency-ms=100\"})\n@Import(RedisTestConfig.class)\nclass CatalogServiceIT {\n\n    @Autowired CatalogService service;\n    @Autowired ProductRepository repository;\n    @Autowired StringRedisTemplate redis;\n    @Autowired BloomFilter bloom;\n\n    @Test\n    void secondReadIsServedFromCache() {\n        int before = repository.loadCount();\n        assertThat(service.find(\"p-1\")).isPresent();\n        assertThat(service.find(\"p-1\")).isPresent();\n        assertThat(repository.loadCount() - before).isEqualTo(1);\n        Long ttl = redis.getExpire(\"product:p-1\");\n        assertThat(ttl).isBetween(470L, 730L);        // 600 s plus or minus 20 percent\n    }\n\n    @Test\n    void unknownIdNeverReachesTheDatabase() {\n        int before = repository.loadCount();\n        assertThat(service.find(\"does-not-exist-\" + System.nanoTime())).isEmpty();\n        assertThat(repository.loadCount()).isEqualTo(before);\n    }\n\n    @Test\n    void concurrentMissesCauseOneDatabaseLoad() {\n        redis.delete(\"product:p-7\");\n        int before = repository.loadCount();\n        ExecutorService pool = Executors.newFixedThreadPool(40);\n        try {\n            List<CompletableFuture<Boolean>> calls = IntStream.range(0, 40)\n                    .mapToObj(i -> CompletableFuture.supplyAsync(\n                            () -> service.find(\"p-7\").isPresent(), pool))\n                    .toList();\n            calls.forEach(c -> assertThat(c.join()).isTrue());\n        } finally {\n            pool.shutdown();\n        }\n        assertThat(repository.loadCount() - before).isEqualTo(1);\n    }\n\n    @Test\n    void removedProductIsRememberedAsAbsent() {\n        // An id that is in the Bloom filter but not in the table: add it to the filter only.\n        String ghost = \"ghost-\" + System.nanoTime();\n        bloom.add(ghost);\n        int before = repository.loadCount();\n        assertThat(service.find(ghost)).isEmpty();\n        assertThat(service.find(ghost)).isEmpty();\n        assertThat(repository.loadCount() - before).isEqualTo(1);\n        assertThat(redis.opsForValue().get(\"product:\" + ghost)).isEqualTo(\"__absent__\");\n    }\n}",
+          "title": "CatalogServiceIT.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The stampede test is only meaningful if the database call is slower than the time it takes the threads to start, which is why the test property sets `catalog.db-latency-ms=100`. If you set it to zero, the test passes even without the lock because the first load finishes before the others miss. A test that cannot fail is not a test; break `loadOnce` on purpose (skip the lock) and confirm the test goes red."
+        },
+        {
+          "type": "markdown",
+          "text": "### Demo: watch the database load counter\n\nWith the service running, fire 200 requests with 50 in parallel at a cold key, then read the counter:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec shopstream-redis redis-cli DEL product:p-500\n(integer) 1\n$ seq 1 200 | xargs -P 50 -I{} curl -s -o /dev/null localhost:8080/api/products/p-500\n$ curl -s localhost:8080/actuator/metrics/catalog.db.loads | grep -o '\"COUNT\",\"value\":[0-9.]*'\n\"COUNT\",\"value\":1.0\n$ curl -s \"localhost:8080/actuator/metrics/catalog.cache?tag=result:hit\" | grep -o '\"value\":[0-9.]*'\n\"value\":199.0",
+          "title": "Single-flight under load"
+        },
+        {
+          "type": "markdown",
+          "text": "The exact split between hits and misses varies from run to run (a few early requests may be counted as misses while they wait); the number to watch is the single database load. Repeat the experiment after commenting out the lock in `loadOnce` and the counter will jump to the number of requests that arrived in the first 50 ms."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you protect a database from a cache stampede, and from cache penetration? A stampede is many concurrent misses on one hot key (usually just after it expires); protect with single-flight loading (a short Redis lock or an in-process lock so one request reloads), TTL jitter so keys do not expire together, and optionally serving slightly stale data while one request refreshes. Penetration is repeated lookups for keys that do not exist; protect with negative caching (short-TTL marker), a Bloom filter of valid ids, and input validation."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n- **Stale-while-revalidate.** Store a soft expiry inside the JSON and keep the Redis TTL longer. Serve the stale value immediately and let one request refresh in the background.\n- **Two-level cache.** Add a small in-JVM Caffeine cache in front of Redis with a 5 second TTL, and compare latency. Then add client-side caching invalidation from the Redis chapter on tracking.\n- **Warm the hot set.** On start, preload the top 500 products from the leaderboard of most viewed items.\n- **Measure.** Add a `redis-benchmark` style load with 95 percent reads on 100 hot ids and chart p99 latency with and without jitter and single-flight.\n- **Survive eviction.** Move the Bloom filter to its own Redis instance with `noeviction`, or rebuild it when `BF.EXISTS` on a known id returns 0."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What this project proves:\n\n- Cache-aside needs more than get/set: jittered TTLs, negative caching and single-flight loading each close a specific failure.\n- A Bloom filter answers \"definitely not here\" for almost no memory and no database load.\n- A lock used to save work can be short and lossy; a lost lock costs a duplicate read, so wait with a bounded timeout and fall back.\n- Count database loads; that metric is the proof the cache does its job.\n- Test with a slow fake database and a real Redis; both are needed to see stampedes."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-3",
+      "type": "concept",
+      "title": "Project B: An API Rate Limiter Service",
+      "subtopicId": "10-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal and requirements\n\nShopStream's gateway must stop one noisy client from starving everyone else. Customers who pay get a larger allowance than anonymous visitors. You will build a rate limiter as a Spring MVC interceptor backed by one Lua script, so that the check-and-update is atomic no matter how many gateway instances run."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Requirement",
+            "What it means"
+          ],
+          "rows": [
+            [
+              "Algorithm",
+              "Token bucket: a bucket holds up to `capacity` tokens, refills at `refill` tokens per second, and each request spends `cost` tokens"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Requirement",
+            "What it means"
+          ],
+          "rows": [
+            [
+              "Atomic",
+              "Read, refill, spend and write happen in one Lua script; two instances can never both spend the last token"
+            ],
+            [
+              "Per-plan limits",
+              "Each API key maps to a plan (`anonymous`, `free`, `pro`) with its own capacity and refill rate"
+            ],
+            [
+              "Weighted routes",
+              "An expensive route such as search can cost several tokens"
+            ],
+            [
+              "Response contract",
+              "`429 Too Many Requests` with `Retry-After`, plus `X-RateLimit-Limit` and `X-RateLimit-Remaining` on every response"
+            ],
+            [
+              "Failure policy",
+              "If Redis is unreachable the limiter fails open (requests pass) and counts the event"
+            ],
+            [
+              "Clock",
+              "The script uses the Redis `TIME` command, so application servers with skewed clocks do not matter"
+            ]
+          ],
+          "caption": "Requirements."
+        },
+        {
+          "type": "markdown",
+          "text": "### Why a token bucket\n\nThe Patterns Part compared three algorithms. As a reminder of the trade-offs that led to this choice:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Algorithm",
+            "Strength",
+            "Weakness"
+          ],
+          "rows": [
+            [
+              "Fixed window counter",
+              "Trivial: `INCR` plus `EXPIRE`",
+              "A client can send 2× the limit across a window boundary"
+            ],
+            [
+              "Sliding window log",
+              "Exact",
+              "One sorted-set member per request; memory grows with the limit"
+            ],
+            [
+              "Token bucket",
+              "Allows controlled bursts, two numbers of state per client",
+              "Slightly harder to explain; needs the script below"
+            ]
+          ],
+          "caption": "Algorithms at a glance."
+        },
+        {
+          "type": "markdown",
+          "text": "The bucket is a hash with two fields: `tokens` (a number that may be fractional) and `ts` (the millisecond time of the last update). On each request the script computes how many tokens have accumulated since `ts`, caps the total at `capacity`, tries to spend `cost`, and writes the new state back. Idle clients cost nothing: the hash gets a TTL slightly longer than the time needed to refill a full bucket, after which a fresh client is indistinguishable from a forgotten one."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "capacity = 10, refill = 5 tokens/s, cost = 1\n\ntime    0.0s   0.2s   0.4s   ...  1.0s        2.0s\ntokens  10 ──► 9 ──► 8 ──► ... ► (burst of 10 sent, bucket empty)\n                                   0 ──► +5 per second ──► steady 5 req/s\n11th request at 0.0s → denied, Retry-After = ceil((1 - 0) / 5) = 1 s (rounded up)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Project layout"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "  rate-limiter/\n  ├── pom.xml                      (same dependencies as Project A)\n  ├── docker-compose.yml           (same Redis service as Project A)\n  └── src\n      ├── main\n      │   ├── java/com/shopstream/ratelimit\n      │   │   ├── RateLimiterApplication.java\n      │   │   ├── RateLimitProperties.java\n      │   │   ├── TokenBucketLimiter.java\n      │   │   ├── RateLimitInterceptor.java\n      │   │   ├── WebConfig.java\n      │   │   └── DemoController.java\n      │   └── resources\n      │       ├── application.yml\n      │       └── scripts/token_bucket.lua\n      └── test/java/com/shopstream/ratelimit\n          ├── RedisTestConfig.java\n          └── RateLimiterIT.java\n\nThepom.xmlneedsspring-boot-starter-webmvc,spring-boot-starter-data-redis,"
+        },
+        {
+          "type": "markdown",
+          "text": "`spring-boot-starter-actuator`, and for tests `spring-boot-starter-test` and `spring-boot-testcontainers`, exactly as in Project A. The `docker-compose.yml` can be reused unchanged; for a rate limiter you may prefer `--maxmemory-policy volatile-ttl`, because every bucket key has a TTL.\n\n### Configuration\n\nThe limits are data, not code, so they live in `application.yml` and bind to a record."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  application:\n    name: rate-limiter\n  data:\n    redis:\n      host: localhost\n      port: 6379\n      timeout: 200ms\n\nratelimit:\n  fail-open: true\n  plans:\n    anonymous: { capacity: 10,  refill-per-second: 2 }\n    free:      { capacity: 30,  refill-per-second: 10 }\n    pro:       { capacity: 200, refill-per-second: 100 }\n  keys:\n    demo-free: free\n    demo-pro: pro\n  route-costs:\n    \"/api/search\": 5\n\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,metrics",
+          "title": "application.yml"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The Redis `timeout: 200ms` is deliberate. A rate limiter is on the hot path of every request; if Redis stalls, you want the call to fail within a fraction of your request budget and trigger the fail-open policy, not hang for the default of one minute."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport java.util.Map;\nimport org.springframework.boot.context.properties.ConfigurationProperties;\n\n@ConfigurationProperties(prefix = \"ratelimit\")\npublic record RateLimitProperties(\n        boolean failOpen,\n        Map<String, Plan> plans,\n        Map<String, String> keys,\n        Map<String, Integer> routeCosts) {\n\n    public record Plan(int capacity, double refillPerSecond) {\n    }\n}",
+          "title": "RateLimitProperties.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### The Lua script\n\nThe whole algorithm is one script. Read it top to bottom; there is no branching you cannot follow."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = bucket key\n-- ARGV[1] = capacity (tokens)\n-- ARGV[2] = refill rate (tokens per second)\n-- ARGV[3] = cost of this request (tokens)\n-- Returns { allowed (1/0), remaining tokens (floored), retry-after ms, ms until full }\nlocal capacity = tonumber(ARGV[1])\nlocal refill   = tonumber(ARGV[2])\nlocal cost     = tonumber(ARGV[3])\n\nlocal t   = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)      -- milliseconds\n\nlocal data   = redis.call('HMGET', KEYS[1], 'tokens', 'ts')\nlocal tokens = tonumber(data[1])\nlocal ts     = tonumber(data[2])\nif tokens == nil then\n  tokens = capacity\n  ts = now\nend\n\nlocal elapsed = math.max(0, now - ts)\ntokens = math.min(capacity, tokens + elapsed * refill / 1000)\n\nlocal allowed = 0\nlocal retry = 0\nif tokens >= cost then\n  tokens = tokens - cost\n  allowed = 1\nelse\n  retry = math.ceil((cost - tokens) * 1000 / refill)\nend\n\nredis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)\nlocal fullMs = math.ceil((capacity - tokens) * 1000 / refill)\nredis.call('PEXPIRE', KEYS[1], math.ceil(capacity * 1000 / refill) + 1000)\n\nreturn { allowed, math.floor(tokens), retry, fullMs }",
+          "title": "scripts/token_bucket.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- `TIME` **instead of the client clock.** Every application server shares Redis's single clock, so skewed server clocks cannot give one instance extra tokens. Since Redis 5, scripts are replicated by their effects (the resulting writes), so calling `TIME` in a script is safe.\n- **State is written even when the request is denied.** Updating `ts` on a denial is correct because the refill has been accounted into `tokens`; skipping the write would make the next call recompute the same refill, which is also correct but wastes the TTL refresh.\n- **Floating point stays inside the script.** Lua numbers are doubles. A Lua number returned to the client is truncated to an integer, which is why we return `math.floor` values and let Java deal with whole numbers.\n- **One key, so no cluster problem.** Everything touches `KEYS[1]` only. In Redis Cluster that is required: a script may only touch keys that live in one slot, and it must declare them in `KEYS`.\n- **Self-cleaning.** The `PEXPIRE` is slightly longer than the time to refill from empty. When it fires, the client's state is gone and the next request starts with a full bucket, which is exactly what the maths would have given.\n\n### The limiter component"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport java.util.List;\nimport org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class TokenBucketLimiter {\n\n    public record Decision(boolean allowed, long remaining, long retryAfterMs, long fullInMs) {\n    }\n\n    private final StringRedisTemplate redis;\n    private final DefaultRedisScript<List> script = new DefaultRedisScript<>();\n\n    public TokenBucketLimiter(StringRedisTemplate redis) {\n        this.redis = redis;\n        script.setLocation(new ClassPathResource(\"scripts/token_bucket.lua\"));\n        script.setResultType(List.class);\n    }\n\n    public Decision tryAcquire(String identity, RateLimitProperties.Plan plan, int cost) {\n        @SuppressWarnings(\"unchecked\")\n        List<Long> r = (List<Long>) redis.execute(script, List.of(\"rl:\" + identity),\n                String.valueOf(plan.capacity()),\n                String.valueOf(plan.refillPerSecond()),\n                String.valueOf(cost));\n        return new Decision(r.get(0) == 1L, r.get(1), r.get(2), r.get(3));\n    }\n}",
+          "title": "TokenBucketLimiter.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`DefaultRedisScript` computes the script's SHA-1 once. Spring Data Redis sends `EVALSHA` and, if the server answers with `NOSCRIPT` (after a restart or `SCRIPT FLUSH`), transparently falls back to `EVAL` and the server caches the script again. You never manage the SHA yourself.\n\n### The interceptor\n\nA `HandlerInterceptor` runs before the controller and sees the request and response, which is exactly the right place for a limiter that must add headers. A servlet `Filter` would also work and runs earlier (before Spring MVC mapping), which matters if you want to protect static resources too."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport io.micrometer.core.instrument.MeterRegistry;\nimport jakarta.servlet.http.HttpServletRequest;\nimport jakarta.servlet.http.HttpServletResponse;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.dao.DataAccessException;\nimport org.springframework.stereotype.Component;\nimport org.springframework.web.servlet.HandlerInterceptor;\n\n@Component\npublic class RateLimitInterceptor implements HandlerInterceptor {\n\n    private static final Logger log = LoggerFactory.getLogger(RateLimitInterceptor.class);\n\n    private final TokenBucketLimiter limiter;\n    private final RateLimitProperties props;\n    private final MeterRegistry metrics;\n\n    public RateLimitInterceptor(TokenBucketLimiter limiter, RateLimitProperties props,\n                                MeterRegistry metrics) {\n        this.limiter = limiter;\n        this.props = props;\n        this.metrics = metrics;\n    }\n    @Override\n    public boolean preHandle(HttpServletRequest req, HttpServletResponse resp, Object handler)\n            throws Exception {\n        String apiKey = req.getHeader(\"X-API-Key\");\n        String identity;\n        String planName;\n        if (apiKey == null) {\n            identity = \"ip:\" + req.getRemoteAddr();\n            planName = \"anonymous\";\n        } else {\n            planName = props.keys().get(apiKey);\n            if (planName == null) {\n                resp.sendError(HttpServletResponse.SC_UNAUTHORIZED, \"Unknown API key\");\n                return false;\n            }\n            identity = \"key:\" + apiKey;\n        }\n        RateLimitProperties.Plan plan = props.plans().get(planName);\n        int cost = props.routeCosts().getOrDefault(req.getRequestURI(), 1);\n\n        TokenBucketLimiter.Decision d;\n        try {\n            d = limiter.tryAcquire(identity, plan, cost);\n        } catch (DataAccessException e) {\n            metrics.counter(\"ratelimit.errors\").increment();\n            log.warn(\"Rate limiter unavailable: {}\", e.toString());\n            if (props.failOpen()) {\n                return true;\n            }\n            resp.sendError(HttpServletResponse.SC_SERVICE_UNAVAILABLE, \"Rate limiter unavailable\");\n            return false;\n        }\n\n        resp.setHeader(\"X-RateLimit-Limit\", String.valueOf(plan.capacity()));\n        resp.setHeader(\"X-RateLimit-Remaining\", String.valueOf(d.remaining()));\n        if (d.allowed()) {\n            metrics.counter(\"ratelimit.requests\", \"plan\", planName, \"result\", \"allowed\")\n                    .increment();\n            return true;\n        }\n        long retryAfterSeconds = Math.max(1, (d.retryAfterMs() + 999) / 1000);\n        resp.setHeader(\"Retry-After\", String.valueOf(retryAfterSeconds));\n        resp.setStatus(429);\n        resp.setContentType(\"application/json\");\n        resp.getWriter().write(\n                \"{\\\"error\\\":\\\"rate_limited\\\",\\\"retryAfterMs\\\":\" + d.retryAfterMs() + \"}\");\n        metrics.counter(\"ratelimit.requests\", \"plan\", planName, \"result\", \"denied\")\n                .increment();\n        return false;\n    }\n}",
+          "title": "RateLimitInterceptor.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.web.servlet.config.annotation.InterceptorRegistry;\nimport org.springframework.web.servlet.config.annotation.WebMvcConfigurer;\n@Configuration\npublic class WebConfig implements WebMvcConfigurer {\n    private final RateLimitInterceptor interceptor;\n    public WebConfig(RateLimitInterceptor interceptor) {\n        this.interceptor = interceptor;\n    }\n    @Override\n    public void addInterceptors(InterceptorRegistry registry) {\n        registry.addInterceptor(interceptor).addPathPatterns(\"/api/**\");\n    }\n}",
+          "title": "WebConfig.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport java.util.Map;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/api\")\npublic class DemoController {\n\n    @GetMapping(\"/ping\")\n    public Map<String, String> ping() {\n        return Map.of(\"pong\", \"ok\");\n    }\n\n    @GetMapping(\"/search\")\n    public Map<String, String> search() {\n        return Map.of(\"results\", \"expensive\");\n    }\n}",
+          "title": "DemoController.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\nimport org.springframework.boot.context.properties.EnableConfigurationProperties;\n\n@SpringBootApplication\n@EnableConfigurationProperties(RateLimitProperties.class)\npublic class RateLimiterApplication {\n\n    public static void main(String[] args) {\n        SpringApplication.run(RateLimiterApplication.class, args);\n    }\n}",
+          "title": "RateLimiterApplication.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice in the interceptor:\n\n- **Identity before limiting.** An unknown API key is a `401`, not a free pass to the anonymous plan; otherwise attackers could rotate fake keys to get fresh buckets.\n- **Fail-open versus fail-closed is a business decision.** For a public catalogue, blocking all traffic because the limiter is down is worse than briefly having no limit. For a login or payment endpoint you may choose fail-closed. The code makes it one property.\n- **Headers on every response,** `Retry-After` **only on** `429`**.** Clients can pace themselves before they are blocked. `Retry-After` is rounded up to whole seconds, as the HTTP header requires.\n- **The route cost is looked up by exact URI.** For real routes with path variables, use the matched pattern from the request attribute instead; see the extensions."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`req.getRemoteAddr()` behind a load balancer or gateway is the balancer's address, so every anonymous user would share one bucket. Behind a trusted proxy, read `X-Forwarded-For` (or configure `server.forward-headers-strategy`), and never trust that header from the open internet, where clients can forge it."
+        },
+        {
+          "type": "markdown",
+          "text": "### Verify with redis-cli\n\nStart Redis and the service, then spend the anonymous bucket (capacity 10) quickly:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ for i in $(seq 1 12); do \\\n    curl -s -o /dev/null -w \"%{http_code} \" localhost:8080/api/ping; done; echo\n200 200 200 200 200 200 200 200 200 200 429 429\n$ curl -si localhost:8080/api/ping | head -8\nHTTP/1.1 429\nX-RateLimit-Limit: 10\nX-RateLimit-Remaining: 0\nRetry-After: 1\nContent-Type: application/json\n\n{\"error\":\"rate_limited\",\"retryAfterMs\":388}",
+          "title": "Burst, then denial"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> KEYS rl:*\n1) \"rl:ip:0:0:0:0:0:0:0:1\"\n127.0.0.1:6379> HGETALL rl:ip:0:0:0:0:0:0:0:1\n1) \"tokens\"\n2) \"0.4\"\n3) \"ts\"\n4) \"1760100000123\"\n127.0.0.1:6379> PTTL rl:ip:0:0:0:0:0:0:0:1\n(integer) 5601",
+          "title": "Inspect the bucket"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "`KEYS` is fine on an empty development instance and is the quickest way to look; on a busy server use `SCAN 0 MATCH` `rl:* COUNT 100` instead. The IPv6 loopback address in the key (`0:0:0:0:0:0:0:1`) is what you see when `curl` connects to `localhost` over IPv6; the exact values in your output will differ."
+        },
+        {
+          "type": "markdown",
+          "text": "Now try the paid plan and the weighted route:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -H \"X-API-Key: demo-pro\" -o /dev/null -D - localhost:8080/api/search | grep X-Rate\nX-RateLimit-Limit: 200\nX-RateLimit-Remaining: 195\n$ curl -s -o /dev/null -w \"%{http_code}\\n\" -H \"X-API-Key: wrong\" localhost:8080/api/ping\n401",
+          "title": "Plans and weights"
+        },
+        {
+          "type": "markdown",
+          "text": "The search call cost 5 tokens, so 200 became 195.\n\n### Tests\n\nWe reuse the same `RedisTestConfig` pattern as Project A (a `GenericContainer<>(\"redis:8\")` bean with `@ServiceConnection(name = \"redis\")`). The tests set tiny plans so they run in milliseconds. To call the running server we use the JDK `HttpClient` and the `local.server.port` property, which keeps the test independent of Spring Boot 4's reorganised web-test packages."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.ratelimit;\n\nimport static org.assertj.core.api.Assertions.assertThat;\n\nimport java.net.URI;\nimport java.net.http.HttpClient;\nimport java.net.http.HttpRequest;\nimport java.net.http.HttpResponse;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.atomic.AtomicInteger;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.beans.factory.annotation.Value;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.context.annotation.Import;\n\n@SpringBootTest(\n        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,\n        properties = {\n            \"ratelimit.plans.tiny.capacity=5\",\n            \"ratelimit.plans.tiny.refill-per-second=0.001\",\n            \"ratelimit.plans.quick.capacity=2\",\n            \"ratelimit.plans.quick.refill-per-second=20\",\n            \"ratelimit.keys.k-tiny=tiny\"\n        })\n@Import(RedisTestConfig.class)\nclass RateLimiterIT {\n\n    @Value(\"${local.server.port}\") int port;\n    @Autowired TokenBucketLimiter limiter;\n    @Autowired RateLimitProperties props;\n\n    @Test\n    void bucketAllowsCapacityThenDenies() {\n        var plan = props.plans().get(\"tiny\");\n        for (int i = 0; i < 5; i++) {\n            assertThat(limiter.tryAcquire(\"t:basic\", plan, 1).allowed()).isTrue();\n        }\n        var denied = limiter.tryAcquire(\"t:basic\", plan, 1);\n        assertThat(denied.allowed()).isFalse();\n        assertThat(denied.retryAfterMs()).isPositive();\n    }\n\n    @Test\n    void bucketRefillsOverTime() throws Exception {\n        var plan = props.plans().get(\"quick\");              // 20 tokens per second\n        limiter.tryAcquire(\"t:refill\", plan, 1);\n        limiter.tryAcquire(\"t:refill\", plan, 1);\n        assertThat(limiter.tryAcquire(\"t:refill\", plan, 1).allowed()).isFalse();\n        Thread.sleep(150);                                   // about 3 tokens, capped at 2\n        assertThat(limiter.tryAcquire(\"t:refill\", plan, 1).allowed()).isTrue();\n    }\n\n    @Test\n    void concurrentCallersNeverExceedCapacity() {\n        var plan = props.plans().get(\"tiny\");               // 5 tokens, practically no refill\n        AtomicInteger allowed = new AtomicInteger();\n        ExecutorService pool = Executors.newFixedThreadPool(32);\n        try {\n            List<CompletableFuture<Void>> calls = new ArrayList<>();\n            for (int i = 0; i < 200; i++) {\n                calls.add(CompletableFuture.runAsync(() -> {\n                    if (limiter.tryAcquire(\"t:race\", plan, 1).allowed()) {\n                        allowed.incrementAndGet();\n                    }\n                }, pool));\n            }\n            calls.forEach(CompletableFuture::join);\n        } finally {\n            pool.shutdown();\n        }\n        assertThat(allowed.get()).isEqualTo(5);\n    }\n\n    @Test\n    void httpContractIncludesHeadersAnd429() throws Exception {\n        HttpClient http = HttpClient.newHttpClient();\n        URI uri = URI.create(\"http://localhost:\" + port + \"/api/ping\");\n        HttpRequest req = HttpRequest.newBuilder(uri)\n                .header(\"X-API-Key\", \"k-tiny\").build();\n        HttpResponse<String> last = null;\n        for (int i = 0; i < 6; i++) {\n            last = http.send(req, HttpResponse.BodyHandlers.ofString());\n        }\n        assertThat(last.statusCode()).isEqualTo(429);\n        assertThat(last.headers().firstValue(\"Retry-After\")).isPresent();\n        assertThat(last.headers().firstValue(\"X-RateLimit-Remaining\")).hasValue(\"0\");\n    }\n}",
+          "title": "RateLimiterIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The third test is the important one. It fires 200 calls from 32 threads at a bucket of 5 tokens and asserts that exactly 5 were allowed. If you replace the Lua script with a Java read-modify-write (`HGET`, compute, `HSET`), this test will fail intermittently and show you the race that the script prevents.\n\n### Demo: two clients, one noisy\n\nRun two terminals. In the first, hammer the API as an anonymous client; in the second, use the pro key and watch it keep succeeding:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ seq 1 100 | xargs -P 10 -I{} curl -s -o /dev/null -w \"%{http_code}\\n\" localhost:8080/api/ping \\\n    | sort | uniq -c\n     11 200\n     89 429\n$ curl -s -o /dev/null -w \"%{http_code}\\n\" -H \"X-API-Key: demo-pro\" localhost:8080/api/ping\n200\n$ curl -s \"localhost:8080/actuator/metrics/ratelimit.requests?tag=result:denied\" \\\n    | grep -o '\"value\":[0-9.]*'\n\"value\":89.0",
+          "title": "Isolation between clients"
+        },
+        {
+          "type": "markdown",
+          "text": "The anonymous count is 11 rather than 10 because a fraction of a token refills while the 100 requests are being sent. Your exact numbers will vary slightly."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why implement a rate limiter in a Lua script instead of Java code with GET and SET? Read-modify-write across the network is a race: two app servers read the same token count and both spend the last token. Redis runs a script as one atomic unit on its single command thread, so no other command interleaves between the read and the write. The alternative is optimistic locking with `WATCH`/`MULTI` and retries, which is slower under contention. A script also saves round trips: one instead of two or three."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Production limiters usually sit in the API gateway or a sidecar, not inside every service, and often combine a coarse per-IP limit at the edge with finer per-key limits behind it. The Redis part is almost always some variant of this script. The cost to watch is one Redis round trip (typically well under a millisecond on a local network) added to every request; keep Redis in the same zone as the gateway."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n- **Per-route buckets.** Use the matched pattern (`HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE`) in the key, giving `rl:{identity}:{route}`, so a busy route cannot exhaust a quiet one.\n- **Local fallback.** When Redis is down, fall back to a small in-process Guava or Caffeine-based limiter rather than no limit at all.\n- **Sliding window variant.** Implement the sorted-set sliding window log as a second script and compare memory with `MEMORY USAGE` for 1,000 clients.\n- **Dynamic plans.** Store plans in a Redis hash (`plan:{name}`) so an operator can change limits without a deploy.\n- **Cluster test.** Run the tests against a three-node Redis Cluster and confirm all keys of one identity still live in one slot (they do, since each script touches one key)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What this project proves:\n\n- A token bucket needs two numbers of state per client and one atomic script; Lua gives you atomicity without locks.\n- Use the Redis `TIME` command for time arithmetic inside the script; do not trust application clocks.\n- Decide the failure policy (fail open or closed) explicitly and give Redis a short client timeout.\n- Give clients the information to behave: `Retry-After` and remaining-count headers.\n- Prove atomicity with a concurrency test that would fail for a non-atomic implementation."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-4",
+      "type": "concept",
+      "title": "Project C: A Flash-Sale Service That Never Oversells",
+      "subtopicId": "10-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal and requirements\n\nAt 12:00 sharp ShopStream drops 100 limited sneakers at half price, and 20,000 people click at once. Three things must hold, even with several service instances and a worker that may crash mid-job:\n\n1. **Never oversell.** Exactly 100 units can be reserved, no matter how many requests race.\n2. **Holds expire.** A shopper who reserves a pair has two minutes to pay; if they do not, the pair goes back on sale.\n3. **Orders are processed exactly once in effect.** Confirmed reservations become order events on a Redis stream, consumed by a worker in a consumer group that survives crashes and redelivery."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Requirement",
+            "Design choice"
+          ],
+          "rows": [
+            [
+              "Atomic stock check and decrement",
+              "One Lua script (`reserve.lua`) decides: sold out, already bought, or reserved"
+            ],
+            [
+              "One unit per shopper",
+              "A set `buyers:{sku}` checked and updated in the same script"
+            ],
+            [
+              "Reservation with deadline",
+              "Sorted set `resvexp:{sku}` scored by deadline in milliseconds, plus a hash with the details"
+            ],
+            [
+              "Expiry that returns stock",
+              "A scheduled reaper finds due reservations; `release.lua` claims each one atomically and restores stock"
+            ],
+            [
+              "Confirm exactly once",
+              "`confirm.lua` claims the reservation with `ZREM`; whoever removes it wins, a retry gets \"already confirmed\""
+            ],
+            [
+              "Idempotent API",
+              "`Idempotency-Key` header: replaying a request returns the first answer and does not spend stock twice"
+            ],
+            [
+              "Order pipeline",
+              "`confirm.lua` appends to `stream:orders`; a worker reads it as a member of group `fulfilment`, then `XACK`s"
+            ]
+          ],
+          "caption": "Requirements."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "In key names below, `{sku}` and `{id}` are placeholders, not Redis Cluster hash tags. This project is written for a single Redis (or primary with replicas), where scripts may touch any keys. To run it on Redis Cluster you would put a hash tag around the SKU in every key a script touches (for example `stock:{sku}`, literally with braces) so they share a slot, and send `XADD` from Java instead of from the script. The Scaling Part explains why."
+        },
+        {
+          "type": "markdown",
+          "text": "### Why a script, not WATCH or a lock\n\nThere are three ways to decrement stock safely. A plain `DECR` and a check afterwards oversells briefly (the counter goes negative, and other requests see it). `WATCH` with `MULTI`/`EXEC` is correct but retries under contention, and a flash sale is pure contention: with 1,000 competing clients most `EXEC` calls fail and retry. A distributed lock works but serialises requests through an extra round trip each. A Lua script runs as one atomic step on Redis's single command thread: no retries, no lock, one round trip. A single Redis instance can run a very large number of such tiny scripts per second; in practice the network and the web tier usually saturate first, but measure your own setup with `redis-benchmark` or a load test.\n\n### Architecture"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "clients ──► SaleController ──► ReservationService ──────────► Redis\n                                  │  reserve.lua   stock:{sku}        (string, integer)\n                                  │                buyers:{sku}       (set of user ids)\n                                  │                resvexp:{sku}      (zset id → deadline ms)\n                                  │                resv:{sku}:{id}    (hash user, qty, status)\n                                  │                idem:{sku}:{key}   (string → reservation id)\n                                  │  confirm.lua ──► stream:orders ─────────────────┐\n                                  │                                                 ▼\nExpiryReaper (1 s) ── release.lua              OrderWorker (group \"fulfilment\")\n  (returns stock)                                └► OrderStore (idempotent put) + XACK"
+        },
+        {
+          "type": "markdown",
+          "text": "The reservation lifecycle is a tiny state machine. The sorted set is the arbiter: a reservation is \"live\" exactly while its id is in `resvexp:{sku}`. Both `confirm.lua` and `release.lua` try to `ZREM` the id first; Redis runs scripts one at a time, so exactly one of them succeeds. That removes the classic race between \"shopper pays at 1:59\" and \"reaper expires at 2:00\"."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "         reserve.lua                   confirm.lua (ZREM wins)\n(none) ───────────────► RESERVED ───────────────────────────► PAID ──► stream:orders\n                           │\n                           │ release.lua (ZREM wins, deadline passed)\n                           ▼\n                        EXPIRED   (stock returned, shopper may try again)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Project layout"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "flash-sale/\n├── pom.xml                          (same dependencies as Project A, web + data-redis + test)\n├── docker-compose.yml               (same Redis service)\n└── src\n    ├── main\n    │   ├── java/com/shopstream/flashsale\n    │   │   ├── FlashSaleApplication.java\n    │   │   ├── SaleProperties.java\n    │   │   ├── ReservationService.java\n    │   │   ├── ExpiryReaper.java\n    │   │   ├── OrderWorker.java\n    │   │   ├── OrderStore.java\n    │   │   └── SaleController.java\n    │   └── resources\n    │       ├── application.yml\n    │       └── scripts/{reserve,confirm,release}.lua\n    └── test/java/com/shopstream/flashsale\n        ├── RedisTestConfig.java\n        └── FlashSaleIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For this project use `appendonly yes` in `docker-compose.yml` (`command: [\"redis-server\", \"--appendonly\", \"yes\"]`): reservations and stock are state you do not want to lose on a restart. Remember that even with the AOF on `everysec` you can lose about a second of writes in a crash, so for money-adjacent state the order of record should still be your database, fed from the stream."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  application:\n    name: flash-sale\n  data:\n    redis:\n      host: localhost\n      port: 6379\n\nsale:\n  hold: 2m\n  stream: stream:orders\n  group: fulfilment",
+          "title": "application.yml"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport java.time.Duration;\nimport org.springframework.boot.context.properties.ConfigurationProperties;\n\n@ConfigurationProperties(prefix = \"sale\")\npublic record SaleProperties(Duration hold, String stream, String group) {\n}",
+          "title": "SaleProperties.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### The three Lua scripts\n\n`reserve.lua` is the heart of the project. Read it as a decision list: first match wins."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS: 1 stock, 2 buyers, 3 expiry zset, 4 reservation hash, 5 idempotency key\n-- ARGV: 1 reservation id, 2 user id, 3 quantity, 4 hold time in ms\n-- Returns { code, reservationId }\n--   1 reserved | 3 duplicate request (replayed) | -1 already bought | -2 sold out | -3 no such sale\nlocal previous = redis.call('GET', KEYS[5])\nif previous then\n  return { 3, previous }\nend\n\nlocal stock = redis.call('GET', KEYS[1])\nif not stock then\n  return { -3, '' }\nend\nif redis.call('SISMEMBER', KEYS[2], ARGV[2]) == 1 then\n  return { -1, '' }\nend\nlocal qty = tonumber(ARGV[3])\nif tonumber(stock) < qty then\n  return { -2, '' }\nend\n\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\n\nredis.call('DECRBY', KEYS[1], qty)\nredis.call('SADD', KEYS[2], ARGV[2])\nredis.call('ZADD', KEYS[3], now + tonumber(ARGV[4]), ARGV[1])\nredis.call('HSET', KEYS[4], 'user', ARGV[2], 'qty', ARGV[3], 'status', 'RESERVED')\nredis.call('EXPIRE', KEYS[4], 86400)\nredis.call('SET', KEYS[5], ARGV[1], 'EX', 86400)\nreturn { 1, ARGV[1] }",
+          "title": "scripts/reserve.lua"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS: 1 expiry zset, 2 reservation hash, 3 orders stream\n-- ARGV: 1 reservation id, 2 sku\n-- Returns 1 confirmed | 2 already confirmed | 0 expired or unknown\nlocal deadline = redis.call('ZSCORE', KEYS[1], ARGV[1])\nif not deadline then\n  if redis.call('HGET', KEYS[2], 'status') == 'PAID' then\n    return 2\n  end\n  return 0\nend\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\nif tonumber(deadline) < now then\n  return 0                      -- too late; the reaper will give the stock back\nend\n\nredis.call('ZREM', KEYS[1], ARGV[1])\nlocal f = redis.call('HMGET', KEYS[2], 'user', 'qty')\nredis.call('HSET', KEYS[2], 'status', 'PAID')\nredis.call('XADD', KEYS[3], '*', 'orderId', ARGV[1], 'sku', ARGV[2], 'user', f[1], 'qty', f[2])\nreturn 1",
+          "title": "scripts/confirm.lua"
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS: 1 stock, 2 buyers, 3 expiry zset, 4 reservation hash\n-- ARGV: 1 reservation id\n-- Returns 1 if this call returned the stock, 0 if it was not due or someone else won\nlocal deadline = redis.call('ZSCORE', KEYS[3], ARGV[1])\nif not deadline then\n  return 0\nend\nlocal t = redis.call('TIME')\nlocal now = t[1] * 1000 + math.floor(t[2] / 1000)\nif tonumber(deadline) > now then\n  return 0\nend\n\nredis.call('ZREM', KEYS[3], ARGV[1])\nlocal f = redis.call('HMGET', KEYS[4], 'user', 'qty')\nredis.call('INCRBY', KEYS[1], f[2])\nredis.call('SREM', KEYS[2], f[1])\nredis.call('HSET', KEYS[4], 'status', 'EXPIRED')\nreturn 1",
+          "title": "scripts/release.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **Everything in** `reserve.lua` **is decided before anything is written.** All checks run first, then the five writes; there is no early return after a partial write, so the script never leaves half-applied state. (Redis scripts are atomic in the sense that nothing else runs in between, but they are not rolled back if a later command errors, so design them check-then-write.)\n- `confirm.lua` **re-checks the deadline.** Between the reaper's runs, an overdue reservation still sits in the sorted set. Checking the time inside the script means a payment at second 121 is refused even if the reaper has not noticed yet.\n- **Idempotency is part of the same script.** The first thing `reserve.lua` does is look up the replay key. Doing that in Java before the script would leave a window where two identical requests both pass the check.\n- **Quantities are strings in the hash.** `HMGET` returns strings; `INCRBY` accepts a numeric string. Redis would reject a value that is not an integer, which would abort the script, so validate `qty` in Java first.\n- **Long-running scripts block everything.** These run in microseconds. Never put a loop over thousands of reservations into one script; the reaper processes ids one script call at a time for this reason.\n\n### The reservation service"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.Set;\nimport java.util.UUID;\nimport org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class ReservationService {\n\n    public enum Outcome { RESERVED, DUPLICATE_REQUEST, ALREADY_BOUGHT, SOLD_OUT, NO_SUCH_SALE }\n\n    public enum ConfirmOutcome { CONFIRMED, ALREADY_CONFIRMED, EXPIRED }\n\n    public record Reservation(Outcome outcome, String reservationId) {\n    }\n\n    private final StringRedisTemplate redis;\n    private final SaleProperties props;\n    private final DefaultRedisScript<List> reserve = script(\"reserve\");\n    private final DefaultRedisScript<Long> confirm = longScript(\"confirm\");\n    private final DefaultRedisScript<Long> release = longScript(\"release\");\n\n    public ReservationService(StringRedisTemplate redis, SaleProperties props) {\n        this.redis = redis;\n        this.props = props;\n    }\n\n    private static DefaultRedisScript<List> script(String name) {\n        var s = new DefaultRedisScript<List>();\n        s.setLocation(new ClassPathResource(\"scripts/\" + name + \".lua\"));\n        s.setResultType(List.class);\n        return s;\n    }\n\n    private static DefaultRedisScript<Long> longScript(String name) {\n        var s = new DefaultRedisScript<Long>();\n        s.setLocation(new ClassPathResource(\"scripts/\" + name + \".lua\"));\n        s.setResultType(Long.class);\n        return s;\n    }\n\n    /** (Re)opens a sale with the given stock. Resets buyers and pending holds. */\n    public void openSale(String sku, int units) {\n        redis.delete(List.of(\"buyers:\" + sku, \"resvexp:\" + sku));\n        redis.opsForValue().set(\"stock:\" + sku, String.valueOf(units));\n        redis.opsForSet().add(\"sales:active\", sku);\n    }\n\n    public long stock(String sku) {\n        String v = redis.opsForValue().get(\"stock:\" + sku);\n        return v == null ? 0 : Long.parseLong(v);\n    }\n\n    public Set<String> activeSales() {\n        Set<String> s = redis.opsForSet().members(\"sales:active\");\n        return s == null ? Set.of() : s;\n    }\n\n    public Reservation reserve(String sku, String userId, int qty, String idempotencyKey) {\n        String id = UUID.randomUUID().toString();\n        String idem = idempotencyKey != null ? idempotencyKey : id;\n        @SuppressWarnings(\"unchecked\")\n        List<Object> r = (List<Object>) redis.execute(reserve,\n                List.of(\"stock:\" + sku, \"buyers:\" + sku, \"resvexp:\" + sku,\n                        \"resv:\" + sku + \":\" + id, \"idem:\" + sku + \":\" + idem),\n                id, userId, String.valueOf(qty), String.valueOf(props.hold().toMillis()));\n        long code = (Long) r.get(0);\n        String reservationId = (String) r.get(1);\n        Outcome outcome = switch ((int) code) {\n            case 1 -> Outcome.RESERVED;\n            case 3 -> Outcome.DUPLICATE_REQUEST;\n            case -1 -> Outcome.ALREADY_BOUGHT;\n            case -2 -> Outcome.SOLD_OUT;\n            default -> Outcome.NO_SUCH_SALE;\n        };\n        return new Reservation(outcome, reservationId);\n    }\n\n    public ConfirmOutcome confirm(String sku, String reservationId) {\n        Long r = redis.execute(confirm,\n                List.of(\"resvexp:\" + sku, \"resv:\" + sku + \":\" + reservationId, props.stream()),\n                reservationId, sku);\n        return r == null || r == 0 ? ConfirmOutcome.EXPIRED\n                : r == 1 ? ConfirmOutcome.CONFIRMED : ConfirmOutcome.ALREADY_CONFIRMED;\n    }\n\n    /** Called by the reaper. Returns how many reservations had their stock returned. */\n    public int releaseExpired(String sku) {\n        long horizon = System.currentTimeMillis() + 1000;      // script re-checks with Redis TIME\n        Set<String> due = redis.opsForZSet().rangeByScore(\"resvexp:\" + sku, 0, horizon, 0, 100);\n        int released = 0;\n        if (due == null) {\n            return 0;\n        }\n        for (String id : due) {\n            Long r = redis.execute(release,\n                    List.of(\"stock:\" + sku, \"buyers:\" + sku, \"resvexp:\" + sku,\n                            \"resv:\" + sku + \":\" + id), id);\n            if (r != null && r == 1L) {\n                released++;\n            }\n        }\n        return released;\n    }\n}",
+          "title": "ReservationService.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport org.springframework.scheduling.annotation.Scheduled;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class ExpiryReaper {\n\n    private final ReservationService reservations;\n\n    public ExpiryReaper(ReservationService reservations) {\n        this.reservations = reservations;\n    }\n\n    @Scheduled(fixedDelay = 1000)\n    public void run() {\n        for (String sku : reservations.activeSales()) {\n            reservations.releaseExpired(sku);\n        }\n    }\n}",
+          "title": "ExpiryReaper.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the reaper is safe to run on every instance at once. If two instances pick the same expired reservation, `release.lua` lets only one succeed (`ZREM` wins). That is the same trick as the lock-free claims in the job-queue pattern, and it means you do not need leader election. The `horizon` is slightly ahead of local time only to fetch candidates; the script is the authority on whether the deadline has passed.\n\n### The controller"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport java.util.Map;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestHeader;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/api/sales/{sku}\")\npublic class SaleController {\n\n    public record ReserveRequest(String userId, int qty) {\n    }\n\n    private final ReservationService service;\n\n    public SaleController(ReservationService service) {\n        this.service = service;\n    }\n\n    @PostMapping\n    public Map<String, Object> open(@PathVariable String sku, @RequestParam int stock) {\n        service.openSale(sku, stock);\n        return Map.of(\"sku\", sku, \"stock\", stock);\n    }\n\n    @GetMapping\n    public Map<String, Object> state(@PathVariable String sku) {\n        return Map.of(\"sku\", sku, \"stock\", service.stock(sku));\n    }\n\n    @PostMapping(\"/reservations\")\n    public ResponseEntity<Map<String, Object>> reserve(\n            @PathVariable String sku, @RequestBody ReserveRequest body,\n            @RequestHeader(value = \"Idempotency-Key\", required = false) String key) {\n        if (body.userId() == null || body.qty() < 1 || body.qty() > 2) {\n            return ResponseEntity.badRequest().body(Map.of(\"error\", \"invalid_request\"));\n        }\n        var r = service.reserve(sku, body.userId(), body.qty(), key);\n        return switch (r.outcome()) {\n            case RESERVED -> ResponseEntity.status(201)\n                    .body(Map.of(\"reservationId\", r.reservationId()));\n            case DUPLICATE_REQUEST -> ResponseEntity.ok(Map.of(\"reservationId\", r.reservationId()));\n            case ALREADY_BOUGHT -> ResponseEntity.status(409)\n                    .body(Map.of(\"error\", \"already_bought\"));\n            case SOLD_OUT -> ResponseEntity.status(409).body(Map.of(\"error\", \"sold_out\"));\n            case NO_SUCH_SALE -> ResponseEntity.status(404).body(Map.of(\"error\", \"no_such_sale\"));\n        };\n    }\n\n    @PostMapping(\"/reservations/{id}/confirm\")\n    public ResponseEntity<Map<String, Object>> confirm(@PathVariable String sku,\n                                                       @PathVariable String id) {\n        return switch (service.confirm(sku, id)) {\n            case CONFIRMED, ALREADY_CONFIRMED -> ResponseEntity.ok(Map.of(\"status\", \"PAID\"));\n            case EXPIRED -> ResponseEntity.status(410).body(Map.of(\"error\", \"reservation_expired\"));\n        };\n    }\n}",
+          "title": "SaleController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Why `409 Conflict` for sold out and `410 Gone` for an expired hold? They are conventions, not rules. The point is that a client can tell \"you lost the race\" (stop, show the sold-out page) from \"your hold lapsed\" (offer to try again) without parsing messages.\n\n### The order pipeline: stream and consumer group\n\n`confirm.lua` appends one entry per paid reservation to `stream:orders`. The worker is a member of consumer group `fulfilment`. A stream gives you what a plain list cannot: entries stay after delivery, each consumer has a list of delivered-but-unacknowledged entries (the pending entries list, PEL), and a crashed worker's work can be picked up again."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport java.util.Map;\nimport java.util.concurrent.ConcurrentHashMap;\nimport org.springframework.stereotype.Component;\n\n/** Stands in for the orders table. putIfAbsent makes processing idempotent. */\n@Component\npublic class OrderStore {\n\n    public record Order(String orderId, String sku, String userId, int qty) {\n    }\n\n    private final Map<String, Order> orders = new ConcurrentHashMap<>();\n\n    public boolean save(Order order) {\n        return orders.putIfAbsent(order.orderId(), order) == null;\n    }\n\n    public int count() {\n        return orders.size();\n    }\n}",
+          "title": "OrderStore.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport jakarta.annotation.PostConstruct;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.UUID;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.data.redis.RedisSystemException;\nimport org.springframework.data.redis.connection.stream.Consumer;\nimport org.springframework.data.redis.connection.stream.MapRecord;\nimport org.springframework.data.redis.connection.stream.ReadOffset;\nimport org.springframework.data.redis.connection.stream.StreamOffset;\nimport org.springframework.data.redis.connection.stream.StreamReadOptions;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.scheduling.annotation.Scheduled;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderWorker {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderWorker.class);\n\n    private final StringRedisTemplate redis;\n    private final SaleProperties props;\n    private final OrderStore store;\n    private final Consumer consumer;\n\n    public OrderWorker(StringRedisTemplate redis, SaleProperties props, OrderStore store) {\n        this.redis = redis;\n        this.props = props;\n        this.store = store;\n        this.consumer = Consumer.from(props.group(), \"worker-\" + UUID.randomUUID());\n    }\n\n    @PostConstruct\n    void createGroup() {\n        try {\n            redis.opsForStream().createGroup(props.stream(), ReadOffset.from(\"0\"), props.group());\n        } catch (RedisSystemException e) {\n            String msg = String.valueOf(e.getMessage()) + e.getCause();\n            if (!msg.contains(\"BUSYGROUP\")) {\n                throw e;           // any error other than \"group already exists\" is real\n            }\n        }\n    }\n\n    @Scheduled(fixedDelay = 200)\n    public void poll() {\n        // 1. entries delivered to this consumer earlier but never acknowledged (offset \"0\")\n        handle(read(ReadOffset.from(\"0\")));\n        // 2. new entries nobody has received yet (\">\")\n        handle(read(ReadOffset.lastConsumed()));\n    }\n\n    private List<MapRecord<String, Object, Object>> read(ReadOffset offset) {\n        var options = StreamReadOptions.empty().count(50);\n        return redis.opsForStream().read(consumer, options,\n                StreamOffset.create(props.stream(), offset));\n    }\n\n    private void handle(List<MapRecord<String, Object, Object>> records) {\n        if (records == null) {\n            return;\n        }\n        for (var rec : records) {\n            Map<Object, Object> f = rec.getValue();\n            var order = new OrderStore.Order((String) f.get(\"orderId\"), (String) f.get(\"sku\"),\n                    (String) f.get(\"user\"), Integer.parseInt((String) f.get(\"qty\")));\n            if (!store.save(order)) {\n                log.info(\"Order {} was already processed; acknowledging again\", order.orderId());\n            }\n            redis.opsForStream().acknowledge(props.stream(), props.group(), rec.getId());\n        }\n    }\n}",
+          "title": "OrderWorker.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice in the worker:\n\n- **Pending first, then new.** Reading offset `0` returns this consumer's own unacknowledged entries; reading `>` returns entries never delivered to anyone. If the process dies between saving an order and `XACK`, the entry is delivered again on restart. Because the consumer name is random in this demo, a restarted worker is a new consumer and would not see the old PEL; in production use a stable name (the pod name) or run `XAUTOCLAIM` to adopt entries idle for too long. See the extensions.\n- **Processing is idempotent.** `putIfAbsent` on the order id means a redelivered entry cannot create a second order. Streams give you at-least-once delivery; idempotent handlers turn that into exactly-once effect.\n- **Acknowledge only after the work.** `XACK` follows the save. Reversing the order would lose the order on a crash between the two.\n- `createGroup` **creates the stream if needed.** Spring Data Redis issues `XGROUP CREATE` with `MKSTREAM`, so starting the worker before any sale works. A restart finds the group already present and the server answers `BUSYGROUP`, which we tolerate."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A consumer group that nobody reads is not free: unacknowledged entries stay in the PEL and the stream itself keeps growing. Trim the stream (`XTRIM`, or `XADD ... MAXLEN ~`) once you are sure every group has acknowledged. Since Redis 8.2 you can also use `XACKDEL` and the `ACKED` option to delete entries only once all groups have acknowledged them; check the command pages for exact syntax before relying on it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\n\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\nimport org.springframework.boot.context.properties.EnableConfigurationProperties;\nimport org.springframework.scheduling.annotation.EnableScheduling;\n\n@SpringBootApplication\n@EnableScheduling\n@EnableConfigurationProperties(SaleProperties.class)\npublic class FlashSaleApplication {\n\n    public static void main(String[] args) {\n        SpringApplication.run(FlashSaleApplication.class, args);\n    }\n}",
+          "title": "FlashSaleApplication.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Verify with redis-cli\n\nOpen a sale of three units, reserve and confirm one, and look at the state:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X POST \"localhost:8080/api/sales/sneaker-1?stock=3\"\n{\"sku\":\"sneaker-1\",\"stock\":3}\n$ curl -s -X POST localhost:8080/api/sales/sneaker-1/reservations \\\n    -H 'Content-Type: application/json' -d '{\"userId\":\"u1\",\"qty\":1}'\n{\"reservationId\":\"c0a8f1de-5d3c-4b6e-9a53-7a4e2c1b9f10\"}\n127.0.0.1:6379> GET stock:sneaker-1\n\"2\"\n127.0.0.1:6379> SMEMBERS buyers:sneaker-1\n1) \"u1\"\n127.0.0.1:6379> ZRANGE resvexp:sneaker-1 0 -1 WITHSCORES\n1) \"c0a8f1de-5d3c-4b6e-9a53-7a4e2c1b9f10\"\n2) \"1760100120123\"\n127.0.0.1:6379> HGETALL resv:sneaker-1:c0a8f1de-5d3c-4b6e-9a53-7a4e2c1b9f10\n1) \"user\"\n2) \"u1\"\n3) \"qty\"\n4) \"1\"\n5) \"status\"\n6) \"RESERVED\"",
+          "title": "Walk one reservation through Redis"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X POST \\\n    localhost:8080/api/sales/sneaker-1/reservations/c0a8f1de-5d3c-4b6e-9a53-7a4e2c1b9f10/confirm\n{\"status\":\"PAID\"}\n127.0.0.1:6379> XLEN stream:orders\n(integer) 1\n127.0.0.1:6379> XINFO GROUPS stream:orders\n1) 1) \"name\"\n   2) \"fulfilment\"\n   3) \"consumers\"\n   4) (integer) 1\n   5) \"pending\"\n   6) (integer) 0\n   7) \"last-delivered-id\"\n   8) \"1760100005432-0\"\n   9) \"entries-read\"\n  10) (integer) 1\n  11) \"lag\"\n  12) (integer) 0\n127.0.0.1:6379> ZCARD resvexp:sneaker-1\n(integer) 0",
+          "title": "After the shopper pays"
+        },
+        {
+          "type": "markdown",
+          "text": "`pending 0` and `lag 0` mean the worker has read and acknowledged everything. If the worker is stopped, new confirmations raise `lag`; if it reads but fails before `XACK`, they raise `pending`. Those two numbers are the first things to monitor on a stream pipeline.\n\n### Tests: the oversell test\n\nThe test that matters is brutal and short: 500 distinct shoppers race for 100 units from 64 threads."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.flashsale;\nimport static org.assertj.core.api.Assertions.assertThat;\nimport static org.awaitility.Awaitility.await;\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.Queue;\nimport java.util.concurrent.ConcurrentLinkedQueue;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\nimport java.util.stream.IntStream;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.context.annotation.Import;\nimport org.springframework.data.redis.core.StringRedisTemplate;\n\n@SpringBootTest(properties = {\"sale.hold=2s\", \"spring.task.scheduling.pool.size=2\"})\n@Import(RedisTestConfig.class)\nclass FlashSaleIT {\n\n    @Autowired ReservationService service;\n    @Autowired OrderStore orders;\n    @Autowired StringRedisTemplate redis;\n\n    @Test\n    void neverOversells() throws Exception {\n        service.openSale(\"race\", 100);\n        Queue<ReservationService.Reservation> results = new ConcurrentLinkedQueue<>();\n        ExecutorService pool = Executors.newFixedThreadPool(64);\n        try {\n            List<Future<?>> futures = IntStream.range(0, 500)\n                    .mapToObj(i -> pool.submit(\n                            () -> results.add(service.reserve(\"race\", \"user-\" + i, 1, null))))\n                    .toList();\n            for (Future<?> f : futures) {\n                f.get();\n            }\n        } finally {\n            pool.shutdown();\n        }\n        long reserved = results.stream()\n                .filter(r -> r.outcome() == ReservationService.Outcome.RESERVED).count();\n        long soldOut = results.stream()\n                .filter(r -> r.outcome() == ReservationService.Outcome.SOLD_OUT).count();\n        assertThat(reserved).isEqualTo(100);\n        assertThat(soldOut).isEqualTo(400);\n        assertThat(service.stock(\"race\")).isZero();\n    }\n\n    @Test\n    void sameIdempotencyKeyDoesNotSpendStockTwice() {\n        service.openSale(\"idem\", 5);\n        var first = service.reserve(\"idem\", \"alice\", 1, \"req-123\");\n        var replay = service.reserve(\"idem\", \"alice\", 1, \"req-123\");\n        assertThat(first.outcome()).isEqualTo(ReservationService.Outcome.RESERVED);\n        assertThat(replay.outcome()).isEqualTo(ReservationService.Outcome.DUPLICATE_REQUEST);\n        assertThat(replay.reservationId()).isEqualTo(first.reservationId());\n        assertThat(service.stock(\"idem\")).isEqualTo(4);\n    }\n\n    @Test\n    void oneUnitPerShopper() {\n        service.openSale(\"once\", 5);\n        service.reserve(\"once\", \"bob\", 1, null);\n        assertThat(service.reserve(\"once\", \"bob\", 1, null).outcome())\n                .isEqualTo(ReservationService.Outcome.ALREADY_BOUGHT);\n    }\n\n    @Test\n    void expiredHoldReturnsStockAndCannotBeConfirmed() throws Exception {\n        service.openSale(\"hold\", 1);\n        var r = service.reserve(\"hold\", \"carol\", 1, null);\n        assertThat(service.stock(\"hold\")).isZero();\n        Thread.sleep(2300);                                     // hold is 2 s\n        assertThat(service.confirm(\"hold\", r.reservationId()))\n                .isEqualTo(ReservationService.ConfirmOutcome.EXPIRED);\n        service.releaseExpired(\"hold\");       // the background reaper may have won; either is fine\n        assertThat(service.stock(\"hold\")).isEqualTo(1);\n        var retry = service.reserve(\"hold\", \"carol\", 1, null);  // carol may try again\n        assertThat(retry.outcome()).isEqualTo(ReservationService.Outcome.RESERVED);\n    }\n\n    @Test\n    void confirmedReservationsBecomeOrdersExactlyOnce() {\n        service.openSale(\"order\", 10);\n        int before = orders.count();\n        for (int i = 0; i < 10; i++) {\n            var r = service.reserve(\"order\", \"buyer-\" + i, 1, null);\n            service.confirm(\"order\", r.reservationId());\n            service.confirm(\"order\", r.reservationId());        // a retry must be harmless\n        }\n        await().atMost(Duration.ofSeconds(10))\n                .untilAsserted(() -> assertThat(orders.count() - before).isEqualTo(10));\n        var summary = redis.opsForStream().pending(\"stream:orders\", \"fulfilment\");\n        Long pending = summary.getTotalPendingMessages();\n        assertThat(pending).isZero();\n    }\n}",
+          "title": "FlashSaleIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Because the stream and sale keys persist inside one container for the whole test class, every test uses its own SKU (`race`, `idem`, `once`, `hold`, `order`) so tests do not disturb each other. The 500-way race uses distinct user ids on purpose; with a single user id the \"one per shopper\" rule would reject all but one request and the test would prove nothing about stock."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`StringRedisTemplate.opsForStream().pending(...)` is shown here to assert the worker acknowledged everything; if your Spring Data Redis version names this method differently, `XPENDING` through a `RedisCallback` is an equally good check. Keep the assertion: a worker that processes but forgets `XACK` passes every other test and slowly fills the PEL in production."
+        },
+        {
+          "type": "markdown",
+          "text": "### Demo: the thundering herd\n\nWith the service running, open a sale of 100 and let 2,000 requests from 100 different users hit it with 50 in parallel:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X POST \"localhost:8080/api/sales/air-max?stock=100\"\n{\"sku\":\"air-max\",\"stock\":100}\n$ seq 1 2000 | xargs -P 50 -I{} sh -c \\\n    'curl -s -o /dev/null -w \"%{http_code}\\n\" -X POST \\\n     localhost:8080/api/sales/air-max/reservations \\\n     -H \"Content-Type: application/json\" -d \"{\\\"userId\\\":\\\"u{}\\\",\\\"qty\\\":1}\"' | sort | uniq -c\n    100 201\n   1900 409\n$ curl -s localhost:8080/api/sales/air-max\n{\"sku\":\"air-max\",\"stock\":0}",
+          "title": "Oversell check from the outside"
+        },
+        {
+          "type": "markdown",
+          "text": "Exactly 100 `201` responses, no matter how often you repeat it. Now do the experiment that teaches the most: change `reserve.lua` into three separate Java calls (`GET`, compare, `DECRBY`) and run the demo again. You will see more than 100 successes and a negative stock. That is the oversell the script exists to prevent."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you prevent overselling in a flash sale? Make the check and the decrement a single atomic operation. In Redis that is a Lua script (or `DECR` with a check of the returned value and compensation, which briefly shows negative stock). Avoid read-then-write from the application. Add reservation holds with a deadline so abandoned carts return stock, idempotency keys so retries do not double-spend, and treat Redis as the fast gate while the order database remains the system of record, reconciled from a durable stream."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Real sales add layers in front of this: a queue or waiting room that admits users at a controlled rate, bot protection, CDN caching of the product page so only the reserve call reaches Redis, and reconciliation jobs that compare Redis stock with the database. The atomic script at the centre looks very much like the one here."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n- **Stable consumer identity plus** `XAUTOCLAIM`**.** Name consumers after the pod, and add a second scheduled task that calls `XAUTOCLAIM` for entries idle more than 60 seconds so a dead worker's backlog is adopted by a live one.\n- **Dead-letter stream.** After N delivery attempts (see `XPENDING` delivery counts), move the entry to `stream:orders:dead` and alert.\n- **Persist to a database.** Replace `OrderStore` with a JPA repository and a unique constraint on the order id; the constraint is the final idempotency guard.\n- **Waiting room.** Add a sorted set of queued users and admit 200 per second into the reserve endpoint.\n- **Reconciliation.** A nightly job compares `stock + reserved + paid` with the initial stock for every sale and alerts on drift."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What this project proves:\n\n- Atomic Lua scripts beat `WATCH` retries and locks for hot-counter workloads; design them check-first, write-last.\n- Use one structure as the arbiter of state (here the expiry sorted set) so competing paths, confirm versus expire, cannot both win.\n- Put idempotency inside the atomic step and make consumers idempotent as well; streams deliver at least once.\n- Acknowledge after the work; watch `lag` and `pending` on every consumer group.\n- Prove correctness with a concurrency test that would fail for the naive implementation."
+        }
+      ]
+    },
+    {
+      "id": "ch-10-5",
+      "type": "concept",
+      "title": "Project D: A Live Leaderboard with Notifications",
+      "subtopicId": "10-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal and requirements\n\nShopStream runs a daily \"Shopper Rewards\" challenge: every purchase earns points, and a live leaderboard shows the top shoppers. When someone enters the top 10 or takes the lead, they get a notification; everybody watching the page sees the board update without refreshing. This project combines four Redis features that usually appear separately: a sorted set for ranking, a stream as the durable event log, Pub/Sub for live fan-out, and a HyperLogLog for counting unique players."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Requirement",
+            "Design choice"
+          ],
+          "rows": [
+            [
+              "Ranked scores",
+              "Sorted set `lb:points:daily:{date}`; `ZINCRBY` adds points, `ZREVRANGE` reads the top"
+            ],
+            [
+              "Rank and neighbours",
+              "`ZREVRANK` for \"you are 7th\", then a short range around that position"
+            ],
+            [
+              "Unique players per day",
+              "HyperLogLog `uv:players:{date}` with `PFADD` and `PFCOUNT`, about 12 KB per key at most"
+            ],
+            [
+              "Durable event log",
+              "Stream `stream:score-events`, trimmed approximately to 10,000 entries"
+            ],
+            [
+              "Reliable forwarding",
+              "A worker in consumer group `notifier` reads the stream and publishes to Pub/Sub, acknowledging after publish"
+            ],
+            [
+              "Live push",
+              "Pub/Sub channels `chan:board` (everyone) and `chan:notify:{player}` (one player), received by every service instance and pushed to browsers over Server-Sent Events (SSE)"
+            ],
+            [
+              "Atomicity",
+              "One Lua script updates the board, the HyperLogLog and the stream and reports the old and new rank"
+            ]
+          ],
+          "caption": "Requirements."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Why not push straight from the web request to the browsers? Because with two or more service instances, the instance that handles the purchase is rarely the one holding a given browser's SSE connection. Pub/Sub is the bus that reaches every instance. And why the stream in the middle? Pub/Sub is fire-and-forget: a message published while an instance is restarting is gone. The stream keeps every event until a consumer acknowledges it, so the forwarding step can retry."
+        },
+        {
+          "type": "markdown",
+          "text": "### Architecture"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "POST /api/points\n      │\n      ▼\nScoreService ── score.lua ──► lb:points:daily:{date}   ZINCRBY (+ old/new rank)\n                         ├──► uv:players:{date}        PFADD\n                         └──► stream:score-events      XADD MAXLEN ~ 10000\n                                     │\n                     group \"notifier\" │ XREADGROUP / XACK\n                                     ▼\n                             EventForwarder ──► PUBLISH chan:board\n                                             └► PUBLISH chan:notify:{player}  (rank events)\n                                                       │\n       every instance subscribes (PSUBSCRIBE chan:*)  ▼\n                             RedisMessageListenerContainer ──► SseHub ──► browsers (EventSource)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Project layout"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "leaderboard/\n├── pom.xml                       (as Project A, web + data-redis + actuator + test)\n├── docker-compose.yml            (same Redis service)\n└── src\n    ├── main\n    │   ├── java/com/shopstream/leaderboard\n    │   │   ├── LeaderboardApplication.java\n    │   │   ├── ScoreService.java\n    │   │   ├── EventForwarder.java\n    │   │   ├── PubSubConfig.java\n    │   │   ├── SseHub.java\n    │   │   └── LeaderboardController.java\n    │   └── resources\n    │       ├── application.yml\n    │       ├── scripts/score.lua\n    │       └── static/index.html\n    └── test/java/com/shopstream/leaderboard\n        ├── RedisTestConfig.java\n        └── LeaderboardIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The Redis keys of this project:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Key",
+            "Type",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "`lb:points:daily:{date}`",
+              "`zset`",
+              "Player to points for one day, expires after 8 days"
+            ],
+            [
+              "`uv:players:{date}`",
+              "`HLL`",
+              "Approximate count of distinct players who scored that day"
+            ],
+            [
+              "`stream:score-events`",
+              "`stream`",
+              "Every scoring event, trimmed to about 10,000 entries"
+            ],
+            [
+              "`chan:board`",
+              "`channel`",
+              "Live board updates for all viewers"
+            ],
+            [
+              "`chan:notify:{player}`",
+              "`channel`",
+              "Personal notifications for one player"
+            ]
+          ],
+          "caption": "Keys."
+        },
+        {
+          "type": "markdown",
+          "text": "### The scoring script\n\nTwo things need atomicity: the old rank must be read before the increment and the new rank after it, with no other score change in between, and the three structures must be updated together."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS: 1 daily leaderboard, 2 unique-players HLL, 3 event stream\n-- ARGV: 1 player id, 2 points to add, 3 board TTL in seconds\n-- Returns { new score (string), old rank (0-based, -1 if new), new rank (0-based) }\nlocal oldRank = redis.call('ZREVRANK', KEYS[1], ARGV[1])\nlocal score = redis.call('ZINCRBY', KEYS[1], ARGV[2], ARGV[1])\nlocal newRank = redis.call('ZREVRANK', KEYS[1], ARGV[1])\nredis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))\nredis.call('PFADD', KEYS[2], ARGV[1])\nredis.call('EXPIRE', KEYS[2], tonumber(ARGV[3]))\n\nlocal old = -1\nif oldRank then\n  old = oldRank\nend\nredis.call('XADD', KEYS[3], 'MAXLEN', '~', '10000', '*',\n           'player', ARGV[1], 'points', ARGV[2], 'score', score,\n           'oldRank', tostring(old), 'newRank', tostring(newRank))\nreturn { score, old, newRank }",
+          "title": "scripts/score.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `ZREVRANK` returns a nil reply for a player not in the set, which a Lua script sees as `false`, so we convert it to `-1`. Ranks are 0-based in Redis; the Java side adds one for humans. `XADD ... MAXLEN ~ 10000` trims approximately, which is cheaper than exact trimming: Redis removes whole internal blocks, so the stream may hold a little more than 10,000 entries."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Sorted sets order players with equal scores by member name (lexicographically). If \"fairness\" matters, the player who reached 500 points first should rank higher. A common trick encodes the time in the fractional part of the score, for example `points + (1 - timestamp / 1e13)`. Doubles hold about 15 to 16 significant digits, so check that your points and timestamps fit before you try it."
+        },
+        {
+          "type": "markdown",
+          "text": "### The score service"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport java.time.Clock;\nimport java.time.LocalDate;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\nimport java.util.Set;\nimport org.springframework.core.io.ClassPathResource;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.data.redis.core.ZSetOperations.TypedTuple;\nimport org.springframework.data.redis.core.script.DefaultRedisScript;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class ScoreService {\n\n    public static final String STREAM = \"stream:score-events\";\n    private static final long BOARD_TTL_SECONDS = 8L * 24 * 3600;\n\n    public record Entry(long rank, String player, double score) {\n    }\n\n    public record ScoreResult(String player, double score, long oldRank, long newRank) {\n    }\n\n    private final StringRedisTemplate redis;\n    private final Clock clock;\n    private final DefaultRedisScript<List> script = new DefaultRedisScript<>();\n\n    public ScoreService(StringRedisTemplate redis, Clock clock) {\n        this.redis = redis;\n        this.clock = clock;\n        script.setLocation(new ClassPathResource(\"scripts/score.lua\"));\n        script.setResultType(List.class);\n    }\n\n    public ScoreResult addPoints(String player, long points) {\n        LocalDate today = LocalDate.now(clock);\n        @SuppressWarnings(\"unchecked\")\n        List<Object> r = (List<Object>) redis.execute(script,\n                List.of(boardKey(today), uniqueKey(today), STREAM),\n                player, String.valueOf(points), String.valueOf(BOARD_TTL_SECONDS));\n        return new ScoreResult(player, Double.parseDouble((String) r.get(0)),\n                (Long) r.get(1), (Long) r.get(2));\n    }\n\n    public List<Entry> top(int size) {\n        String key = boardKey(LocalDate.now(clock));\n        var tuples = redis.opsForZSet().reverseRangeWithScores(key, 0, size - 1);\n        return toEntries(tuples, 1);\n    }\n\n    /** The player's rank (1-based) plus two neighbours above and below. */\n    public Optional<List<Entry>> around(String player) {\n        String key = boardKey(LocalDate.now(clock));\n        Long rank = redis.opsForZSet().reverseRank(key, player);\n        if (rank == null) {\n            return Optional.empty();\n        }\n        long start = Math.max(0, rank - 2);\n        var tuples = redis.opsForZSet().reverseRangeWithScores(key, start, rank + 2);\n        return Optional.of(toEntries(tuples, start + 1));\n    }\n\n    public long uniquePlayersToday() {\n        Long n = redis.opsForHyperLogLog().size(uniqueKey(LocalDate.now(clock)));\n        return n == null ? 0 : n;\n    }\n\n    private static List<Entry> toEntries(Set<TypedTuple<String>> tuples, long firstRank) {\n        List<Entry> out = new ArrayList<>();\n        if (tuples == null) {\n            return out;\n        }\n        long rank = firstRank;\n        for (TypedTuple<String> t : tuples) {          // the returned Set keeps Redis order\n            out.add(new Entry(rank++, t.getValue(), t.getScore() == null ? 0 : t.getScore()));\n        }\n        return out;\n    }\n\n    static String boardKey(LocalDate d) {\n        return \"lb:points:daily:\" + d;\n    }\n\n    static String uniqueKey(LocalDate d) {\n        return \"uv:players:\" + d;\n    }\n}",
+          "title": "ScoreService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the sorted set operations cost `O(log N)` for the rank and `O(log N + M)` for a range of `M` entries, so a board with 10 million players answers \"top 10\" and \"my rank\" in microseconds to low milliseconds on the server. The `Set` returned by `reverseRangeWithScores` is a `LinkedHashSet`, so iteration order is Redis order; if you ever copy it into a `HashSet` the order is lost.\n\n### From stream to Pub/Sub\n\nThe forwarder is a consumer-group worker, structured exactly like the order worker in the flash-sale project: pending entries first, then new ones, acknowledge after the work. The \"work\" here is publishing."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport jakarta.annotation.PostConstruct;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.UUID;\nimport org.springframework.data.redis.RedisSystemException;\nimport org.springframework.data.redis.connection.stream.Consumer;\nimport org.springframework.data.redis.connection.stream.MapRecord;\nimport org.springframework.data.redis.connection.stream.ReadOffset;\nimport org.springframework.data.redis.connection.stream.StreamOffset;\nimport org.springframework.data.redis.connection.stream.StreamReadOptions;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.scheduling.annotation.Scheduled;\nimport org.springframework.stereotype.Component;\nimport tools.jackson.databind.json.JsonMapper;\n\n@Component\npublic class EventForwarder {\n\n    static final String GROUP = \"notifier\";\n\n    public record BoardEvent(String player, String score, int rank) {\n    }\n\n    public record Notification(String player, String message, int rank) {\n    }\n\n    private final StringRedisTemplate redis;\n    private final JsonMapper json;\n    private final Consumer consumer = Consumer.from(GROUP, \"fwd-\" + UUID.randomUUID());\n\n    public EventForwarder(StringRedisTemplate redis, JsonMapper json) {\n        this.redis = redis;\n        this.json = json;\n    }\n\n    @PostConstruct\n    void createGroup() {\n        try {\n            redis.opsForStream().createGroup(ScoreService.STREAM, ReadOffset.from(\"0\"), GROUP);\n        } catch (RedisSystemException e) {\n            if (!(String.valueOf(e.getMessage()) + e.getCause()).contains(\"BUSYGROUP\")) {\n                throw e;\n            }\n        }\n    }\n\n    @Scheduled(fixedDelay = 100)\n    public void poll() {\n        forward(read(ReadOffset.from(\"0\")));            // our own unacknowledged entries\n        forward(read(ReadOffset.lastConsumed()));       // new entries\n    }\n\n    private List<MapRecord<String, Object, Object>> read(ReadOffset offset) {\n        return redis.opsForStream().read(consumer, StreamReadOptions.empty().count(100),\n                StreamOffset.create(ScoreService.STREAM, offset));\n    }\n\n    private void forward(List<MapRecord<String, Object, Object>> records) {\n        if (records == null) {\n            return;\n        }\n        for (var rec : records) {\n            Map<Object, Object> f = rec.getValue();\n            String player = (String) f.get(\"player\");\n            int oldRank = Integer.parseInt((String) f.get(\"oldRank\"));\n            int newRank = Integer.parseInt((String) f.get(\"newRank\"));\n\n            var board = new BoardEvent(player, (String) f.get(\"score\"), newRank + 1);\n            redis.convertAndSend(\"chan:board\", json.writeValueAsString(board));\n\n            String message = null;\n            if (newRank == 0 && oldRank != 0) {\n                message = \"You took the lead!\";\n            } else if (newRank < 10 && (oldRank < 0 || oldRank >= 10)) {\n                message = \"You entered the top 10!\";\n            }\n            if (message != null) {\n                redis.convertAndSend(\"chan:notify:\" + player,\n                        json.writeValueAsString(new Notification(player, message, newRank + 1)));\n            }\n            redis.opsForStream().acknowledge(ScoreService.STREAM, GROUP, rec.getId());\n        }\n    }\n}",
+          "title": "EventForwarder.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If the process dies after `convertAndSend` but before `acknowledge`, the entry is delivered again and viewers see a duplicate board update. For a leaderboard that is harmless (the board message carries the absolute score and rank, not a delta). Notifications are more sensitive; if duplicates would annoy users, record \"notified:{player}:{date}\" with `SET` `NX` before sending."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`Pub/Sub` delivers only to currently connected subscribers and does not buffer. If nobody is subscribed, `PUBLISH` returns `0` and the message is gone. That is why the durable record is the stream and why a browser that reconnects must reload `GET /api/leaderboard` to resynchronise instead of expecting missed events."
+        },
+        {
+          "type": "markdown",
+          "text": "### Receiving messages and pushing to browsers\n\nSpring Boot does not create a `RedisMessageListenerContainer` for you. Declare one, subscribe with a pattern, and hand every message to the hub that owns the SSE connections."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport java.nio.charset.StandardCharsets;\nimport java.time.Clock;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.data.redis.connection.Message;\nimport org.springframework.data.redis.connection.RedisConnectionFactory;\nimport org.springframework.data.redis.listener.PatternTopic;\nimport org.springframework.data.redis.listener.RedisMessageListenerContainer;\n@Configuration\npublic class PubSubConfig {\n\n    @Bean\n    Clock clock() {\n        return Clock.systemDefaultZone();\n    }\n\n    @Bean\n    RedisMessageListenerContainer listenerContainer(RedisConnectionFactory factory, SseHub hub) {\n        var container = new RedisMessageListenerContainer();\n        container.setConnectionFactory(factory);\n        container.addMessageListener((Message message, byte[] pattern) -> {\n            String channel = new String(message.getChannel(), StandardCharsets.UTF_8);\n            String body = new String(message.getBody(), StandardCharsets.UTF_8);\n            if (channel.equals(\"chan:board\")) {\n                hub.broadcast(\"leaderboard\", body);\n            } else if (channel.startsWith(\"chan:notify:\")) {\n                hub.sendTo(channel.substring(\"chan:notify:\".length()), \"notification\", body);\n            }\n        }, new PatternTopic(\"chan:*\"));\n        return container;\n    }\n}",
+          "title": "PubSubConfig.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport java.io.IOException;\nimport java.util.List;\nimport java.util.concurrent.CopyOnWriteArrayList;\nimport org.springframework.stereotype.Component;\nimport org.springframework.web.servlet.mvc.method.annotation.SseEmitter;\n\n/** Holds the SSE connections of THIS instance only. Other instances hold their own. */\n@Component\npublic class SseHub {\n\n    private record Subscriber(SseEmitter emitter, String player) {\n    }\n\n    private final List<Subscriber> subscribers = new CopyOnWriteArrayList<>();\n\n    public SseEmitter subscribe(String player) {\n        SseEmitter emitter = new SseEmitter(30 * 60 * 1000L);  // 30 min\n        Subscriber s = new Subscriber(emitter, player);\n        subscribers.add(s);\n        emitter.onCompletion(() -> subscribers.remove(s));\n        emitter.onTimeout(() -> subscribers.remove(s));\n        emitter.onError(e -> subscribers.remove(s));\n        send(s, \"hello\", \"connected\");                              // commits headers right away\n        return emitter;\n    }\n\n    public void broadcast(String eventName, String data) {\n        subscribers.forEach(s -> send(s, eventName, data));\n    }\n\n    public void sendTo(String player, String eventName, String data) {\n        subscribers.stream().filter(s -> player.equals(s.player()))\n                .forEach(s -> send(s, eventName, data));\n    }\n\n    public int connections() {\n        return subscribers.size();\n    }\n\n    private void send(Subscriber s, String eventName, String data) {\n        try {\n            s.emitter().send(SseEmitter.event().name(eventName).data(data));\n        } catch (IOException | IllegalStateException e) {\n            subscribers.remove(s);                                  // client went away\n        }\n    }\n}",
+          "title": "SseHub.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- **One pattern subscription, two kinds of channel.** `PSUBSCRIBE chan:*` receives `chan:board` and every `chan:notify:{player}`. Pattern subscriptions are convenient; with hundreds of thousands of personal channels you may prefer to subscribe per connected player instead, so Redis does less matching.\n- **The container uses its own connection.** A connection in subscribe mode can run no other commands, so the container holds a dedicated one and delivers messages on a task executor thread. Your normal template calls use other connections.\n- **The hub is local state.** A connection to instance A is only known to A. This is why every instance must subscribe: each instance forwards the Pub/Sub message to its own browsers.\n- **Cleanup on every exit path.** Without `onCompletion`, `onTimeout` and `onError`, closed browsers leak emitters forever, and each broadcast then throws on dead connections.\n\n### The controller and a tiny front end"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport java.util.List;\nimport java.util.Map;\nimport org.springframework.http.MediaType;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.servlet.mvc.method.annotation.SseEmitter;\n\n@RestController\n@RequestMapping(\"/api\")\npublic class LeaderboardController {\n\n    public record PointsRequest(String playerId, long points) {\n    }\n\n    private final ScoreService scores;\n    private final SseHub hub;\n\n    public LeaderboardController(ScoreService scores, SseHub hub) {\n        this.scores = scores;\n        this.hub = hub;\n    }\n\n    @PostMapping(\"/points\")\n    public ResponseEntity<?> add(@RequestBody PointsRequest body) {\n        if (body.playerId() == null || body.points() < 1 || body.points() > 10_000) {\n            return ResponseEntity.badRequest().body(Map.of(\"error\", \"invalid_request\"));\n        }\n        return ResponseEntity.ok(scores.addPoints(body.playerId(), body.points()));\n    }\n\n    @GetMapping(\"/leaderboard\")\n    public List<ScoreService.Entry> top(@RequestParam(defaultValue = \"10\") int size) {\n        return scores.top(Math.min(Math.max(size, 1), 100));\n    }\n\n    @GetMapping(\"/players/{id}/rank\")\n    public ResponseEntity<List<ScoreService.Entry>> around(@PathVariable String id) {\n        return scores.around(id).map(ResponseEntity::ok)\n                .orElseGet(() -> ResponseEntity.notFound().build());\n    }\n\n    @GetMapping(\"/stats/unique-players\")\n    public Map<String, Object> unique() {\n        return Map.of(\"uniquePlayersToday\", scores.uniquePlayersToday());\n    }\n\n    @GetMapping(path = \"/stream\", produces = MediaType.TEXT_EVENT_STREAM_VALUE)\n    public SseEmitter stream(@RequestParam(required = false) String player) {\n        return hub.subscribe(player);\n    }\n}",
+          "title": "LeaderboardController.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\nimport org.springframework.scheduling.annotation.EnableScheduling;\n\n@SpringBootApplication\n@EnableScheduling\npublic class LeaderboardApplication {\n    public static void main(String[] args) {\n        SpringApplication.run(LeaderboardApplication.class, args);\n    }\n}",
+          "title": "LeaderboardApplication.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The input is validated at the edge (`points` between 1 and 10,000) because the board trusts its callers: one bug that posts a million points ruins the day's board.\n\nThe front end is one static page that opens an `EventSource` and re-renders the top 10 whenever a `leaderboard` event arrives:\n\n**src/main/resources/static/index.html**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "<!doctype html>\n<meta charset=\"utf-8\">\n<title>Shopper Rewards</title>\n<h1>Today's top shoppers</h1>\n<ol id=\"board\"></ol>\n<div id=\"note\" style=\"color:#b00\"></div>\n<script>\n  const player = new URLSearchParams(location.search).get('player') || '';\n  async function refresh() {\n    const rows = await (await fetch('/api/leaderboard?size=10')).json();\n    document.getElementById('board').innerHTML =\n      rows.map(r => `<li>${r.player}: ${r.score}</li>`).join('');\n  }\n  const es = new EventSource('/api/stream' + (player ? '?player=' + player : ''));\n  es.addEventListener('leaderboard', refresh);\n  es.addEventListener('notification', e =>\n    document.getElementById('note').textContent = JSON.parse(e.data).message);\n  es.onopen = refresh;     // resync after every (re)connect: Pub/Sub does not replay\n  refresh();\n</script>"
+        },
+        {
+          "type": "markdown",
+          "text": "Note `es.onopen = refresh`: the browser reconnects automatically after a dropped connection, and re-reading the snapshot closes the gap that fire-and-forget Pub/Sub leaves.\n\n### Verify with redis-cli\n\nStart the service, post a few scores, and inspect:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ add() { curl -s -X POST localhost:8080/api/points -H 'Content-Type: application/json' \\\n    -d \"{\\\"playerId\\\":\\\"$1\\\",\\\"points\\\":$2}\"; echo; }\n$ add ana 50; add ben 80; add cy 20; add ana 60\n{\"player\":\"ana\",\"score\":50.0,\"oldRank\":-1,\"newRank\":0}\n{\"player\":\"ben\",\"score\":80.0,\"oldRank\":-1,\"newRank\":0}\n{\"player\":\"cy\",\"score\":20.0,\"oldRank\":-1,\"newRank\":2}\n{\"player\":\"ana\",\"score\":110.0,\"oldRank\":1,\"newRank\":0}\n127.0.0.1:6379> ZREVRANGE lb:points:daily:2026-10-10 0 2 WITHSCORES\n1) \"ana\"\n2) \"110\"\n3) \"ben\"\n4) \"80\"\n5) \"cy\"\n6) \"20\"\n127.0.0.1:6379> ZREVRANK lb:points:daily:2026-10-10 ben\n(integer) 1\n127.0.0.1:6379> PFCOUNT uv:players:2026-10-10\n(integer) 3\n127.0.0.1:6379> XLEN stream:score-events\n(integer) 4\n127.0.0.1:6379> TTL lb:points:daily:2026-10-10\n(integer) 691190",
+          "title": "Scores, ranks and unique players"
+        },
+        {
+          "type": "markdown",
+          "text": "Ana posted twice but `PFCOUNT` says 3 players, as it should. In a second terminal, watch the live channels while you post more scores:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> PSUBSCRIBE chan:*\nReading messages... (press Ctrl-C to quit)\n1) \"psubscribe\"\n2) \"chan:*\"\n3) (integer) 1\n1) \"pmessage\"\n2) \"chan:*\"\n3) \"chan:board\"\n4) \"{\\\"player\\\":\\\"cy\\\",\\\"score\\\":\\\"120\\\",\\\"rank\\\":1}\"\n1) \"pmessage\"\n2) \"chan:*\"\n3) \"chan:notify:cy\"\n4) \"{\\\"player\\\":\\\"cy\\\",\\\"message\\\":\\\"You took the lead!\\\",\\\"rank\\\":1}\"",
+          "title": "Watch Pub/Sub from redis-cli"
+        },
+        {
+          "type": "markdown",
+          "text": "(The message was produced by a post that lifted `cy` from 20 to 120 points. The `rank` field is 1-based in the JSON.) Open `http://localhost:8080/?player=cy` in a browser and post points for `cy`: the page updates and shows the notification text with no refresh."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "`HyperLogLog` trades accuracy for size. `PFCOUNT` has a standard error of about 0.81 percent, and the structure never exceeds roughly 12 KB per key regardless of how many players it has seen. For a few players the estimate is exact, which is why the sample shows 3. If you need the exact set of distinct ids, use a `SET`, and pay memory proportional to the number of players."
+        },
+        {
+          "type": "markdown",
+          "text": "### Tests\n\nThe test class reuses the `RedisTestConfig` container bean from the earlier projects. The SSE test opens a real HTTP connection, waits for the greeting, posts points over HTTP, and waits for the push."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.leaderboard;\n\nimport static org.assertj.core.api.Assertions.assertThat;\n\nimport java.net.URI;\nimport java.net.http.HttpClient;\nimport java.net.http.HttpRequest;\nimport java.net.http.HttpResponse;\nimport java.util.List;\nimport java.util.concurrent.BlockingQueue;\nimport java.util.concurrent.LinkedBlockingQueue;\nimport java.util.concurrent.TimeUnit;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.beans.factory.annotation.Value;\nimport org.springframework.boot.test.context.SpringBootTest;\nimport org.springframework.context.annotation.Import;\n\n@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)\n@Import(RedisTestConfig.class)\nclass LeaderboardIT {\n\n    @Value(\"${local.server.port}\") int port;\n    @Autowired ScoreService scores;\n\n    @Test\n    void ranksFollowPointsAndReportOldAndNewRank() {\n        scores.addPoints(\"t-ann\", 100);\n        scores.addPoints(\"t-ben\", 300);\n        var result = scores.addPoints(\"t-ann\", 250);              // ann 350 passes ben 300\n        assertThat(result.oldRank()).isGreaterThan(result.newRank());\n        List<ScoreService.Entry> top = scores.top(100);\n        int ann = top.stream().map(ScoreService.Entry::player).toList().indexOf(\"t-ann\");\n        int ben = top.stream().map(ScoreService.Entry::player).toList().indexOf(\"t-ben\");\n        assertThat(ann).isLessThan(ben);\n        assertThat(scores.around(\"t-ann\")).isPresent();\n    }\n\n    @Test\n    void uniquePlayersCountsEachPlayerOnce() {\n        long before = scores.uniquePlayersToday();\n        scores.addPoints(\"t-u1\", 1);\n        scores.addPoints(\"t-u1\", 1);\n        scores.addPoints(\"t-u2\", 1);\n        assertThat(scores.uniquePlayersToday() - before).isEqualTo(2);\n    }\n\n    @Test\n    void notificationReachesTheBrowserOverSse() throws Exception {\n        HttpClient http = HttpClient.newHttpClient();\n        BlockingQueue<String> lines = new LinkedBlockingQueue<>();\n        HttpRequest sse = HttpRequest.newBuilder(\n                URI.create(\"http://localhost:\" + port + \"/api/stream?player=sse-dana\"))\n                .header(\"Accept\", \"text/event-stream\").build();\n        http.sendAsync(sse, HttpResponse.BodyHandlers.ofLines())\n                .thenAccept(r -> r.body().forEach(lines::add));\n        assertThat(waitFor(lines, \"data:connected\")).isTrue();\n\n        URI pointsUri = URI.create(\"http://localhost:\" + port + \"/api/points\");\n        HttpRequest post = HttpRequest.newBuilder(pointsUri)\n                .header(\"Content-Type\", \"application/json\")\n                .POST(HttpRequest.BodyPublishers.ofString(\n                        \"{\\\"playerId\\\":\\\"sse-dana\\\",\\\"points\\\":9000}\")).build();\n        var response = http.send(post, HttpResponse.BodyHandlers.ofString());\n        assertThat(response.statusCode()).isEqualTo(200);\n\n        assertThat(waitFor(lines, \"event:notification\")).isTrue();\n    }\n\n    private static boolean waitFor(BlockingQueue<String> lines, String needle) throws Exception {\n        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);\n        while (System.nanoTime() < deadline) {\n            String line = lines.poll(200, TimeUnit.MILLISECONDS);\n            if (line != null && line.contains(needle)) {\n                return true;\n            }\n        }\n        return false;\n    }\n}",
+          "title": "LeaderboardIT.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The SSE test crosses every layer: the HTTP post, the Lua script, the stream, the scheduled forwarder, `PUBLISH`, the listener container, the hub and the HTTP response. It is slower than the others (about 100 ms of polling latency) but it is the one that fails when you misspell a channel name or forget `@EnableScheduling`."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The notification assertion depends on `sse-dana` being the first player on a fresh board when the test runs, or at least entering the top 10. With 9,000 points she takes the lead on any board the other tests have built, because they award at most a few hundred points; if you add tests with larger awards, give this one more points or a separate Redis database."
+        },
+        {
+          "type": "markdown",
+          "text": "### Demo: two instances, one board\n\nThe architecture claim is that any instance can handle the purchase while any instance serves the viewer. Prove it by running two copies on different ports against the same Redis:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8081 &\n$ mvn spring-boot:run -Dspring-boot.run.arguments=--server.port=8082 &\n$ curl -N \"localhost:8082/api/stream?player=ana\" &\nevent:hello\ndata:connected\n\n$ curl -s -X POST localhost:8081/api/points -H 'Content-Type: application/json' \\\n    -d '{\"playerId\":\"ana\",\"points\":500}'\n{\"player\":\"ana\",\"score\":500.0,\"oldRank\":-1,\"newRank\":0}\nevent:leaderboard\ndata:{\"player\":\"ana\",\"score\":\"500.0\",\"rank\":1}\n\nevent:notification\ndata:{\"player\":\"ana\",\"message\":\"You took the lead!\",\"rank\":1}",
+          "title": "Cross-instance push"
+        },
+        {
+          "type": "markdown",
+          "text": "The purchase went to port 8081, a forwarder in one of the two instances published it, and the SSE connection on port 8082 received the push. If both instances run the forwarder, the consumer group makes sure each stream entry is forwarded by exactly one of them (barring a crash), so viewers do not see duplicates in normal operation."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When would you use Pub/Sub, and when a stream, for notifications? Pub/Sub is for live fan-out where losing a message while nobody is listening is acceptable (a UI update, a cache-invalidation hint). A stream is for events you must not lose: it persists entries, supports consumer groups with acknowledgements, and lets a crashed consumer resume. Production designs often use both: the stream as the durable log and a forwarder that republishes to Pub/Sub for the low-latency, many-listener part."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Leaderboards in games and apps are one of the best-known uses of sorted sets because `ZADD`/`ZINCRBY` and rank queries are logarithmic. At very large scale teams shard boards (by region, season or score bucket) and keep an approximate global rank; the principle, one sorted set per board and a stream as the audit log, stays the same."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n- **Weekly and all-time boards.** Add `ZUNIONSTORE` with the last 7 daily boards into `lb:points:weekly`, cached for a minute, and compare its cost with an incrementally maintained weekly board.\n- **Last-Event-ID replay.** Put the stream entry id into the SSE `id:` field. On reconnect the browser sends `Last-Event-ID`; read the missed entries with `XRANGE` and replay them.\n- **Per-player channels on demand.** Subscribe to `chan:notify:{player}` only when a player connects, with `RedisMessageListenerContainer.addMessageListener` and `removeMessageListener`.\n- **Sharded Pub/Sub.** Replace `PUBLISH` with `SPUBLISH` and `SSUBSCRIBE` to scale Pub/Sub on a Redis Cluster.\n- **Tie-break by time.** Implement the fractional-score trick and write a test showing that two players with equal points rank by who got there first.\n- **Backpressure.** Limit each SSE connection to one event per 250 ms by coalescing board updates in the hub."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "What this project proves:\n\n- A sorted set gives you ranking, rank lookup and neighbour queries with logarithmic cost; `ZINCRBY` is the scoring primitive.\n- Run several related updates in one Lua script when they must agree, here the board, the HyperLogLog and the event log.\n- Combine a stream (durable, acknowledged) with Pub/Sub (instant, lossy) instead of choosing one; every instance subscribes, each browser connects to just one.\n- Clients must resynchronise after a reconnect because Pub/Sub does not replay.\n- HyperLogLog counts distinct items in a small fixed size with a small, known error."
+        }
+      ]
+    }
+  ]
+}

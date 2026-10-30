@@ -1,0 +1,177 @@
+{
+  "source": {
+    "document": "Written for this site (not from your PDFs)"
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "type": "introduction",
+      "title": "Connecting the two halves",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Not from your PDFs",
+          "text": "Your PDFs do not cover this topic, so this page was written for the site. Your 12-week plan lists React, hooks, rendering, performance, state management and TypeScript. Check it against the official documentation, or give me a PDF to replace it."
+        },
+        "This page ties React to the Spring Boot API from your guides: routing, calling the API, CORS, JWT handling and forms.",
+        {
+          "type": "diagram",
+          "format": "mermaid",
+          "title": "A full-stack request",
+          "code": "sequenceDiagram\n  participant B as Browser (React)\n  participant S as Spring Boot API\n  participant D as Database\n  B->>S: POST /api/auth/login (email, password)\n  S->>D: find user, check password hash\n  S-->>B: access token, refresh token in HttpOnly cookie\n  B->>S: GET /api/books with Authorization Bearer token\n  S->>S: security filter chain validates the token\n  S->>D: query\n  S-->>B: 200 with JSON\n  B->>B: setState, React re-renders"
+        }
+      ]
+    },
+    {
+      "id": "routing",
+      "type": "concept",
+      "title": "Client-side routing",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "tsx",
+          "code": "function App() {\n  return (\n    <Routes>\n      <Route path=\"/login\" element={<Login />} />\n      <Route element={<RequireAuth />}>\n        <Route path=\"/books\" element={<Books />} />\n        <Route path=\"/books/:id\" element={<BookDetail />} />\n      </Route>\n    </Routes>\n  );\n}\n\nfunction BookDetail() {\n  const { id } = useParams();\n  // ...\n}",
+          "title": "React Router"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Hiding a route in React is not security: anyone can call your API directly. Authorisation must be enforced in Spring. Also, when Spring serves the built app, unknown paths like `/books/7` must return `index.html`, or a page refresh gives a 404."
+        }
+      ]
+    },
+    {
+      "id": "api",
+      "type": "code",
+      "title": "An API client",
+      "blocks": [
+        "Put HTTP in one place, so the token, error handling and base URL are not repeated in every component.",
+        {
+          "type": "code",
+          "language": "typescript",
+          "code": "const BASE = import.meta.env.VITE_API_URL ?? '';\n\nexport async function api<T>(path: string, options: RequestInit = {}): Promise<T> {\n  const res = await fetch(`${BASE}${path}`, {\n    ...options,\n    headers: {\n      'Content-Type': 'application/json',\n      ...(token ? { Authorization: `Bearer ${token}` } : {}),\n      ...options.headers,\n    },\n  });\n  if (res.status === 401) { onUnauthorized(); throw new Error('Unauthorized'); }\n  if (!res.ok) {\n    const problem = await res.json().catch(() => null);   // Spring ProblemDetail, if any\n    throw new Error(problem?.detail ?? `HTTP ${res.status}`);\n  }\n  return res.status === 204 ? (undefined as T) : res.json();\n}",
+          "title": "api.ts"
+        }
+      ]
+    },
+    {
+      "id": "cors",
+      "type": "concept",
+      "title": "CORS, and why you often avoid it",
+      "blocks": [
+        "The browser blocks JavaScript from reading responses from a different origin unless the server allows it. CORS is enforced by the browser: `curl` and Postman ignore it.",
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Bean\nCorsConfigurationSource corsConfigurationSource() {\n    CorsConfiguration config = new CorsConfiguration();\n    config.setAllowedOrigins(List.of(\"https://app.example.com\"));   // never \"*\" with credentials\n    config.setAllowedMethods(List.of(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\"));\n    config.setAllowedHeaders(List.of(\"Authorization\", \"Content-Type\"));\n    config.setAllowCredentials(true);\n    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();\n    source.registerCorsConfiguration(\"/api/**\", config);\n    return source;\n}",
+          "title": "Spring: enable with http.cors(withDefaults())"
+        },
+        "In development, skip CORS with a Vite proxy, so the browser sees a single origin:",
+        {
+          "type": "code",
+          "language": "javascript",
+          "code": "// vite.config.js\nexport default { server: { proxy: { '/api': 'http://localhost:8080' } } };"
+        }
+      ]
+    },
+    {
+      "id": "tokens",
+      "type": "concept",
+      "title": "Where to keep the token",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Storage",
+            "XSS can steal it?",
+            "CSRF risk?",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "`localStorage`",
+              "Yes",
+              "No",
+              "Simple, but any injected script can read it"
+            ],
+            [
+              "Memory (a variable)",
+              "Harder",
+              "No",
+              "Lost on refresh, so pair it with a refresh cookie"
+            ],
+            [
+              "`HttpOnly` cookie",
+              "No",
+              "Yes, needs SameSite or a CSRF token",
+              "JavaScript cannot read it"
+            ]
+          ],
+          "caption": "A common pattern: a short-lived access token in memory, and a refresh token in an HttpOnly cookie."
+        }
+      ]
+    },
+    {
+      "id": "forms",
+      "type": "code",
+      "title": "Forms and validation errors",
+      "blocks": [
+        "Show Spring's validation errors next to the fields. Client checks give fast feedback; the server has the final word.",
+        {
+          "type": "code",
+          "language": "tsx",
+          "code": "function NewBook() {\n  const [title, setTitle] = useState('');\n  const [errors, setErrors] = useState<Record<string, string>>({});\n\n  async function onSubmit(e: FormEvent) {\n    e.preventDefault();                     // stop the full-page form post\n    const res = await fetch('/api/books', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ title }),\n    });\n    if (res.status === 400) {\n      setErrors((await res.json()).errors ?? {});   // the shape your @ControllerAdvice returns\n      return;\n    }\n    // success: navigate, or invalidate the books query\n  }\n\n  return (\n    <form onSubmit={onSubmit}>\n      <input value={title} onChange={(e) => setTitle(e.target.value)} aria-invalid={!!errors.title} />\n      {errors.title && <p role=\"alert\">{errors.title}</p>}\n      <button>Save</button>\n    </form>\n  );\n}"
+        }
+      ]
+    },
+    {
+      "id": "notes",
+      "type": "notes",
+      "title": "Important notes",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "**Your React app gets a CORS error from Spring. Walk through it.** The browser sends a preflight `OPTIONS` for non-simple requests, and the response must allow the origin, method and headers. With Spring Security, enable `http.cors(...)` so the preflight is handled before authentication; otherwise it gets a 401. In development, a Vite proxy avoids the issue."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Security lives in Spring; hiding UI is only cosmetic.\n- Keep HTTP in one API client.\n- CORS is enforced by the browser.\n- Choose token storage knowing the XSS and CSRF trade-offs.\n- Serve `index.html` for unknown paths so client routes survive a refresh."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why does a request work in Postman but fail with CORS in the browser?",
+              "answer": "CORS is enforced by browsers only. Postman does not apply the same-origin policy."
+            },
+            {
+              "question": "Why does `/books/7` give a 404 on refresh in production?",
+              "answer": "The server looks for that path and finds nothing. It must fall back to `index.html` so the client router can handle it."
+            },
+            {
+              "question": "Is a `RequireAuth` route enough to protect admin data?",
+              "answer": "No. It only hides the screen. The API must check authorisation on every request."
+            },
+            {
+              "question": "What is the XSS risk of `localStorage` for tokens?",
+              "answer": "Any script running on your page, including an injected one, can read and send the token."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

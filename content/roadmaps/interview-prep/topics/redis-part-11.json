@@ -1,0 +1,1131 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "398-421"
+  },
+  "sections": [
+    {
+      "id": "ch-11-1",
+      "type": "concept",
+      "title": "Deployment Options and a Production redis.conf",
+      "subtopicId": "11-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Everything so far ran on a laptop. A production Redis has to survive restarts, keep its data directory on disk that outlives the process, be reachable only by the services that need it, and tell you when it is unhappy. This chapter covers the common ways to run Redis and then walks through a sane, annotated `redis.conf` that you can adapt.\n\n### Choosing how to run Redis\n\nThere is no single right answer. The question is who owns the operating system, the disk and the failover logic."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Good for",
+            "Watch out for"
+          ],
+          "rows": [
+            [
+              "Docker / Compose",
+              "Local development, CI, small single-host setups",
+              "Data lost if no volume is mounted; no automatic failover"
+            ],
+            [
+              "systemd on a VM",
+              "One or a few servers you manage yourself",
+              "You own patching, kernel settings, backups, failover"
+            ],
+            [
+              "Kubernetes (StatefulSet or an operator)",
+              "Teams that already run everything on Kubernetes",
+              "Storage class, pod rescheduling, and memory limits need care"
+            ],
+            [
+              "Managed service from a cloud or Redis vendor",
+              "Teams that do not want to run Redis",
+              "Cost, feature lag, vendor limits on commands and modules"
+            ]
+          ],
+          "caption": "Deployment options at a glance."
+        },
+        {
+          "type": "markdown",
+          "text": "If your whole team's job is not \"run databases\", strongly consider a managed service for production and use the rest of this Part as the checklist of what you are paying someone else to do. If you run it yourself, the rest of the chapter applies directly.\n\n### Docker and Docker Compose\n\nThe official image is `redis` on Docker Hub. For ShopStream development, the following Compose file gives you a Redis with a named volume, a mounted config file and a health check."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  redis:\n    image: redis:8\n    container_name: shopstream-redis\n    command: [\"redis-server\", \"/usr/local/etc/redis/redis.conf\"]\n    ports:\n      - \"127.0.0.1:6379:6379\"\n    volumes:\n      - redis-data:/data\n      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 10s\n      timeout: 3s\n      retries: 5\n    restart: unless-stopped\nvolumes:\n  redis-data:",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `127.0.0.1:6379:6379` publishes the port only on the host's loopback interface. Writing just `6379:6379` publishes it on every interface of the host, which is how many accidental exposures begin.\n- `/data` is the image's working directory, so `dir /data` in the config (or the default) writes RDB and AOF files into the named volume. Without the volume, `docker rm` deletes your data.\n- Pin a major version tag (`redis:8`) rather than `latest` so an image pull does not upgrade you by surprise. For production pin a full version.\n- The container needs the config to bind to an address the other containers can reach (for example `bind * -::*` inside the container) because Docker networking, not Redis, then decides who can connect. Keep the host-side publish restricted as shown above.\n\n### Running under systemd on a VM\n\nWhen you install Redis from a package manager or compile it, run it as an unprivileged `redis` user under systemd. Packages ship a unit file, so you rarely write it by hand, but you should know what matters in it."
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "[Unit]\nDescription=Redis in-memory data store\nAfter=network.target\n\n[Service]\nUser=redis\nGroup=redis\nExecStart=/usr/bin/redis-server /etc/redis/redis.conf --supervised systemd\nType=notify\nRestart=always\nLimitNOFILE=65535\nRuntimeDirectory=redis\nReadWritePaths=/var/lib/redis /var/log/redis\n\n[Install]\nWantedBy=multi-user.target",
+          "title": "/etc/systemd/system/redis.service"
+        },
+        {
+          "type": "markdown",
+          "text": "`--supervised systemd` (the config directive is `supervised`) makes Redis tell systemd when it is ready. `LimitNOFILE` matters because Redis wants a file descriptor per client connection plus some of its own; with fewer descriptors than `maxclients` allows, Redis lowers its effective client limit at startup and logs a warning.\n\n#### Linux kernel settings\n\nRedis prints warnings at startup for the settings that matter most. Do not ignore them."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Why",
+            "Typical value"
+          ],
+          "rows": [
+            [
+              "`vm.overcommit_memory`",
+              "A background save forks; with strict overcommit the fork can fail on a large dataset even though copy-on-write needs little memory",
+              "1"
+            ],
+            [
+              "`Transparent Huge Pages`",
+              "Huge pages make copy-on-write copy 2 MB instead of 4 KB per touched page and cause latency spikes during forks",
+              "never (disable)"
+            ],
+            [
+              "`net.core.somaxconn`",
+              "Caps the listen backlog; Redis's `tcp-backlog` (default 511) is silently reduced if this is lower",
+              "1024 or higher"
+            ],
+            [
+              "`Swap`",
+              "A Redis whose pages are swapped out becomes extremely slow in an unpredictable way",
+              "Small or none, and size RAM so it is not used"
+            ]
+          ],
+          "caption": "Host settings Redis complains about if they are wrong."
+        },
+        {
+          "type": "markdown",
+          "text": "### Redis on Kubernetes\n\nRedis is a stateful, long-lived process with a disk, so the Kubernetes primitive that fits is a **StatefulSet**: pods get stable names and each keeps its own PersistentVolumeClaim across restarts. A **headless Service** gives each pod a stable DNS name, which Sentinel and Cluster need because nodes identify each other by address.\n\nRather than hand-writing replication, Sentinel and Cluster bootstrapping, many teams install a Helm chart or an **operator** (a controller that watches a custom resource such as \"a Redis cluster with 3 shards and 1 replica each\" and creates and repairs the pods). Several community and vendor operators exist, and which is best depends on your requirements, so evaluate them against these questions rather than by name:\n\n- Does it handle failover and re-sharding, or only create the pods?\n- How does it do upgrades: one pod at a time, replica before primary?\n- Where are backups stored and have you restored one?\n- Is the project maintained and does it support the Redis version you want?\n\nPoints that bite regardless of tooling:\n\n- **Memory limits.** If the pod's memory limit is close to `maxmemory`, the fork for a background save plus copy-on-write pushes the container over its limit and the kernel kills it (out-of-memory kill). Leave headroom, as the sizing chapter explains.\n- **Storage.** Use a storage class with predictable latency. AOF `fsync` on slow network disks shows up directly as command latency.\n- **Pod rescheduling and addresses.** A restarted pod may get a new IP. Clients and cluster nodes should use DNS names, and a Redis Cluster must be configured to announce an address peers can reach.\n- **Disruption budgets.** Add a PodDisruptionBudget so a node drain cannot take the primary and all replicas at once.\n\n### A production redis.conf, annotated\n\nThe file below is a starting point for a single primary with one replica, persistence on, and a trusted private network. Every directive is a real Redis directive; the values are sensible defaults to adapt, not magic numbers."
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "# --- Network ---\nbind 10.0.1.15 127.0.0.1\nprotected-mode yes\nport 6379\ntcp-backlog 511\ntcp-keepalive 300\ntimeout 0\nmaxclients 10000\n\n# --- Security (details in the security chapter) ---\naclfile /etc/redis/users.acl\nenable-debug-command no\nenable-module-command no\n\n# --- Memory ---\nmaxmemory 12gb\nmaxmemory-policy allkeys-lfu\nmaxmemory-samples 5\nlazyfree-lazy-eviction yes\nlazyfree-lazy-expire yes\nlazyfree-lazy-server-del yes\nreplica-lazy-flush yes\n\n# --- Persistence ---\ndir /var/lib/redis\nsave 3600 1 300 100 60 10000\nstop-writes-on-bgsave-error yes\nrdbcompression yes\nrdbchecksum yes\nappendonly yes\nappendfsync everysec\nno-appendfsync-on-rewrite no\nauto-aof-rewrite-percentage 100\nauto-aof-rewrite-min-size 64mb\n\n# --- Replication ---\nrepl-backlog-size 256mb\nmin-replicas-to-write 1\nmin-replicas-max-lag 10\n\n# --- Observability ---\nslowlog-log-slower-than 10000\nslowlog-max-len 256\nlatency-monitor-threshold 100\nloglevel notice\nlogfile /var/log/redis/redis.log\n\n# --- Client protection ---\nclient-output-buffer-limit normal 0 0 0\nclient-output-buffer-limit replica 512mb 128mb 60\nclient-output-buffer-limit pubsub 32mb 8mb 60",
+          "title": "redis.conf"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Reading the file section by section\n\n- **Network.** `bind` lists the interfaces to listen on; give it the private address of the server and loopback, never a public one. `protected-mode yes` is the safety net: with no password and no explicit bind it only answers loopback clients. `tcp-keepalive 300` sends TCP keepalives so dead peers are detected. `timeout 0` never closes idle clients; that is right for connection pools. `maxclients 10000` is the ceiling on simultaneous connections.\n- **Memory.** `maxmemory` must be set on any instance used as a cache, and also on a data store if you prefer a clean error to the machine running out of memory. The policy is covered in the eviction chapter in Part 4; `allkeys-lfu` is a good default for caches. The `lazyfree-*` options make the server free big values in a background thread instead of blocking the main one, which smooths latency for large keys.\n- **Persistence.** Several `save` rules in one line are allowed (a snapshot after 3600 s if at least 1 key changed, 300 s and 100 keys, 60 s and 10000 keys). `appendonly yes` with `appendfsync everysec` is the usual balance: at most about one second of writes lost on a crash. Redis defaults to `appendonly no`, so you must turn this on. See the persistence chapter in Part 4 for the trade-offs.\n- **Replication.** A backlog large enough to cover the longest replica outage you want to ride through with a partial resync. Think \"write rate in bytes per second times the seconds of outage\". `min-replicas-to-write 1` makes the primary refuse writes if it has fewer than one replica with lag under `min-replicas-max-lag` seconds, trading availability for less data loss.\n- **Observability.** `slowlog-log-slower-than` is in microseconds, so 10000 is 10 ms. `latency-monitor-threshold` `100` records latency events above 100 ms for `LATENCY DOCTOR`.\n- **Client protection.** `client-output-buffer-limit` format is `class hard-limit soft-limit soft-seconds`. A replica or Pub/Sub subscriber that cannot keep up would otherwise make the primary buffer unbounded data in RAM; the limit disconnects it. Raise the replica limit if a large dataset makes full syncs fail."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not copy `maxmemory 12gb` blindly. It must be derived from your machine's RAM minus operating system, fork headroom and replication buffers. The next chapter shows the arithmetic. A `maxmemory` equal to total RAM is a recipe for an out-of-memory kill during a snapshot."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Change settings live, then persist them. `CONFIG SET` changes most directives without a restart, and `CONFIG REWRITE` writes the running values back to `redis.conf`. If you manage the file with Ansible or a ConfigMap, change it there instead so the next deploy does not undo your tuning."
+        },
+        {
+          "type": "markdown",
+          "text": "### Verifying the deployment\n\nAfter starting, check the facts instead of assuming them:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli -h 10.0.1.15 ping\nPONG\n$ redis-cli -h 10.0.1.15 config get appendonly\n1) \"appendonly\"\n2) \"yes\"\n$ redis-cli -h 10.0.1.15 info server | grep -E \"redis_version|tcp_port|config_file\"\nredis_version:8.0.0\ntcp_port:6379\nconfig_file:/etc/redis/redis.conf\n$ redis-cli -h 10.0.1.15 info replication | grep -E \"^role|connected_slaves\"\nrole:master\nconnected_slaves:1",
+          "title": "Post-deploy smoke checks"
+        },
+        {
+          "type": "markdown",
+          "text": "Note that `INFO` still prints `role:master` and `connected_slaves` for historical reasons, even though the documentation says primary and replica. Also confirm from a machine that should not have access that the port is unreachable; that test matters more than any config line."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Deployment and configuration\n\n- Always persist the data directory on a volume or disk that survives the process, and bind only to private interfaces.\n- Run as an unprivileged user; set `vm.overcommit_memory=1`, disable Transparent Huge Pages and raise the file descriptor limit.\n- On Kubernetes use a StatefulSet or a maintained operator, leave memory headroom above `maxmemory`, and add a disruption budget.\n- Set `maxmemory`, a persistence mode, a replication backlog, slow log and client output buffer limits explicitly rather than trusting defaults.\n- Verify the running configuration with `CONFIG GET` and `INFO`, and test unreachability from the outside."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-2",
+      "type": "concept",
+      "title": "Sizing and Capacity Planning",
+      "subtopicId": "11-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "\"How big a server do I need?\" is the first question operations asks. Redis keeps the whole dataset in RAM, so memory is the main constraint, but connections, network bandwidth and the CPU core that runs commands also set limits. This chapter gives you a way to estimate, a way to measure, and a list of what to leave out of the budget.\n\n### Memory math\n\nStart with the data: number of keys times average size per key. The size per key has two parts, the payload and the overhead.\n\n#### Per-key overhead\n\nEvery key costs memory beyond its value: the key string itself, an entry in the main dictionary, an object header, and (if the key has a TTL) an entry in the expires dictionary. On a test with Redis 7.0 on a 64-bit Linux machine, 100,000 tiny keys such as `key:1` holding a 10-byte value cost about 90 bytes per key all in. Treat \"50 to 100 bytes per key, plus the data\" as an order-of-magnitude rule, and measure your own data, because versions and allocators differ.\n\n#### Per-structure behaviour\n\nThe same logical data can cost very different amounts depending on the encoding. Small hashes, sorted sets and lists use the compact **listpack** encoding; larger ones switch to hash tables or skip lists with a pointer per element. `MEMORY` `USAGE` reports the bytes used by one key, including overhead:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET a b\nOK\n127.0.0.1:6379> MEMORY USAGE a\n(integer) 64\n127.0.0.1:6379> HSET h f v\n(integer) 1\n127.0.0.1:6379> MEMORY USAGE h\n(integer) 64\n127.0.0.1:6379> OBJECT ENCODING h\n\"listpack\"",
+          "title": "Measure real keys instead of guessing"
+        },
+        {
+          "type": "markdown",
+          "text": "(Exact byte counts vary by version; the point is that a hash with a single small field costs only a few dozen bytes more than a string.)"
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Many small hashes beat millions of tiny top-level keys. If you store 10 attributes of a user, one hash `user:42` with 10 fields uses less memory than 10 separate keys, because there is one set of per-key overhead, not ten. The trade-off: hash fields can have their own TTL only on Redis 7.4 and later, while separate keys can always expire independently."
+        },
+        {
+          "type": "markdown",
+          "text": "#### A worked estimate\n\nSuppose ShopStream expects 2 million products cached as hashes of about 400 bytes of payload, 5 million active sessions of about 300 bytes, and a few small structures. A first estimate:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Dataset",
+            "Count",
+            "Bytes each (payload + overhead)",
+            "Total"
+          ],
+          "rows": [
+            [
+              "Product hashes",
+              "2,000,000",
+              "400 + 150 = 550",
+              "1.1 GB"
+            ],
+            [
+              "Sessions",
+              "5,000,000",
+              "300 + 150 = 450",
+              "2.25 GB"
+            ],
+            [
+              "Carts, rate limits, misc",
+              "n/a",
+              "n/a",
+              "0.5 GB"
+            ],
+            [
+              "Estimated dataset",
+              "n/a",
+              "n/a",
+              "about 3.9 GB"
+            ]
+          ],
+          "caption": "Illustrative first-pass memory estimate (labelled guess, not measurement)."
+        },
+        {
+          "type": "markdown",
+          "text": "The \"150\" per item bundles key, dictionary, expiry and per-field overhead and is an assumption. Before trusting it, load a representative sample (say 100,000 products) into a test instance and compare `used_memory` before and after. Scale up from the measured number and add 20 to 30 percent margin for growth.\n\n### What else uses memory\n\n`used_memory` in `INFO memory` is what Redis has allocated. Beyond the dataset it includes buffers you must budget for:\n\n- **Client buffers.** Each connection has input and output buffers. Pipelining huge batches or slow readers (Pub/Sub subscribers, replicas) grow them. `maxmemory-clients` (Redis 7.0+) can cap total client memory, as a percentage or an absolute size.\n- **Replication backlog and replica output buffers**, sized by `repl-backlog-size` and the output limits shown earlier.\n- **AOF buffers** during rewrite.\n- **Fragmentation.** The operating system may hold more RSS (resident memory) than Redis has live data. Check `mem_fragmentation_ratio` in `INFO memory`: RSS divided by `used_memory`. Around 1.0 to 1.5 is normal; well above 1.5 means memory is wasted by fragmentation (consider `activedefrag yes` or a restart through failover); below 1.0 means the OS has swapped part of Redis out, which is an emergency. On a tiny, nearly empty instance the ratio is meaningless: a fresh test instance can show a ratio of 5 or more simply because the executable's baseline memory dominates.\n- **Eviction does not count these buffers**, which is one reason `maxmemory` must be well below physical RAM.\n\n#### Headroom for fork and copy-on-write\n\nWhen Redis takes an RDB snapshot or rewrites the AOF it calls `fork()`. The child shares memory pages with the parent; each page the parent modifies after the fork is copied (copy-on-write). In the worst case, a write-heavy workload during a long snapshot can duplicate nearly the entire dataset. A rule of thumb for planning:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "Physical RAM ≥ maxmemory × (1 + COW factor) + buffers + OS\nread-mostly workload:   COW factor about 0.1 to 0.3\nwrite-heavy workload:   COW factor up to 1.0 in the worst case"
+        },
+        {
+          "type": "markdown",
+          "text": "That is why Redis machines often have maxmemory at 50 to 70 percent of RAM when persistence is on and writes are heavy. You can measure your own COW usage: after a background save, look at `current_cow_size` in `INFO` `persistence` while a save is running, and `rdb_last_cow_size` afterwards."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A cache on a 16 GB box with `maxmemory 15gb` can still get killed. Eviction keeps the dataset under 15 GB, but the snapshot child, client buffers and fragmentation sit on top. When the box runs out, the Linux out-of-memory killer picks the biggest process, which is Redis. Look for it in `dmesg` or the system log."
+        },
+        {
+          "type": "markdown",
+          "text": "### Connections and CPU\n\n#### Connections\n\nEach client connection is a file descriptor and some memory. Typical Spring Boot applications use a handful of connections each (Lettuce shares one connection among threads for most commands; Jedis pools use one per concurrent command). The danger is multiplication: 200 pods times 20 connections is 4000 connections. Keep `maxclients` (default 10000) above the sum of all pool sizes with margin, and confirm with `INFO clients`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INFO clients\n# Clients\nconnected_clients:1\ncluster_connections:0\nmaxclients:10000\nclient_recent_max_input_buffer:0\nclient_recent_max_output_buffer:0\nblocked_clients:0\ntracking_clients:0",
+          "title": "Connection headroom"
+        },
+        {
+          "type": "markdown",
+          "text": "#### The single command thread\n\nCommands run on one thread, so one Redis instance can never use more than about one core for command execution, however many cores the machine has. With I/O threads enabled (`io-threads`, reworked in Redis 8.0) socket reading and writing are spread over more cores, which helps for many connections and large payloads but does not parallelize command execution itself. If one instance is CPU bound on the main thread, the answer is to shard the data across several instances (Redis Cluster, or client-side partitioning), not a bigger machine.\n\n#### Network\n\nA `GET` of a 10 KB value at 100,000 operations per second is about 1 GB per second, roughly 8 Gbit/s, which can saturate a 10 Gbit link. Large values and fan-out reads (replicas, Pub/Sub) are bandwidth problems before they are CPU problems. Multiply payload size by operations per second to estimate.\n\n### Benchmarking\n\n`redis-benchmark` ships with Redis and measures raw server throughput for common commands. It is useful for comparing configurations, not for predicting your application's behaviour."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-benchmark -h 10.0.1.15 -t set,get -n 1000000 -c 50 -d 256 -P 16 -q\nSET: 612745.12 requests per second, p50=0.623 msec\nGET: 701331.25 requests per second, p50=0.543 msec",
+          "title": "redis-benchmark usage"
+        },
+        {
+          "type": "markdown",
+          "text": "(The numbers above are illustrative; yours depend entirely on hardware and network.) The options: `-t` selects tests, `-n` is the total number of requests, `-c` the number of parallel connections, `-d` the value size in bytes, `-P` the pipeline depth and `-q` quiet output. Always benchmark from a separate machine on the same network as your application, with your real value sizes, and with and without pipelining, because a benchmark that runs on the same host as the server mostly measures loopback.\n\nFor a more realistic load profile (key distributions, ratios of reads and writes, many connections and threads) a dedicated tool such as **memtier\\_benchmark** is commonly used. It is a separate project from Redis; check its documentation for options."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Capacity reviews that work Teams that avoid surprises review three numbers per instance every quarter: peak `used_memory` as a percentage of `maxmemory`, peak connected clients as a percentage of `maxclients`, and p99 command latency. If any one is trending toward its ceiling, they resize or shard before the incident, not during it."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you size a Redis instance? Estimate keys times (payload plus per-key overhead), validate with `MEMORY USAGE` on real samples, add growth margin, then add headroom for fork copy-on-write, client and replication buffers and fragmentation, so `maxmemory` is typically well below physical RAM. Check connection counts against `maxclients`, and check bandwidth and the single main thread, which cap throughput on one instance and are solved by sharding."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Sizing\n\n- Memory is the primary constraint; per-key overhead is tens of bytes and small compact encodings save a lot, but measure with `MEMORY USAGE` and a load test.\n- `maxmemory` is not physical RAM: leave room for fork copy-on-write, buffers and fragmentation.\n- Watch `mem_fragmentation_ratio`; far above 1.5 means waste, below 1.0 means swapping.\n- One instance runs commands on one core and shares one network link: scale out by sharding.\n- Benchmark from another host with realistic value sizes and pipelining, and treat the result as a comparison tool."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-3",
+      "type": "concept",
+      "title": "Monitoring Redis",
+      "subtopicId": "11-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A Redis server that nobody watches fails in the same predictable ways: memory fills, latency creeps up, a replica falls behind, connections pile up. Almost every one of those failures is visible in `INFO` long before it becomes an outage. This chapter shows which numbers to watch, where to find them, what thresholds are reasonable as starting guidance, and how to get them into a dashboard.\n\n### INFO: the single source of truth\n\n`INFO` returns server statistics grouped in sections. Ask for one section at a time instead of dumping everything:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "INFO server\nINFO clients\nINFO memory\nINFO persistence\nINFO stats\nINFO replication\nINFO cpu\nINFO commandstats\nINFO keyspace"
+        },
+        {
+          "type": "markdown",
+          "text": "`INFO everything` adds all sections, and `INFO commandstats` and `INFO latencystats` show per-command call counts, time and (with `latency-tracking yes`, the default since Redis 7.0) percentile latencies. Fields are `name:value` lines, so they are easy to parse with a script or an exporter."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Section",
+            "What it tells you"
+          ],
+          "rows": [
+            [
+              "`used_memory`",
+              "memory",
+              "Bytes allocated by Redis; compare with `maxmemory`"
+            ],
+            [
+              "`mem_fragmentation_rati` `o`",
+              "memory",
+              "RSS divided by used\\_memory; high means wasted memory, below 1 means swapping"
+            ],
+            [
+              "`connected_clients`",
+              "clients",
+              "Current connections; compare with `maxclients`"
+            ],
+            [
+              "`blocked_clients`",
+              "clients",
+              "Clients waiting in blocking calls such as BLPOP or XREAD BLOCK"
+            ],
+            [
+              "`rejected_connections`",
+              "stats",
+              "Connections refused because `maxclients` was reached"
+            ],
+            [
+              "`keyspace_hits /` `keyspace_misses`",
+              "stats",
+              "Used to compute the cache hit ratio"
+            ],
+            [
+              "`evicted_keys`",
+              "stats",
+              "Keys removed by `maxmemory` eviction"
+            ],
+            [
+              "`expired_keys`",
+              "stats",
+              "Keys removed by TTL"
+            ],
+            [
+              "`instantaneous_ops_per_` `sec`",
+              "stats",
+              "Recent throughput"
+            ],
+            [
+              "`latest_fork_usec`",
+              "stats",
+              "Duration of the last fork in microseconds"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Field",
+            "Section",
+            "What it tells you"
+          ],
+          "rows": [
+            [
+              "`rdb_last_bgsave_status` `/` `aof_last_write_status`",
+              "persistence",
+              "Must be ok"
+            ],
+            [
+              "`master_link_status`",
+              "replication",
+              "On a replica: up or down"
+            ],
+            [
+              "`master_repl_offset /` `slave_repl_offset`",
+              "replication",
+              "Compare primary and replica to see lag in bytes"
+            ]
+          ],
+          "caption": "The INFO fields that matter most."
+        },
+        {
+          "type": "markdown",
+          "text": "### Key metrics and starting thresholds\n\nThresholds depend on your system. The table gives guidance for a typical cache or session store, so use it as a starting point and tune it with your own history."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Metric",
+            "How to compute",
+            "Starting alert idea"
+          ],
+          "rows": [
+            [
+              "Memory use",
+              "used\\_memory ÷ maxmemory",
+              "Warn above 80%, page above 90%"
+            ],
+            [
+              "Cache hit ratio",
+              "hits ÷ (hits + misses) over a window",
+              "Alert on a sudden drop, not on a fixed value"
+            ],
+            [
+              "Evictions",
+              "rate of evicted\\_keys",
+              "Any sustained non-zero rate on a store that must keep data; on a cache watch for a rising trend"
+            ],
+            [
+              "Rejected connections",
+              "rate of rejected\\_connections",
+              "Any non-zero value"
+            ],
+            [
+              "Clients",
+              "connected\\_clients ÷ maxclients",
+              "Warn above 80%"
+            ],
+            [
+              "Fork time",
+              "latest\\_fork\\_usec",
+              "Warn when it grows into hundreds of milliseconds"
+            ],
+            [
+              "Replica lag",
+              "primary offset minus replica offset, or seconds since last interaction",
+              "Alert when lag keeps growing"
+            ],
+            [
+              "Persistence errors",
+              "rdb\\_last\\_bgsave\\_status, aof\\_last\\_write\\_status",
+              "Alert on anything other than ok"
+            ],
+            [
+              "Slow commands",
+              "rate of new SLOWLOG entries",
+              "Alert on a sudden increase"
+            ],
+            [
+              "Latency",
+              "p99 of client-side timings",
+              "Alert on your SLO, for example above 5 ms"
+            ]
+          ],
+          "caption": "Metrics, how to compute them, and a starting alert rule (guidance, not law)."
+        },
+        {
+          "type": "markdown",
+          "text": "The hit ratio deserves a note. Over the lifetime of the server it is a useless average. Compute it over a recent window, from the difference of the counters, and remember that a low ratio is only a problem if misses are expensive (they go to a slow database) or if it changed recently. A cache full of one-time keys has a low ratio and is working as designed."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "INFO counters only go up. `keyspace_hits`, `evicted_keys` and friends are cumulative since start (or since `CONFIG` `RESETSTAT`). A dashboard that plots the raw value is not showing what is happening now. Plot the rate of change."
+        },
+        {
+          "type": "markdown",
+          "text": "### Prometheus and Grafana\n\nThe most common way to collect these numbers is a **Prometheus exporter**: a small process that connects to Redis, runs `INFO` and friends, and exposes the values over HTTP for Prometheus to scrape. The widely used one is `redis_exporter`. A typical Compose fragment next to ShopStream's Redis looks like this:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  redis-exporter:\n    image: oliver006/redis_exporter:latest\n    environment:\n      REDIS_ADDR: \"redis://redis:6379\"\n      REDIS_PASSWORD: \"${REDIS_PASSWORD}\"\n    ports:\n      - \"127.0.0.1:9121:9121\"\n    depends_on:\n      - redis",
+          "title": "docker-compose.monitoring.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "Prometheus then scrapes port 9121. Pin a specific image version in real deployments. Metric names follow the exporter's `redis_` prefix, for example `redis_memory_used_bytes`, `redis_memory_max_bytes`, `redis_connected_clients`, `redis_keyspace_hits_total`, `redis_evicted_keys_total`; confirm the exact names against the exporter's README for the version you deploy. Example alert expressions in Prometheus query language:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# memory above 90% of maxmemory (only meaningful if maxmemory > 0)\nredis_memory_used_bytes / redis_memory_max_bytes > 0.9\n\n# hit ratio over the last 5 minutes\nrate(redis_keyspace_hits_total[5m])\n  / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]))\n\n# any evictions happening now\nrate(redis_evicted_keys_total[5m]) > 0"
+        },
+        {
+          "type": "markdown",
+          "text": "Also monitor the Java side. Spring Boot Actuator with Micrometer exposes Lettuce command latency and connection metrics when Lettuce's metrics are enabled, and your own cache hit and miss counters tell you about the application-level hit ratio, which matters more to users than the server's. The Spring chapters in Part 7 cover application-side metrics.\n\n### SLOWLOG\n\nThe slow log records commands whose **execution time** (not including network or queueing time) exceeded a threshold. It is the first tool for finding \"who is running the expensive command\"."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG GET slowlog-log-slower-than\n1) \"slowlog-log-slower-than\"\n2) \"10000\"\n127.0.0.1:6379> CONFIG SET slowlog-log-slower-than 5000\nOK\n127.0.0.1:6379> SLOWLOG GET 1\n1) 1) (integer) 14\n   2) (integer) 1760000000\n   3) (integer) 31254\n   4) 1) \"SORT\"\n      2) \"biglist\"\n   5) \"10.0.1.20:51234\"\n   6) \"\"\n127.0.0.1:6379> SLOWLOG LEN\n(integer) 3\n127.0.0.1:6379> SLOWLOG RESET\nOK",
+          "title": "Reading the slow log"
+        },
+        {
+          "type": "markdown",
+          "text": "Each entry is: a unique id, the Unix timestamp, the duration in microseconds (31254 µs is about 31 ms here), the command and its arguments (long arguments are truncated), the client address and the client name. The log keeps only the most recent `slowlog-max-len` entries in memory, so export it periodically if you want history.\n\n### LATENCY tools\n\nThree layers help separate \"Redis is slow\" from \"the network or machine is slow\":\n\n- **Client-side timing.** Measure round-trip time from the application host: `redis-cli --latency -h host` samples `PING` repeatedly and prints min, max and average in milliseconds.\n- **Intrinsic latency.** `redis-cli --intrinsic-latency 100` run on the server host measures the delay the kernel or hypervisor itself adds (the number is the test duration in seconds). You cannot get better latency than this baseline.\n- **The latency monitor.** After `CONFIG SET latency-monitor-threshold 100` Redis records events (such as fork, AOF fsync, expiry cycles) that take longer than 100 ms. `LATENCY LATEST`, `LATENCY HISTORY event` and `LATENCY DOCTOR` then report them, the last in plain English with suggestions."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG SET latency-monitor-threshold 100\nOK\n127.0.0.1:6379> LATENCY LATEST\n1) 1) \"fork\"\n   2) (integer) 1760000100\n   3) (integer) 312\n   4) (integer) 312\n127.0.0.1:6379> LATENCY DOCTOR",
+          "title": "Latency doctor"
+        },
+        {
+          "type": "markdown",
+          "text": "The `LATENCY LATEST` columns are the event name, the time of the latest sample, the latest latency in milliseconds, and the all-time maximum. On an idle test instance `LATENCY DOCTOR` says there is too little data for its advice, which is normal.\n\n### Clients, keyspace and memory commands\n\n`CLIENT LIST` prints one line per connection with its address, age, idle time, current command, buffer memory (`qbuf`, `omem`) and name. Name your connections (`CLIENT SETNAME`, or `client-name` in Lettuce and Jedis configuration) so you can tell the cart-service pods from the notification-service ones. Sort by `tot-mem` or `omem` to find a client with a runaway buffer, and by `age` plus `idle` to find leaked connections.\n\n`INFO keyspace` shows per-database key counts, how many have an expiry and the average TTL:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INFO keyspace\n# Keyspace\ndb0:keys=2041557,expires=1984210,avg_ttl=1352211",
+          "title": "Keyspace summary"
+        },
+        {
+          "type": "markdown",
+          "text": "`avg_ttl` is in milliseconds. If `keys` is much larger than `expires` on a cache, you are probably missing TTLs, which is how a cache grows until it hits the memory ceiling. `MEMORY STATS` and `MEMORY DOCTOR` give a breakdown of the instance's memory use and simple advice."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "A dashboard that earns its keep Six panels cover most incidents: memory used versus `maxmemory`, hit ratio over a recent window, ops per second, connected clients, evictions plus expired keys per second, and p99 latency seen from the client. Add replication lag and fork duration for any instance that persists or replicates."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Monitoring\n\n- `INFO` is the source of truth; most monitoring is turning its counters into rates and ratios.\n- Alert on memory versus `maxmemory`, rejected connections, persistence errors, replication lag, fork time and evictions where they should not occur.\n- Use `redis_exporter` with Prometheus and Grafana, plus application-side cache metrics.\n- `SLOWLOG` shows expensive commands (execution time only); `LATENCY` tools and `--intrinsic-latency` separate Redis from environment problems.\n- Name your clients and keep TTLs on cache keys, then `CLIENT LIST` and `INFO keyspace` answer many questions fast."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-4",
+      "type": "concept",
+      "title": "Troubleshooting Playbook",
+      "subtopicId": "11-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "When something is wrong at 3 a.m. you want a short route from symptom to cause to command to fix. This chapter is organized that way. For each area, first reproduce the symptom with a measurement, then change one thing at a time.\n\n### Method\n\n1. State the symptom with a number (\"p99 went from 2 ms to 80 ms at 14:05\").\n2. Check the cheap global signals: `INFO` (memory, clients, stats, persistence, replication), `SLOWLOG GET`, `LATENCY` `LATEST`.\n3. Correlate with events: deploy, traffic spike, snapshot start, failover, a new batch job.\n4. Form one hypothesis, test it with a command, and only then change something.\n\n### High latency"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "How to confirm",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "Periodic spikes every few minutes",
+              "Fork for RDB snapshot or AOF rewrite",
+              "`latest_fork_usec` in `INFO` `stats`; `LATENCY LATEST` shows \"fork\"",
+              "Disable Transparent Huge Pages; use faster VM type; make instances smaller by sharding; schedule heavy writes away from snapshots"
+            ],
+            [
+              "Spikes with every write, disk busy",
+              "AOF fsync on slow disk",
+              "`strace -T -e` `trace=fdatasync` on the server; `aof_delayed_fsync` in `INFO persistence`",
+              "Use `appendfsync everysec`; faster disk; keep AOF on a separate volume"
+            ],
+            [
+              "Constant moderate latency, a few clients to blame",
+              "Slow O(N) commands",
+              "`SLOWLOG GET`; `INFO` `commandstats`",
+              "Replace with incremental alternatives (`SCAN` instead of `KEYS`); cap collection sizes; split big keys"
+            ],
+            [
+              "Latency grows with traffic",
+              "Single thread saturated",
+              "`INFO cpu`, `top` shows one core at 100%",
+              "Pipeline; reduce payload sizes; enable I/O threads; shard across instances"
+            ],
+            [
+              "Sudden huge latency, memory pressure",
+              "Swapping",
+              "`vmstat 1` shows swap in/out; `mem_fragmentatio` `n_ratio` below 1",
+              "Add RAM, lower `maxmemory`, stop other memory consumers, no swap"
+            ],
+            [
+              "Network-looking delays",
+              "Packet loss, noisy neighbours, large replies",
+              "`redis-cli --latency` from client host; compare `--intrinsic-latency` on server",
+              "Fix network; move clients closer; reduce reply sizes"
+            ],
+            [
+              "Stalls when many keys expire together",
+              "Expiry cycle bursts",
+              "`LATENCY LATEST` event \"expire-cycle\"",
+              "Add jitter to TTLs so keys do not expire at the same instant"
+            ]
+          ],
+          "caption": "Latency symptoms."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never use `KEYS` on a production instance. `KEYS pattern` scans the entire keyspace in one command and blocks every other client for as long as that takes. Use `SCAN` with a cursor and a `COUNT` hint, which returns small batches and lets other commands run between them."
+        },
+        {
+          "type": "markdown",
+          "text": "### Memory growth and out-of-memory"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "How to confirm",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "`used_memory` climbs without bound on a cache",
+              "Keys without TTL, no `maxmemory`",
+              "`INFO keyspace` (keys much larger than expires); `maxmemory` is 0",
+              "Always set TTLs; set `maxmemory` and an eviction policy"
+            ],
+            [
+              "Writes fail with `OOM` `command not allowed` `when used memory >` `'maxmemory'`",
+              "`noeviction` policy (the default) and the memory is full",
+              "`CONFIG GET maxmemory-policy`",
+              "For a cache choose `allkeys-lru` or `allkeys-lfu`; for a store add capacity or delete data"
+            ],
+            [
+              "RSS much higher than `used_memory`",
+              "Fragmentation",
+              "`mem_fragmentation_ratio` above 1.5",
+              "Enable `activedefrag yes`; or fail over to a fresh replica and restart the old primary"
+            ],
+            [
+              "Process killed by Linux",
+              "OOM killer; fork plus copy-on-write plus buffers exceeded RAM",
+              "`dmesg` or journal mentions \"Out of memory: Killed process\"",
+              "Lower `maxmemory`; add RAM; limit client buffers"
+            ],
+            [
+              "One client's memory huge",
+              "Slow Pub/Sub subscriber or huge pipeline",
+              "`CLIENT LIST` large `omem` or `qbuf`",
+              "Set `client-output-buffer-limit`; fix the consumer; set `maxmemory-clients`"
+            ],
+            [
+              "Memory not freed after deleting data",
+              "Allocator keeps freed pages",
+              "`INFO memory` allocator fields",
+              "Normal; it is reused. Defrag or restart if truly needed"
+            ]
+          ],
+          "caption": "Memory symptoms."
+        },
+        {
+          "type": "markdown",
+          "text": "### Big keys and hot keys\n\nA **big key** is one whose value is huge (a list with ten million items, a hash with a million fields). Deleting or reading it blocks the single thread for a long time, and in a cluster it can make one shard far larger than the others. A **hot key** is one that receives a disproportionate share of traffic; in a cluster all its traffic lands on one shard.\n\n#### Finding big keys\n\n`redis-cli --bigkeys` samples the keyspace with `SCAN` and reports the largest key of each type. `--memkeys` does the same by memory usage. Both are safe on a live server (they use `SCAN`) but they do add load, so prefer a replica or off-peak."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli -h 10.0.1.15 --bigkeys\n# Scanning the entire keyspace to find biggest keys as well as\n# average sizes per key type.\n\n[00.00%] Biggest hash   found so far '\"product:991\"' with 12 fields\n[41.25%] Biggest list   found so far '\"search:recent:u7\"' with 9001 items\n\n-------- summary -------\n\nSampled 2041557 keys in the keyspace!\nTotal key length in bytes is 31204112 (avg len 15.28)\n\nBiggest   list found '\"search:recent:u7\"' has 9001 items\nBiggest   hash found '\"product:991\"' has 12 fields",
+          "title": "Scan for big keys"
+        },
+        {
+          "type": "markdown",
+          "text": "(Output shortened and illustrative.) To delete a big collection without blocking, use `UNLINK key`, which reclaims memory in a background thread, or delete incrementally with `HSCAN` plus `HDEL` batches.\n\n#### Finding hot keys\n\nBefore Redis 8.6 the options were awkward: `redis-cli --hotkeys` works only when an LFU eviction policy (`allkeys-lfu` or `volatile-lfu`) is active, sampling access frequency counters; `MONITOR` shows everything but costs a lot and must never be left running. Redis 8.6 adds a purpose-built `HOTKEYS` command family that tracks the hottest keys over a time window:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# track the top 10 keys by CPU and by network bytes, sampling 1 in 10 commands, for 60 seconds\nHOTKEYS START METRICS 2 CPU NET COUNT 10 DURATION 60 SAMPLE 10\n# later, read the results of the current or most recent session\nHOTKEYS GET\n# stop early, or clear the stored results\nHOTKEYS STOP\nHOTKEYS RESET"
+        },
+        {
+          "type": "markdown",
+          "text": "`METRICS 2 CPU NET` says that two metrics follow (CPU time and network bytes; at least one is required). `COUNT` is how many keys to report and `SAMPLE ratio` samples each command with probability 1 in ratio: a higher ratio costs less performance but may miss keys. `SLOTS` restricts tracking to chosen hash slots in cluster mode. Only one session can run at a time. `HOTKEYS GET` returns fields such as `tracking-active`, `collection-duration-ms`, `by-cpu-time-us` (key and microseconds pairs) and `by-net-bytes` (key and byte pairs). The commands are in the `@admin` and `@dangerous` ACL categories, so restrict who can run them.\n\nIf you must live without it, find hot keys with application-side counters and metrics, and mitigate by replicating the value (read from replicas), by caching it in the application process (client-side caching or a small local cache), or by splitting it into several keys (`stock:{sku}:0` to `stock:{sku}:7`) that you sum or choose from at random.\n\n### Fork stalls and persistence problems\n\nA fork copies the process's page tables. On big instances or slow hypervisors this takes tens to hundreds of milliseconds, during which Redis serves nothing. Check `latest_fork_usec` and keep instances to a few tens of gigabytes rather than hundreds. Disable Transparent Huge Pages (described in the deployment chapter), and avoid triggering `BGSAVE` and `BGREWRITEAOF` at once.\n\nIf `rdb_last_bgsave_status` is `err`, the usual causes are: no disk space in `dir`, wrong permissions on `dir`, or the fork failing for lack of memory (see `vm.overcommit_memory`). With `stop-writes-on-bgsave-error yes` (the default) Redis then rejects writes with a `MISCONF` error until a save succeeds. Fix the disk or memory problem first; do not just turn the safeguard off, because it is telling you that you are not persisting.\n\n### Connection storms"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "How to confirm",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "`ERR max number of` `clients reached`",
+              "Pools too large, connection leak, or a restart wave of many pods",
+              "`INFO clients`; `rejected_connections`; `CLIENT` `LIST` grouped by address/name",
+              "Reduce pool sizes; fix leaks (always return pooled connections); raise `maxclients` and the file descriptor limit"
+            ],
+            [
+              "Application times out after Redis restarts",
+              "Thundering herd: every client reconnects and retries at once",
+              "Many new connections in `total_connections_received` rate",
+              "Backoff with jitter on reconnect; Lettuce reconnects automatically, tune timeouts"
+            ],
+            [
+              "Idle connections vanish through a firewall or load balancer",
+              "Idle timeout shorter than client keepalive",
+              "Errors on first command after quiet period",
+              "Keep `tcp-keepalive` below the device timeout; enable client-side keepalive and periodic `PING`"
+            ],
+            [
+              "Many connections from one client",
+              "Creating a new client per request",
+              "`CLIENT LIST` shows churn",
+              "Create one shared client or a pool at startup"
+            ]
+          ],
+          "caption": "Connection symptoms."
+        },
+        {
+          "type": "markdown",
+          "text": "### Replication problems"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "How to confirm",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "Replica shows `master_li` `nk_status:down`",
+              "Network, wrong password, replica cannot reach primary",
+              "`INFO replication` on the replica; replica log",
+              "Check `masterauth` and `masteruser`, firewall, TLS settings"
+            ],
+            [
+              "Replica endlessly full-resyncs",
+              "Backlog too small for the disconnection; output buffer limit closing the link",
+              "`sync_full` and `sync_partial_ok` /`sync_partial_err` in `INFO` `stats`; primary log",
+              "Raise `repl-backlog-size` and the replica `client-output-buffer-limit`"
+            ],
+            [
+              "Replication lag grows",
+              "Replica too slow, big commands, or network bandwidth",
+              "Compare `master_repl_offset` with `slave_repl_offset`",
+              "Faster replica; smaller values; avoid huge writes"
+            ],
+            [
+              "Reads from replica return stale data",
+              "Replication is asynchronous",
+              "Expected",
+              "Read from primary for read-your-writes; use `WAIT` when needed"
+            ],
+            [
+              "Primary refuses writes with `NOREPLICAS`",
+              "`min-replicas-to-writ` `e` not satisfied",
+              "`INFO replication` shows fewer good replicas",
+              "Restore the replicas; this protection is by design"
+            ]
+          ],
+          "caption": "Replication symptoms."
+        },
+        {
+          "type": "markdown",
+          "text": "For Sentinel and Cluster specific operations (failover, slot repair), see the chapters on them in Part 5. The cluster symptom table follows.\n\n### Cluster fail states"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "How to confirm",
+            "Fix"
+          ],
+          "rows": [
+            [
+              "`CLUSTERDOWN The` `cluster is down`",
+              "`cluster_state:fail`; some slots unassigned or their owners unreachable",
+              "`CLUSTER INFO`; `redis-cli` `--cluster check host:port`",
+              "Restore the failed primary or promote its replica; with `cluster-r` `equire-full-coverage yes` the whole cluster stops when any slot is uncovered"
+            ],
+            [
+              "Many `MOVED` errors",
+              "Client does not follow cluster topology",
+              "Client logs; `CLUSTER SHARDS` or `CLUSTER NODES`",
+              "Use a cluster-aware client with topology refresh (Lettuce: enable adaptive refresh)"
+            ],
+            [
+              "`CROSSSLOT` errors",
+              "A multi-key command or transaction touches keys in different slots",
+              "Error text",
+              "Use hash tags such as `{user:42}:cart` to colocate keys"
+            ],
+            [
+              "One shard overloaded",
+              "Hot key or big key, or uneven slot spread",
+              "`INFO` per node; `CLUSTER` `SLOT-STATS` (8.2+); `HOTKEYS`",
+              "Rebalance slots; split hot keys"
+            ],
+            [
+              "Node flapping, failovers without cause",
+              "`cluster-node-timeout` too short for the latency; long fork",
+              "Logs show PFAIL/FAIL then recovery",
+              "Raise `cluster-node-timeout`; fix the stalls that cause it"
+            ],
+            [
+              "Slots stuck migrating or importing",
+              "Interrupted resharding",
+              "`redis-cli --cluster check` reports open slots",
+              "`redis-cli --cluster fix` `host:port`, or on Redis 8.4 and later use `CLUSTER MIGRATION` for atomic slot migration"
+            ]
+          ],
+          "caption": "Cluster symptoms."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Redis became slow in production. What do you check first? Look at `INFO` and `SLOWLOG` for the global picture: is memory near the limit or swapping, did a fork or AOF fsync coincide with the spikes (`latest_fork_usec`, `LATENCY LATEST`), is a slow O(N) command in the slow log, are clients or CPU saturated? Then separate environment from Redis with `redis-cli` `--latency` from the client and `--intrinsic-latency` on the server, and change one thing at a time."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Troubleshooting\n\n- Measure first: `INFO`, `SLOWLOG`, `LATENCY`, `CLIENT LIST` answer most questions in a minute.\n- Latency spikes usually come from forks, fsync, slow O(N) commands, swapping or a saturated single thread.\n- Cache memory problems come from missing TTLs, no `maxmemory`, or the wrong eviction policy; the OOM killer needs fork headroom.\n- Find big keys with `--bigkeys`/`--memkeys`, delete them with `UNLINK`; find hot keys with `HOTKEYS` (8.6) or application metrics.\n- Connection storms and cluster `CROSSSLOT`, `MOVED` and fail states have well-known causes; know the table, then the command."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-5",
+      "type": "concept",
+      "title": "Security Hardening",
+      "subtopicId": "11-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Redis was designed for trusted networks. It speaks a simple text protocol, it is very fast at guessing-friendly operations like `AUTH` attempts, and a single `FLUSHALL` from an attacker deletes everything. The official security guidance is blunt: access to the Redis port should be denied to everybody but trusted clients. Exposed, unauthenticated Redis servers on the public internet are found and abused routinely, so treat the steps in this chapter as the minimum, not extras.\n\nThink in layers: the network decides who can connect at all, authentication decides who you are, ACLs decide what you may do, TLS protects the bytes on the wire, and operational hygiene covers secrets, dangerous commands and auditing.\n\n### Layer 1: network\n\n- **Never expose Redis to the internet.** Put it in a private subnet or an internal Kubernetes namespace and allow only the application's addresses through security groups, firewall rules or `NetworkPolicy`.\n- **Bind narrowly.** `bind 10.0.1.15 127.0.0.1` listens only on those interfaces. Docker needs care: `-p 6379:6379` publishes on all host interfaces, so use `-p 127.0.0.1:6379:6379` for local use.\n- **Keep** `protected-mode yes`**.** Since version 3.2.0, when Redis runs with the default configuration (binding all interfaces) and no password, protected mode makes it answer only loopback clients. It is a safety net against an accidental misconfiguration, not a security design.\n- **Do not run as root.** Redis does not need root privileges. A dedicated `redis` user limits the damage if someone gets command execution.\n- **Cluster and replication ports.** The cluster bus port (the data port plus 10000) and the replication link also need to be reachable only between your nodes.\n\n### Layer 2: authentication and ACL design\n\nRedis 6 introduced Access Control Lists. A fresh server has one user, `default`, equivalent to `user default on nopass` `~* &* +@all`: enabled, no password, all keys, all channels, all commands. The old `requirepass` directive still works but only sets a password on that all-powerful `default` user, which is why it is the legacy method. The recommended approach is one user per application with only what it needs.\n\n#### The ACL rule language\n\nRules are applied left to right and are incremental:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Rule",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`on / off`",
+              "Enable or disable authentication as this user"
+            ],
+            [
+              "`>password`",
+              "Add a password (stored as a SHA-256 hash)"
+            ],
+            [
+              "`#hash`",
+              "Add a password by its SHA-256 hex digest instead of plain text"
+            ],
+            [
+              "`~pattern`",
+              "Allow keys matching the pattern; `~*` is all keys"
+            ],
+            [
+              "`%R~pattern, %W~pattern`",
+              "Read-only or write-only access to matching keys (Redis 7.0+)"
+            ],
+            [
+              "`&pattern`",
+              "Allow Pub/Sub channels matching the pattern"
+            ],
+            [
+              "`+@category, -@category`",
+              "Add or remove a command category such as `@read`, `@write`, `@dangerous`"
+            ],
+            [
+              "`+command, -command`",
+              "Add or remove one command; subcommands as `+config|get` (7.0+)"
+            ],
+            [
+              "`(rules)`",
+              "A selector: an extra independent rule set (7.0+)"
+            ],
+            [
+              "`reset`",
+              "Return the user to its freshly created state"
+            ]
+          ],
+          "caption": "ACL rules you will use most."
+        },
+        {
+          "type": "markdown",
+          "text": "A user with no key pattern cannot touch any key. Key patterns restrict only commands that name keys: `FLUSHALL`, `FLUSHDB` and `SWAPDB` are not limited by them, so exclude them explicitly or exclude `@dangerous`.\n\n#### Users for ShopStream"
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "user default off nopass sanitize-payload ~* &* -@all\nuser catalog on #HASH_CATALOG ~product:* ~cache:* +@read +@write +@connection -@dangerous\nuser cart on #HASH_CART ~cart:* ~session:* +@read +@write +@connection -@dangerous\nuser notifier on #HASH_NOTIFIER ~stream:orders &orders:* +@read +@write +@pubsub -@dangerous\nuser monitoring on #HASH_MON ~* +info +ping +slowlog +latency +client|list +config|get +memory|usage\nuser admin on #HASH_ADMIN ~* &* +@all",
+          "title": "/etc/redis/users.acl"
+        },
+        {
+          "type": "markdown",
+          "text": "Replace the `HASH_...` placeholders with real SHA-256 hex digests of each password (64 hex characters). What to notice:\n\n- The `default` user is switched `off` so a connection that does not authenticate can do nothing. Applications use their own users.\n- Each service sees only its own key prefixes, so a bug or a leaked credential in the cart service cannot read the catalogue or delete streams.\n- `-@dangerous` removes commands such as `FLUSHALL`, `KEYS`, `CONFIG`, `DEBUG`, `SHUTDOWN` and `REPLICAOF` from application users in one rule. After that, add back individual commands only if needed. Check the exact category membership of a command with `COMMAND INFO`.\n- The monitoring user can read statistics but not application data.\n- Selectors and `%R~` let you give read-only access to a prefix (for example a reporting job reading `~product:*` but not writing it).\n\nUsers can be defined inline in `redis.conf` or in an external file referenced by `aclfile`; the two methods cannot be mixed. With an ACL file, `ACL LOAD` reloads it (and keeps the old rules if any line is invalid) and `ACL SAVE` writes the current rules back. `CONFIG REWRITE` does not save ACLs."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ACL SETUSER cart on >s3cret ~cart:* +@read +@write -@dangerous\nOK\n127.0.0.1:6379> ACL WHOAMI\n\"default\"\n127.0.0.1:6379> AUTH cart s3cret\nOK\n127.0.0.1:6379> SET cart:42 \"x\"\nOK\n127.0.0.1:6379> SET product:1 \"x\"\n(error) NOPERM No permissions to access a key\n127.0.0.1:6379> FLUSHALL\n(error) NOPERM this user has no permissions to run the 'flushall' command\n127.0.0.1:6379> ACL LOG 1",
+          "title": "Working with ACLs live"
+        },
+        {
+          "type": "markdown",
+          "text": "(The wording of NOPERM messages differs between versions.) Other commands worth knowing: `ACL LIST` and `ACL` `GETUSER name` show the effective rules, `ACL DRYRUN user command [arg ...]` tells you whether a user could run a command without running it, `ACL LOG` lists recent denied commands, failed `AUTH` attempts and key/channel violations (its size is `acllog-max-len`), and `ACL DELUSER` removes a user and closes its connections."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Redis 8 changed ACL behaviour for module commands. Commands from the built-in modules (JSON, Search, Time Series, probabilistic structures) now fall under the standard ACL categories. According to the 8.0 notes, a user with `+@all` `-@write` can no longer run `JSON.SET`, which it could before. Review every user you wrote before Redis 8 and add explicit rules where a service lost access, or gained it unintentionally through `+@read`."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Test every ACL user from the application's point of view. Write an integration test (Testcontainers is ideal) that starts Redis with your real `users.acl` and runs the service's commands as that user. A restrictive ACL that breaks the app in production is a common 3 a.m. surprise: Lua scripts, Streams commands and the commands your client library issues at connection time (for example `CLIENT SETINFO`, `HELLO`) all need to be allowed."
+        },
+        {
+          "type": "markdown",
+          "text": "### Layer 3: TLS\n\nWithout TLS, passwords and data cross the network in clear text, and `AUTH` itself is just another unencrypted command. Redis supports TLS on client connections, replication links and the cluster bus. It requires a Redis build with TLS (official packages and images include it)."
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "port 0\ntls-port 6379\ntls-cert-file /etc/redis/tls/redis.crt\ntls-key-file /etc/redis/tls/redis.key\ntls-ca-cert-file /etc/redis/tls/ca.crt\ntls-auth-clients yes\ntls-replication yes\ntls-cluster yes",
+          "title": "redis.conf (TLS section)"
+        },
+        {
+          "type": "markdown",
+          "text": "`port 0` disables the plain TCP port entirely so nobody can fall back to it. `tls-auth-clients yes` is the default and enforces **mutual TLS**: clients must present a certificate signed by the CA. Set it to `no` if you want server-only TLS with passwords or ACL users for client identity. `tls-replication yes` on replicas uses TLS for the link to the primary, and `tls-cluster yes` encrypts the cluster bus. The command line client takes `--tls --cert --key --cacert`.\n\nFor Spring Boot, enable TLS and point at an SSL bundle (the bundle holds truststore and keystore details):"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  data:\n    redis:\n      host: redis.internal.shopstream.example\n      port: 6379\n      username: cart\n      password: ${REDIS_PASSWORD}\n      ssl:\n        enabled: true\n        bundle: redis-client\n  ssl:\n    bundle:\n      pem:\n        redis-client:\n          truststore:\n            certificate: file:/etc/ssl/redis/ca.crt\n          keystore:\n            certificate: file:/etc/ssl/redis/client.crt\n            private-key: file:/etc/ssl/redis/client.key",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "The property names `spring.data.redis.ssl.enabled` and `spring.data.redis.ssl.bundle` come from Spring Boot's Redis support; confirm the PEM bundle property layout in the Spring Boot SSL reference for your exact version. TLS adds CPU cost on both sides; Redis 8 supports I/O threading together with TLS, which helps on busy servers.\n\n### Layer 4: secrets, dangerous commands, audit\n\n#### Secrets\n\n- Never commit passwords to Git or bake them into images. Inject them from a secrets manager, Kubernetes Secret or environment variable (`${REDIS_PASSWORD}` as above).\n- Redis config and ACL files hold passwords or password hashes. Restrict their permissions (for example mode 640, owned by `redis`) and prefer `#sha256hash` entries in ACL files so the plain text is not stored at all.\n- Rotate: ACL lets a user hold two passwords at once. Add the new one with `ACL SETUSER cart >new`, roll out the application, then remove the old one with `ACL SETUSER cart <old`.\n- Use long random passwords. Redis can check passwords very quickly, so brute-force protection depends on password strength and on network restriction.\n\n#### Dangerous commands\n\nThe old approach of renaming commands with `rename-command` is deprecated according to the current security documentation, which recommends ACL rules instead. Remove from application users the commands that can destroy or reconfigure the server: `FLUSHALL`, `FLUSHDB`, `CONFIG`, `DEBUG`, `SHUTDOWN`, `REPLICAOF`, `MODULE`, `KEYS`, `ACL`. Keep `enable-debug-command no` and `enable-module-command no` (the defaults) in the server configuration. `CONFIG SET` can change `dir` and `dbfilename`, which an attacker may use to make Redis write files to arbitrary locations, so never let untrusted clients have `CONFIG`.\n\n#### Audit\n\nOpen source Redis has no complete built-in audit log of every command. What you can do:\n\n- Read `ACL LOG` regularly (or export it) for denied operations and failed logins.\n- Send the server log (`logfile`) to central logging and alert on authentication failures, replication changes and persistence errors.\n- Log at the network and orchestration layer: who can reach port 6379, who ran `kubectl exec` into the pod.\n- Use short, named connections (`CLIENT SETNAME`) so `CLIENT LIST` shows which service owns each connection.\n- Avoid `MONITOR` in production: it streams every command, including passwords sent with `AUTH`, and slows the server."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "A hardening checklist before go-live Private network only; `protected-mode yes`; `default` user off; per-service ACL users with key prefixes; TLS everywhere including replication; secrets from a manager; `-@dangerous` for apps; separate admin credentials; persistence and backups configured; alerts for `ACL LOG` growth. If you cannot tick every item, say which ones you accepted as risk."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you secure a Redis instance? Isolate it on a private network and bind it to specific interfaces; never expose it publicly. Disable the passwordless `default` user and give each application an ACL user limited to its key patterns and command categories (excluding `@dangerous`). Encrypt connections with TLS, including replication and cluster traffic, keep secrets out of source control, and watch `ACL LOG`. `requirepass` alone is the legacy minimum, and `rename-command` is deprecated in favour of ACLs."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Security\n\n- Redis assumes a trusted network: restrict reachability first, and never expose it to the internet.\n- Replace the open `default` user with per-service ACL users limited by key pattern and command category.\n- Use TLS for clients, replication and the cluster bus; mutual TLS adds client identity.\n- Keep secrets out of code; store ACL passwords as hashes; rotate by overlapping two passwords.\n- Remove destructive commands from application users with ACLs; do not rely on `rename-command`.\n- Redis 8 module commands fall under standard ACL categories: re-test users after upgrading."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-6",
+      "type": "concept",
+      "title": "Backup, Restore and Disaster Recovery",
+      "subtopicId": "11-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Replication is not a backup. If someone runs `FLUSHALL` or a buggy deployment deletes keys, the replicas faithfully delete them too within milliseconds. A backup is a separate, point-in-time copy stored somewhere else, and it only counts once you have restored from it successfully.\n\n### Decide what you need to protect\n\nNot all Redis data needs backup. Ask for each ShopStream use:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Data",
+            "If lost",
+            "Backup need"
+          ],
+          "rows": [
+            [
+              "Catalogue cache, rate-limit counters",
+              "Rebuilt from the database as traffic arrives",
+              "None; plan for warm-up load on the database"
+            ],
+            [
+              "Sessions",
+              "Users must log in again",
+              "Persistence on, backups optional"
+            ],
+            [
+              "Carts, idempotency keys, order streams",
+              "Customer-visible loss or double processing",
+              "Persistence and regular backups"
+            ],
+            [
+              "Primary store use (Redis is the system of record)",
+              "Business data lost",
+              "Full backup, tested restore, off-site copy"
+            ]
+          ],
+          "caption": "What deserves a backup."
+        },
+        {
+          "type": "markdown",
+          "text": "Two numbers define the plan: **RPO** (recovery point objective: how much recent data you can afford to lose) and **RTO** (recovery time objective: how long you can be down). `appendfsync everysec` gives an RPO of about a second against a crash, while hourly RDB copies give an RPO of an hour against a deletion or corruption. RTO depends on dataset size: Redis loads an RDB file at roughly the speed of your disk and CPU, so a large instance may need minutes to start.\n\n### RDB backups\n\nAn RDB file is never modified after it is produced: Redis writes a temporary file and renames it atomically when the snapshot is complete, so copying the file while the server runs is safe. The official recommendation:\n\n- A cron job that copies `dump.rdb` hourly into one directory and daily into another, with the date in the file name.\n- Delete old copies with `find` (for example hourly for 48 hours, daily for one or two months).\n- At least once a day, move a copy outside the machine, ideally outside the data centre, and encrypt it.\n- Verify the transfer (size and checksum), and have an independent alert if fresh backups stop arriving."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> BGSAVE\nBackground saving started\n127.0.0.1:6379> LASTSAVE\n(integer) 1760000200\n$ cp /var/lib/redis/dump.rdb /backup/dump-$(date +%Y%m%d-%H%M).rdb\n$ redis-check-rdb /backup/dump-20261010-0200.rdb\n[offset 0] Checking RDB file /backup/dump-20261010-0200.rdb\n[offset 26] AUX FIELD redis-ver = '8.0.0'\n[offset 0] \\o/ RDB looks OK! \\o/",
+          "title": "Taking and checking an RDB backup"
+        },
+        {
+          "type": "markdown",
+          "text": "(Output shortened.) `LASTSAVE` returns the Unix time of the last successful save; compare it before and after `BGSAVE` to know it finished, or watch `rdb_bgsave_in_progress` in `INFO persistence`. To pull a snapshot from a remote server without shell access to it, `redis-cli --rdb /backup/remote.rdb -h host` fetches an RDB over the replication protocol.\n\n### AOF backups\n\nSince Redis 7.0 the append-only file is a directory (`appenddirname`) containing a base file, incremental files and a manifest. Copying the directory is a valid backup unless a rewrite happens while you copy, which could leave an inconsistent set. The documented procedure:\n\n1. Turn off automatic rewrites: `CONFIG SET auto-aof-rewrite-percentage 0`, and do not run `BGREWRITEAOF`.\n2. Check `aof_rewrite_in_progress` in `INFO persistence` is `0`; if it is `1`, wait.\n3. Copy the files in the AOF directory (or create hard links and copy those, so rewrites can be re-enabled sooner).\n4. Restore the setting: `CONFIG SET auto-aof-rewrite-percentage 100` (your previous value).\n\nIf you run with both RDB snapshots and AOF, backing up the RDB files is usually simpler and the copy is a single compact file.\n\n### Restoring, and the tested restore\n\n#### Restoring an RDB\n\n1. Stop the Redis process (or a new instance you are restoring into).\n2. Put the RDB file in the configured `dir` with the configured `dbfilename`.\n3. Start Redis and check `INFO keyspace` and a few known keys."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Restoring an RDB into an instance with AOF enabled. When `appendonly yes` is set, Redis loads from the AOF files at startup and ignores `dump.rdb`. If the AOF directory is empty, it starts empty and your RDB is not loaded. Restore into a server started with `appendonly no`, check the data, then run `CONFIG SET appendonly yes` so Redis writes an AOF from the in-memory data, and finally set `appendonly yes` in the config file."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Repairing a damaged AOF\n\nA server that crashed mid-write may leave a truncated last command. `redis-check-aof --fix` on the affected file truncates the file to the last valid command (Redis can also do this itself with `aof-load-truncated yes`, the default). Always copy the files before running `--fix`, because it drops data.\n\n#### Prove it with a restore drill\n\nAn untested backup is a hope. Schedule a drill, at least quarterly, that does the following automatically if possible:\n\n1. Pull the latest off-site backup, verify its checksum, and decrypt it.\n2. Start a scratch Redis from it (a container is ideal).\n3. Run sanity checks: key counts within an expected range from `DBSIZE`, a handful of known keys, `redis-check-rdb` passes.\n4. Record how long it took. That is your measured RTO.\n\n### Disaster recovery across regions\n\nDisaster recovery adds copying backups to other locations, and optionally keeping a standby copy ready.\n\n- **Backup shipping.** Encrypted snapshots to object storage in another region, or to servers at another provider. This is the cheapest and always worth doing.\n- **Cross-region replica.** A replica in another region follows the primary asynchronously over a long link, so it lags and is behind by definition: it reduces RTO but its RPO is not zero. Use TLS on the link, enlarge `repl-backlog-size` to survive link outages and expect a full resync after a long one. Promote it manually (`REPLICAOF NO ONE`) when the region is lost, then point applications at it.\n- **Active-active with conflict resolution** is a feature of commercial Redis offerings, not of the open-source server; if you need that, evaluate it separately.\n- **Runbooks.** Write down the failover steps, who may decide, how clients find the new primary (DNS, Sentinel, configuration), and how you fail back. Rehearse it."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Persistence off plus automatic restart can erase your replicas. The replication documentation describes this trap: if a primary has persistence disabled and an automatic restart brings it back empty, its replicas resynchronize from the empty primary and destroy their copies of the data. If persistence is off on a primary that matters, disable automatic restart, or keep persistence on the primary."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Is a replica a backup? No. Replication copies every change, including accidental deletions and corruption, almost instantly. A backup is an independent point-in-time copy, such as an RDB snapshot stored off the machine, that you have tested restoring. Replicas protect against hardware failure and give availability; backups protect against data mistakes and disasters."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Backup and recovery\n\n- Replication is for availability; backups are separate point-in-time copies kept elsewhere.\n- RDB files can be copied safely while Redis runs; for AOF directories, pause rewrites while copying.\n- Ship encrypted copies off the machine, verify them, and alert when shipping stops.\n- A backup is real only after a restore drill; measure RTO.\n- With `appendonly yes`, Redis loads the AOF, not `dump.rdb`: restore through a server with AOF off, then enable it."
+        }
+      ]
+    },
+    {
+      "id": "ch-11-7",
+      "type": "concept",
+      "title": "Upgrades and Migrations",
+      "subtopicId": "11-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Upgrading Redis is routine if you do it one node at a time with a rollback plan, and painful if you do it all at once on a Friday. This chapter gives procedures for each topology and notes the changes to watch for when moving from Redis 7 to Redis 8, from Redis Stack to Redis Open Source, or between Redis and other stores.\n\n### Before any upgrade\n\n1. **Read the release notes** of every version between yours and the target, looking for breaking changes, changed defaults, removed commands and deprecated configuration.\n2. **Back up** and perform a test restore (see the previous chapter).\n3. **Rehearse in staging** with a copy of production data, and run your application's integration tests against the new version. Testcontainers makes it easy to run the same tests against two image tags.\n4. **Check client compatibility**: the Redis client library (Lettuce, Jedis, Redisson) and Spring Data Redis versions must support the new server. New server versions generally stay backward compatible with older clients, but commands you plan to use must exist in the client.\n5. **Plan rollback.** Newer RDB and AOF files may not be readable by older versions, so once data has been written by the new version you may not be able to go back to the old binary with the same files. Keep the pre-upgrade backup and decide the point of no return in advance.\n\n### Rolling upgrade: primary with replicas\n\nThe principle: upgrade replicas first, then switch roles, then upgrade the old primary. Clients should keep working throughout.\n\n1. Upgrade one replica. Stop it gracefully with `SHUTDOWN SAVE` (a replica stopped cleanly stores in its RDB file the information needed to resync), start it on the new version, and wait until `master_link_status:up` and the offsets match the primary.\n2. Repeat for the other replicas, one at a time.\n3. Fail over. With Sentinel, run `SENTINEL FAILOVER mymaster`, so a replica running the new version is promoted and clients follow. Without Sentinel, promote a replica with `REPLICAOF NO ONE`, point clients to it, and make the old primary a replica of it.\n4. Upgrade the old primary (now a replica) the same way as step 1."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A replica restarted from an AOF file cannot do a partial resync. The replication documentation notes that a replica that restarted via AOF cannot be partially synchronized. Switch the replica to RDB persistence before shutting it down, restart, then enable AOF again, or accept a full resync. For large datasets, a full resync costs a fork on the primary and heavy bandwidth, so schedule it off-peak."
+        },
+        {
+          "type": "markdown",
+          "text": "### Rolling upgrade: Redis Cluster\n\nDo the same dance per shard, one shard at a time:\n\n1. Upgrade the replicas of a shard (restart each on the new version and let it resync).\n2. On an upgraded replica, run `CLUSTER FAILOVER` to promote it; this is a coordinated manual failover that waits for the replica to catch up, so no writes are lost.\n3. Upgrade the former primary, which is now a replica.\n4. Check `CLUSTER INFO` (`cluster_state:ok`) and `redis-cli --cluster check` before moving to the next shard.\n\nAvoid resharding or adding nodes at the same time as upgrading. From Redis 8.4, atomic slot migration (`CLUSTER` `MIGRATION`) makes moving slots between nodes safer, but keep that a separate change from the version upgrade.\n\n### Moving from Redis 7 to Redis 8\n\nWhat to check, based on the 8.0 release notes and what-is-new page:\n\n- **Modules are built in.** Redis 8 merges Redis Stack and Redis Community Edition into one distribution, Redis Open Source, with JSON, Search and Query, Time Series and the probabilistic data structures included. If your configuration contains `loadmodule` lines for those modules, remove them rather than loading old module files over built-in ones, and re-read the release notes before starting.\n- **ACLs.** Module commands fall under standard categories now. Re-test users that rely on negative rules such as `+@all -@write`.\n- **Search behaviour.** The 8.0 notes list stricter validation of some `FT.` arguments, errors instead of empty results for invalid input, changed default reducer values, and BM25 as the default scorer instead of TF-IDF. If you run search queries, re-run your tests and compare results.\n- **Persistence and replication** features such as multi-part AOF (7.0) are unchanged in concept; the new version still reads the previous version's files, but test this on your own data first.\n- **Newer features are optional.** Hash field commands such as `HGETEX`, `HSETEX` and `HGETDEL` (8.0), `XDELEX` and `XACKDEL` (8.2), and the 8.4 and 8.6 additions need a matching server, so do not use them in application code until every environment, including developers' containers and CI, runs a server that supports them.\n- **License.** Check the license terms of the version you deploy and whether they fit your organization and distribution model.\n\n### Moving from Redis Stack or standalone modules\n\nIf you ran the `redis-stack` image or loaded RediSearch or RedisJSON modules into Redis 7, the target is the Redis 8 image, which contains them. The sequence: take a backup, start a Redis 8 instance on a copy of the data, verify that indexes (`FT.INFO`), JSON documents (`JSON.GET`) and time series are present and queries behave the same, then switch applications over. If the data does not load or an index is missing, treat it as a migration problem and consult the release notes; do not try to guess file compatibility.\n\n### Moving data between instances and other stores"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Approach",
+            "When to use",
+            "Notes"
+          ],
+          "rows": [
+            [
+              "Replication (`REPLICAOF` new instance, then promote)",
+              "Same engine, minimal downtime, e.g. moving to new hardware or another cloud",
+              "The new node syncs everything and keeps up with writes; cut over when lag is zero"
+            ],
+            [
+              "RDB file restore",
+              "Planned downtime acceptable",
+              "Simple and verifiable; copy the file, start the new server"
+            ],
+            [
+              "`redis-cli --pipe`",
+              "Bulk load from a generated stream of commands in RESP",
+              "Fast mass insertion; generate the protocol file from the source"
+            ],
+            [
+              "`SCAN` plus `DUMP`/`RESTORE`/`MIGRATE`",
+              "Selective copy between instances",
+              "Avoids loading all keys at once; handle TTLs and keys written during the copy"
+            ],
+            [
+              "Dedicated migration tools",
+              "Cross-vendor or live sync with checks",
+              "Evaluate their documentation for supported versions and cluster modes"
+            ],
+            [
+              "Application dual-writes",
+              "Replacing Redis usage with another store (or the reverse)",
+              "Write to both, read from the new one, compare, then drop the old"
+            ]
+          ],
+          "caption": "Migration approaches."
+        },
+        {
+          "type": "markdown",
+          "text": "When moving a cache, you may not need to migrate data at all: start the new instance empty and accept a period of low hit ratio, protecting the database with a stampede guard (see the caching patterns in Part 8) and a gradual traffic shift.\n\nWhen migrating data **from** a relational database into Redis (or between Redis and another store), decide the source of truth, make the load idempotent (repeatable without duplicates), and verify counts and sample records before switching reads.\n\n### Valkey and other compatible servers\n\nValkey is an open-source fork of Redis created from version 7.2.4 under the Linux Foundation, and other Redis-protocol compatible servers exist. At the protocol and core command level (strings, hashes, lists, sets, sorted sets, streams, replication, Cluster, Sentinel) applications written for Redis 7.2 generally work, and Redis clients like Lettuce, Jedis and Redisson speak to them. The two projects have since added different features, so compatibility is not guaranteed beyond the shared base. Features specific to newer Redis versions, such as the Redis 8 built-in JSON and search commands, vector sets or `HGETEX`, may be missing or implemented differently elsewhere. Before moving in either direction, list the commands and modules you use, test them against the target, and read both projects' documentation. Also read the license terms of each option for your use case."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "An upgrade timeline that rarely surprises Week 1: read notes, upgrade staging, run tests. Week 2: upgrade one production replica and watch it for several days. Week 3: failover and upgrade the rest. At each step you can stop. The riskiest upgrades are the ones squeezed into a single maintenance window with no rehearsal."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you upgrade a Redis primary-replica pair with minimal downtime? Upgrade the replica first and let it resync, then fail over so that the upgraded replica becomes the primary (with Sentinel or a manual promotion), then upgrade the old primary, which is now a replica. Take a backup first, read the release notes, rehearse in staging, and be aware that newer data files may not be readable by older versions, so rollback means restoring the pre-upgrade backup."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Upgrades and migrations\n\n- Read release notes, back up, rehearse, and decide the point of no return before touching production.\n- Upgrade replicas first, fail over, then upgrade the old primary; in a cluster do it one shard at a time with `CLUSTER` `FAILOVER`.\n- Redis 8 includes the former Stack modules and changes ACL categories and some search behaviour; remove old `loadmodule` lines and re-test users and queries.\n- Do not use new commands in code until every environment runs a server that supports them.\n- Choose a migration method by downtime tolerance: replication for live moves, RDB for planned downtime, tools or dual-writes across stores.\n- Compatibility with Valkey and other servers holds for the shared core, not for newer or module features; test your command set."
+        }
+      ]
+    }
+  ]
+}

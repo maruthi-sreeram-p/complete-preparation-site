@@ -14,7 +14,7 @@ export default function DashboardPage() {
   const { roadmap, stats, continueTarget } = useRoadmapScope()
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 px-4 py-8">
+    <div className="w-full space-y-6 px-4 py-8 lg:px-6">
       {roadmap.placeholder && (
         <div className="flex items-start gap-3 rounded-xl border border-accent/25 bg-accent/5 p-4 text-sm text-muted">
           <Info size={16} className="mt-0.5 shrink-0 text-accent" />
@@ -39,7 +39,7 @@ export default function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-medium text-muted">Progress by category</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {stats.byCategory.map(({ category, total, completed, inProgress, percent }) => (
             <div key={category.id} className="rounded-xl border border-line bg-panel p-4">
               <div className="flex items-center justify-between">

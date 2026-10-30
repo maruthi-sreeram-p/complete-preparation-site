@@ -242,12 +242,12 @@ def theme_color(color, role):
     if role == "fill":
         if l >= 0.6:
             if sat < 0.12:
-                return "#171925" if l >= 0.93 else "#1d2030"
+                return "#1c1c1c" if l >= 0.93 else "#242424"
             return hex_color(colorsys.hls_to_rgb(h, min(0.4, max(0.16, 1 - l)), sat * 0.8))
         return hex_color(rgb)
     if role == "stroke":
         if sat < 0.15:
-            return "#8a93bd" if l < 0.7 else "#2f3350"
+            return "#9a9a9a" if l < 0.7 else "#3a3a3a"
         return hex_color(colorsys.hls_to_rgb(h, max(l, 0.6), sat))
     # text
     if l < 0.55:
@@ -560,6 +560,10 @@ def convert(pdf, wanted, page_range):
                 if not info:
                     continue
                 text = chars_text(el["line"]["chars"]).strip()
+                if re.fullmatch(r"PART \d+", text):  # the next part's cover page ends this chapter
+                    close_chapter()
+                    flow = Flow()
+                    continue
                 m = re.match(r"(\d+\.\d+)\s+(.+)$", text)
                 if info["bold"] > 0.8 and info["size"] >= 14 and m:
                     close_chapter()
@@ -738,6 +742,26 @@ def extract(pdf, topic):
     return {"source": topic["source"], "sections": sections}, missing
 
 
+def front_matter(pdf, first_page):
+    """The guide's opening pages ("How to use this guide" and similar), up to its table of contents."""
+    flow = Flow()
+    for pno in range(2, first_page):
+        for el in page_elements(pdf.pages[pno - 1]):
+            if el["kind"] != "line":
+                handle_element(flow, el)
+                continue
+            info = classify_line(el["line"])
+            if not info:
+                continue
+            text = chars_text(el["line"]["chars"]).strip()
+            if text.lower() in ("contents", "table of contents"):
+                flow.flush_all()
+                return flow.blocks
+            handle_line(flow, el["line"], info, text)
+    flow.flush_all()
+    return flow.blocks
+
+
 def summary(content):
     kinds = {}
     for s in content["sections"]:
@@ -763,6 +787,11 @@ def main():
                     print(f"{topic['id']}: exists, skipped", flush=True)
                     continue
                 content, missing = extract(pdf, topic)
+                if topic["id"].endswith("-part-1"):
+                    blocks = front_matter(pdf, int(topic["source"]["pages"].split("-")[0]))
+                    if blocks:
+                        content["sections"].insert(0, {"id": "about-this-guide", "type": "introduction",
+                                                       "title": "About this guide", "blocks": blocks})
                 target.write_text(json.dumps(content, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
                 print(f"{topic['id']}: {summary(content)}"
                       + (f"  CHAPTERS NOT FOUND: {sorted(missing)}" if missing else ""), flush=True)

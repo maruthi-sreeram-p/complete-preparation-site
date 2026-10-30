@@ -80,7 +80,6 @@ export function FigureBlock({ caption, labels = [] }) {
           ))}
         </ul>
       )}
-      <p className="mt-2 text-xs text-faint">Diagram not generated yet.</p>
     </figure>
   )
 }
@@ -123,8 +122,8 @@ function Question({ index, question, hint, answer, difficulty }) {
         <span className="text-sm font-semibold tabular-nums text-accent">Q{index}</span>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
-            <div className="text-sm font-medium">
-              <Markdown inline>{question}</Markdown>
+            <div className="min-w-0 flex-1 font-medium">
+              <Markdown>{question}</Markdown>
             </div>
             {difficulty && <span className="shrink-0 rounded-full border border-line px-2 py-0.5 text-[11px] text-muted">{difficulty}</span>}
           </div>

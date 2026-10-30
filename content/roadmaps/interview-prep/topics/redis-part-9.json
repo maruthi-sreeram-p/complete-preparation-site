@@ -1,0 +1,889 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "333-349"
+  },
+  "sections": [
+    {
+      "id": "ch-9-1",
+      "type": "concept",
+      "title": "The Use-Case Map",
+      "subtopicId": "9-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "You now know what Redis can do. The harder question, the one that decides whether a project succeeds, is when Redis is the right tool and what role it should play. This Part walks through the industries and system types where Redis shows up, and then gives you a decision guide for the cases where it should not.\n\nA note on sources. Redis is widely deployed, but this book does not make claims about what any named company runs, because such claims go stale or cannot be verified. Instead every example here is phrased as \"a typical e-commerce site\" or \"a ride-hailing backend\". The designs are the ones that follow from Redis's properties, and you can check each one against the chapters of Parts 3 to 8.\n\n### Redis plays four roles\n\nAlmost every real use of Redis falls into one of four roles. Naming the role first tells you how much durability and consistency you must demand."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Role",
+            "What it means",
+            "Consequence"
+          ],
+          "rows": [
+            [
+              "Cache",
+              "A faster copy of data that lives elsewhere",
+              "Losing it is fine; the source of truth rebuilds it"
+            ],
+            [
+              "Ephemeral state",
+              "Data that is only meaningful for a short time (sessions, locks, rate counters)",
+              "Losing it hurts a little; TTLs bound its life"
+            ],
+            [
+              "Derived or hot data",
+              "Data computed from a durable source and kept for speed (leaderboards, counters, feeds)",
+              "Rebuildable, but rebuilding may be slow, so persistence helps"
+            ],
+            [
+              "Messaging and coordination",
+              "Streams, pub/sub, queues, locks between processes",
+              "Delivery guarantees matter; choose the primitive carefully"
+            ]
+          ],
+          "caption": "The four roles of Redis."
+        },
+        {
+          "type": "markdown",
+          "text": "Redis as the only copy of important business data (the \"system of record\") is possible, with AOF and replication, but it is the role that needs the most care and is discussed honestly in the decision chapter later in this Part.\n\n### The map\n\nThe table below is the reference for the rest of the Part. Read it as: for this use case, reach for these structures, using this pattern, and expect this consistency need and lifetime. Sizes and TTLs are typical starting points, not rules."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Use case",
+            "Structures",
+            "Pattern",
+            "Consistency need",
+            "Typical TTL / size"
+          ],
+          "rows": [
+            [
+              "Page or object cache",
+              "`String, hash, JSON`",
+              "Cache-aside",
+              "Eventual; stale OK",
+              "Seconds to hours"
+            ],
+            [
+              "Session store",
+              "`Hash`",
+              "Key per session, sliding TTL",
+              "Read-your-writes",
+              "15 to 60 min"
+            ],
+            [
+              "Shopping cart",
+              "`Hash`",
+              "Hash per user",
+              "Per-user ordering",
+              "Days; small"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Use case",
+            "Structures",
+            "Pattern",
+            "Consistency need",
+            "Typical TTL / size"
+          ],
+          "rows": [
+            [
+              "Rate limiting",
+              "`String counter, sorted` `set`",
+              "Fixed or sliding window, Lua",
+              "Atomic check-and- increment",
+              "Window length"
+            ],
+            [
+              "Leaderboard",
+              "`Sorted set`",
+              "ZADD, ZREVRANGE",
+              "Eventual OK",
+              "Per season; up to millions"
+            ],
+            [
+              "Flash-sale stock",
+              "`String counter`",
+              "Lua atomic decrement",
+              "Strict: never oversell",
+              "Sale duration"
+            ],
+            [
+              "Distributed lock",
+              "`String`",
+              "SET NX PX, token check",
+              "Safety needs care",
+              "Seconds"
+            ],
+            [
+              "Idempotency key",
+              "`String`",
+              "SET NX EX",
+              "Atomic first-writer-wins",
+              "Hours to days"
+            ],
+            [
+              "Job queue",
+              "`List, stream`",
+              "Consumer group, ack",
+              "At-least-once",
+              "Until processed"
+            ],
+            [
+              "Pub/sub fan-out",
+              "`Pub/sub channel`",
+              "Fire and forget",
+              "At-most-once",
+              "None"
+            ],
+            [
+              "Unique counts",
+              "`HyperLogLog, bitmap`",
+              "PFADD, SETBIT",
+              "Approximate OK",
+              "Day or month"
+            ],
+            [
+              "Geo search",
+              "`Geo (sorted set)`",
+              "GEOSEARCH",
+              "Eventual",
+              "Live positions, short"
+            ],
+            [
+              "Time series",
+              "`Time series, stream`",
+              "Append and range query",
+              "Eventual",
+              "Retention window"
+            ],
+            [
+              "Semantic cache, RAG",
+              "`Search index with` `vectors`",
+              "KNN query",
+              "Approximate by design",
+              "Hours to days"
+            ]
+          ],
+          "caption": "Use case to structure map."
+        },
+        {
+          "type": "markdown",
+          "text": "Notice what the table says about durability: most rows tolerate loss, and the rows that do not (flash-sale stock, idempotency keys, queues) are exactly the ones where you must design the recovery path. Keep that in mind in every chapter that follows."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Name the role (cache, ephemeral state, derived data, messaging) before choosing structures or persistence.\n- Most Redis use cases tolerate loss; the ones that do not need an explicit recovery design.\n- Map each use case to a structure and a pattern, then to a consistency need and a TTL.\n- This book describes categories of systems, not claims about named companies."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-2",
+      "type": "concept",
+      "title": "E-Commerce",
+      "subtopicId": "9-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "E-commerce is the home turf of our running example, ShopStream. A shop has a read-heavy catalogue, a write-heavy cart, bursty traffic during sales and strict rules around money and stock. Redis fits several of these jobs at once, and a typical site uses it in five places.\n\n### Catalogue cache\n\nProduct pages are read thousands of times for every one change. The database can serve them, but at peak the same few hundred hot products dominate the load. Cache-aside (Part 8) puts a copy in Redis: the service reads `product:{id}` first, falls back to the database on a miss, and stores the result with a TTL.\n\nTwo details matter in e-commerce specifically. First, price and stock must not be stale for long, so catalogue descriptions get a long TTL (hours) while price and availability are either short-lived (seconds) or fetched separately. Splitting the cached object into a stable part and a volatile part is a common design. Second, add a small random jitter to TTLs so that products cached in the same minute do not all expire in the same second."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# stable product data, cached for hours\nHSET product:1001 name \"Trail Shoe\" brand \"Strider\" category \"shoes\"\nEXPIRE product:1001 14400\n# volatile data, cached for seconds\nSET product:1001:price 5999 EX 30"
+        },
+        {
+          "type": "markdown",
+          "text": "### Carts\n\nA cart belongs to one user, is updated item by item and must feel instant. A hash per user is the natural shape: the field is the SKU, the value is the quantity."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HINCRBY cart:42 sku:1001 1\n(integer) 1\n127.0.0.1:6379> HINCRBY cart:42 sku:2002 2\n(integer) 2\n127.0.0.1:6379> HGETALL cart:42\n1) \"sku:1001\"\n2) \"1\"\n3) \"sku:2002\"\n4) \"2\"\n127.0.0.1:6379> EXPIRE cart:42 604800\n(integer) 1",
+          "title": "A cart as a hash"
+        },
+        {
+          "type": "markdown",
+          "text": "Each `HINCRBY` is atomic, so two browser tabs adding the same item do not lose updates. The `EXPIRE` gives abandoned carts a lifetime of seven days; refresh it whenever the cart changes. Anonymous carts use a random cart id as the key suffix and are merged into the user cart at login (read both hashes, add quantities, delete the anonymous one)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A cart in Redis is not an order. Treat the cart as convenient, mostly durable state. The moment the user checks out, write the order to your database (the system of record) and only then clear the cart. Do not let an eviction or a failover decide whether an order existed."
+        },
+        {
+          "type": "markdown",
+          "text": "### A cart service in Java\n\nThe same cart with Spring Data Redis. The service owns the key naming and the TTL, so no other class needs to know how a cart is stored."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.cart;\n\nimport java.time.Duration;\nimport java.util.Map;\nimport java.util.stream.Collectors;\n\nimport org.springframework.data.redis.core.HashOperations;\nimport org.springframework.data.redis.core.StringRedisTemplate;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class CartService {\n\n    private static final Duration CART_TTL = Duration.ofDays(7);\n\n    private final StringRedisTemplate redis;\n\n    public CartService(StringRedisTemplate redis) {\n        this.redis = redis;\n    }\n\n    private String key(long userId) {\n        return \"cart:\" + userId;\n    }\n\n    public void addItem(long userId, String sku, int quantity) {\n        HashOperations<String, String, String> ops = redis.opsForHash();\n        ops.increment(key(userId), sku, quantity);\n        redis.expire(key(userId), CART_TTL);\n    }\n\n    public Map<String, Integer> items(long userId) {\n        HashOperations<String, String, String> ops = redis.opsForHash();\n        return ops.entries(key(userId)).entrySet().stream()\n                .collect(Collectors.toMap(Map.Entry::getKey,\n                        e -> Integer.parseInt(e.getValue())));\n    }\n    public void clear(long userId) {\n        redis.delete(key(userId));\n    }\n}",
+          "title": "CartService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `increment` maps to `HINCRBY`, so concurrent adds are safe without any Java locking. `expire` is called on every change, which gives the sliding seven-day lifetime. The two calls are two round trips; that is fine here, and a pipeline or a small Lua script can merge them if the cart path ever becomes hot. The service stores strings only, so the cart is readable from `redis-cli` while debugging.\n\n### Sessions\n\nWeb sessions stored in Redis let any application instance serve any request, which is what makes horizontal scaling and rolling deploys painless. A session is a hash under `session:{sid}` with a TTL that you slide forward on each request. Spring Session (see the Spring Part) does this for you. Keep sessions small: an id, a user id, and a few flags. Large objects in sessions are copied on every request and make failover painful.\n\n### Flash sales\n\nA flash sale is the hardest e-commerce load: ten thousand people want the last two hundred units in the same few seconds. The database cannot arbitrate this cheaply, and a read-then-write in application code oversells. Redis solves it because a Lua script runs atomically on the single command thread."
+        },
+        {
+          "type": "code",
+          "language": "lua",
+          "code": "-- KEYS[1] = stock:{sku}, ARGV[1] = quantity wanted\nlocal stock = tonumber(redis.call('GET', KEYS[1]) or '0')\nlocal want = tonumber(ARGV[1])\nif stock >= want then\n  redis.call('DECRBY', KEYS[1], want)\n  return 1\nend\nreturn 0",
+          "title": "stock_reserve.lua"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the check and the decrement are one atomic step, so stock can never go negative. The script returns 1 or 0 and the caller decides what to tell the user. The full production version, with reservation TTLs, an order stream and idempotency, is built as a project later in this book.\n\nThe honest limits: the Redis counter is a fast gate, not the ledger. After a successful reservation you write the order durably, and a periodic job reconciles the counter with the database. If Redis restarts and loses a few seconds of decrements (with default `appendfsync everysec`), the reconciliation corrects the counter. Decide in advance whether a small oversell followed by an apology, or a small undersell, is acceptable for your business; both are cheaper than not selling.\n\n### Recommendations and \"recently viewed\"\n\nSimple recommendations do not need machine learning infrastructure at request time. A list holds the last N products a user viewed, capped with `LTRIM`. A sorted set holds the bestsellers per category, updated with `ZINCRBY` on every purchase. \"Customers also bought\" is often computed offline and written as a set or a sorted set per product, so the page only does one `ZREVRANGE`. Redis serves the result; the offline job computes it. Vector search (see the AI chapter in this Part) adds similarity-based recommendations when you need them."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "LPUSH recent:42 sku:1001\nLTRIM recent:42 0 19\nZINCRBY lb:bestsellers:shoes 1 sku:1001\nZREVRANGE lb:bestsellers:shoes 0 9 WITHSCORES"
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "On a typical sale day The catalogue cache absorbs most reads, the cart hash absorbs write bursts, and the stock counter is protected by a script. The database sees only misses, checkouts and the reconciliation job. That asymmetry, not raw speed, is why the architecture survives the spike."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Cache the catalogue with TTL jitter; split stable data from volatile price and stock.\n- A hash per user is the cart; `HINCRBY` is atomic and the cart gets a sliding TTL.\n- Sessions in Redis make app instances stateless; keep them small.\n- Flash-sale stock is decremented by a Lua script; the database remains the ledger.\n- Orders are written to the database, never only to Redis."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-3",
+      "type": "concept",
+      "title": "Gaming and Social Applications",
+      "subtopicId": "9-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Games and social products have two things in common: huge numbers of small, frequently changing facts (a score, a status, a position) and users who notice latency immediately. These are in-memory data store workloads.\n\n### Leaderboards\n\nThe leaderboard is the classic. A sorted set keeps members ordered by score, and the operations players care about are all logarithmic: add or update a score, get the top N, get a player's rank, get the players around a rank."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:season:7 4200 \"asha\" 3900 \"ben\" 5100 \"chen\"\n(integer) 3\n127.0.0.1:6379> ZINCRBY lb:season:7 200 \"ben\"\n\"4100\"\n127.0.0.1:6379> ZREVRANGE lb:season:7 0 2 WITHSCORES\n1) \"chen\"\n2) \"5100\"\n3) \"asha\"\n4) \"4200\"\n5) \"ben\"\n6) \"4100\"\n127.0.0.1:6379> ZREVRANK lb:season:7 \"ben\"\n(integer) 2",
+          "title": "A game leaderboard"
+        },
+        {
+          "type": "markdown",
+          "text": "Ties are broken by lexicographic order of the member, which may not be what your game wants; if first-to-reach wins, encode a timestamp into the score. To show \"ten players around me\", take the player's rank with `ZREVRANK` and then call `ZREVRANGE` for rank minus five to rank plus five. At very large scale (tens of millions of players), keep the full ranking in one sorted set if memory allows, or shard by region or league and merge only for the global top N.\n\n### Matchmaking\n\nMatching players of similar skill is a range query: a sorted set of waiting players scored by rating lets you ask `ZRANGEBYSCORE` for everyone within a window around your rating, then widen the window the longer a player has waited. The match is claimed atomically (a Lua script that removes both players or neither), so one player cannot land in two matches. Redis is the waiting room; the game server owns the match itself.\n\n### Presence and \"who is online\"\n\nPresence is a heartbeat problem. Every client refreshes `presence:{userId}` with a short TTL (say 60 seconds) every 20 to 30 seconds. If the key exists the user is online; if the client crashes the key simply expires, with no cleanup job. For \"how many users are online right now\" a sorted set scored by last-seen timestamp works: `ZADD online <now> <user>`, then `ZCOUNT online <now-60> +inf`, and `ZREMRANGEBYSCORE` to trim old entries. For a friends-list view, ask for the presence keys of friends in one pipelined batch rather than one round trip per friend.\n\n### Feeds and timelines\n\nA social feed can be built two ways, and Redis supports both. In **fan-out on write**, publishing a post pushes its id into the timeline list or sorted set of every follower (`ZADD timeline:{follower} <timestamp> <postId>`), so reading a feed is one cheap `ZREVRANGE`. In **fan-out on read**, the reader fetches recent posts of everyone followed and merges them at request time. Fan-out on write makes reads fast and writes expensive, which hurts for accounts with millions of followers. Typical systems mix the two: push for normal accounts, pull for very popular ones, merged at read time. Cap each timeline (`ZREMRANGEBYRANK timeline:42 0 -1001` keeps the newest 1000) so memory stays bounded. The posts themselves live in your database; Redis holds ids.\n\n### Counters and reactions\n\nLikes, views and follower counts are `INCR` on a string or a field in a hash. The write rate on a viral post can be very high, and the exact count is rarely critical. A common design counts in Redis and flushes totals to the database every few seconds, accepting that a crash loses a few seconds of increments. Whether to also keep a set of who liked (to prevent double likes) depends on the product: a set per post is exact but costs memory per user; a Bloom filter is approximate and compact."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you build a global leaderboard for 50 million players? Use a sorted set keyed by season, `ZADD` or `ZINCRBY` on score change, `ZREVRANGE` for the top N and `ZREVRANK` for a player's rank, all O(log N). Estimate memory first (tens of bytes per member plus the member string), shard by region if one node cannot hold it, and persist with AOF or rebuild from the durable score table. For the \"around me\" view use the rank then a range query."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Sorted sets give you rank, top N and around-me queries in logarithmic time.\n- Presence is a TTL key refreshed by heartbeat; expiry is the cleanup.\n- Feeds: push ids to followers for normal accounts, pull for celebrities, cap every timeline.\n- Count in Redis, flush to the database in batches, and accept bounded loss for non-critical counters."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-4",
+      "type": "concept",
+      "title": "Fintech, Ride-Hailing and Logistics",
+      "subtopicId": "9-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "These industries move money, vehicles and parcels. Mistakes are expensive, so the first rule is blunt: **Redis is not the** **system of record for balances, payments or shipments.** The ledger lives in a transactional database with strong guarantees. Redis earns its place around the ledger, in the parts that need speed, expiry and coordination: rate limits, idempotency, locks, risk counters and live positions.\n\n### Rate limits and abuse control\n\nPayment and login endpoints are attacked and mis-called constantly. A rate limiter in front of them, built on atomic counters or a token bucket in Lua (see the rate limiting chapter in Part 8), costs microseconds per call. Limits are layered: per IP at the gateway, per account for sensitive actions such as password attempts, per API key for partners. A fail-open or fail-closed decision is part of the design: if Redis is down, should payments be blocked or allowed? Most teams fail closed for login and fail open for read-only APIs, and write the choice down.\n\n### Idempotency keys\n\nNetworks retry. A mobile app that times out sends the payment request again, and the customer must not be charged twice. The client sends an `Idempotency-Key` header; the server claims it atomically before doing the work."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "# claim the key; only one caller wins\nSET idem:pay:7f3a NX EX 86400 \"in-progress\"\n# after the payment is stored durably, record the response for replays\nSET idem:pay:7f3a \"{\\\"status\\\":201,\\\"paymentId\\\":\\\"p-889\\\"}\" XX EX 86400"
+        },
+        {
+          "type": "markdown",
+          "text": "If `SET ... NX` returns `OK` you own the request. If it returns `(nil)`, either the first attempt is still running (answer 409 or make the caller wait) or it finished and you replay the stored response. The key's TTL bounds how long a retry is recognised. The database should still have a unique constraint on the business operation, because the Redis key can be lost in a failover; Redis makes duplicates rare and cheap to detect, the constraint makes them impossible.\n\n### Locks around money\n\nLocks serialise work on one entity, for example \"only one settlement run per merchant\". The simple pattern is `SET` `lock:merchant:9 <token> NX PX 30000` and a Lua compare-and-delete to release. Be honest about what that gives you: mutual exclusion that is correct while the lock holder finishes within the TTL and Redis does not fail over at the wrong moment. A paused process (a long garbage collection, a network stall) can still act after its lock expired. For anything where a double action is harmful, the real protection is a **fencing token**: the lock service hands out an increasing number and the database rejects writes that carry an older one. Treat the Redis lock as an efficiency tool and let the database enforce correctness.\n\n### Risk and fraud counters\n\nFraud rules are often counting questions: how many cards has this device tried in ten minutes, how many failed logins per account today, how much has this user transferred in the last hour. Sliding windows over a sorted set (`ZADD` with timestamps, `ZREMRANGEBYSCORE` to trim, `ZCARD` to count) or small time-bucketed counters answer them in one round trip, and the rule engine reads them while a transaction is being authorised. These counters are derived data: if lost, the system is briefly less strict, not wrong about money.\n\n### Live positions and geo\n\nA ride-hailing backend asks the same question all day: which available drivers are within two kilometres of this rider? The geo commands store positions in a sorted set and answer radius queries."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> GEOADD drivers:available 77.5946 12.9716 \"d:17\" 77.6101 12.9352 \"d:21\"\n(integer) 2\n127.0.0.1:6379> GEOSEARCH drivers:available FROMLONLAT 77.5900 12.9700 BYRADIUS 3 km ASC\n1) \"d:17\"",
+          "title": "Nearby drivers"
+        },
+        {
+          "type": "markdown",
+          "text": "Drivers send a position every few seconds, so the write rate is high but each write is tiny. Remove a driver from the set when they accept a ride (`ZREM`), and set a companion key with a TTL so that drivers whose app died drop out of the available pool. Logistics systems do the same with vehicles and parcels: the latest position lives in Redis, the history is appended to a stream or time series and then to the warehouse, and the delivery status of record lives in the database. In one large region the geo set can get hot; shard by city or by cell id so that one key does not carry the whole country."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Money in a cache If an interviewer or a design review asks \"where is the balance stored?\", the answer must never be only \"in Redis\". Redis may hold a cached balance for display, with the ledger as the truth. A cached copy used to authorise a debit needs a compare against the ledger."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Redis surrounds the ledger (limits, idempotency, locks, risk counters, live positions); it is not the ledger.\n- Idempotency keys use `SET NX EX` and a stored response; a database constraint is the backstop.\n- A lock is an efficiency tool; fencing tokens and database constraints give correctness.\n- Decide fail-open or fail-closed per endpoint before the outage, not during it.\n- Geo sets answer \"who is near me\" fast; shard them when one key gets hot."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-5",
+      "type": "concept",
+      "title": "Real-Time Analytics and IoT",
+      "subtopicId": "9-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Analytics workloads count, aggregate and look at the recent past. Redis suits the real-time edge of this work: what happened in the last minute, hour or day, while the long-term history goes to a column store or data warehouse.\n\n### Counting things cheaply\n\nThree structures cover most \"how many\" questions."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Question",
+            "Structure",
+            "Cost",
+            "Accuracy"
+          ],
+          "rows": [
+            [
+              "`Page views`",
+              "`INCR` on a string per page and time bucket",
+              "1 key per bucket",
+              "Exact"
+            ],
+            [
+              "`Unique visitors` `per day`",
+              "HyperLogLog (`PFADD`, `PFCOUNT`)",
+              "About 12 KB per key at most",
+              "Approximate (standard error ≈ 0.81%)"
+            ],
+            [
+              "`Did user X visit` `today`",
+              "Bitmap (`SETBIT`, `GETBIT`), bit index = user number",
+              "1 bit per user id",
+              "Exact"
+            ]
+          ],
+          "caption": "Counting structures."
+        },
+        {
+          "type": "markdown",
+          "text": "Daily active users from a bitmap: `SETBIT dau:2026-10-09 <userNumber> 1`, then `BITCOUNT dau:2026-10-09`. Bitmaps for several days combine with `BITOP AND` or `OR` to answer \"active every day this week\". This needs dense, small integer user ids; with sparse ids a bitmap wastes memory and a HyperLogLog or set is better."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> PFADD uv:2026-10-09 \"u1\" \"u2\" \"u3\"\n(integer) 1\n127.0.0.1:6379> PFADD uv:2026-10-09 \"u2\"\n(integer) 0\n127.0.0.1:6379> PFCOUNT uv:2026-10-09\n(integer) 3",
+          "title": "Unique visitors with HyperLogLog"
+        },
+        {
+          "type": "markdown",
+          "text": "### Time series\n\nRedis 8 includes a time series data type (formerly a module). It stores samples of (timestamp, value) per key with a retention period, and supports range queries and aggregation, for example the average per five minutes."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "TS.CREATE sensor:7:temp RETENTION 86400000 LABELS site plant1 kind temperature\nTS.ADD sensor:7:temp * 21.4\nTS.RANGE sensor:7:temp - + AGGREGATION avg 300000"
+        },
+        {
+          "type": "markdown",
+          "text": "Here `*` means \"use the server time\", `RETENTION` is in milliseconds (one day), and the aggregation bucket is 300000 ms, five minutes. Labels let you query many series at once (`TS.MGET`, `TS.MRANGE` with a filter such as `kind=temperature`). Compaction rules can roll fine data into coarser series automatically. Check the commands page for the exact options available in your version before relying on one.\n\n### Ingesting events with streams\n\nSensors, clickstreams and application logs arrive as a firehose. A stream is an append-only log in Redis, and consumer groups let several workers share the processing with acknowledgements (see the streams chapters in Parts 3 and 8). A common shape is:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "devices ──► gateway ──► XADD events:telemetry MAXLEN ~ 1000000\n                                     │\n             group \"aggregator\" ─────┼──► TS.ADD / HINCRBY (live view)\n             group \"archiver\"   ─────┴──► batch write to warehouse"
+        },
+        {
+          "type": "markdown",
+          "text": "Two independent groups read the same stream: one maintains the live aggregates in Redis for dashboards, the other writes batches to long-term storage. Capping the stream with `MAXLEN ~` bounds memory; size the cap for how far behind your slowest consumer may fall, because trimmed entries are gone. If the data must be kept for days or replayed at will, or the volume is far beyond one node's memory, a log system built for that (such as Kafka, discussed in the next chapter) is the better buffer, with Redis serving the hot aggregates."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Memory is the budget Redis keeps everything in RAM. Estimate before you commit: a day of one-second samples for 10,000 sensors is 864 million points. Aggregate, downsample, set retention, and keep raw data elsewhere."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Use `INCR` for exact counts, HyperLogLog for approximate unique counts, bitmaps for dense yes/no per user.\n- Redis time series gives retention, labels and aggregation for recent data.\n- Streams ingest events and let independent consumer groups build live views and archives.\n- Bound everything (retention, `MAXLEN`) because RAM is finite; send long history to a warehouse."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-6",
+      "type": "concept",
+      "title": "Microservices Glue",
+      "subtopicId": "9-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "In a system of many small services, Redis often becomes shared infrastructure: a place where independent processes meet. That is useful and also dangerous, because a shared Redis is a shared dependency. This chapter covers the legitimate uses and the failure modes.\n\n### Shared cache and sessions\n\nSeveral instances of a service, or several services, can share one cache so that a value computed by one is available to all. Per-instance in-memory caches (Caffeine) are faster but each holds its own copy and drifts out of sync. A two-level cache (a small local cache in front of Redis, invalidated by Redis messages or client-side caching tracking) combines both. Sessions and short-lived tokens follow the same logic: store them centrally so any instance can validate them.\n\n### Configuration and feature flags\n\nFeature flags are keys: `ff:new-checkout` with a value of `on`, `off` or a percentage. Services read them with a short local cache, and pub/sub or keyspace tracking tells instances to refresh. Redis is fine as the fast read path for flags; keep the authoritative flag definitions, audit trail and approval workflow in a proper config system and have it write to Redis.\n\n### Service discovery: use with caution\n\nIt is tempting to register service instances as keys with TTL heartbeats, and it works for small setups. In production, prefer the platform's own discovery (Kubernetes services, a service mesh, or a dedicated registry): they handle health checks, load balancing and consistency better than a hand-rolled Redis registry, and they do not make your cache a single point of failure for every call between services.\n\n### Messaging between services\n\nRedis offers three ways to move messages, and they differ in what happens when a consumer is away."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Primitive",
+            "Delivery",
+            "Persistence",
+            "Use for"
+          ],
+          "rows": [
+            [
+              "Pub/sub",
+              "At-most-once, to whoever is connected",
+              "None",
+              "Cache invalidation, live notifications, presence"
+            ],
+            [
+              "List with `LMOVE`",
+              "At-least-once with a processing list",
+              "In the keyspace",
+              "Simple work queues"
+            ],
+            [
+              "Stream + consumer group",
+              "At-least-once with ack and replay of pending",
+              "Yes, with trimming",
+              "Event processing, order events, background jobs"
+            ]
+          ],
+          "caption": "Messaging options inside Redis."
+        },
+        {
+          "type": "markdown",
+          "text": "Use pub/sub only for messages you can afford to lose. For order events that a notification service must not miss, use a stream with a consumer group, and design the consumer to be idempotent because at-least-once delivery means duplicates.\n\n### Redis and Kafka: complements, not rivals\n\nA question every architect gets: \"we have Kafka, do we need Redis?\" They solve different problems. Kafka is a distributed, replicated, disk-based log built for high-throughput, durable event streaming with long retention and replay by many independent consumers. Redis is an in-memory data store built for sub-millisecond access to current state and small, fast coordination primitives. A common combination: Kafka carries the durable stream of business events between services; consumers build read-optimised views of that stream in Redis (the current price of each product, the live leaderboard, the session state) for fast lookups. Redis streams cover smaller, simpler pipelines where one tool is easier to run than two, with the caveat that capacity is bounded by memory.\n\n### API gateway rate limiting\n\nThe gateway is the natural place for coarse limits per client. It keeps counters in Redis so that all gateway instances share the same count (a local counter per instance would multiply the allowed rate by the instance count). Return `429` `Too Many Requests` with a `Retry-After` header, and keep the Lua script small so that gateway latency stays low."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Blast radius If one Redis serves the cache, the sessions, the rate limiter and the queue, a memory spike in the cache can evict sessions and block logins. Production setups usually run separate instances (or at least separate eviction policies) for cache data, which may be evicted, and for state that must not be: use `allkeys-lru` on the cache and `noeviction` on the queue and session instance."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why not use Redis pub/sub as the event bus between microservices? Pub/sub is at-most-once: a subscriber that is down, slow or reconnecting misses messages and nothing is stored. It is excellent for invalidation and live signals, and wrong for events that must be processed. Use streams with consumer groups or a durable broker, with idempotent consumers."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Share caches and sessions through Redis; add a local cache layer when latency demands it.\n- Prefer platform service discovery over a hand-built Redis registry.\n- Pub/sub is lossy; streams with consumer groups give at-least-once delivery.\n- Kafka is the durable event backbone, Redis the fast current-state store; they complement each other.\n- Isolate workloads (cache vs state) into separate instances to limit blast radius."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-7",
+      "type": "concept",
+      "title": "AI Applications",
+      "subtopicId": "9-7",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Applications built on large language models (LLMs) have three recurring needs: remembering things cheaply, finding relevant information by meaning, and avoiding repeated expensive model calls. Redis 8 includes a query engine with vector search in the standard distribution, which makes it a practical single place for all three. This chapter stays close to what the features do and avoids performance claims; benchmark with your own data and embedding model.\n\n### Vectors in two minutes\n\nAn **embedding** is a list of numbers (a vector, for example 768 or 1536 floats) produced by a model so that texts with similar meaning land close together. **Vector search** finds the stored vectors nearest to a query vector. Exact search compares against everything (the `FLAT` index type); approximate search trades a little accuracy for speed (the `HNSW` index type). Closeness is measured by a distance metric such as `COSINE`, `L2` or `IP` (inner product). Redis stores the vector as a field of a hash or JSON document and the search index makes it queryable."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "FT.CREATE idx:docs ON HASH PREFIX 1 doc: SCHEMA\n  title TEXT\n  tenant TAG\n  embedding VECTOR HNSW 6 TYPE FLOAT32 DIM 768 DISTANCE_METRIC COSINE"
+        },
+        {
+          "type": "markdown",
+          "text": "The `6` after `HNSW` is the number of attribute tokens that follow (three name-value pairs). Documents under the prefix `doc:` are indexed automatically when written. A query asks for the K nearest vectors, optionally filtered by other fields:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "FT.SEARCH idx:docs \"(@tenant:{acme})=>[KNN 5 @embedding $vec AS dist]\"\n  PARAMS 2 vec \"<binary FLOAT32 blob>\" SORTBY dist RETURN 2 title dist DIALECT 2"
+        },
+        {
+          "type": "markdown",
+          "text": "The query vector is passed as the raw bytes of the float array (little-endian float32), not as text. In Java you build it with a `ByteBuffer`; client libraries and Spring AI provide helpers. Filtering on tags while searching by vector is how multi-tenant applications keep one customer's documents out of another's results.\n\n### Semantic cache\n\nLLM calls are slow and cost money per token. Users ask the same question in many wordings: \"how do I reset my password\" and \"I forgot my password, what now\". An ordinary cache keyed by exact text misses these. A **semantic** **cache** embeds the incoming prompt, searches for a stored prompt within a distance threshold, and returns the stored answer on a hit."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "prompt ─► embed ─► KNN 1 in Redis ─┬─ distance ≤ threshold ─► return cached answer\n                                   └─ otherwise ─► call LLM ─► store prompt vector + answer (TTL)"
+        },
+        {
+          "type": "markdown",
+          "text": "Design points that decide whether it works:\n\n- **The threshold is a product decision.** Too loose and users get an answer to a different question; too strict and the cache never hits. Tune it on real traffic and log near-misses.\n- **Scope the cache.** Include tenant, language and model version as filter fields; a cached answer is only valid in the context that produced it.\n- **Set a TTL** so stale answers age out, and delete entries when the underlying knowledge changes.\n- Do not cache personalised or sensitive answers.\n\n### Retrieval-augmented generation (RAG)\n\nA model only knows its training data. RAG gives it your data at question time: split your documents into chunks, embed and store each chunk in Redis, and on each question embed the question, fetch the K nearest chunks, and pass them to the model as context. Redis plays the retrieval role. Ingestion (chunking, embedding, refreshing) is a batch or streaming job you write, and quality depends more on chunking and the embedding model than on the database.\n\nRedis also supports combining text relevance with vector similarity. Release 8.4 added `FT.HYBRID`, a hybrid search command that combines the two result lists (Reciprocal Rank Fusion is one of the supported ways). Hybrid search helps when exact terms matter, such as product codes or error numbers, which embeddings alone tend to blur. Check the command page for the options available in your version.\n\n### Agent memory and sessions\n\nAn AI agent needs working state: the conversation so far, tool results, user preferences. This is session data again, and Redis handles it as it handles any session:\n\n- **Short-term memory:** a list or stream per conversation (`chat:{id}`) holding recent turns, trimmed to a window, with a TTL so abandoned chats disappear.\n- **Long-term memory:** facts and summaries stored with embeddings so the agent can recall relevant ones by meaning, scoped per user with a tag filter.\n- **Coordination:** locks, queues and streams to run tool calls and background tasks reliably.\n\nRedis 8 also introduced a beta vector set data type designed for storing and querying vectors directly; its commands (prefixed `V`, such as `VADD` and `VSIM`) are young, so confirm their current status in the documentation before building on them."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Memory cost and embeddings Each vector costs its dimensions × 4 bytes for float32 before index overhead. One million 768-dimension vectors is roughly 3 GB of raw vector data (1,000,000 × 768 × 4 bytes) plus the HNSW graph and your other fields. Estimate, then test with a realistic sample. Some index options reduce memory by compressing vectors, with an accuracy cost."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Changing the embedding model Vectors from different models are not comparable, and the dimension is fixed at index creation. A model change means re-embedding everything and building a new index. Store the model name in the document and create the new index alongside the old one for a smooth switch."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Vector search finds nearest embeddings; it is built into Redis 8 (`FT.CREATE` with a `VECTOR` field, `FT.SEARCH` with `KNN`).\n- A semantic cache returns stored LLM answers for similar prompts; the distance threshold and the scoping filters make or break it.\n- RAG uses Redis as the retrieval store; quality depends mostly on chunking and the embedding model.\n- Agent memory is session data plus embeddings; keep it scoped, trimmed and expiring.\n- Budget memory (dimensions × 4 bytes per vector) and plan for model changes."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-8",
+      "type": "concept",
+      "title": "Decision Guide: When to Use Redis and When Not To",
+      "subtopicId": "9-8",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Every tool is wrong for some job. This chapter gives you a checklist for deciding, an honest list of cases where Redis is the wrong choice, and a table of alternatives. It is also what a design review or an interview wants to hear: not enthusiasm, but reasoning.\n\n### Five questions before you put data in Redis\n\n1. **How big is the data, now and in a year?** Everything lives in RAM, and RAM costs more per gigabyte than disk. A working set of a few gigabytes to a few hundred is comfortable; terabytes of cold data are not. Multiply by overhead (typically well above the raw payload) and leave headroom for forks and replication buffers.\n2. **What happens if this data is lost?** If the answer is \"we rebuild it\", Redis is easy. If the answer is \"we lose money or legal records\", Redis can be part of the design only with a durable source of truth behind it.\n3. **What consistency do you need?** Single commands and scripts are atomic on one node. Replication is asynchronous, so after a failover the last few writes may be gone, and in a cluster, multi-key operations are limited to keys in one slot. If you need multi-row transactions with rollback, constraints and joins, you need a relational database.\n4. **How will you query it?** Redis is excellent when you know the key or the range (by key, score, time, location, vector). It is poor at ad hoc questions across arbitrary fields (the query engine helps, but it is an index you maintain, not a general SQL engine).\n5. **Can you operate it?** Memory sizing, persistence settings, failover and monitoring are your job, or you pay a managed service to do them.\n\n### Worked example: will it fit?\n\nQuestion 2 above asks about size, so do the arithmetic once. ShopStream expects 2 million active sessions, 500,000 catalogue entries and 3 million carts at peak. The numbers below are illustrative estimates, not measurements."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Data",
+            "Count",
+            "Rough size each",
+            "Rough total"
+          ],
+          "rows": [
+            [
+              "Sessions (hash, 6 small fields)",
+              "2,000,000",
+              "400 bytes",
+              "0.8 GB"
+            ],
+            [
+              "Catalogue (hash, 15 fields)",
+              "500,000",
+              "1.5 KB",
+              "0.75 GB"
+            ],
+            [
+              "Carts (hash, 4 items)",
+              "3,000,000",
+              "300 bytes",
+              "0.9 GB"
+            ],
+            [
+              "Subtotal",
+              "-",
+              "-",
+              "about 2.5 GB"
+            ]
+          ],
+          "caption": "Illustrative memory estimate."
+        },
+        {
+          "type": "markdown",
+          "text": "Then add margin: key overhead and allocator fragmentation (plan for well above the raw payload), replication and client buffers, and room for the copy-on-write cost during a background save or AOF rewrite, which in the worst case approaches the size of the dataset if writes touch most pages. A sensible plan for this data is a node with 8 GB or more and `maxmemory` set noticeably below the physical RAM. The point is the method: count, size, add overhead, add fork headroom, then measure with `MEMORY USAGE` on real keys and revise.\n\n### Signals that Redis is a good fit\n\n- Access is by key or by simple ordering, and latency is measured in milliseconds or less.\n- The data is a copy, a counter, a window, a queue entry or a short-lived state.\n- Operations are naturally atomic and small (increment, push, add to set, claim a lock).\n- A TTL describes the data's real lifetime.\n- Read volume far exceeds what the primary store should serve.\n\n### Signals that it is the wrong tool"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Why Redis struggles",
+            "Consider"
+          ],
+          "rows": [
+            [
+              "Large, cold, mostly-archival data",
+              "RAM cost; most of it is never read",
+              "Relational database, object store, column store"
+            ],
+            [
+              "Complex relational queries, joins, reporting",
+              "No joins; no ad hoc SQL",
+              "PostgreSQL or another relational database"
+            ],
+            [
+              "Multi-row ACID transactions with rollback",
+              "`MULTI` has no rollback, scripts are not undone on error",
+              "Relational database"
+            ],
+            [
+              "Financial ledger, orders, legal records",
+              "Asynchronous replication can lose acknowledged writes",
+              "Relational database with synchronous replication"
+            ],
+            [
+              "Durable high-volume event log with long replay",
+              "Bounded by memory, trimmed streams drop history",
+              "Kafka or a similar log system"
+            ],
+            [
+              "Full-text search over a large corpus with rich analysis",
+              "Query engine is capable but not a search platform for every need",
+              "Dedicated search engine, or test the Redis query engine on your data"
+            ],
+            [
+              "Graph traversal as the core workload",
+              "No native graph model in core Redis",
+              "Graph database"
+            ],
+            [
+              "Blob storage of large files",
+              "Large values block the single thread and burn RAM",
+              "Object storage; keep the URL in Redis"
+            ]
+          ],
+          "caption": "When Redis is the wrong primary store, and what to consider instead."
+        },
+        {
+          "type": "markdown",
+          "text": "### Redis as the primary store: a sober view\n\nIt is possible. With `appendonly yes`, an `appendfsync` policy that matches your loss tolerance, replicas, and tested backups, Redis can hold the primary copy of some data, and teams do run it that way for things like sessions or leaderboards that they treat as the authoritative copy. But understand what you accept: with `everysec` a crash can lose about a second of writes; replication is asynchronous, so a failover can lose more; `WAIT` narrows but does not eliminate the window; and a dataset must fit in memory on the node or shard. If those terms are acceptable for this data, it is a valid choice. If you hesitate, add a database behind it.\n\n### The cache-vs-store test\n\nAsk: \"if I flushed Redis right now, what breaks and for how long?\" Group your keys into three buckets and handle each differently:\n\n- **Pure cache:** nothing breaks except speed. Use `allkeys-lru` or `allkeys-lfu`, no persistence needed (or RDB for faster warm-up).\n- **State with a source of truth:** users are inconvenienced (logged out, carts empty) and recovery is possible. Persistence on, `noeviction` or `volatile-*` policies, TTLs everywhere that makes sense.\n- **State with no other copy:** treat it like a database: AOF, replicas, backups, alerts and restore drills.\n\nMixing all three on one instance with one eviction policy is the most common architecture mistake. Separate them.\n\n### Alternatives, case by case"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Need",
+            "Redis",
+            "Alternative and when it wins"
+          ],
+          "rows": [
+            [
+              "Application cache",
+              "Shared, networked, rich structures",
+              "In-process cache (Caffeine) when one JVM and nanosecond reads matter; Memcached for plain, simple string caching"
+            ],
+            [
+              "Session store",
+              "TTL, hashes, fast",
+              "A database table when sessions must survive anything and traffic is small"
+            ],
+            [
+              "Message queue",
+              "Lists and streams, simple",
+              "RabbitMQ for routing and acknowledgements semantics; Kafka for durable, replayable event streams"
+            ],
+            [
+              "Counters and analytics",
+              "Atomic, fast, approximate options",
+              "A time-series or column store for long history and ad hoc analysis"
+            ],
+            [
+              "Leaderboards",
+              "Sorted sets are ideal",
+              "A database with an index, when rankings are rare and small"
+            ],
+            [
+              "Locks",
+              "Fast, simple, needs care",
+              "Database row locks or advisory locks, or a consensus store such as ZooKeeper or etcd, when correctness is critical"
+            ],
+            [
+              "Search",
+              "Query engine with vectors built in",
+              "Dedicated search engine for large, text-heavy workloads"
+            ]
+          ],
+          "caption": "Redis compared to common alternatives."
+        },
+        {
+          "type": "markdown",
+          "text": "Valkey, the open-source fork of Redis created from Redis 7.2.4, speaks the same core protocol and commands. The newer Redis 8 data types and the query engine are specific to Redis; check the license terms and feature set against your needs when choosing a distribution or a managed service."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When would you not use Redis? When the data is large and cold, when I need relational queries or multi-row transactions with rollback, or when losing acknowledged writes is unacceptable and there is no durable store behind it. I would use Redis around the primary database as a cache, a limiter, a queue or a coordination layer, and keep the system of record where it has strong durability and constraints."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Ask about size, loss tolerance, consistency, query shape and operability before choosing Redis.\n- Redis is right for key-based, small, atomic, TTL-shaped, latency-sensitive workloads.\n- It is wrong as the sole store for ledgers, large cold data, relational queries and replayable event history.\n- Separate pure cache, state with a source of truth, and state with no other copy, with different policies.\n- Compare against the specific alternative for each case instead of choosing by habit."
+        }
+      ]
+    },
+    {
+      "id": "ch-9-9",
+      "type": "concept",
+      "title": "Reference Architectures for ShopStream",
+      "subtopicId": "9-9",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This chapter assembles the pieces. ShopStream, our running example, is a mid-sized online shop with a gateway and five services: catalog, cart, order, inventory and notification. Below are three reference architectures, from the smallest that is sensible to one that survives a regional sale. They are generic designs for a typical company at each stage; adapt the numbers to your traffic."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 188.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M262.0 180.0 C262.0 177.8 239.6 176.0 212.0 176.0 C184.4 176.0 162.0 177.8 162.0 180.0 C162.0 182.2 184.4 184.0 212.0 184.0 C239.6 184.0 262.0 182.2 262.0 180.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 180.0 L262.0 180.0 L262.0 164.0 L162.0 164.0 Z\" fill=\"#23282e\" stroke=\"#eef0f3\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M306.0 178.0 L496.9 178.0 C499.1 178.0 500.9 176.2 500.9 174.0 L500.9 6.0 C500.9 3.8 499.1 2.0 496.9 2.0 L306.0 2.0 C303.8 2.0 302.0 3.8 302.0 6.0 L302.0 174.0 C302.0 176.2 303.8 178.0 306.0 178.0 Z\" fill=\"#43160f\" stroke=\"#df5d53\" stroke-width=\"1.40\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 168.0 L487.9 168.0 C489.6 168.0 490.9 166.7 490.9 165.0 L490.9 151.0 C490.9 149.3 489.6 148.0 487.9 148.0 L315.0 148.0 C313.3 148.0 312.0 149.3 312.0 151.0 L312.0 165.0 C312.0 166.7 313.3 168.0 315.0 168.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M262.0 164.0 C262.0 161.8 239.6 160.0 212.0 160.0 C184.4 160.0 162.0 161.8 162.0 164.0 C162.0 166.2 184.4 168.0 212.0 168.0 C239.6 168.0 262.0 166.2 262.0 164.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M58.0 91.0 L76.0 91.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M132.0 91.0 L162.0 17.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 17.0 L302.0 91.0\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 91.0 L162.0 47.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 47.0 L302.0 91.0\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 91.0 L162.0 77.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 77.0 L302.0 91.0\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 91.0 L162.0 107.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 107.0 L302.0 91.0\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M132.0 91.0 L162.0 137.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M262.0 137.0 L302.0 91.0\" fill=\"none\" stroke=\"#df5d53\" stroke-width=\"0.80\" stroke-linejoin=\"round\"/><path d=\"M5.0 108.0 L55.0 108.0 C56.7 108.0 58.0 106.7 58.0 105.0 L58.0 77.0 C58.0 75.3 56.7 74.0 55.0 74.0 L5.0 74.0 C3.3 74.0 2.0 75.3 2.0 77.0 L2.0 105.0 C2.0 106.7 3.3 108.0 5.0 108.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M79.0 108.0 L129.0 108.0 C130.7 108.0 132.0 106.7 132.0 105.0 L132.0 77.0 C132.0 75.3 130.7 74.0 129.0 74.0 L79.0 74.0 C77.3 74.0 76.0 75.3 76.0 77.0 L76.0 105.0 C76.0 106.7 77.3 108.0 79.0 108.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M76.0 91.0 L70.6 88.4 L70.6 93.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 30.0 L259.0 30.0 C260.7 30.0 262.0 28.7 262.0 27.0 L262.0 7.0 C262.0 5.3 260.7 4.0 259.0 4.0 L165.0 4.0 C163.3 4.0 162.0 5.3 162.0 7.0 L162.0 27.0 C162.0 28.7 163.3 30.0 165.0 30.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 17.0 L158.3 20.4 L162.3 22.0 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 91.0 L301.8 86.0 L297.9 88.1 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 60.0 L259.0 60.0 C260.7 60.0 262.0 58.7 262.0 57.0 L262.0 37.0 C262.0 35.3 260.7 34.0 259.0 34.0 L165.0 34.0 C163.3 34.0 162.0 35.3 162.0 37.0 L162.0 57.0 C162.0 58.7 163.3 60.0 165.0 60.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 47.0 L157.7 49.5 L161.3 51.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 91.0 L300.6 86.2 L297.4 89.1 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 90.0 L259.0 90.0 C260.7 90.0 262.0 88.7 262.0 87.0 L262.0 67.0 C262.0 65.3 260.7 64.0 259.0 64.0 L165.0 64.0 C163.3 64.0 162.0 65.3 162.0 67.0 L162.0 87.0 C162.0 88.7 163.3 90.0 165.0 90.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 77.0 L157.0 76.9 L158.8 80.9 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 91.0 L298.5 87.5 L297.0 91.6 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 120.0 L259.0 120.0 C260.7 120.0 262.0 118.7 262.0 117.0 L262.0 97.0 C262.0 95.3 260.7 94.0 259.0 94.0 L165.0 94.0 C163.3 94.0 162.0 95.3 162.0 97.0 L162.0 117.0 C162.0 118.7 163.3 120.0 165.0 120.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 107.0 L159.1 103.0 L157.0 106.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 91.0 L297.0 90.7 L298.6 94.7 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M165.0 150.0 L259.0 150.0 C260.7 150.0 262.0 148.7 262.0 147.0 L262.0 127.0 C262.0 125.3 260.7 124.0 259.0 124.0 L165.0 124.0 C163.3 124.0 162.0 125.3 162.0 127.0 L162.0 147.0 C162.0 148.7 163.3 150.0 165.0 150.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M162.0 137.0 L161.4 132.0 L157.7 134.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M302.0 91.0 L297.4 93.0 L300.7 95.8 Z\" fill=\"#d8382b\" stroke=\"#df5d53\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 48.0 L487.9 48.0 C489.6 48.0 490.9 46.7 490.9 45.0 L490.9 31.0 C490.9 29.3 489.6 28.0 487.9 28.0 L315.0 28.0 C313.3 28.0 312.0 29.3 312.0 31.0 L312.0 45.0 C312.0 46.7 313.3 48.0 315.0 48.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 72.0 L487.9 72.0 C489.6 72.0 490.9 70.7 490.9 69.0 L490.9 55.0 C490.9 53.3 489.6 52.0 487.9 52.0 L315.0 52.0 C313.3 52.0 312.0 53.3 312.0 55.0 L312.0 69.0 C312.0 70.7 313.3 72.0 315.0 72.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 96.0 L487.9 96.0 C489.6 96.0 490.9 94.7 490.9 93.0 L490.9 79.0 C490.9 77.3 489.6 76.0 487.9 76.0 L315.0 76.0 C313.3 76.0 312.0 77.3 312.0 79.0 L312.0 93.0 C312.0 94.7 313.3 96.0 315.0 96.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 120.0 L487.9 120.0 C489.6 120.0 490.9 118.7 490.9 117.0 L490.9 103.0 C490.9 101.3 489.6 100.0 487.9 100.0 L315.0 100.0 C313.3 100.0 312.0 101.3 312.0 103.0 L312.0 117.0 C312.0 118.7 313.3 120.0 315.0 120.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M315.0 144.0 L487.9 144.0 C489.6 144.0 490.9 142.7 490.9 141.0 L490.9 127.0 C490.9 125.3 489.6 124.0 487.9 124.0 L315.0 124.0 C313.3 124.0 312.0 125.3 312.0 127.0 L312.0 141.0 C312.0 142.7 313.3 144.0 315.0 144.0 Z\" fill=\"#1c1c1c\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"374.4\" y=\"13.0\" font-size=\"8.4\" fill=\"#eea6a0\" font-weight=\"700\" textLength=\"54.1\" lengthAdjust=\"spacingAndGlyphs\">Redis (roles)</text><text x=\"188.0\" y=\"19.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"48.1\" lengthAdjust=\"spacingAndGlyphs\">catalog-service</text><text x=\"371.9\" y=\"40.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"59.2\" lengthAdjust=\"spacingAndGlyphs\">product:{id} cache</text><text x=\"193.4\" y=\"49.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"37.2\" lengthAdjust=\"spacingAndGlyphs\">cart-service</text><text x=\"363.2\" y=\"64.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"76.5\" lengthAdjust=\"spacingAndGlyphs\">session:{sid}, cart:{uid}</text><text x=\"191.1\" y=\"79.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"41.7\" lengthAdjust=\"spacingAndGlyphs\">order-service</text><text x=\"14.7\" y=\"88.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"30.6\" lengthAdjust=\"spacingAndGlyphs\">Browsers</text><text x=\"89.3\" y=\"88.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"29.4\" lengthAdjust=\"spacingAndGlyphs\">Gateway</text><text x=\"373.1\" y=\"88.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"56.7\" lengthAdjust=\"spacingAndGlyphs\">stock:{sku} + Lua</text><text x=\"14.7\" y=\"98.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"30.6\" lengthAdjust=\"spacingAndGlyphs\">and apps</text><text x=\"87.1\" y=\"98.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"33.7\" lengthAdjust=\"spacingAndGlyphs\">rate limits</text><text x=\"184.6\" y=\"109.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"54.8\" lengthAdjust=\"spacingAndGlyphs\">inventory-service</text><text x=\"376.7\" y=\"112.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"49.4\" lengthAdjust=\"spacingAndGlyphs\">rl:{ip} rate limit</text><text x=\"373.8\" y=\"136.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"55.2\" lengthAdjust=\"spacingAndGlyphs\">lb:bestsellers zset</text><text x=\"181.9\" y=\"139.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"60.2\" lengthAdjust=\"spacingAndGlyphs\">notification-service</text><text x=\"366.4\" y=\"160.3\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"70.2\" lengthAdjust=\"spacingAndGlyphs\">stream:orders + group</text><text x=\"55.1\" y=\"176.0\" font-size=\"6.8\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"53.7\" lengthAdjust=\"spacingAndGlyphs\">system of record:</text><text x=\"190.2\" y=\"174.4\" font-size=\"7.0\" fill=\"#e7e9f3\" textLength=\"43.7\" lengthAdjust=\"spacingAndGlyphs\">SQL database</text></svg>",
+          "width": 503,
+          "caption": "Redis roles in ShopStream: notice that every Redis role sits beside a durable database, never in place of it.",
+          "alt": "Redis (roles) | catalog-service | product:{id} cache | cart-service | session:{sid}, cart:{uid} | order-service | Browsers Gateway stock:{sku} + Lua | and apps rate limits | inventory-service | rl:{ip} rate limit | lb:bestsellers zset | notification-service | stream:orders + group | system of record: SQL database"
+        },
+        {
+          "type": "markdown",
+          "text": "### Which key family belongs to which service\n\nBefore choosing a topology, decide ownership. A shared Redis does not mean shared keys: each key family has one owning service, a naming convention and a lifetime."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Service",
+            "Keys",
+            "Structure",
+            "Lifetime and loss policy"
+          ],
+          "rows": [
+            [
+              "catalog",
+              "`'product:{id}'`",
+              "Hash or JSON",
+              "TTL hours with jitter; rebuildable"
+            ],
+            [
+              "cart",
+              "`'cart:{userId}'`",
+              "Hash",
+              "7 days sliding; low-value loss"
+            ],
+            [
+              "gateway",
+              "`'session:{sid}',` `'rl:{ip}:{route}'`",
+              "Hash, string",
+              "Minutes; loss logs users out"
+            ],
+            [
+              "inventory",
+              "`'stock:{sku}'`",
+              "String counter",
+              "Sale duration; reconciled with database"
+            ],
+            [
+              "order",
+              "`'idem:{key}', 'lock:order:{id}'`",
+              "String",
+              "Hours / seconds; database constraint as backstop"
+            ],
+            [
+              "order, notification",
+              "`'stream:orders'`",
+              "Stream, group `notifier`",
+              "Days, trimmed; must not be silently lost"
+            ],
+            [
+              "analytics",
+              "`'uv:{date}',` `'lb:bestsellers:daily'`",
+              "HyperLogLog, sorted set",
+              "Days; rebuildable"
+            ],
+            [
+              "catalog",
+              "`'geo:stores'`",
+              "Geo",
+              "Long; reloaded from database"
+            ],
+            [
+              "config",
+              "`'ff:{name}'`",
+              "String",
+              "Long; owned by the config system"
+            ]
+          ],
+          "caption": "ShopStream key families."
+        },
+        {
+          "type": "markdown",
+          "text": "### Architecture A: one primary, one replica (start here)\n\nFor a young shop or a staging environment, a single primary with one replica and Sentinel is enough."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "gateway ─┐\ncatalog ─┤                    ┌──────────────┐   async   ┌──────────────┐\ncart    ─┼─► Lettuce ───────► │ Redis primary│ ────────► │ Redis replica│\norder   ─┤                    └──────┬───────┘           └──────────────┘\nnotif.  ─┘                           │\n                    Sentinel x3 monitor and promote the replica on failure"
+        },
+        {
+          "type": "markdown",
+          "text": "Settings that matter: `appendonly yes` with `appendfsync everysec` because the instance holds carts, sessions and the order stream; `maxmemory` with `maxmemory-policy volatile-lru` so that only keys with a TTL are evicted and stream and counters are protected (every cache key must therefore have a TTL); and a monitored memory alert well before the limit. All workloads share one instance, which is the weakness: a cache memory spike can push the instance into eviction trouble. Acceptable at small scale, and the next step fixes it.\n\n### Architecture B: separate cache and state (the usual production shape)\n\nSplit by what happens on loss. A cache instance (or cluster) holds only rebuildable data and evicts freely. A state instance holds sessions, carts, stock, idempotency keys and the order stream, with persistence and no eviction."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Setting",
+            "Cache instance",
+            "State instance"
+          ],
+          "rows": [
+            [
+              "Keys",
+              "product, search results, bestsellers",
+              "session, cart, stock, idem, stream:orders"
+            ],
+            [
+              "`maxmemory-policy`",
+              "`allkeys-lru` or `allkeys-lfu`",
+              "`noeviction`"
+            ],
+            [
+              "Persistence",
+              "None or RDB only",
+              "AOF `everysec` plus RDB"
+            ],
+            [
+              "Replication / HA",
+              "Replica optional",
+              "Replica and Sentinel, or managed HA"
+            ],
+            [
+              "On memory full",
+              "Evicts old entries",
+              "Writes fail loudly; alert and scale"
+            ]
+          ],
+          "caption": "Two instances with different policies."
+        },
+        {
+          "type": "markdown",
+          "text": "In Spring Boot (see the Spring Part) this means two connection factories and two templates, one per instance, with `@Qualifier` names such as `cacheRedisTemplate` and `stateRedisTemplate`. `RedisCacheManager` is wired to the cache connection only. This separation is the single biggest reliability improvement for the least effort.\n\n### Architecture C: sharded for a big sale\n\nWhen the state no longer fits in one node's memory, or one node's single command thread becomes the bottleneck, move to Redis Cluster for the dataset that needs it (usually the cache and the sessions, which are plentiful and independent per key)."
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "         ┌────────────── Redis Cluster (cache) ──────────────┐\n         │ shard 1 slots 0-5460  shard 2 5461-10922  shard 3  │\n         │   primary + replica     primary + replica   ...    │\n         └─────────────────────────────────────────────────────┘\nservices ─► Lettuce cluster client (topology refresh, MOVED handling)\n         └────────────► State: Sentinel-managed primary + replica (or small cluster)"
+        },
+        {
+          "type": "markdown",
+          "text": "Design rules for the cluster: keep every multi-key operation inside one slot with a hash tag, for example `cart:{42}` and `cart:{42}:meta` together, because cross-slot commands fail. Make the stock key `stock:{sku}` so that one SKU is always a single-shard operation; a flash sale for one hot SKU still funnels to one shard, so for extreme cases split the stock into several buckets (`stock:{sku}:1` to `:8`) and draw from a random bucket. Use `readFrom` replica preference in the client only for data where slightly stale reads are fine. Rehearse a node failure and a resharding before the sale, not during it.\n\n### The sale-day checklist\n\nWhatever the architecture, work through this before a big event:\n\n1. Load-test the hot paths with realistic key distributions, not one key repeated.\n2. Pre-warm the catalogue cache for the featured products.\n3. Confirm that every cache key has a TTL and that the state instance runs `noeviction` with an alert at 70 to 80 percent memory.\n4. Check `latency` and `slowlog` baselines; no command should be a surprise.\n5. Verify client timeouts, retry limits and the fail-open or fail-closed choice per endpoint.\n6. Test failover and a restore from backup in a non-production copy, with a stopwatch.\n7. Have a runbook for: Redis down, memory full, replica lagging, hot key.\n\n### Putting it together\n\nThe common thread across all three: Redis sits next to the durable stores, each key family has an owner, a lifetime and a loss policy, and the architecture is chosen by asking what happens when each piece disappears. If you can answer that for every key in the table at the start of this chapter, you understand Redis well enough to design with it."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Growing in steps Teams rarely start at Architecture C. A typical path is A for the first launch, B after the first scare about eviction or sessions, and C only when measured memory or throughput requires it. Each step is a response to a measurement, not a guess."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you use Redis in an e-commerce platform and what would you keep out of it? In: catalogue cache with jittered TTLs, sessions, carts as hashes, a Lua-guarded stock counter for sales, rate limits and idempotency keys at the gateway, a bestseller sorted set, and an order stream with a consumer group for notifications. Out: the order ledger, payments and anything that must survive a failover without loss, which belong in the database. I would separate cache and state instances because they need different eviction and persistence."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Assign every key family to one owning service, with a lifetime and a loss policy.\n- Start with a primary, a replica and Sentinel; separate cache from state next; shard only when measured.\n- Cache instances evict and skip persistence; state instances use `noeviction`, AOF and replicas.\n- In a cluster, design keys with hash tags so multi-key operations stay in one slot.\n- Prepare for events with load tests, pre-warming, alerts, failover rehearsals and a runbook."
+        }
+      ]
+    }
+  ]
+}

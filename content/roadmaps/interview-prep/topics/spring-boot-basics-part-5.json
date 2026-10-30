@@ -1,0 +1,629 @@
+{
+  "source": {
+    "document": "Spring_Boot_Basics.pdf",
+    "pages": "67-91"
+  },
+  "sections": [
+    {
+      "id": "ch-5-1",
+      "type": "concept",
+      "title": "Plan and scaffold",
+      "subtopicId": "5-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Reading about Spring is not the same as building with it. In this Part you build a small but realistic service, **Library API**, in which librarians manage authors and books and members borrow and return copies. It is deliberately small enough to type in an afternoon, yet it uses the pieces a hiring manager expects to see: layered architecture, DTO records, Bean Validation, Spring Data JPA with relationships, a transactional business rule, `ProblemDetail` errors, role-based security, tests and a Docker Compose run."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The listings in this Part are written to compile against Spring Boot 3.5.x and to carry over to Boot 4 with the small changes noted in the text. They could not be executed while this guide was written, so type them in, run `./mvnw verify`, and fix typos as you go; the structure is what matters. Any output shown is typical, not captured."
+        },
+        {
+          "type": "markdown",
+          "text": "### Requirements\n\n- Librarians create and edit authors and books and see all loans.\n- Anyone can browse authors and books (search by title, paged).\n- A member who is logged in can borrow a book if a copy is available and can list their own loans.\n- A librarian records the return of a loan.\n- A book that has loans cannot be deleted; a book with no free copy cannot be borrowed; the ISBN is unique.\n\n### Endpoints"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Path",
+            "Who",
+            "Result"
+          ],
+          "rows": [
+            [
+              "`GET`",
+              "`/api/authors, /api/authors/{id}`",
+              "anyone",
+              "200 list or one"
+            ],
+            [
+              "`POST`",
+              "`/api/authors`",
+              "LIBRARIAN",
+              "201 with Location"
+            ],
+            [
+              "`GET`",
+              "`/api/books?title=&page=&size=`",
+              "anyone",
+              "200 page of books"
+            ],
+            [
+              "`GET`",
+              "`/api/books/{id}`",
+              "anyone",
+              "200 or 404"
+            ],
+            [
+              "`POST`",
+              "`/api/books`",
+              "LIBRARIAN",
+              "201, 404 unknown author, 409 duplicate ISBN"
+            ],
+            [
+              "`PUT`",
+              "`/api/books/{id}`",
+              "LIBRARIAN",
+              "200, 404, 409"
+            ],
+            [
+              "`DELETE`",
+              "`/api/books/{id}`",
+              "LIBRARIAN",
+              "204, 404, 409 if loans exist"
+            ],
+            [
+              "`POST`",
+              "`/api/loans`",
+              "MEMBER or LIBRARIAN",
+              "201, 404, 409 no copy"
+            ],
+            [
+              "`GET`",
+              "`/api/loans/mine`",
+              "authenticated",
+              "200 own loans"
+            ],
+            [
+              "`GET`",
+              "`/api/loans`",
+              "LIBRARIAN",
+              "200 all loans"
+            ],
+            [
+              "`POST`",
+              "`/api/loans/{id}/return`",
+              "LIBRARIAN",
+              "200, 404, 409 already returned"
+            ]
+          ],
+          "caption": "The API surface."
+        },
+        {
+          "type": "markdown",
+          "text": "### Package layout\n\nPackage by layer, which is the simplest to follow at this size (larger systems often package by feature instead).\n\n**Project layout**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "library-api/\n  pom.xml  Dockerfile  docker-compose.yml\n  src/main/java/com/example/library/\n    LibraryApplication.java\n    domain/    Author  Book  Loan\n    repository/ AuthorRepository  BookRepository  LoanRepository\n    service/   AuthorService  BookService  LoanService\n    web/       AuthorController  BookController  LoanController\n               dto/ (records)   ApiExceptionHandler\n    error/     NotFoundException  ConflictException\n    config/    SecurityConfig  SecurityProps\n  src/main/resources/\n    application.yml\n    db/migration/V1__init.sql\n  src/test/java/com/example/library/\n    web/BookControllerTest   service/LoanServiceTest"
+        },
+        {
+          "type": "markdown",
+          "text": "The dependency rule is one-directional: `web` calls `service`, `service` calls `repository`, and nothing calls upwards. Entities stay inside `domain` and `service`; controllers only see DTO records.\n\n### The pom"
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\"\n         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0\n                             https://maven.apache.org/xsd/maven-4.0.0.xsd\">\n  <modelVersion>4.0.0</modelVersion>\n\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.5.6</version>   <!-- use the latest 3.5.x from start.spring.io -->\n    <relativePath/>\n  </parent>\n\n  <groupId>com.example</groupId>\n  <artifactId>library-api</artifactId>\n  <version>0.0.1-SNAPSHOT</version>\n\n  <properties>\n    <java.version>21</java.version>\n  </properties>\n\n  <dependencies>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-web</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-validation</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-data-jpa</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-security</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-actuator</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.flywaydb</groupId>\n      <artifactId>flyway-core</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.flywaydb</groupId>\n      <artifactId>flyway-database-postgresql</artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.postgresql</groupId>\n      <artifactId>postgresql</artifactId>\n      <scope>runtime</scope>\n    </dependency>\n\n    <dependency>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-starter-test</artifactId>\n      <scope>test</scope>\n    </dependency>\n    <dependency>\n      <groupId>org.springframework.security</groupId>\n      <artifactId>spring-security-test</artifactId>\n      <scope>test</scope>\n    </dependency>\n  </dependencies>\n\n  <build>\n    <plugins>\n      <plugin>\n        <groupId>org.springframework.boot</groupId>\n        <artifactId>spring-boot-maven-plugin</artifactId>\n      </plugin>\n    </plugins>\n  </build>\n</project>",
+          "title": "pom.xml"
+        },
+        {
+          "type": "markdown",
+          "text": "The parent's dependency management supplies the version of every dependency above, so no `<version>` tags appear. There is no H2 dependency on purpose: repository-level tests use the same PostgreSQL via Testcontainers in a real project (see the testing chapter), and here we keep the test suite to unit and web-slice tests that need no database."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Spring Boot 4 split many starters. The web starter is now `spring-boot-starter-webmvc`, Flyway needs `spring-boot-starter-flyway`, and each technology has a matching `-test` starter. The simplest way to port: generate a project at start.spring.io with the same choices on the Boot 4 line and copy its dependency list. Application code in this Part is unaffected, apart from import packages for test-slice annotations."
+        },
+        {
+          "type": "markdown",
+          "text": "### Configuration and schema"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  application:\n    name: library-api\n  datasource:\n    url: ${DB_URL:jdbc:postgresql://localhost:5432/library}\n    username: ${DB_USER:library}\n    password: ${DB_PASSWORD:library}\n  jpa:\n    hibernate:\n      ddl-auto: validate\n    open-in-view: false\n  flyway:\n    enabled: true\n\nserver:\n  shutdown: graceful\n\nmanagement:\n  endpoints:\n    web:\n      exposure:\n        include: health,info\n  endpoint:\n    health:\n      probes:\n        enabled: true\n\nlibrary:\n  security:\n    librarian-password: ${LIBRARIAN_PASSWORD:librarian-dev}\n    member-password: ${MEMBER_PASSWORD:member-dev}",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "`${NAME:default}` reads an environment variable with a fallback, so local runs work with no setup while Compose or production override the values from outside. Flyway runs the SQL migration at start-up and Hibernate only validates that the entities match it:"
+        },
+        {
+          "type": "code",
+          "language": "sql",
+          "code": "create table authors (\n    id   bigint generated by default as identity primary key,\n    name varchar(200) not null\n);\n\ncreate table books (\n    id               bigint generated by default as identity primary key,\n    title            varchar(300) not null,\n    isbn             varchar(20)  not null unique,\n    author_id        bigint       not null references authors (id),\n    copies_total     int          not null check (copies_total >= 1),\n    copies_available int          not null check (copies_available >= 0),\n    version          bigint       not null default 0\n);\n\ncreate table loans (\n    id          bigint generated by default as identity primary key,\n    book_id     bigint       not null references books (id),\n    borrower    varchar(100) not null,\n    loaned_at   date         not null,\n    due_date    date         not null,\n    returned_at date\n);\n\ncreate index idx_loans_borrower on loans (borrower);\ncreate index idx_loans_book on loans (book_id);",
+          "title": "V1__init.sql"
+        },
+        {
+          "type": "markdown",
+          "text": "Save it as `src/main/resources/db/migration/V1__init.sql`. The file name matters: `V`, version, two underscores, description. Never edit a migration that has run anywhere; add `V2__...` instead."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Write requirements and an endpoint table first; it becomes your test checklist.\n- Package by layer here, with one-way dependencies from web to service to repository.\n- Flyway owns the schema, Hibernate only validates it, and configuration comes from environment variables with dev defaults.\n- Never edit an applied migration."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-2",
+      "type": "concept",
+      "title": "Domain, repository and service",
+      "subtopicId": "5-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "This chapter builds everything below the web layer: three entities, three repositories, the services and the error types.\n\n### Errors first\n\nTwo small exceptions express the business outcomes the web layer will translate to 404 and 409:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.error;\n\npublic class NotFoundException extends RuntimeException {\n\n    public NotFoundException(String what, Object id) {\n        super(what + \" \" + id + \" not found\");\n    }\n}",
+          "title": "NotFoundException.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.error;\n\npublic class ConflictException extends RuntimeException {\n\n    public ConflictException(String message) {\n        super(message);\n    }\n}",
+          "title": "ConflictException.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Both are unchecked, which matters for `@Transactional`: a `RuntimeException` leaving a transactional method rolls the transaction back by default.\n\n### Entities"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.domain;\n\nimport jakarta.persistence.Entity;\nimport jakarta.persistence.GeneratedValue;\nimport jakarta.persistence.GenerationType;\nimport jakarta.persistence.Id;\nimport jakarta.persistence.Table;\n\n@Entity\n@Table(name = \"authors\")\npublic class Author {\n\n    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n\n    private String name;\n\n    protected Author() {\n        // required by JPA\n    }\n\n    public Author(String name) {\n        this.name = name;\n    }\n\n    public Long getId() { return id; }\n\n    public String getName() { return name; }\n}",
+          "title": "Author.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.domain;\n\nimport com.example.library.error.ConflictException;\nimport jakarta.persistence.Entity;\nimport jakarta.persistence.FetchType;\nimport jakarta.persistence.GeneratedValue;\nimport jakarta.persistence.GenerationType;\nimport jakarta.persistence.Id;\nimport jakarta.persistence.JoinColumn;\nimport jakarta.persistence.ManyToOne;\nimport jakarta.persistence.Table;\nimport jakarta.persistence.Version;\n\n@Entity\n@Table(name = \"books\")\npublic class Book {\n\n    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n\n    private String title;\n    private String isbn;\n    @ManyToOne(fetch = FetchType.LAZY, optional = false)\n    @JoinColumn(name = \"author_id\")\n    private Author author;\n\n    private int copiesTotal;\n    private int copiesAvailable;\n\n    @Version\n    private long version;\n\n    protected Book() {\n        // required by JPA\n    }\n\n    public Book(String title, String isbn, Author author, int copies) {\n        this.title = title;\n        this.isbn = isbn;\n        this.author = author;\n        this.copiesTotal = copies;\n        this.copiesAvailable = copies;\n    }\n\n    public void update(String title, String isbn, Author author) {\n        this.title = title;\n        this.isbn = isbn;\n        this.author = author;\n    }\n\n    public void checkOut() {\n        if (copiesAvailable == 0) {\n            throw new ConflictException(\"No copy of '\" + title + \"' is available\");\n        }\n        copiesAvailable--;\n    }\n\n    public void checkIn() {\n        if (copiesAvailable >= copiesTotal) {\n            throw new ConflictException(\"All copies of '\" + title + \"' are already in\");\n        }\n        copiesAvailable++;\n    }\n\n    public Long getId() { return id; }\n    public String getTitle() { return title; }\n    public String getIsbn() { return isbn; }\n    public Author getAuthor() { return author; }\n    public int getCopiesTotal() { return copiesTotal; }\n    public int getCopiesAvailable() { return copiesAvailable; }\n}",
+          "title": "Book.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.domain;\n\nimport jakarta.persistence.Entity;\nimport jakarta.persistence.FetchType;\nimport jakarta.persistence.GeneratedValue;\nimport jakarta.persistence.GenerationType;\nimport jakarta.persistence.Id;\nimport jakarta.persistence.JoinColumn;\nimport jakarta.persistence.ManyToOne;\nimport jakarta.persistence.Table;\nimport java.time.LocalDate;\n\n@Entity\n@Table(name = \"loans\")\npublic class Loan {\n\n    @Id\n    @GeneratedValue(strategy = GenerationType.IDENTITY)\n    private Long id;\n\n    @ManyToOne(fetch = FetchType.LAZY, optional = false)\n    @JoinColumn(name = \"book_id\")\n    private Book book;\n\n    private String borrower;\n    private LocalDate loanedAt;\n    private LocalDate dueDate;\n    private LocalDate returnedAt;\n\n    protected Loan() {\n        // required by JPA\n    }\n\n    public Loan(Book book, String borrower, LocalDate loanedAt, LocalDate dueDate) {\n        this.book = book;\n        this.borrower = borrower;\n        this.loanedAt = loanedAt;\n        this.dueDate = dueDate;\n    }\n\n    public boolean isReturned() { return returnedAt != null; }\n\n    public void markReturned(LocalDate day) { this.returnedAt = day; }\n\n    public Long getId() { return id; }\n    public Book getBook() { return book; }\n    public String getBorrower() { return borrower; }\n    public LocalDate getLoanedAt() { return loanedAt; }\n    public LocalDate getDueDate() { return dueDate; }\n    public LocalDate getReturnedAt() { return returnedAt; }\n}",
+          "title": "Loan.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Fields have no setters; state changes go through behaviour (`checkOut`, `checkIn`, `markReturned`). The rule \"you cannot borrow when no copy is free\" lives in the entity, so it cannot be bypassed by a careless caller.\n- Every association is `LAZY`. `@ManyToOne` defaults to `EAGER`, which is the usual cause of N+1 surprises, so we state it explicitly.\n- `@Version` turns on optimistic locking. Two members borrowing the last copy at the same moment both read `copiesAvailable = 1`; the second `UPDATE` finds the version changed and fails with `ObjectOptimisticLockingFailureException`, which we map to 409.\n- Camel-case fields map to snake-case columns (`copiesTotal` to `copies_total`) through Spring Boot's default naming strategy.\n\n### Repositories"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.repository;\n\nimport com.example.library.domain.Book;\nimport org.springframework.data.domain.Page;\nimport org.springframework.data.domain.Pageable;\nimport org.springframework.data.jpa.repository.EntityGraph;\nimport org.springframework.data.jpa.repository.JpaRepository;\n\npublic interface BookRepository extends JpaRepository<Book, Long> {\n\n    @EntityGraph(attributePaths = \"author\")\n    Page<Book> findByTitleContainingIgnoreCase(String title, Pageable pageable);\n\n    boolean existsByIsbn(String isbn);\n}",
+          "title": "BookRepository.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.repository;\n\nimport com.example.library.domain.Loan;\nimport java.util.List;\nimport org.springframework.data.jpa.repository.EntityGraph;\nimport org.springframework.data.jpa.repository.JpaRepository;\n  public interface LoanRepository extends JpaRepository<Loan, Long> {\n      @EntityGraph(attributePaths = {\"book\", \"book.author\"})\n      List<Loan> findByBorrowerOrderByLoanedAtDesc(String borrower);\n      @EntityGraph(attributePaths = {\"book\", \"book.author\"})\n      List<Loan> findAllByOrderByLoanedAtDesc();\n      boolean existsByBookId(Long bookId);\n  }\nAuthorRepository isaone-liner,publicinterface AuthorRepository extends JpaRepository<Author, Long> {},",
+          "title": "LoanRepository.java"
+        },
+        {
+          "type": "markdown",
+          "text": "in the same package. The `@EntityGraph` annotations tell Spring Data to join-fetch the author (and book) in the same query that loads the page. Without them, mapping 20 books to DTOs would trigger one extra query per book for `getAuthor().getName()`: the N+1 problem from the relationships chapter.\n\n### Request and response records\n\nDTOs are records. Validation annotations on the request records are what `@Valid` in the controller will check:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web.dto;\n\nimport jakarta.validation.constraints.Min;\nimport jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.NotNull;\nimport jakarta.validation.constraints.Pattern;\nimport jakarta.validation.constraints.Size;\n\npublic record BookRequest(\n        @NotBlank @Size(max = 300) String title,\n        @NotBlank @Pattern(regexp = \"[0-9-]{10,17}\", message = \"must be a valid ISBN\") String isbn,\n        @NotNull Long authorId,\n        @Min(1) int copies) {\n}",
+          "title": "BookRequest.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web.dto;\n\nimport com.example.library.domain.Book;\n\npublic record BookResponse(Long id, String title, String isbn, Long authorId,\n                           String authorName, int copiesAvailable, int copiesTotal) {\n\n    public static BookResponse from(Book b) {\n        return new BookResponse(b.getId(), b.getTitle(), b.getIsbn(), b.getAuthor().getId(),\n                b.getAuthor().getName(), b.getCopiesAvailable(), b.getCopiesTotal());\n    }\n}",
+          "title": "BookResponse.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The other DTOs follow the same pattern and are one line each (shown together here; put each record in its own file):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web.dto;\n\nimport com.example.library.domain.Author;\nimport com.example.library.domain.Loan;\nimport jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.NotNull;\nimport jakarta.validation.constraints.Size;\nimport java.time.LocalDate;\nimport java.util.List;\nimport org.springframework.data.domain.Page;\n\npublic class OtherDtos {\n\n    public record AuthorRequest(@NotBlank @Size(max = 200) String name) { }\n\n    public record AuthorResponse(Long id, String name) {\n        public static AuthorResponse from(Author a) {\n            return new AuthorResponse(a.getId(), a.getName());\n        }\n    }\n\n    public record LoanRequest(@NotNull Long bookId) { }\n\n    public record LoanResponse(Long id, Long bookId, String bookTitle, String borrower,\n                               LocalDate loanedAt, LocalDate dueDate, LocalDate returnedAt) {\n        public static LoanResponse from(Loan l) {\n            return new LoanResponse(l.getId(), l.getBook().getId(), l.getBook().getTitle(),\n                    l.getBorrower(), l.getLoanedAt(), l.getDueDate(), l.getReturnedAt());\n        }\n    }\n\n    public record PageResponse<T>(List<T> content, int page, int size, long totalElements) {\n        public static <T> PageResponse<T> of(Page<T> p) {\n            return new PageResponse<>(p.getContent(), p.getNumber(), p.getSize(),\n                    p.getTotalElements());\n        }\n    }\n}",
+          "title": "OtherDtos.java"
+        },
+        {
+          "type": "markdown",
+          "text": "From here on we use them as nested types of `OtherDtos` (`OtherDtos.LoanRequest`); in your own project, separate files are tidier. `PageResponse` exists because serialising Spring Data's `PageImpl` directly produces an unstable JSON shape that Spring warns against.\n\n### Services"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.service;\n\nimport com.example.library.domain.Author;\nimport com.example.library.domain.Book;\nimport com.example.library.error.ConflictException;\nimport com.example.library.error.NotFoundException;\nimport com.example.library.repository.AuthorRepository;\nimport com.example.library.repository.BookRepository;\nimport com.example.library.repository.LoanRepository;\nimport com.example.library.web.dto.BookRequest;\nimport com.example.library.web.dto.BookResponse;\nimport com.example.library.web.dto.OtherDtos.PageResponse;\nimport org.springframework.data.domain.Pageable;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Service\n@Transactional(readOnly = true)\npublic class BookService {\n\n    private final BookRepository books;\n    private final AuthorRepository authors;\n    private final LoanRepository loans;\n\n    public BookService(BookRepository books, AuthorRepository authors, LoanRepository loans) {\n        this.books = books;\n        this.authors = authors;\n        this.loans = loans;\n    }\n\n    public PageResponse<BookResponse> search(String title, Pageable pageable) {\n        String q = title == null ? \"\" : title;\n        return PageResponse.of(books.findByTitleContainingIgnoreCase(q, pageable)\n                .map(BookResponse::from));\n    }\n\n    public BookResponse get(long id) {\n        return BookResponse.from(find(id));\n    }\n\n    @Transactional\n    public BookResponse create(BookRequest req) {\n        if (books.existsByIsbn(req.isbn())) {\n            throw new ConflictException(\"ISBN \" + req.isbn() + \" already exists\");\n        }\n        Book saved = books.save(new Book(req.title(), req.isbn(), author(req.authorId()),\n                req.copies()));\n        return BookResponse.from(saved);\n    }\n\n    @Transactional\n    public BookResponse update(long id, BookRequest req) {\n        Book book = find(id);\n        if (!book.getIsbn().equals(req.isbn()) && books.existsByIsbn(req.isbn())) {\n            throw new ConflictException(\"ISBN \" + req.isbn() + \" already exists\");\n        }\n        book.update(req.title(), req.isbn(), author(req.authorId()));\n        return BookResponse.from(book);   // dirty checking writes the UPDATE at commit\n    }\n\n    @Transactional\n    public void delete(long id) {\n        Book book = find(id);\n        if (loans.existsByBookId(id)) {\n            throw new ConflictException(\"Book \" + id + \" has loans and cannot be deleted\");\n        }\n        books.delete(book);\n    }\n\n    private Book find(long id) {\n        return books.findById(id).orElseThrow(() -> new NotFoundException(\"Book\", id));\n    }\n    private Author author(long id) {\n        return authors.findById(id).orElseThrow(() -> new NotFoundException(\"Author\", id));\n    }\n}",
+          "title": "BookService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Class-level `readOnly = true` is the default for the reads, and the three write methods override it with plain `@Transactional`. Note `update` never calls `save`: the entity is managed inside the transaction, so Hibernate notices the change and issues the `UPDATE` at commit (dirty checking). `PUT` here updates title, ISBN and author; copy counts change only through borrowing and returning.\n\n`AuthorService` is the same shape (`list`, `get`, `create`) and is left as an exercise; its controller appears in the next chapter. The service that carries the real business rule is next:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.service;\n\nimport com.example.library.domain.Book;\nimport com.example.library.domain.Loan;\nimport com.example.library.error.ConflictException;\nimport com.example.library.error.NotFoundException;\nimport com.example.library.repository.BookRepository;\nimport com.example.library.repository.LoanRepository;\nimport com.example.library.web.dto.OtherDtos.LoanResponse;\nimport java.time.Clock;\nimport java.time.LocalDate;\nimport java.util.List;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Service\n@Transactional(readOnly = true)\npublic class LoanService {\n\n    static final int LOAN_DAYS = 14;\n\n    private final LoanRepository loans;\n    private final BookRepository books;\n    private final Clock clock;\n\n    public LoanService(LoanRepository loans, BookRepository books, Clock clock) {\n        this.loans = loans;\n        this.books = books;\n        this.clock = clock;\n    }\n\n    @Transactional\n    public LoanResponse borrow(long bookId, String borrower) {\n        Book book = books.findById(bookId)\n                .orElseThrow(() -> new NotFoundException(\"Book\", bookId));\n        book.checkOut();                                  // throws ConflictException if none left\n        LocalDate today = LocalDate.now(clock);\n        Loan loan = loans.save(new Loan(book, borrower, today, today.plusDays(LOAN_DAYS)));\n        return LoanResponse.from(loan);\n    }\n\n    @Transactional\n    public LoanResponse giveBack(long loanId) {\n        Loan loan = loans.findById(loanId)\n                .orElseThrow(() -> new NotFoundException(\"Loan\", loanId));\n        if (loan.isReturned()) {\n            throw new ConflictException(\"Loan \" + loanId + \" was already returned\");\n        }\n        loan.markReturned(LocalDate.now(clock));\n        loan.getBook().checkIn();\n        return LoanResponse.from(loan);\n    }\n\n    public List<LoanResponse> mine(String borrower) {\n        return loans.findByBorrowerOrderByLoanedAtDesc(borrower).stream()\n                .map(LoanResponse::from).toList();\n    }\n    public List<LoanResponse> all() {\n        return loans.findAllByOrderByLoanedAtDesc().stream().map(LoanResponse::from).toList();\n    }\n}",
+          "title": "LoanService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `borrow` changes two rows (the book's counter and a new loan) in one transaction: both happen or neither does. If `checkOut` throws, nothing is saved.\n- `Clock` is injected, not `LocalDate.now()` called blindly. Production gets the system clock; tests pass `Clock.fixed(...)` and assert exact due dates.\n- The borrower name is a parameter, not read from a security context inside the service. The controller will pass the authenticated user's name; the service stays free of web and security types and is easy to unit test.\n- Provide the clock bean once, in the main class:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library;\n\nimport java.time.Clock;\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\nimport org.springframework.context.annotation.Bean;\n\n@SpringBootApplication\npublic class LibraryApplication {\n\n    public static void main(String[] args) {\n        SpringApplication.run(LibraryApplication.class, args);\n    }\n\n    @Bean\n    Clock clock() {\n        return Clock.systemDefaultZone();\n    }\n}",
+          "title": "LibraryApplication.java"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you prevent two users from borrowing the last copy at the same time? Add optimistic locking with a `@Version` field. Both transactions read the same version; the first commit increments it, and the second commit's `UPDATE ...` `WHERE version = ?` matches zero rows, so Hibernate throws an optimistic-locking exception, which the API maps to 409 and the client can retry. The alternative is pessimistic locking (`SELECT ... FOR UPDATE`), which blocks instead of failing and costs throughput under contention."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Put business rules in the domain and service layer, behind small, behaviour-named methods.\n- Mark associations `LAZY` explicitly and fetch what you need with `@EntityGraph`.\n- `@Transactional` on the service defines the unit of work; unchecked exceptions roll it back.\n- `@Version` gives cheap protection against lost updates.\n- Inject `Clock` for time-dependent logic so tests are deterministic."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-3",
+      "type": "concept",
+      "title": "REST layer with validation and error handling",
+      "subtopicId": "5-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The web layer should be thin: translate HTTP into a service call, and the result back into HTTP. No business rules, no entities, no repository calls.\n\n### Controllers"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport com.example.library.service.BookService;\nimport com.example.library.web.dto.BookRequest;\nimport com.example.library.web.dto.BookResponse;\nimport com.example.library.web.dto.OtherDtos.PageResponse;\nimport jakarta.validation.Valid;\nimport java.net.URI;\nimport org.springframework.data.domain.Pageable;\nimport org.springframework.data.web.PageableDefault;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.DeleteMapping;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.PutMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.servlet.support.ServletUriComponentsBuilder;\n\n@RestController\n@RequestMapping(\"/api/books\")\npublic class BookController {\n\n    private final BookService service;\n\n    public BookController(BookService service) {\n        this.service = service;\n    }\n\n    @GetMapping\n    public PageResponse<BookResponse> search(\n            @RequestParam(required = false) String title,\n            @PageableDefault(size = 20, sort = \"title\") Pageable pageable) {\n        return service.search(title, pageable);\n    }\n\n    @GetMapping(\"/{id}\")\n    public BookResponse get(@PathVariable long id) {\n        return service.get(id);\n    }\n\n    @PostMapping\n    public ResponseEntity<BookResponse> create(@Valid @RequestBody BookRequest request) {\n        BookResponse created = service.create(request);\n        URI location = ServletUriComponentsBuilder.fromCurrentRequest()\n                .path(\"/{id}\").buildAndExpand(created.id()).toUri();\n        return ResponseEntity.created(location).body(created);\n    }\n\n    @PutMapping(\"/{id}\")\n    public BookResponse update(@PathVariable long id, @Valid @RequestBody BookRequest request) {\n        return service.update(id, request);\n    }\n\n    @DeleteMapping(\"/{id}\")\n    public ResponseEntity<Void> delete(@PathVariable long id) {\n        service.delete(id);\n        return ResponseEntity.noContent().build();\n    }\n}",
+          "title": "BookController.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport com.example.library.service.LoanService;\nimport com.example.library.web.dto.OtherDtos.LoanRequest;\nimport com.example.library.web.dto.OtherDtos.LoanResponse;\nimport jakarta.validation.Valid;\nimport java.net.URI;\nimport java.security.Principal;\nimport java.util.List;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/api/loans\")\npublic class LoanController {\n\n    private final LoanService service;\n\n    public LoanController(LoanService service) {\n        this.service = service;\n    }\n\n    @PostMapping\n    public ResponseEntity<LoanResponse> borrow(@Valid @RequestBody LoanRequest request,\n                                               Principal principal) {\n        LoanResponse loan = service.borrow(request.bookId(), principal.getName());\n        return ResponseEntity.created(URI.create(\"/api/loans/\" + loan.id())).body(loan);\n    }\n\n    @GetMapping(\"/mine\")\n    public List<LoanResponse> mine(Principal principal) {\n        return service.mine(principal.getName());\n    }\n\n    @GetMapping\n    public List<LoanResponse> all() {\n        return service.all();\n    }\n\n    @PostMapping(\"/{id}/return\")\n    public LoanResponse giveBack(@PathVariable long id) {\n        return service.giveBack(id);\n    }\n}",
+          "title": "LoanController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`AuthorController` follows the `BookController` pattern with `GET /api/authors`, `GET /api/authors/{id}` and `POST` `/api/authors` over a small `AuthorService`; write it as practice. Three things to notice in the two controllers above:\n\n- `@Valid` on the `@RequestBody` runs Bean Validation before the method body; invalid input never reaches the service.\n- `Principal` is resolved by Spring MVC from the security context, so the borrower name comes from the authenticated user and cannot be spoofed in the request body. That is a security decision as much as a design one.\n- `POST` returns `201 Created` with a `Location` header, `DELETE` returns `204`, and nothing returns an entity.\n\nSet a ceiling on page size so a client cannot ask for a million rows: `spring.data.web.pageable.max-page-size: 100` in `application.yml`.\n\n### One place for errors\n\nServices throw domain exceptions; one `@RestControllerAdvice` converts everything to RFC 9457 `ProblemDetail` JSON. Extending `ResponseEntityExceptionHandler` gives correct problem-detail responses for the standard Spring MVC exceptions (malformed JSON, wrong method, missing parameter) for free. We override only the validation case to add field details."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport com.example.library.error.ConflictException;\nimport com.example.library.error.NotFoundException;\nimport java.util.LinkedHashMap;\nimport java.util.Map;\nimport org.springframework.http.HttpHeaders;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.HttpStatusCode;\nimport org.springframework.http.ProblemDetail;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.orm.ObjectOptimisticLockingFailureException;\nimport org.springframework.validation.FieldError;\nimport org.springframework.web.bind.MethodArgumentNotValidException;\nimport org.springframework.web.bind.annotation.ExceptionHandler;\nimport org.springframework.web.bind.annotation.RestControllerAdvice;\nimport org.springframework.web.context.request.WebRequest;\nimport org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;\n\n@RestControllerAdvice\npublic class ApiExceptionHandler extends ResponseEntityExceptionHandler {\n\n    @ExceptionHandler(NotFoundException.class)\n    ProblemDetail notFound(NotFoundException ex) {\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());\n        pd.setTitle(\"Not found\");\n        return pd;\n    }\n\n    @ExceptionHandler(ConflictException.class)\n    ProblemDetail conflict(ConflictException ex) {\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());\n        pd.setTitle(\"Conflict\");\n        return pd;\n    }\n\n    @ExceptionHandler(ObjectOptimisticLockingFailureException.class)\n    ProblemDetail concurrentUpdate(ObjectOptimisticLockingFailureException ex) {\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,\n                \"The record was changed by someone else; please retry\");\n        pd.setTitle(\"Concurrent update\");\n        return pd;\n    }\n\n    @Override\n    protected ResponseEntity<Object> handleMethodArgumentNotValid(\n            MethodArgumentNotValidException ex, HttpHeaders headers,\n            HttpStatusCode status, WebRequest request) {\n        Map<String, String> errors = new LinkedHashMap<>();\n        for (FieldError fe : ex.getBindingResult().getFieldErrors()) {\n            errors.putIfAbsent(fe.getField(), fe.getDefaultMessage());\n        }\n        ProblemDetail pd = ex.getBody();\n        pd.setTitle(\"Validation failed\");\n        pd.setProperty(\"errors\", errors);\n        return handleExceptionInternal(ex, pd, headers, status, request);\n    }\n}",
+          "title": "ApiExceptionHandler.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Typical output of a failed validation (the exact members can vary slightly by version):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -u librarian:librarian-dev -H 'Content-Type: application/json' \\\n    -d '{\"title\":\"\",\"isbn\":\"x\",\"authorId\":1,\"copies\":0}' localhost:8080/api/books\n{\"type\":\"about:blank\",\"title\":\"Validation failed\",\"status\":400,\n \"detail\":\"Invalid request content.\",\"instance\":\"/api/books\",\n \"errors\":{\"title\":\"must not be blank\",\"isbn\":\"must be a valid ISBN\",\n \"copies\":\"must be greater than or equal to 1\"}}",
+          "title": "Typical output"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not add a catch-all `@ExceptionHandler(Exception.class)` to this advice without thought. It would also catch Spring Security's `AccessDeniedException` thrown by method security and turn a correct 403 into a 500. Leave unexpected errors to Boot's default error handling, which returns a generic 500 without a stack trace (the default for `server.error.include-stacktrace` is `never`), and log the real cause server-side."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Security failures raised by the filter chain (401, 403 on URL rules) happen before MVC, so this advice never sees them; they come back with an empty body. That is acceptable for an API; if you want JSON bodies there, supply a custom `AuthenticationEntryPoint` and `AccessDeniedHandler`."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Controllers translate: bind and validate input, call one service method, choose the status code.\n- Throw domain exceptions in the service; map them centrally in one `@RestControllerAdvice` using `ProblemDetail`.\n- Never take identity from the request body when the security context knows it.\n- Return DTOs, `201` plus `Location` on create, `204` on delete."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-4",
+      "type": "concept",
+      "title": "Security and tests",
+      "subtopicId": "5-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Roles with HTTP Basic\n\nTwo users live in memory, and their passwords come from configuration (so they are environment variables in Compose). This is fine for a learning project; a real system would load users from a database or delegate to an identity provider, as the security chapter described."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.config;\nimport org.springframework.boot.context.properties.ConfigurationProperties;\n@ConfigurationProperties(prefix = \"library.security\")\npublic record SecurityProps(String librarianPassword, String memberPassword) {\n}",
+          "title": "SecurityProps.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.config;\n\nimport org.springframework.boot.context.properties.EnableConfigurationProperties;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.http.HttpMethod;\nimport org.springframework.security.config.Customizer;\nimport org.springframework.security.config.annotation.web.builders.HttpSecurity;\nimport org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;\nimport org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;\nimport org.springframework.security.config.http.SessionCreationPolicy;\nimport org.springframework.security.core.userdetails.User;\nimport org.springframework.security.core.userdetails.UserDetailsService;\nimport org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;\nimport org.springframework.security.crypto.password.PasswordEncoder;\nimport org.springframework.security.provisioning.InMemoryUserDetailsManager;\nimport org.springframework.security.web.SecurityFilterChain;\n\n@Configuration\n@EnableWebSecurity\n@EnableConfigurationProperties(SecurityProps.class)\npublic class SecurityConfig {\n\n    @Bean\n    PasswordEncoder passwordEncoder() {\n        return new BCryptPasswordEncoder();\n    }\n\n    @Bean\n    UserDetailsService users(SecurityProps props, PasswordEncoder encoder) {\n        var librarian = User.withUsername(\"librarian\")\n                .password(encoder.encode(props.librarianPassword()))\n                .roles(\"LIBRARIAN\").build();\n        var alice = User.withUsername(\"alice\")\n                .password(encoder.encode(props.memberPassword()))\n                .roles(\"MEMBER\").build();\n        return new InMemoryUserDetailsManager(librarian, alice);\n    }\n\n    @Bean\n    SecurityFilterChain chain(HttpSecurity http) throws Exception {\n        http\n            .csrf(AbstractHttpConfigurer::disable)\n            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n            .authorizeHttpRequests(auth -> auth\n                .requestMatchers(\"/actuator/health/**\").permitAll()\n                .requestMatchers(HttpMethod.GET, \"/api/books/**\", \"/api/authors/**\").permitAll()\n                .requestMatchers(\"/api/books/**\", \"/api/authors/**\").hasRole(\"LIBRARIAN\")\n                .requestMatchers(HttpMethod.GET, \"/api/loans\").hasRole(\"LIBRARIAN\")\n                .requestMatchers(\"/api/loans/*/return\").hasRole(\"LIBRARIAN\")\n                .anyRequest().authenticated())\n            .httpBasic(Customizer.withDefaults());\n        return http.build();\n    }\n}",
+          "title": "SecurityConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Order is everything. The public `GET` rule comes before the librarian rule for the same paths; swap them and nobody could browse anonymously. The final `anyRequest().authenticated()` covers `POST /api/loans` and `GET` `/api/loans/mine` for any logged-in user.\n- CSRF is disabled because the API is stateless and uses a header credential, the justification from the security chapter, not a shortcut.\n- A user who is logged in but lacks the role gets `403`; no credentials gives `401`.\n- Passwords are encoded with BCrypt once at start-up. There is no plain-text password in the code, only configurable defaults for development.\n\n### Web-layer test\n\n`@WebMvcTest` starts only the MVC slice: the controller, the advice and the security filter chain, with services replaced by mocks. It runs in well under a second per test class once the context is cached."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport static org.mockito.Mockito.when;\nimport static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;\nimport static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;\nimport static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;\nimport static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;\nimport static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;\nimport com.example.library.config.SecurityConfig;\nimport com.example.library.error.NotFoundException;\nimport com.example.library.service.BookService;\nimport com.example.library.web.dto.BookRequest;\nimport com.example.library.web.dto.BookResponse;\nimport org.junit.jupiter.api.Test;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;\nimport org.springframework.context.annotation.Import;\nimport org.springframework.http.MediaType;\nimport org.springframework.security.test.context.support.WithMockUser;\nimport org.springframework.test.context.bean.override.mockito.MockitoBean;\nimport org.springframework.test.web.servlet.MockMvc;\n\n@WebMvcTest(BookController.class)\n@Import(SecurityConfig.class)\nclass BookControllerTest {\n\n    private static final String VALID_BOOK = \"\"\"\n            {\"title\":\"Dune\",\"isbn\":\"978-0441172719\",\"authorId\":7,\"copies\":3}\n            \"\"\";\n\n    @Autowired\n    MockMvc mvc;\n\n    @MockitoBean\n    BookService service;\n\n    @Test\n    void getBookIsPublic() throws Exception {\n        when(service.get(1L)).thenReturn(\n                new BookResponse(1L, \"Dune\", \"978-0441172719\", 7L, \"Frank Herbert\", 2, 3));\n\n        mvc.perform(get(\"/api/books/1\"))\n                .andExpect(status().isOk())\n                .andExpect(jsonPath(\"$.title\").value(\"Dune\"));\n    }\n\n    @Test\n    void unknownBookIs404ProblemDetail() throws Exception {\n        when(service.get(99L)).thenThrow(new NotFoundException(\"Book\", 99L));\n\n        mvc.perform(get(\"/api/books/99\"))\n                .andExpect(status().isNotFound())\n                .andExpect(jsonPath(\"$.title\").value(\"Not found\"));\n    }\n\n    @Test\n    void createWithoutLoginIs401() throws Exception {\n        mvc.perform(post(\"/api/books\").contentType(MediaType.APPLICATION_JSON).content(VALID_BOOK))\n                .andExpect(status().isUnauthorized());\n    }\n\n    @Test\n    @WithMockUser(roles = \"MEMBER\")\n    void createAsMemberIs403() throws Exception {\n        mvc.perform(post(\"/api/books\").contentType(MediaType.APPLICATION_JSON).content(VALID_BOOK))\n                .andExpect(status().isForbidden());\n    }\n\n    @Test\n    @WithMockUser(roles = \"LIBRARIAN\")\n    void createAsLibrarianReturns201WithLocation() throws Exception {\n        when(service.create(new BookRequest(\"Dune\", \"978-0441172719\", 7L, 3))).thenReturn(\n                new BookResponse(5L, \"Dune\", \"978-0441172719\", 7L, \"Frank Herbert\", 3, 3));\n\n        mvc.perform(post(\"/api/books\").contentType(MediaType.APPLICATION_JSON).content(VALID_BOOK))\n                .andExpect(status().isCreated())\n                .andExpect(header().string(\"Location\", \"http://localhost/api/books/5\"));\n    }\n\n    @Test\n    @WithMockUser(roles = \"LIBRARIAN\")\n    void invalidBodyIs400WithFieldErrors() throws Exception {\n        String bad = \"{\\\"title\\\":\\\"\\\",\\\"isbn\\\":\\\"x\\\",\\\"authorId\\\":7,\\\"copies\\\":0}\";\n        mvc.perform(post(\"/api/books\").contentType(MediaType.APPLICATION_JSON).content(bad))\n                .andExpect(status().isBadRequest())\n                .andExpect(jsonPath(\"$.errors.title\").exists())\n                .andExpect(jsonPath(\"$.errors.copies\").exists());\n    }\n}",
+          "title": "BookControllerTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Records give `BookRequest` a value-based `equals`, which is why `when(service.create(new BookRequest(...)))` matches the deserialised request. These six tests check routing, JSON, validation, error mapping and the security rules, all without a database."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "In Spring Boot 4 the slice annotations moved into feature-specific packages (for example `WebMvcTest` is under `org.springframework.boot.webmvc.test.autoconfigure`) and need the matching test starter. `@MockitoBean`, `MockMvc` and `@WithMockUser` are unchanged. Let your IDE fix the imports."
+        },
+        {
+          "type": "markdown",
+          "text": "### Service unit test\n\nThe business rule is tested with plain JUnit and Mockito: no Spring context at all, so it runs in milliseconds."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.service;\n\nimport static org.assertj.core.api.Assertions.assertThat;\nimport static org.assertj.core.api.Assertions.assertThatThrownBy;\nimport static org.mockito.ArgumentMatchers.any;\nimport static org.mockito.Mockito.never;\nimport static org.mockito.Mockito.verify;\nimport static org.mockito.Mockito.when;\n\nimport com.example.library.domain.Author;\nimport com.example.library.domain.Book;\nimport com.example.library.domain.Loan;\nimport com.example.library.error.ConflictException;\nimport com.example.library.repository.BookRepository;\nimport com.example.library.repository.LoanRepository;\nimport com.example.library.web.dto.OtherDtos.LoanResponse;\nimport java.time.Clock;\nimport java.time.Instant;\nimport java.time.LocalDate;\nimport java.time.ZoneOffset;\nimport java.util.Optional;\nimport org.junit.jupiter.api.BeforeEach;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.extension.ExtendWith;\nimport org.mockito.Mock;\nimport org.mockito.junit.jupiter.MockitoExtension;\n\n@ExtendWith(MockitoExtension.class)\nclass LoanServiceTest {\n\n    @Mock\n    LoanRepository loans;\n\n    @Mock\n    BookRepository books;\n\n    LoanService service;\n\n    @BeforeEach\n    void setUp() {\n        Clock clock = Clock.fixed(Instant.parse(\"2026-03-01T10:00:00Z\"), ZoneOffset.UTC);\n        service = new LoanService(loans, books, clock);\n    }\n\n    @Test\n    void borrowTakesACopyAndSetsDueDate() {\n        Book book = new Book(\"Dune\", \"978-0441172719\", new Author(\"Frank Herbert\"), 2);\n        when(books.findById(1L)).thenReturn(Optional.of(book));\n        when(loans.save(any(Loan.class))).thenAnswer(inv -> inv.getArgument(0));\n\n        LoanResponse loan = service.borrow(1L, \"alice\");\n\n        assertThat(book.getCopiesAvailable()).isEqualTo(1);\n        assertThat(loan.dueDate()).isEqualTo(LocalDate.of(2026, 3, 15));\n        assertThat(loan.borrower()).isEqualTo(\"alice\");\n    }\n\n    @Test\n    void borrowFailsWhenNoCopyIsLeft() {\n        Book book = new Book(\"Dune\", \"978-0441172719\", new Author(\"Frank Herbert\"), 1);\n        book.checkOut();\n        when(books.findById(1L)).thenReturn(Optional.of(book));\n\n        assertThatThrownBy(() -> service.borrow(1L, \"alice\"))\n                .isInstanceOf(ConflictException.class)\n                .hasMessageContaining(\"Dune\");\n        verify(loans, never()).save(any());\n    }\n}",
+          "title": "LoanServiceTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "A natural third layer is a repository test with `@DataJpaTest` against PostgreSQL in Testcontainers (covered in the testing chapter): it would prove the Flyway migration and the derived queries work together. We omit it here so the suite needs no Docker daemon."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- Security rules are ordered; public reads first, role rules next, `anyRequest().authenticated()` last.\n- Test authorisation explicitly: 401 without login, 403 with the wrong role, success with the right one.\n- `@WebMvcTest` plus `@MockitoBean` tests the HTTP contract quickly; plain Mockito tests the business rules even faster.\n- Inject time (`Clock`) so tests are deterministic."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-5",
+      "type": "concept",
+      "title": "Run it and call it",
+      "subtopicId": "5-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Dockerfile and Compose\n\nUse the multi-stage `Dockerfile` from the shipping chapter unchanged (it builds the jar inside the image). The Compose file runs PostgreSQL and the application, passing credentials as environment variables, which relaxed binding maps to the `${...}` placeholders and properties in `application.yml`:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_DB: library\n      POSTGRES_USER: library\n      POSTGRES_PASSWORD: ${DB_PASSWORD:-library}\n    volumes:\n      - dbdata:/var/lib/postgresql/data\n    healthcheck:\n      test: [\"CMD-SHELL\", \"pg_isready -U library -d library\"]\n      interval: 5s\n      timeout: 3s\n      retries: 10\n\n  api:\n    build: .\n    depends_on:\n      db:\n        condition: service_healthy\n    environment:\n      DB_URL: jdbc:postgresql://db:5432/library\n      DB_USER: library\n      DB_PASSWORD: ${DB_PASSWORD:-library}\n      LIBRARIAN_PASSWORD: ${LIBRARIAN_PASSWORD:-librarian-dev}\n      MEMBER_PASSWORD: ${MEMBER_PASSWORD:-member-dev}\n    ports:\n      - \"8080:8080\"\n\nvolumes:\n  dbdata:",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose up --build -d\n$ curl -s localhost:8080/actuator/health\n{\"status\":\"UP\",\"groups\":[\"liveness\",\"readiness\"]}",
+          "title": "Build and start everything"
+        },
+        {
+          "type": "markdown",
+          "text": "Without Docker you can run just the database (`docker compose up -d db`) and start the app from your IDE or with `./mvnw spring-boot:run`; the `localhost` defaults in `application.yml` then apply.\n\n### A curl walk-through\n\nThe responses below are typical output; ids and dates will differ. First, a librarian creates an author and a book:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -u librarian:librarian-dev -H 'Content-Type: application/json' \\\n    -d '{\"name\":\"Frank Herbert\"}' localhost:8080/api/authors\n{\"id\":1,\"name\":\"Frank Herbert\"}\n$ curl -s -u librarian:librarian-dev -H 'Content-Type: application/json' \\\n    -d '{\"title\":\"Dune\",\"isbn\":\"978-0441172719\",\"authorId\":1,\"copies\":1}' \\\n    localhost:8080/api/books\n{\"id\":1,\"title\":\"Dune\",\"isbn\":\"978-0441172719\",\"authorId\":1,\"authorName\":\"Frank Herbert\",\n \"copiesAvailable\":1,\"copiesTotal\":1}",
+          "title": "Create an author and a book (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "Anyone can browse; a member borrows the only copy; a second attempt conflicts:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s 'localhost:8080/api/books?title=dun'\n{\"content\":[{\"id\":1,\"title\":\"Dune\", ... }],\"page\":0,\"size\":20,\"totalElements\":1}\n$ curl -s -u alice:member-dev -H 'Content-Type: application/json' \\\n    -d '{\"bookId\":1}' localhost:8080/api/loans\n{\"id\":1,\"bookId\":1,\"bookTitle\":\"Dune\",\"borrower\":\"alice\",\"loanedAt\":\"2026-03-01\",\n \"dueDate\":\"2026-03-15\",\"returnedAt\":null}\n$ curl -s -u alice:member-dev -H 'Content-Type: application/json' \\\n    -d '{\"bookId\":1}' localhost:8080/api/loans\n{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,\n \"detail\":\"No copy of 'Dune' is available\",\"instance\":\"/api/loans\"}",
+          "title": "Browse, borrow, conflict (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "And the permission checks, printing only the status code:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -o /dev/null -w '%{http_code}\\n' -X POST localhost:8080/api/books\n401\n$ curl -s -o /dev/null -w '%{http_code}\\n' -u alice:member-dev localhost:8080/api/loans\n403\n$ curl -s -u librarian:librarian-dev -X POST localhost:8080/api/loans/1/return\n{\"id\":1,\"bookId\":1,\"bookTitle\":\"Dune\",\"borrower\":\"alice\",\"loanedAt\":\"2026-03-01\",\n \"dueDate\":\"2026-03-15\",\"returnedAt\":\"2026-03-01\"}",
+          "title": "Authorisation checks (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "If every call returns 401, check that the passwords you pass match the ones the container received, and remember that changing the environment requires recreating the container. If the application fails at start with a Flyway or schema validation error, the database volume probably holds an older schema: `docker compose down -v` removes it (and its data).\n\n### Extension ideas\n\nPick the ones that match what you want to learn.\n\n- Replace the in-memory users with an `AppUser` table, a registration endpoint and a database-backed `UserDetailsService`.\n- Switch to JWT: run Keycloak in Compose and turn the API into a resource server.\n- Add a `GET /api/loans/overdue` endpoint with a JPQL query, and a scheduled job (`@Scheduled`) that logs overdue loans.\n- Add a `@DataJpaTest` with Testcontainers PostgreSQL for the repositories and the Flyway migration.\n- Add a Micrometer counter for loans created and expose `prometheus`.\n- Add OpenAPI documentation with springdoc and a `v1` path prefix for versioning.\n- Add a Redis cache for book searches and measure the difference.\n- Add a members table, limits on concurrent loans per member, and a 422 response when the limit is hit.\n- Deploy it to a free-tier container platform and add the URL to your CV and README."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "A small, finished, tested and containerised project with a clear README (how to run, endpoint table, design decisions, how to run the tests) is worth more in an interview than a large unfinished one. Be ready to explain each choice: why DTOs, why optimistic locking, why 409 and not 400, why CSRF is disabled."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Key points\n\n- A project is finished when someone else can clone it and run it with one command.\n- Docker Compose ties the app and PostgreSQL together; configuration enters through environment variables.\n- Walk the API with curl, checking 401, 403, 404 and 409 as well as the happy path.\n- Keep a README and a list of design decisions; they are what you talk about in interviews."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Plan and scaffold"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why is `spring.jpa.open-in-view` set to `false`, and what does that force you to do?",
+              "answer": "It stops the persistence session from staying open during view rendering, which avoids hidden lazy queries and long connection use. You must finish loading data (and map to DTOs) inside the service transaction."
+            },
+            {
+              "question": "What does `${DB_URL:jdbc:postgresql://localhost:5432/library}` do?",
+              "answer": "It uses the environment variable `DB_URL` if set, otherwise the literal default after the colon."
+            },
+            {
+              "question": "You need a new column next week. Do you edit `V1__init.sql`?",
+              "answer": "No. Flyway checksums applied migrations and refuses to start if one changed. Add `V2__add_column.sql`."
+            },
+            {
+              "question": "Why does the layout forbid controllers from using entities?",
+              "answer": "Entities are persistence details with lazy relationships; exposing them couples the API to the schema and risks lazy-loading errors and accidental data leaks."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Domain, repository and service"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In `update`, there is no `books.save(book)`. Why does the change still reach the database?",
+              "answer": "The entity is managed in an open transaction, so Hibernate dirty-checks it and flushes an `UPDATE` at commit."
+            },
+            {
+              "question": "What would break if `LoanService.borrow` caught the `ConflictException` and returned `null`?",
+              "answer": "The transaction would commit with the decremented counter but no loan, silently corrupting the data. Throwing an unchecked exception triggers rollback."
+            },
+            {
+              "question": "Why are entity setters avoided here?",
+              "answer": "Changes go through intention-revealing methods that enforce rules (`checkOut`), so invalid states are hard to create."
+            },
+            {
+              "question": "The read-only method `mine` calls `this.borrow(...)`, which has its own read-write `@Transactional`. Which settings apply to `borrow`?",
+              "answer": "The caller's read-only transaction. Self-invocation bypasses the Spring proxy, so the annotation on `borrow` is ignored for that call."
+            },
+            {
+              "question": "What problem do the `@EntityGraph` annotations prevent?",
+              "answer": "N+1: one query for the list plus one per row to lazy-load the author or book."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### REST layer with validation and error handling"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which status does the API return when you `POST` a book with an ISBN that already exists, and which layer decides it?",
+              "answer": "`409 Conflict`; `BookService.create` throws `ConflictException` and the advice maps it."
+            },
+            {
+              "question": "Why is the borrower taken from `Principal` instead of the request body?",
+              "answer": "Anything in the body can be forged. The authenticated principal is trustworthy, so a member cannot borrow in someone else's name."
+            },
+            {
+              "question": "What is wrong with returning the `Book` entity from the controller (name two problems)?",
+              "answer": "Lazy-loading errors outside a transaction (with open-in-view off), and coupling the public JSON contract to the database schema, which can also leak internal fields. Also risk of infinite recursion on bidirectional relations."
+            },
+            {
+              "question": "A client sends malformed JSON. Which code path handles it in this project?",
+              "answer": "`ResponseEntityExceptionHandler` (the parent class) handles `HttpMessageNotReadableException` and returns a 400 `ProblemDetail`."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Security and tests"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "A member calls `GET /api/loans` and receives a response. What status, and which line of `SecurityConfig` decides it?",
+              "answer": "`403 Forbidden`, from `.requestMatchers(HttpMethod.GET, \"/api/loans\").hasRole(\"LIBRARIAN\")` (the member is authenticated but lacks the role)."
+            },
+            {
+              "question": "Why does `createAsMemberIs403` need `@WithMockUser` while `getBookIsPublic` does not?",
+              "answer": "The first needs an authenticated user to get past authentication to authorisation; the public `GET` rule permits everyone."
+            },
+            {
+              "question": "What would the test `invalidBodyIs400WithFieldErrors` fail on if `ApiExceptionHandler` did not override `handleMethodArgumentNotValid`?",
+              "answer": "The `$.errors.title` path: the default response has status 400 but no per-field `errors` property."
+            },
+            {
+              "question": "Why does `LoanServiceTest` pass a fixed `Clock`?",
+              "answer": "So \"today\" is fixed and the due date can be asserted exactly instead of depending on when the test runs."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Run it and call it"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In Compose, why is the database URL `jdbc:postgresql://db:5432/library` rather than `localhost`?",
+              "answer": "Inside the API container `localhost` is the container itself; services reach each other by service name on the Compose network."
+            },
+            {
+              "question": "You changed `LIBRARIAN_PASSWORD` in your shell but the running container still accepts the old one. Why?",
+              "answer": "Environment variables are fixed when a container is created. Recreate it with `docker compose up -d` `--force-recreate api`."
+            },
+            {
+              "question": "A logged-in client calls `/api/book/1` and gets 404. What is the likely mistake?",
+              "answer": "The path is `/api/books/1` (plural); there is no mapping for `/api/book/1`."
+            },
+            {
+              "question": "What does `docker compose down -v` do that `down` does not?",
+              "answer": "It also deletes the named volumes, so the database starts empty next time."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

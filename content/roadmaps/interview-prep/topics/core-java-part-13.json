@@ -1,0 +1,1115 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "510-562"
+  },
+  "sections": [
+    {
+      "id": "ch-13-1",
+      "type": "concept",
+      "title": "How to work through the projects",
+      "subtopicId": "13-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Reading about Java is not the same as building with it. Interviewers and teammates trust people who have finished programs, not people who know the vocabulary. This Part gives you four projects, each small enough to finish in an evening or two and each chosen to exercise a different slice of the book: object-oriented design and file persistence, streams and java.time, concurrency, and data structures with locking. Every listing was compiled and run on a JDK 21 build machine and the output shown is the real output.\n\n### Ground rules shared by all four projects\n\nEach project uses the same conventions, so you only learn them once.\n\n- **Plain tools only.** You need `javac` and `java`, nothing else. Maven, Gradle and JUnit are what you would use at work (see the chapters on testing and packaging in Part 11), but a project you cannot build without downloading half the internet is hard to study.\n- **Package per project.** Code lives under `com.example.<project>`, split into sub-packages by role (`model`, `repo`, `service`, `app`). The directory structure must mirror the package names.\n- **Sources and tests are separate trees.** `src/` holds production code, `test/` holds tests. Compiled classes go to `out/` and `testout/`, which you can delete at any time.\n- **Time and randomness are injected.** Code that calls `LocalDate.now()` or `new Random()` directly cannot be tested. Our classes take a `Clock` (see the java.time chapter) or a seed, so the output in this book is repeatable.\n- **A hand-rolled test runner.** JUnit is not assumed to be installed, so every project ships a tiny runner (about 40 lines) that registers named checks, runs them, prints PASS/FAIL and sets the process exit code. You will read it once in the first project and reuse the idea afterwards.\n- **Scripted input.** Interactive programs read from `System.in`. We feed them a text file with shell redirection (`<` `script.txt`), which makes demos reproducible and also makes the program testable.\n\n### The standard workflow\n\nFor each project, work in this order. It mirrors how professional work goes, just faster.\n\n1. Read the goal and the design section. Draw the classes on paper before reading code.\n2. Create the directory tree, then type the files in. Typing, not pasting, is what makes you notice details.\n3. Compile. Fix errors one at a time, reading the first error message only; later ones are often consequences.\n4. Run the program with the scripted input and compare with the output in the book.\n5. Run the tests. Then break something on purpose (change a `>` to `>=`) and watch a test fail. A test you have never seen fail proves little.\n6. Do at least one extension idea from the end of the chapter without looking for a solution."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "The compile command used throughout is `javac -d out $(find src -name '*.java')`. The `-d out` flag tells javac where to put `.class` files and it creates the package directories for you. On Windows PowerShell use `javac -d out` `(Get-ChildItem -Recurse src -Filter *.java).FullName`."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The projects deliberately avoid frameworks, but they follow the layering you will meet in Spring Boot: a controller-like entry point (`app`), a service layer with the business rules, a repository interface hiding storage, and plain model classes. When you reach Spring later, you will recognise every box."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Every project: plain javac, `src` and `test` trees, package per project with role sub-packages."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Inject `Clock` and seeds so behaviour is repeatable and testable."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Scripted input plus a tiny test runner make console programs verifiable without any framework."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Break something on purpose to prove your tests can fail."
+        }
+      ]
+    },
+    {
+      "id": "ch-13-2",
+      "type": "concept",
+      "title": "Project A: A bank account manager",
+      "subtopicId": "13-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal\n\nBuild a console program that opens accounts, deposits, withdraws, transfers between accounts, prints statements and remembers everything between runs. It looks like a toy, but it exercises most of Part 3 (classes, interfaces, enums, records, immutability, exceptions) plus collections and NIO file handling. The same design works for an inventory app (items instead of accounts, stock instead of balance); see the extension ideas.\n\nRequirements:\n\n- Accounts have an id, an owner and a type. A savings account may overdraw by up to 5.00; a checking account may not.\n- Money is stored as whole cents in a `long`. Never use `double` for money (see the numbers chapter in Part 4).\n- Business failures (not enough money) and input mistakes (negative amount, unknown account) are reported differently.\n- Data is stored in a CSV file and survives restarts. A crash during saving must not corrupt the file.\n- A text menu reads commands such as `deposit AC001 25.25`.\n\n### Design"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 404.0 132.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 102.0 L249.0 102.0 C250.7 102.0 252.0 100.7 252.0 99.0 L252.0 77.0 C252.0 75.3 250.7 74.0 249.0 74.0 L5.0 74.0 C3.3 74.0 2.0 75.3 2.0 77.0 L2.0 99.0 C2.0 100.7 3.3 102.0 5.0 102.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 66.0 L249.0 66.0 C250.7 66.0 252.0 64.7 252.0 63.0 L252.0 41.0 C252.0 39.3 250.7 38.0 249.0 38.0 L5.0 38.0 C3.3 38.0 2.0 39.3 2.0 41.0 L2.0 63.0 C2.0 64.7 3.3 66.0 5.0 66.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M127.0 74.0 L128.7 70.4 L125.3 70.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M295.0 94.0 L399.0 94.0 C400.7 94.0 402.0 92.7 402.0 91.0 L402.0 5.0 C402.0 3.3 400.7 2.0 399.0 2.0 L295.0 2.0 C293.3 2.0 292.0 3.3 292.0 5.0 L292.0 91.0 C292.0 92.7 293.3 94.0 295.0 94.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 50.0 L292.0 50.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.80\" stroke-linejoin=\"round\" stroke-dasharray=\"3.0 2.0\"/><path d=\"M5.0 30.0 L249.0 30.0 C250.7 30.0 252.0 28.7 252.0 27.0 L252.0 5.0 C252.0 3.3 250.7 2.0 249.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 27.0 C2.0 28.7 3.3 30.0 5.0 30.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M127.0 38.0 L128.7 34.4 L125.3 34.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M292.0 50.0 L288.4 48.3 L288.4 51.7 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"88.7\" y=\"18.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"76.7\" lengthAdjust=\"spacingAndGlyphs\">Main / CLI (entry point)</text><text x=\"325.8\" y=\"37.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"42.5\" lengthAdjust=\"spacingAndGlyphs\">Model classes</text><text x=\"322.3\" y=\"46.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"49.5\" lengthAdjust=\"spacingAndGlyphs\">records, enums,</text><text x=\"85.6\" y=\"54.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"82.7\" lengthAdjust=\"spacingAndGlyphs\">Services (business rules)</text><text x=\"330.3\" y=\"54.6\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"33.3\" lengthAdjust=\"spacingAndGlyphs\">exceptions</text><text x=\"324.9\" y=\"63.1\" font-size=\"6.8\" fill=\"#e7e9f3\" textLength=\"44.3\" lengthAdjust=\"spacingAndGlyphs\">(shared by all)</text><text x=\"65.1\" y=\"90.5\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"123.7\" lengthAdjust=\"spacingAndGlyphs\">Storage interface -&gt; file / in-memory</text><text x=\"71.0\" y=\"120.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"111.9\" lengthAdjust=\"spacingAndGlyphs\">dependencies point downward only</text></svg>",
+          "width": 404,
+          "caption": "The layers used in every project: the entry point talks to services, services talk to a storage interface, and model classes are shared by all layers. Dependencies point downward only.",
+          "alt": "Main / CLI (entry point) | Model classes | records, enums, | Services (business rules) exceptions | (shared by all) | Storage interface -> file / in-memory | dependencies point downward only"
+        },
+        {
+          "type": "markdown",
+          "text": "Responsibilities, from bottom to top:\n\n- **model**: `Account` (mutable state with rules), `AccountType` (enum carrying the overdraft limit), `Transaction` (immutable record), `Money` (parse and format cents), and two exceptions.\n- **repo**: the `Repository<T, ID>` interface and two implementations. `InMemoryAccountRepository` keeps a `TreeMap` so listings are sorted by id. `FileAccountRepository` loads a CSV at start and rewrites it after every save.\n- **service**: `BankService` holds the use cases (open, deposit, withdraw, transfer). It depends on the `Repository` interface, not on a concrete class, so tests can use the in-memory version.\n- **app**: `Main` parses command lines and prints results. No business rule lives here.\n\nTwo design decisions deserve a sentence each. First, `InsufficientFundsException` is **checked** because running out of money is a normal outcome that every caller must handle; `InvalidAmountException` extends `IllegalArgumentException` (unchecked) because a negative amount is a bug or bad input, not an outcome to plan for (see the exceptions chapter in Part 5). Second, `Transaction` is a **record** because it is pure immutable data.\n\n### The code\n\nCreate the tree below. All paths are relative to the project directory."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ find src test -name '*.java' | sort\nsrc/com/example/bank/app/Main.java\nsrc/com/example/bank/model/Account.java\nsrc/com/example/bank/model/AccountType.java\nsrc/com/example/bank/model/InsufficientFundsException.java\nsrc/com/example/bank/model/InvalidAmountException.java\nsrc/com/example/bank/model/Money.java\nsrc/com/example/bank/model/Transaction.java\nsrc/com/example/bank/repo/FileAccountRepository.java\nsrc/com/example/bank/repo/InMemoryAccountRepository.java\nsrc/com/example/bank/repo/Repository.java\nsrc/com/example/bank/service/BankService.java\ntest/com/example/bank/BankTests.java\ntest/com/example/bank/MiniTest.java",
+          "title": "Project layout"
+        },
+        {
+          "type": "markdown",
+          "text": "We start with the small model types."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\npublic enum AccountType {\n    CHECKING(0), SAVINGS(500);   // overdraft limit in cents\n    private final long overdraftLimit;\n    AccountType(long overdraftLimit) {\n        this.overdraftLimit = overdraftLimit;\n    }\n\n    public long overdraftLimit() {\n        return overdraftLimit;\n    }\n}",
+          "title": "AccountType.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\n\nimport java.time.LocalDate;\n\npublic record Transaction(LocalDate date, String kind, long amountCents, long balanceAfter) {\n    public Transaction {\n        if (kind == null || kind.isBlank()) {\n            throw new IllegalArgumentException(\"kind required\");\n        }\n    }\n\n    @Override\n    public String toString() {\n        return \"%s %-12s %10s  balance %10s\".formatted(\n                date, kind, Money.format(amountCents), Money.format(balanceAfter));\n    }\n}",
+          "title": "Transaction.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\n\npublic final class Money {\n    private Money() { }\n\n    /** Parses \"12.34\" or \"12\" into cents. */\n    public static long parse(String text) {\n        String t = text.trim();\n        int dot = t.indexOf('.');\n        try {\n            if (dot < 0) {\n                return Math.multiplyExact(Long.parseLong(t), 100L);\n            }\n            String frac = t.substring(dot + 1);\n            if (frac.length() != 2) {\n                throw new NumberFormatException(\"need exactly 2 decimals\");\n            }\n            long whole = Long.parseLong(t.substring(0, dot));\n            return Math.addExact(Math.multiplyExact(whole, 100L), Long.parseLong(frac));\n        } catch (NumberFormatException | ArithmeticException e) {\n            throw new InvalidAmountException(\"bad amount: '\" + text + \"'\", e);\n        }\n    }\n\n    public static String format(long cents) {\n        String sign = cents < 0 ? \"-\" : \"\";\n        long abs = Math.abs(cents);\n        return \"%s%d.%02d\".formatted(sign, abs / 100, abs % 100);\n    }\n}",
+          "title": "Money.java"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`Money.parse(\"1.5\")` is rejected on purpose. Accepting one decimal digit invites the bug where \"1.5\" becomes 105 cents. Being strict at the boundary is cheaper than debugging wrong balances later. Note also `Math.multiplyExact` and `Math.addExact`: they throw `ArithmeticException` on overflow instead of silently wrapping around (see the numbers chapters), and we translate that into our own exception."
+        },
+        {
+          "type": "markdown",
+          "text": "The two exceptions show the checked versus unchecked choice in code."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\n\n/** Checked: callers must decide what to do when the money is not there. */\npublic class InsufficientFundsException extends Exception {\n    private final long shortfallCents;\n\n    public InsufficientFundsException(String accountId, long shortfallCents) {\n        super(\"account \" + accountId + \" is short by \" + Money.format(shortfallCents));\n        this.shortfallCents = shortfallCents;\n    }\n\n    public long shortfallCents() {\n        return shortfallCents;\n    }\n}",
+          "title": "InsufficientFundsException.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\n\n/** Unchecked: a programming or input error, not a business outcome. */\npublic class InvalidAmountException extends IllegalArgumentException {\n    public InvalidAmountException(String message) {\n        super(message);\n    }\n\n    public InvalidAmountException(String message, Throwable cause) {\n        super(message, cause);\n    }\n}",
+          "title": "InvalidAmountException.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Now the central class, `Account`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.model;\n\nimport java.time.Clock;\nimport java.time.LocalDate;\nimport java.util.ArrayList;\nimport java.util.Collections;\nimport java.util.List;\nimport java.util.Objects;\n\npublic class Account {\n    private final String id;\n    private final String owner;\n    private final AccountType type;\n    private long balanceCents;\n    private final List<Transaction> history = new ArrayList<>();\n\n    public Account(String id, String owner, AccountType type, long openingCents) {\n        this.id = Objects.requireNonNull(id);\n        this.owner = Objects.requireNonNull(owner);\n        this.type = Objects.requireNonNull(type);\n        if (openingCents < 0) {\n            throw new InvalidAmountException(\"opening balance must not be negative\");\n        }\n        this.balanceCents = openingCents;\n    }\n\n    public String id() { return id; }\n    public String owner() { return owner; }\n    public AccountType type() { return type; }\n    public long balanceCents() { return balanceCents; }\n\n    /** Read-only view: callers cannot modify our history. */\n    public List<Transaction> history() {\n        return Collections.unmodifiableList(history);\n    }\n\n    public void deposit(long cents, Clock clock) {\n        requirePositive(cents);\n        balanceCents = Math.addExact(balanceCents, cents);\n        history.add(new Transaction(LocalDate.now(clock), \"DEPOSIT\", cents, balanceCents));\n    }\n\n    public void withdraw(long cents, Clock clock) throws InsufficientFundsException {\n        requirePositive(cents);\n        long available = balanceCents + type.overdraftLimit();\n        if (cents > available) {\n            throw new InsufficientFundsException(id, cents - available);\n        }\n        balanceCents -= cents;\n        history.add(new Transaction(LocalDate.now(clock), \"WITHDRAW\", cents, balanceCents));\n    }\n\n    private static void requirePositive(long cents) {\n        if (cents <= 0) {\n            throw new InvalidAmountException(\"amount must be positive, got \" + Money.format(cents));\n        }\n    }\n\n    /** Used by the repository when loading from disk (history is not persisted). */\n    public static Account restore(String id, String owner, AccountType type, long cents) {\n        return new Account(id, owner, type, Math.max(cents, 0)).withBalance(cents);\n    }\n\n    private Account withBalance(long cents) {\n        this.balanceCents = cents;\n        return this;\n    }\n\n    @Override\n    public String toString() {\n        return \"%s [%s] %s %s\".formatted(id, type, owner, Money.format(balanceCents));\n    }\n}",
+          "title": "Account.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Fields are `private`; the only way to change the balance is `deposit` or `withdraw`, so the rules cannot be bypassed (encapsulation).\n- `history()` returns `Collections.unmodifiableList(history)`, a read-only view. Without it a caller could call `account.history().clear()` and erase the audit trail. A test checks this.\n- `withdraw` checks the rule before changing any state, then updates balance and history together. The order matters: if validation threw after the balance changed, the object would be left inconsistent.\n- `restore` is a named factory used only when loading from disk. A comment says history is not persisted; that is a known limitation we list under extensions.\n\nNext the storage layer: one interface, two implementations."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.repo;\nimport java.util.List;\nimport java.util.Optional;\npublic interface Repository<T, ID> {\n    Optional<T> findById(ID id);\n    List<T> findAll();\n    void save(T entity);\n}",
+          "title": "Repository.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.repo;\n\nimport com.example.bank.model.Account;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.TreeMap;\npublic class InMemoryAccountRepository implements Repository<Account, String> {\n    private final Map<String, Account> accounts = new TreeMap<>();   // sorted by id\n\n    @Override\n    public Optional<Account> findById(String id) {\n        return Optional.ofNullable(accounts.get(id));\n    }\n\n    @Override\n    public List<Account> findAll() {\n        return new ArrayList<>(accounts.values());\n    }\n\n    @Override\n    public void save(Account account) {\n        accounts.put(account.id(), account);\n    }\n}",
+          "title": "InMemoryAccountRepository.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.repo;\n\nimport com.example.bank.model.Account;\nimport com.example.bank.model.AccountType;\nimport java.io.IOException;\nimport java.io.UncheckedIOException;\nimport java.nio.charset.StandardCharsets;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.nio.file.StandardCopyOption;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Optional;\n\n/** Wraps another repository and persists all accounts to a CSV file after every save. */\npublic class FileAccountRepository implements Repository<Account, String> {\n    private final Path file;\n    private final InMemoryAccountRepository cache = new InMemoryAccountRepository();\n\n    public FileAccountRepository(Path file) {\n        this.file = file;\n        load();\n    }\n\n    private void load() {\n        if (!Files.exists(file)) {\n            return;\n        }\n        try {\n            for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {\n                if (line.isBlank() || line.startsWith(\"#\")) {\n                    continue;\n                }\n                String[] p = line.split(\",\", -1);\n                cache.save(Account.restore(p[0], p[1], AccountType.valueOf(p[2]),\n                        Long.parseLong(p[3])));\n            }\n        } catch (IOException e) {\n            throw new UncheckedIOException(\"cannot read \" + file, e);\n        }\n    }\n\n    @Override\n    public Optional<Account> findById(String id) {\n        return cache.findById(id);\n    }\n\n    @Override\n    public List<Account> findAll() {\n        return cache.findAll();\n    }\n    @Override\n    public void save(Account account) {\n        cache.save(account);\n        flush();\n    }\n\n    /** Write to a temp file, then move it over the real one: a crash cannot leave half a file. */\n    private void flush() {\n        List<String> lines = new ArrayList<>();\n        lines.add(\"# id,owner,type,balanceCents\");\n        for (Account a : cache.findAll()) {\n            lines.add(String.join(\",\", a.id(), a.owner(), a.type().name(),\n                    Long.toString(a.balanceCents())));\n        }\n        try {\n            Path tmp = file.resolveSibling(file.getFileName() + \".tmp\");\n            Files.write(tmp, lines, StandardCharsets.UTF_8);\n            Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING,\n                    StandardCopyOption.ATOMIC_MOVE);\n        } catch (IOException e) {\n            throw new UncheckedIOException(\"cannot write \" + file, e);\n        }\n    }\n}",
+          "title": "FileAccountRepository.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `findById` returns `Optional`, so \"not found\" cannot be confused with a `null` bug.\n- `FileAccountRepository` reuses the in-memory version as a cache (composition over inheritance). Only `save` touches the disk.\n- `flush` writes `accounts.csv.tmp` and then moves it over the real file with `ATOMIC_MOVE`. If the program dies mid-write, the old file is still intact. This is the standard \"write temp, then rename\" pattern (see the NIO.2 chapter in Part 5).\n- Both IO methods convert `IOException` into `UncheckedIOException` with a clear message and the original cause. The repository interface stays free of checked IO exceptions, so services need not know the storage is a file."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`ATOMIC_MOVE` is not supported on every file system and combining it with `REPLACE_EXISTING` may be ignored on some platforms. It works on normal local disks on Linux, macOS and Windows. If you target network drives, catch `AtomicMoveNotSupportedException` and fall back to a plain replace."
+        },
+        {
+          "type": "markdown",
+          "text": "The service holds the use cases."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.service;\n\nimport com.example.bank.model.Account;\nimport com.example.bank.model.AccountType;\nimport com.example.bank.model.InsufficientFundsException;\nimport com.example.bank.model.InvalidAmountException;\nimport com.example.bank.repo.Repository;\nimport java.time.Clock;\nimport java.util.List;\nimport java.util.NoSuchElementException;\n\npublic class BankService {\n    private final Repository<Account, String> repo;\n    private final Clock clock;\n    private int nextNumber;\n\n    public BankService(Repository<Account, String> repo, Clock clock) {\n        this.repo = repo;\n        this.clock = clock;\n        this.nextNumber = repo.findAll().size() + 1;\n    }\n\n    public Account open(String owner, AccountType type, long openingCents) {\n        Account a = new Account(\"AC%03d\".formatted(nextNumber++), owner, type, openingCents);\n        repo.save(a);\n        return a;\n    }\n\n    public Account get(String id) {\n        return repo.findById(id).orElseThrow(() -> new NoSuchElementException(\"no account \" + id));\n    }\n\n    public List<Account> all() {\n        return repo.findAll();\n    }\n\n    public void deposit(String id, long cents) {\n        Account a = get(id);\n        a.deposit(cents, clock);\n        repo.save(a);\n    }\n\n    public void withdraw(String id, long cents) throws InsufficientFundsException {\n        Account a = get(id);\n        a.withdraw(cents, clock);\n        repo.save(a);\n    }\n\n    /** Both legs succeed or neither does: withdraw first (it can fail), then deposit. */\n    public void transfer(String from, String to, long cents) throws InsufficientFundsException {\n        if (from.equals(to)) {\n            throw new InvalidAmountException(\"cannot transfer to the same account\");\n        }\n        Account src = get(from);\n        Account dst = get(to);          // look up both BEFORE changing anything\n        src.withdraw(cents, clock);\n        dst.deposit(cents, clock);\n        repo.save(src);\n        repo.save(dst);\n    }\n}",
+          "title": "BankService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The important method is `transfer`. It looks up **both** accounts before changing either, so an unknown destination cannot leave money withdrawn. It withdraws first because that is the step that can fail with the checked exception; the deposit cannot fail after that. In a real database you would use a transaction instead of relying on step order (see the extension ideas for a rollback exercise).\n\nFinally the text menu."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank.app;\n\nimport com.example.bank.model.AccountType;\nimport com.example.bank.model.InsufficientFundsException;\nimport com.example.bank.model.Money;\nimport com.example.bank.repo.FileAccountRepository;\nimport com.example.bank.service.BankService;\nimport java.io.InputStream;\nimport java.nio.file.Path;\nimport java.time.Clock;\nimport java.time.Instant;\nimport java.time.ZoneOffset;\nimport java.util.Scanner;\n\npublic class Main {\n    private final BankService bank;\n    private final Scanner in;\n\n    public Main(BankService bank, InputStream input) {\n        this.bank = bank;\n        this.in = new Scanner(input);\n    }\n\n    public void run() {\n        while (in.hasNextLine()) {\n            String line = in.nextLine().trim();\n            if (line.isEmpty()) {\n                continue;\n            }\n            System.out.println(\"> \" + line);          // echo, since input is scripted\n            String[] w = line.split(\"\\\\s+\");\n            try {\n                if (!dispatch(w)) {\n                    return;\n                }\n            } catch (InsufficientFundsException e) {\n                System.out.println(\"DECLINED: \" + e.getMessage());\n            } catch (IllegalArgumentException | java.util.NoSuchElementException e) {\n                System.out.println(\"ERROR: \" + e.getMessage());\n            }\n        }\n    }\n\n    /** Returns false when the user asked to quit. */\n    private boolean dispatch(String[] w) throws InsufficientFundsException {\n        switch (w[0]) {\n            case \"open\" -> {\n                var a = bank.open(w[1], AccountType.valueOf(w[2].toUpperCase()), Money.parse(w[3]));\n                System.out.println(\"opened \" + a);\n            }\n            case \"deposit\" -> bank.deposit(w[1], Money.parse(w[2]));\n            case \"withdraw\" -> bank.withdraw(w[1], Money.parse(w[2]));\n            case \"transfer\" -> bank.transfer(w[1], w[2], Money.parse(w[3]));\n            case \"list\" -> bank.all().forEach(a -> System.out.println(\"  \" + a));\n            case \"history\" -> bank.get(w[1]).history().forEach(t -> System.out.println(\"  \" + t));\n            case \"quit\" -> {\n                return false;\n            }\n            default -> System.out.println(\"unknown command: \" + w[0]);\n        }\n        return true;\n    }\n\n    public static void main(String[] args) {\n        Path file = Path.of(args.length > 0 ? args[0] : \"accounts.csv\");\n        Clock clock = Clock.fixed(Instant.parse(\"2026-03-01T10:00:00Z\"), ZoneOffset.UTC);\n        new Main(new BankService(new FileAccountRepository(file), clock), System.in).run();\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The `switch` is the arrow form with no fall-through. The method returns `false` for `quit`, which ends the loop.\n- Two catch blocks give two behaviours: a checked business failure prints `DECLINED`, input and lookup mistakes print `ERROR`. One bad command never kills the program.\n- The constructor takes an `InputStream`, so a test could pass a `ByteArrayInputStream`.\n\n### Running it\n\nSave the commands below as `script1.txt`. Each line is typed into the menu; some are deliberately wrong.\n\n**script1.txt**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "open Asha checking 100.00\nopen Ravi savings 20.50\ndeposit AC001 25.25\nwithdraw AC001 500\ntransfer AC001 AC002 50\nwithdraw AC002 99.99\ndeposit AC002 -5\ndeposit AC009 5\ndeposit AC001 abc\nlist\nhistory AC001\nquit"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ rm -rf out accounts.csv\n$ javac -d out $(find src -name '*.java')\n$ java -cp out com.example.bank.app.Main accounts.csv < script1.txt\n> open Asha checking 100.00\nopened AC001 [CHECKING] Asha 100.00\n> open Ravi savings 20.50\nopened AC002 [SAVINGS] Ravi 20.50\n> deposit AC001 25.25\n> withdraw AC001 500\nDECLINED: account AC001 is short by 374.75\n> transfer AC001 AC002 50\n> withdraw AC002 99.99\nDECLINED: account AC002 is short by 24.49\n> deposit AC002 -5\nERROR: amount must be positive, got -5.00\n> deposit AC009 5\nERROR: no account AC009\n> deposit AC001 abc\nERROR: bad amount: 'abc'\n> list\n  AC001 [CHECKING] Asha 75.25\n  AC002 [SAVINGS] Ravi 70.50\n> history AC001\n  2026-03-01 DEPOSIT           25.25  balance     125.25\n  2026-03-01 WITHDRAW          50.00  balance      75.25\n> quit",
+          "title": "Compile and run the scripted session"
+        },
+        {
+          "type": "markdown",
+          "text": "Look at each declined or failed line. The 500.00 withdrawal is declined with the exact shortfall (checking accounts have no overdraft). The savings account may dip 5.00 below zero, so withdrawing 99.99 from 70.50 is short by 24.49, not 29.49. Negative amounts, unknown accounts and the text \"abc\" are all reported without crashing.\n\nThe data file is plain text and the second run proves persistence."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ cat accounts.csv\n# id,owner,type,balanceCents\nAC001,Asha,CHECKING,7525\nAC002,Ravi,SAVINGS,7050\n$ printf 'list\\nwithdraw AC001 1000\\nquit\\n' | java -cp out com.example.bank.app.Main accounts.csv\n> list\n  AC001 [CHECKING] Asha 75.25\n  AC002 [SAVINGS] Ravi 70.50\n> withdraw AC001 1000\nDECLINED: account AC001 is short by 924.75\n> quit",
+          "title": "The CSV file and a second run"
+        },
+        {
+          "type": "markdown",
+          "text": "### Tests with a hand-rolled runner\n\nHere is the whole test framework. It is intentionally tiny: tests are named lambdas; `assertThrows` takes the expected exception type."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank;\n\nimport java.util.ArrayList;\nimport java.util.List;\n\n/** A tiny stand-in for JUnit: register named checks, run them, report, exit non-zero. */\npublic final class MiniTest {\n    public interface Body {\n        void run() throws Exception;\n    }\n\n    private record Case(String name, Body body) { }\n\n    private final List<Case> cases = new ArrayList<>();\n\n    public void test(String name, Body body) {\n        cases.add(new Case(name, body));\n    }\n    public static void assertEquals(Object expected, Object actual) {\n        if (!java.util.Objects.equals(expected, actual)) {\n            throw new AssertionError(\"expected <\" + expected + \"> but was <\" + actual + \">\");\n        }\n    }\n\n    public static void assertTrue(boolean condition, String message) {\n        if (!condition) {\n            throw new AssertionError(message);\n        }\n    }\n\n    public static <T extends Throwable> void assertThrows(Class<T> type, Body body) {\n        try {\n            body.run();\n        } catch (Throwable t) {\n            if (type.isInstance(t)) {\n                return;\n            }\n            throw new AssertionError(\"expected \" + type.getSimpleName() + \" but got \" + t);\n        }\n        throw new AssertionError(\"expected \" + type.getSimpleName() + \" but nothing was thrown\");\n    }\n\n    public int runAll() {\n        int failed = 0;\n        for (Case c : cases) {\n            try {\n                c.body().run();\n                System.out.println(\"PASS \" + c.name());\n            } catch (Throwable t) {\n                failed++;\n                System.out.println(\"FAIL \" + c.name() + \" -> \" + t.getMessage());\n            }\n        }\n        System.out.printf(\"%d tests, %d failed%n\", cases.size(), failed);\n        return failed;\n    }\n}",
+          "title": "MiniTest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Tests use it like JUnit, except they are registered in `main`."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.bank;\n\nimport static com.example.bank.MiniTest.assertEquals;\nimport static com.example.bank.MiniTest.assertThrows;\n\nimport com.example.bank.model.AccountType;\nimport com.example.bank.model.InsufficientFundsException;\nimport com.example.bank.model.InvalidAmountException;\nimport com.example.bank.model.Money;\nimport com.example.bank.repo.FileAccountRepository;\nimport com.example.bank.repo.InMemoryAccountRepository;\nimport com.example.bank.service.BankService;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.time.Clock;\nimport java.time.Instant;\nimport java.time.ZoneOffset;\n\npublic class BankTests {\n    static final Clock CLOCK = Clock.fixed(Instant.parse(\"2026-03-01T00:00:00Z\"), ZoneOffset.UTC);\n\n    static BankService newBank() {\n        return new BankService(new InMemoryAccountRepository(), CLOCK);\n    }\n\n    public static void main(String[] args) {\n        MiniTest t = new MiniTest();\n\n        t.test(\"Money.parse handles whole and fractional amounts\", () -> {\n            assertEquals(1250L, Money.parse(\"12.50\"));\n            assertEquals(700L, Money.parse(\"7\"));\n        });\n        t.test(\"Money.parse rejects one-decimal input\", () ->\n                assertThrows(InvalidAmountException.class, () -> Money.parse(\"1.5\")));\n        t.test(\"Money.format round-trips negatives\", () ->\n                assertEquals(\"-0.05\", Money.format(-5)));\n        t.test(\"deposit increases balance and records history\", () -> {\n            var bank = newBank();\n            var a = bank.open(\"Asha\", AccountType.CHECKING, 1000);\n            bank.deposit(a.id(), 250);\n            assertEquals(1250L, bank.get(a.id()).balanceCents());\n            assertEquals(1, bank.get(a.id()).history().size());\n        });\n        t.test(\"withdraw beyond balance throws checked exception\", () -> {\n            var bank = newBank();\n            var a = bank.open(\"Asha\", AccountType.CHECKING, 1000);\n            assertThrows(InsufficientFundsException.class, () -> bank.withdraw(a.id(), 1001));\n            assertEquals(1000L, bank.get(a.id()).balanceCents());\n        });\n        t.test(\"savings may overdraw up to the limit\", () -> {\n            var bank = newBank();\n            var a = bank.open(\"Ravi\", AccountType.SAVINGS, 1000);\n            bank.withdraw(a.id(), 1500);\n            assertEquals(-500L, bank.get(a.id()).balanceCents());\n        });\n        t.test(\"failed transfer changes neither account\", () -> {\n            var bank = newBank();\n            var a = bank.open(\"A\", AccountType.CHECKING, 1000);\n            var b = bank.open(\"B\", AccountType.CHECKING, 0);\n            assertThrows(InsufficientFundsException.class,\n                    () -> bank.transfer(a.id(), b.id(), 5000));\n            assertEquals(1000L, bank.get(a.id()).balanceCents());\n            assertEquals(0L, bank.get(b.id()).balanceCents());\n        });\n        t.test(\"history view cannot be modified\", () -> {\n            var a = newBank().open(\"A\", AccountType.CHECKING, 0);\n            assertThrows(UnsupportedOperationException.class, () -> a.history().clear());\n        });\n        t.test(\"file repository survives a restart\", () -> {\n            Path f = Files.createTempFile(\"accounts\", \".csv\");\n            var bank = new BankService(new FileAccountRepository(f), CLOCK);\n            var a = bank.open(\"Asha\", AccountType.CHECKING, 4200);\n            var reloaded = new BankService(new FileAccountRepository(f), CLOCK);\n            assertEquals(4200L, reloaded.get(a.id()).balanceCents());\n            Files.delete(f);\n        });\n\n        System.exit(t.runAll() == 0 ? 0 : 1);\n    }\n}",
+          "title": "BankTests.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d testout -cp out $(find test -name '*.java')\n$ java -cp out:testout com.example.bank.BankTests\nPASS Money.parse handles whole and fractional amounts\nPASS Money.parse rejects one-decimal input\nPASS Money.format round-trips negatives\nPASS deposit increases balance and records history\nPASS withdraw beyond balance throws checked exception\nPASS savings may overdraw up to the limit\nPASS failed transfer changes neither account\nPASS history view cannot be modified\nPASS file repository survives a restart\n9 tests, 0 failed\n$ echo \"exit code: $?\"\nexit code: 0",
+          "title": "Compile and run the tests"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "On Windows the classpath separator is `;` instead of `:`."
+        },
+        {
+          "type": "markdown",
+          "text": "#### What the tests cover\n\nPure helpers (parsing and formatting), the happy path, the checked exception, the overdraft rule, the all-or-nothing property of `transfer`, the read-only history and persistence across a \"restart\" (a second repository reading the same file). Each test builds its own fresh bank so tests cannot affect each other; that independence is the single most important property of a test suite."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is money stored as a `long` of cents rather than `double` or `BigDecimal`? `double` cannot represent most decimal fractions exactly (0.1 + 0.2 is not 0.3), so sums drift. `BigDecimal` is exact and is the right tool when you need arbitrary scale or rounding rules. Whole minor units in a `long` are exact, fast and simple when the currency has a fixed number of decimals, and `Math.addExact` guards overflow. Many payment systems store minor units for exactly this reason."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a Spring Boot version, `BankService` becomes a `@Service`, `Repository` becomes a Spring Data repository backed by a database table, and `transfer` gets `@Transactional` so that both legs commit or roll back together. The shape of the code stays the same."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n1. **Inventory variant.** Replace `Account` with `Item` (sku, name, quantity) and `withdraw` with `remove`; throwing a checked `OutOfStockException`. Add a `low` command that lists items under a threshold using a stream.\n2. Persist the transaction history too (one line per transaction in a second file) and load it in `restore`.\n3. Make `transfer` genuinely atomic: if `repo.save(dst)` fails after `repo.save(src)`, undo the first save.\n4. Add a monthly interest method on savings accounts using `BigDecimal` with `RoundingMode.HALF_EVEN`, and test the rounding.\n5. Add a `Statement` formatter that prints a table using a text block template and `String.formatted`.\n6. Replace the CSV with a JSON-lines file written by hand, then think about what a library such as Jackson would save you."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Layers (app, service, repo, model) keep rules in one place and storage replaceable behind an interface."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Store money in minor units; use `Math.*Exact`; validate at the boundary."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Checked exceptions for expected business outcomes, unchecked for bad input and bugs."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Write-then-rename makes file persistence crash-safe; read-only views protect internal state."
+        }
+      ]
+    },
+    {
+      "id": "ch-13-3",
+      "type": "concept",
+      "title": "Project B: A log file analyzer",
+      "subtopicId": "13-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal\n\nOperations people read logs for a living, and \"count the errors per hour and show me the slow endpoints\" is a question you will answer with code many times. This project builds a command-line analyzer that reads a web-server style log, tolerates bad lines, and prints a report. It exercises regular expressions, `java.time`, the Stream API with collectors, `Optional`, records, text blocks and `Files.lines`.\n\nBecause we have no real log, the project also contains a **generator** that writes a reproducible fake one. Seeding `java.util.Random` makes the same seed produce the same file on every machine, which is what makes the report below repeatable.\n\nThe log format, one entry per line:\n\n**Log line format**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "2026-03-01T08:00:01.131Z INFO  [billing] PUT /orders 200 17ms user=u13\ntimestamp(UTC)           level service   method path   status latency user"
+        },
+        {
+          "type": "markdown",
+          "text": "### Design\n\n- **model**: `Level` enum (ordered DEBUG to ERROR) and `LogEntry` record. The record has a derived `endpoint()` that turns `GET /orders/42` and `GET /orders/77` into the same key `GET /orders/{id}`. Without this grouping, every id would be its own \"endpoint\".\n- **io**: `LogGenerator` writes the file; `LogParser` turns one line into an `Optional<LogEntry>`.\n- **analysis**: `Analyzer` runs all the statistics and returns an immutable `Report` record.\n- **app**: `Main` formats the report with a text block.\n\nTwo design choices to notice. The parser returns `Optional` instead of throwing, because malformed lines are expected in real logs and should be counted, not fatal. And the report is **data** (a record), not printed text; formatting lives only in `Main`. That separation is what lets the tests assert on numbers rather than on strings.\n\n### The code\n\n#### Model"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.model;\n\npublic enum Level {\n    DEBUG, INFO, WARN, ERROR;\n\n    public boolean atLeast(Level other) {\n        return compareTo(other) >= 0;\n    }\n}",
+          "title": "Level.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.model;\nimport java.time.Instant;\npublic record LogEntry(Instant time, Level level, String service, String method,\n                       String path, int status, int millis, String user) {\n    /** \"/orders/42\" and \"/orders/77\" are the same endpoint: collapse numeric ids. */\n    public String endpoint() {\n        return method + \" \" + path.replaceAll(\"/\\\\d+\", \"/{id}\");\n    }\n\n    public boolean isServerError() {\n        return status >= 500;\n    }\n}",
+          "title": "LogEntry.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### The generator"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.io;\n\nimport com.example.logs.model.Level;\nimport java.io.IOException;\nimport java.io.UncheckedIOException;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.time.Instant;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Random;\n\n/** Writes a reproducible fake log: the same seed always gives the same file. */\npublic final class LogGenerator {\n    private static final String[] SERVICES = {\"api\", \"auth\", \"billing\"};\n    private static final String[] PATHS = {\"/orders\", \"/orders/%d\", \"/login\", \"/users/%d\",\n        \"/invoices/%d\", \"/health\"};\n    private static final String[] METHODS = {\"GET\", \"GET\", \"GET\", \"POST\", \"PUT\"};\n\n    private LogGenerator() { }\n\n    public static void write(Path file, int lines, long seed, Instant start) {\n        Random rnd = new Random(seed);\n        List<String> out = new ArrayList<>(lines);\n        Instant t = start;\n        for (int i = 0; i < lines; i++) {\n            t = t.plusMillis(1 + rnd.nextInt(15_000));          // up to 15 s between lines\n            if (i % 97 == 96) {\n                out.add(\"### corrupted line \" + i);              // malformed on purpose\n                continue;\n            }\n            int status = pickStatus(rnd);\n            Level level = status >= 500 ? Level.ERROR : status >= 400 ? Level.WARN\n                    : rnd.nextInt(10) == 0 ? Level.DEBUG : Level.INFO;\n            String service = SERVICES[rnd.nextInt(SERVICES.length)];\n            String path = PATHS[rnd.nextInt(PATHS.length)].formatted(1 + rnd.nextInt(500));\n            int millis = 5 + (int) (-Math.log(1 - rnd.nextDouble()) * 40)\n                    + (status >= 500 ? 300 : 0);\n            out.add(\"%s %-5s [%s] %s %s %d %dms user=u%02d\".formatted(t, level, service,\n                    METHODS[rnd.nextInt(METHODS.length)], path, status, millis, rnd.nextInt(40)));\n        }\n        try {\n            Files.write(file, out);\n        } catch (IOException e) {\n            throw new UncheckedIOException(e);\n        }\n    }\n\n    private static int pickStatus(Random rnd) {\n        int r = rnd.nextInt(100);\n        if (r < 85) {\n            return 200;\n        } else if (r < 90) {\n            return 201;\n        } else if (r < 95) {\n            return 404;\n        } else if (r < 97) {\n            return 401;\n        }\n        return 500;\n    }\n}",
+          "title": "LogGenerator.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `new Random(seed)` gives a fixed sequence; every 97th line is replaced with garbage so we can test error handling; latencies follow an exponential distribution (`-Math.log(1 - u)` times a mean), which resembles real latency data with a long tail; 5xx responses get an extra 300 ms. The format string uses `%-5s` to pad the level and `Instant.toString()` for the timestamp, which is always ISO-8601 in UTC.\n\n#### The parser"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.io;\n\nimport com.example.logs.model.Level;\nimport com.example.logs.model.LogEntry;\nimport java.time.Instant;\nimport java.time.format.DateTimeParseException;\nimport java.util.Optional;\nimport java.util.regex.Matcher;\nimport java.util.regex.Pattern;\n\npublic final class LogParser {\n    // named groups make the pattern self-documenting\n    private static final Pattern LINE = Pattern.compile(\n            \"^(?<ts>\\\\S+)\\\\s+(?<level>[A-Z]+)\\\\s+\\\\[(?<svc>[a-z]+)]\\\\s+\"\n            + \"(?<method>[A-Z]+)\\\\s+(?<path>\\\\S+)\\\\s+(?<status>\\\\d{3})\\\\s+\"\n            + \"(?<ms>\\\\d+)ms\\\\s+user=(?<user>\\\\w+)$\");\n\n    private LogParser() { }\n\n    /** Empty means \"this line is not a valid entry\"; the caller counts it. */\n    public static Optional<LogEntry> parse(String line) {\n        Matcher m = LINE.matcher(line);\n        if (!m.matches()) {\n            return Optional.empty();\n        }\n        try {\n            return Optional.of(new LogEntry(\n                    Instant.parse(m.group(\"ts\")),\n                    Level.valueOf(m.group(\"level\")),\n                    m.group(\"svc\"),\n                    m.group(\"method\"),\n                    m.group(\"path\"),\n                    Integer.parseInt(m.group(\"status\")),\n                    Integer.parseInt(m.group(\"ms\")),\n                    m.group(\"user\")));\n        } catch (DateTimeParseException | IllegalArgumentException e) {\n            return Optional.empty();\n        }\n    }\n}",
+          "title": "LogParser.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The regular expression uses **named groups** (`(?<status>\\d{3})`) read with `m.group(\"status\")`. Named groups survive edits to the pattern; numbered groups break silently when you add one. The pattern is a `static final Pattern`, compiled once: compiling inside the per-line method would repeat the work two thousand times. `matches()` requires the whole line to fit the pattern, and `^...$` makes the intent explicit."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "The `catch` covers `IllegalArgumentException` because `Level.valueOf(\"LOUD\")` throws it, and `NumberFormatException` (a subclass) from a number that does not fit an `int`. `DateTimeParseException` is not a subclass of it, so both appear in the multi-catch (which forbids listing a class and its own subclass together)."
+        },
+        {
+          "type": "markdown",
+          "text": "#### The analyzer"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.analysis;\n\nimport com.example.logs.model.Level;\nimport com.example.logs.model.LogEntry;\nimport java.time.Instant;\nimport java.util.List;\nimport java.util.Map;\n\n/** Everything the analyzer computed; plain data so tests can inspect each piece. */\npublic record Report(int total, int malformed, Instant first, Instant last,\n                     Map<Level, Long> byLevel,\n                     List<Map.Entry<String, Long>> topEndpoints,\n                     Map<String, Double> avgMillisByService,\n                     long p95Millis,\n                     Map<Instant, Long> errorsPerHour,\n                     Map<Boolean, Long> okVsFailed,\n                     List<LogEntry> slowest) { }",
+          "title": "Report.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.analysis;\n\nimport com.example.logs.io.LogParser;\nimport com.example.logs.model.Level;\nimport com.example.logs.model.LogEntry;\nimport java.io.IOException;\nimport java.io.UncheckedIOException;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.time.temporal.ChronoUnit;\nimport java.util.Comparator;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.TreeMap;\nimport java.util.stream.Collectors;\nimport java.util.stream.Stream;\n\npublic final class Analyzer {\n    private Analyzer() { }\n\n    public static Report analyze(Path file) {\n        try (Stream<String> lines = Files.lines(file)) {\n            List<String> all = lines.filter(l -> !l.isBlank()).toList();\n            List<LogEntry> entries = all.stream()\n                    .map(LogParser::parse)\n                    .flatMap(Optional::stream)          // drops the empty Optionals\n                    .toList();\n            return analyze(entries, all.size() - entries.size());\n        } catch (IOException e) {\n            throw new UncheckedIOException(\"cannot read \" + file, e);\n        }\n    }\n\n    public static Report analyze(List<LogEntry> entries, int malformed) {\n        Map<Level, Long> byLevel = entries.stream().collect(Collectors.groupingBy(\n                LogEntry::level, () -> new TreeMap<>(), Collectors.counting()));\n\n        List<Map.Entry<String, Long>> top = entries.stream()\n                .collect(Collectors.groupingBy(LogEntry::endpoint, Collectors.counting()))\n                .entrySet().stream()\n                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()\n                        .thenComparing(Map.Entry.comparingByKey()))\n                .limit(5)\n                .toList();\n\n        Map<String, Double> avg = entries.stream().collect(Collectors.groupingBy(\n                LogEntry::service, TreeMap::new, Collectors.averagingInt(LogEntry::millis)));\n\n        long[] sorted = entries.stream().mapToLong(LogEntry::millis).sorted().toArray();\n        long p95 = sorted.length == 0 ? 0 : sorted[(int) Math.ceil(sorted.length * 0.95) - 1];\n\n        Map<java.time.Instant, Long> errorsPerHour = entries.stream()\n                .filter(e -> e.level() == Level.ERROR)\n                .collect(Collectors.groupingBy(e -> e.time().truncatedTo(ChronoUnit.HOURS),\n                        TreeMap::new, Collectors.counting()));\n\n        Map<Boolean, Long> okVsFailed = entries.stream()\n                .collect(Collectors.partitioningBy(e -> e.status() < 400, Collectors.counting()));\n\n        List<LogEntry> slowest = entries.stream()\n                .sorted(Comparator.comparingInt(LogEntry::millis).reversed()\n                        .thenComparing(LogEntry::time))\n                .limit(3)\n                .toList();\n\n        return new Report(entries.size(), malformed,\n                entries.stream().map(LogEntry::time).min(Comparator.naturalOrder()).orElse(null),\n                entries.stream().map(LogEntry::time).max(Comparator.naturalOrder()).orElse(null),\n                byLevel, top, avg, p95, errorsPerHour, okVsFailed, slowest);\n    }\n}",
+          "title": "Analyzer.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Walk through the collectors, because they are the point of this project (see the collectors chapter in Part 7).\n\n- `groupingBy(LogEntry::level, () -> new TreeMap<>(), counting())` counts entries per level. The map factory argument picks a `TreeMap`, so keys come out in enum declaration order instead of hash order.\n- Top endpoints: group by endpoint, then stream the map's `entrySet()`, sort by count descending with ties broken by key (so output is deterministic), and `limit(5)`. `comparingByValue().reversed()` needs the explicit type witness `Map.Entry.<String, Long>` because Java cannot infer the type through the chained call.\n- `averagingInt` computes the mean per service in one pass.\n- p95 sorts latencies into a `long[]` and picks the element at rank `ceil(0.95 * n)`. This \"nearest rank\" definition is simple and common; other definitions interpolate and give slightly different numbers.\n- `truncatedTo(ChronoUnit.HOURS)` rounds an `Instant` down to the hour, which makes a natural grouping key for errors per hour.\n- `partitioningBy` always produces both keys (`true` and `false`), even if one group is empty, so `get(true)` never returns `null`.\n- `.flatMap(Optional::stream)` is the idiom for \"keep the present values, drop the empties\" (Java 9+)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "`Files.lines` holds an open file handle until the stream is closed. Always wrap it in try-with-resources as shown. Forgetting it leaks file descriptors, and on Windows it can stop you deleting the file."
+        },
+        {
+          "type": "markdown",
+          "text": "#### The report printer"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs.app;\n\nimport com.example.logs.analysis.Analyzer;\nimport com.example.logs.analysis.Report;\nimport com.example.logs.io.LogGenerator;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.time.Instant;\nimport java.time.ZoneOffset;\nimport java.time.format.DateTimeFormatter;\nimport java.util.stream.Collectors;\n\npublic class Main {\n    private static final DateTimeFormatter HOUR =\n            DateTimeFormatter.ofPattern(\"yyyy-MM-dd HH':00'\").withZone(ZoneOffset.UTC);\n\n    public static void main(String[] args) throws Exception {\n        Path file = Path.of(args.length > 0 ? args[0] : \"sample.log\");\n        if (!Files.exists(file)) {\n            LogGenerator.write(file, 2000, 42L, Instant.parse(\"2026-03-01T08:00:00Z\"));\n            System.out.println(\"generated \" + file);\n        }\n        System.out.print(render(Analyzer.analyze(file)));\n    }\n\n    static String render(Report r) {\n        String levels = r.byLevel().entrySet().stream()\n                .map(e -> \"  %-6s %5d\".formatted(e.getKey(), e.getValue()))\n                .collect(Collectors.joining(\"\\n\"));\n        String top = r.topEndpoints().stream()\n                .map(e -> \"  %-22s %5d\".formatted(e.getKey(), e.getValue()))\n                .collect(Collectors.joining(\"\\n\"));\n        String avg = r.avgMillisByService().entrySet().stream()\n                .map(e -> \"  %-8s %6.1f ms\".formatted(e.getKey(), e.getValue()))\n                .collect(Collectors.joining(\"\\n\"));\n        String errors = r.errorsPerHour().entrySet().stream()\n                .map(e -> \"  %s  %3d\".formatted(HOUR.format(e.getKey()), e.getValue()))\n                .collect(Collectors.joining(\"\\n\"));\n        String slow = r.slowest().stream()\n                .map(e -> \"  %5d ms  %s %s\".formatted(e.millis(), e.service(), e.endpoint()))\n                .collect(Collectors.joining(\"\\n\"));\n        return \"\"\"\n                LOG REPORT\n                entries: %d (malformed lines skipped: %d)\n                window : %s to %s\n\n                By level\n                %s\n\n                Top endpoints\n                %s\n\n                Average latency by service\n                %s\n                p95 latency: %d ms\n\n                Errors per hour (UTC)\n                %s\n\n                Succeeded (<400): %d   Failed (>=400): %d\n\n                Slowest requests\n                %s\n                \"\"\".formatted(r.total(), r.malformed(), r.first(), r.last(), levels, top, avg,\n                r.p95Millis(), errors, r.okVsFailed().get(true), r.okVsFailed().get(false), slow);\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The text block uses `%s` and `%d` placeholders and `.formatted(...)` (see the strings chapter). The closing `\"\"\"` sits at the left margin of the content, which defines how much indentation is stripped. Each section is first built into a string with `Collectors.joining(\"\\n\")`, a common way to turn a collection into multi-line text.\n\n### Running it"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ rm -rf out sample.log\n$ javac -d out $(find src -name '*.java')\n$ java -cp out com.example.logs.app.Main\ngenerated sample.log\nLOG REPORT\nentries: 1980 (malformed lines skipped: 20)\nwindow : 2026-03-01T08:00:01.131Z to 2026-03-01T12:11:24.770Z\n\nBy level\n  DEBUG    177\n  INFO    1599\n  WARN     141\n  ERROR     63\n\nTop endpoints\n  GET /health              216\n  GET /login               215\n  GET /orders              204\n  GET /invoices/{id}       198\n  GET /users/{id}          191\n\nAverage latency by service\n  api        55.0 ms\n  auth       53.1 ms\n  billing    56.7 ms\np95 latency: 166 ms\n\nErrors per hour (UTC)\n  2026-03-01 08:00   19\n  2026-03-01 09:00   15\n  2026-03-01 10:00   14\n  2026-03-01 11:00   14\n  2026-03-01 12:00    1\n\nSucceeded (<400): 1776   Failed (>=400): 204\n\nSlowest requests\n    523 ms  billing GET /login\n    446 ms  billing GET /users/{id}\n    436 ms  auth POST /health",
+          "title": "Generate the sample log and analyze it"
+        },
+        {
+          "type": "markdown",
+          "text": "A glance at the generated file shows the format, including the deliberately corrupt lines (the analyzer reports exactly 20 skipped out of 2000, one in 97 as designed)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ head -3 sample.log\n2026-03-01T08:00:01.131Z INFO  [billing] PUT /orders 200 17ms user=u13\n2026-03-01T08:00:13.314Z INFO  [api] POST /login 200 29ms user=u09\n2026-03-01T08:00:14.715Z INFO  [api] GET /health 200 24ms user=u06\n$ grep -n '###' sample.log | head -2\n97:### corrupted line 96\n194:### corrupted line 193\n$ wc -l sample.log\n2000 sample.log",
+          "title": "Peek at the raw log"
+        },
+        {
+          "type": "markdown",
+          "text": "Since the generator is seeded, you should see the same numbers. If you change the seed, every figure changes but the invariants hold: the level counts sum to the number of entries, and the successes plus failures equal the same total.\n\n### Tests\n\nThe tests reuse the `MiniTest` runner from the previous project (copy it into the `com.example.logs` test package). Two things are worth studying: the first test builds data by hand so every expected value can be computed on paper (100 latencies of 1 to 100 ms, so the 95th-percentile by nearest rank is exactly 95), and the generator test proves determinism by writing the same seed twice and comparing the files."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.logs;\n\nimport static com.example.logs.MiniTest.assertEquals;\nimport static com.example.logs.MiniTest.assertTrue;\n\nimport com.example.logs.analysis.Analyzer;\nimport com.example.logs.analysis.Report;\nimport com.example.logs.io.LogGenerator;\nimport com.example.logs.io.LogParser;\nimport com.example.logs.model.Level;\nimport com.example.logs.model.LogEntry;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.time.Instant;\nimport java.util.List;\n\npublic class LogTests {\n    static final String GOOD =\n            \"2026-03-01T08:00:01.131Z INFO  [api] GET /orders/42 200 17ms user=u13\";\n\n    static LogEntry entry(String time, Level level, int status, int millis) {\n        return new LogEntry(Instant.parse(time), level, \"api\", \"GET\", \"/orders/1\",\n                status, millis, \"u1\");\n    }\n\n    public static void main(String[] args) {\n        MiniTest t = new MiniTest();\n\n        t.test(\"parse reads every field\", () -> {\n            LogEntry e = LogParser.parse(GOOD).orElseThrow();\n            assertEquals(Level.INFO, e.level());\n            assertEquals(\"api\", e.service());\n            assertEquals(200, e.status());\n            assertEquals(17, e.millis());\n            assertEquals(\"GET /orders/{id}\", e.endpoint());\n        });\n        t.test(\"parse rejects garbage and bad timestamps\", () -> {\n            assertTrue(LogParser.parse(\"### corrupted\").isEmpty(), \"garbage accepted\");\n            assertTrue(LogParser.parse(GOOD.replace(\"2026-03-01\", \"2026-13-45\")).isEmpty(),\n                    \"bad date accepted\");\n            assertTrue(LogParser.parse(GOOD.replace(\"INFO \", \"LOUD \")).isEmpty(),\n                    \"unknown level accepted\");\n        });\n        t.test(\"p95 and failure partition on a hand-made list\", () -> {\n            List<LogEntry> list = new java.util.ArrayList<>();\n            for (int i = 1; i <= 100; i++) {\n                list.add(entry(\"2026-03-01T08:00:00Z\", Level.INFO, i <= 90 ? 200 : 500, i));\n            }\n            Report r = Analyzer.analyze(list, 3);\n            assertEquals(95L, r.p95Millis());\n            assertEquals(90L, r.okVsFailed().get(true));\n            assertEquals(3, r.malformed());\n        });\n        t.test(\"errors are grouped by hour\", () -> {\n            Report r = Analyzer.analyze(List.of(\n                    entry(\"2026-03-01T08:10:00Z\", Level.ERROR, 500, 10),\n                    entry(\"2026-03-01T08:50:00Z\", Level.ERROR, 500, 10),\n                    entry(\"2026-03-01T09:05:00Z\", Level.ERROR, 500, 10)), 0);\n            assertEquals(2L, r.errorsPerHour().get(Instant.parse(\"2026-03-01T08:00:00Z\")));\n            assertEquals(1L, r.errorsPerHour().get(Instant.parse(\"2026-03-01T09:00:00Z\")));\n        });\n        t.test(\"generator is deterministic and analyzer counts bad lines\", () -> {\n            Path a = Files.createTempFile(\"a\", \".log\");\n            Path b = Files.createTempFile(\"b\", \".log\");\n            Instant start = Instant.parse(\"2026-03-01T00:00:00Z\");\n            LogGenerator.write(a, 500, 7L, start);\n            LogGenerator.write(b, 500, 7L, start);\n            assertEquals(Files.readString(a), Files.readString(b));\n            Report r = Analyzer.analyze(a);\n            assertEquals(500, r.total() + r.malformed());\n            assertEquals(5, r.malformed());          // lines 97,194,291,388,485\n            Files.delete(a);\n            Files.delete(b);\n        });\n        t.test(\"Level.atLeast follows declaration order\", () -> {\n            assertTrue(Level.ERROR.atLeast(Level.WARN), \"ERROR >= WARN\");\n            assertTrue(!Level.DEBUG.atLeast(Level.INFO), \"DEBUG < INFO\");\n        });\n\n        System.exit(t.runAll() == 0 ? 0 : 1);\n    }\n}",
+          "title": "LogTests.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d testout -cp out $(find test -name '*.java')\n$ java -cp out:testout com.example.logs.LogTests\nPASS parse reads every field\nPASS parse rejects garbage and bad timestamps\nPASS p95 and failure partition on a hand-made list\nPASS errors are grouped by hour\nPASS generator is deterministic and analyzer counts bad lines\nPASS Level.atLeast follows declaration order\n6 tests, 0 failed",
+          "title": "Run the tests"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you compute a top-N of a very large log file that does not fit in memory? Stream the file line by line (`Files.lines`), never collect all lines, and keep only counters. If the number of distinct keys also does not fit, use an approximate structure (count-min sketch) or process in partitions: hash each key to one of K temporary files, count each partition separately, then merge the top-N. For the in-memory case, a size-N min-heap (`PriorityQueue`) beats sorting everything."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Real systems rarely analyze log files with hand-written code; they ship structured JSON logs to Elasticsearch, Loki or similar. But the same operations (parse, group by a time bucket, percentile) are exactly what dashboards perform, and log parsing code still appears in migration scripts and incident investigations."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n1. Add command-line options: `--min-level WARN` using `Level.atLeast`, and `--service billing`, applied as stream filters before the statistics.\n2. Parse the file in parallel with `lines.parallel()` and compare timings with the sequential version. Is it faster for 2000 lines? For 5 million? Explain why (see the parallel streams discussion in Part 7).\n3. Add a \"busiest minute\" statistic (group by `truncatedTo(MINUTES)`, take the `max` by value).\n4. Support a second log format by introducing a `LineFormat` interface with two implementations and choosing by a command-line flag.\n5. Print an ASCII bar chart of errors per hour using `\"#\".repeat(n)`.\n6. Detect bursts: report any 5-minute window containing more than 10 errors (sliding window over sorted timestamps)."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Return `Optional` from parsers of untrusted input and count the empties instead of crashing."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Collectors (`groupingBy`, `counting`, `averagingInt`, `partitioningBy`) express reports declaratively; pass a map factory when key order matters."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Keep results as data (records) and formatting separate so tests check numbers."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Always close `Files.lines` streams, and compile regex `Pattern` objects once."
+        }
+      ]
+    },
+    {
+      "id": "ch-13-4",
+      "type": "concept",
+      "title": "Project C: A concurrent order processor",
+      "subtopicId": "13-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal\n\nA shop receives orders and must validate and charge each one. Each charge involves a slow call to a payment service, so one order takes about 10 ms of waiting, not computing. Processing 200 orders one by one takes over two seconds; processing them concurrently should take a fraction of that. This project implements the same job **five ways** and checks that all five agree:\n\n1. sequentially (the baseline),\n2. with a hand-built producer-consumer pipeline on a `BlockingQueue`,\n3. with an `ExecutorService` thread pool and `Future`s,\n4. with `CompletableFuture` stages,\n5. with Java 21 virtual threads.\n\nIt also shows a graceful shutdown, a deliberate data race, and a test strategy for concurrent code. Read the concurrency Part first (threads, the memory model, executors, CompletableFuture, virtual threads); this chapter applies it.\n\n### Design\n\nThe work itself is separated from the way it is scheduled. That is the main design idea: `OrderProcessor.process(Order)` knows nothing about threads, and each `Runner` implementation decides how to call it for many orders.\n\n- **model**: `Order` and `Result` records, and `Summary`, an order-independent digest (counts plus a checksum of ids). Concurrent runs finish in unpredictable order, so we cannot compare result lists directly. A summary that ignores order lets us ask \"did every runner produce the same outcome?\".\n- **work**: `OrderGenerator` (seeded) and `OrderProcessor`, which sleeps for the simulated latency and then applies two business rules: reject amounts over 900.00, reject customers whose name ends in 13.\n- **run**: the `Runner` interface and five implementations.\n- **app**: `Main` times all runners; `ShutdownDemo` and `RaceDemo` illustrate two ideas separately."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Using `Thread.sleep` to imitate I/O is a deliberate simplification. A sleeping thread, like a thread blocked on a socket, uses no CPU. That is the situation where more threads than cores help. For CPU-bound work (hashing, image resizing) a pool larger than the core count gains nothing."
+        },
+        {
+          "type": "markdown",
+          "text": "### The code\n\n#### Model and work"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.model;\npublic record Order(int id, String customer, long amountCents) { }",
+          "title": "Order.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.model;\n\npublic record Result(int orderId, Status status, String detail) {\n    public enum Status { ACCEPTED, REJECTED }\n\n    public static Result accepted(Order o) {\n        return new Result(o.id(), Status.ACCEPTED, \"ok\");\n    }\n\n    public static Result rejected(Order o, String why) {\n        return new Result(o.id(), Status.REJECTED, why);\n    }\n}",
+          "title": "Result.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.model;\n\nimport java.util.Collection;\n\n/** Order-independent digest of a run: two correct runs must produce equal summaries. */\npublic record Summary(int accepted, int rejected, long checksum) {\n    public static Summary of(Collection<Result> results) {\n        int ok = 0;\n        int bad = 0;\n        long sum = 0;\n        for (Result r : results) {\n            if (r.status() == Result.Status.ACCEPTED) {\n                ok++;\n            } else {\n                bad++;\n            }\n            sum += r.orderId() * (r.status() == Result.Status.ACCEPTED ? 1L : 2L);\n        }\n        return new Summary(ok, bad, sum);\n    }\n}",
+          "title": "Summary.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.work;\n\nimport com.example.orders.model.Order;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Random;\n\npublic final class OrderGenerator {\n    private OrderGenerator() { }\n\n    public static List<Order> generate(int count, long seed) {\n        Random rnd = new Random(seed);\n        List<Order> orders = new ArrayList<>(count);\n        for (int i = 1; i <= count; i++) {\n            orders.add(new Order(i, \"cust\" + rnd.nextInt(30), 500 + rnd.nextInt(99_000)));\n        }\n        return orders;\n    }\n}",
+          "title": "OrderGenerator.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.work;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\n\n/** The \"business logic\": pretend to call a payment service (a blocking wait), then decide. */\npublic final class OrderProcessor {\n    private final long latencyMillis;\n\n    public OrderProcessor(long latencyMillis) {\n        this.latencyMillis = latencyMillis;\n    }\n\n    public Result process(Order o) {\n        try {\n            Thread.sleep(latencyMillis);                  // stands in for network I/O\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();           // restore the flag, then bail out\n            throw new IllegalStateException(\"interrupted while processing \" + o.id(), e);\n        }\n        if (o.amountCents() > 90_000) {\n            return Result.rejected(o, \"over limit\");\n        }\n        if (o.customer().endsWith(\"13\")) {\n            return Result.rejected(o, \"blocked customer\");\n        }\n        return Result.accepted(o);\n    }\n}",
+          "title": "OrderProcessor.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The catch block in `process` is the right way to handle `InterruptedException`: restore the flag with `Thread.currentThread().interrupt()` and stop what you were doing. Swallowing it silently makes threads impossible to cancel. Here we convert it into an unchecked exception because the caller (a task in some pool) cannot do anything else with a checked one.\n\n#### The runner interface and the baseline"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport java.util.List;\n\npublic interface Runner {\n    String name();\n\n    List<Result> run(List<Order> orders) throws Exception;\n}",
+          "title": "Runner.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.ArrayList;\nimport java.util.List;\n\npublic class SequentialRunner implements Runner {\n    private final OrderProcessor processor;\n\n    public SequentialRunner(OrderProcessor processor) {\n        this.processor = processor;\n    }\n\n    @Override\n    public String name() {\n        return \"sequential\";\n    }\n    @Override\n    public List<Result> run(List<Order> orders) {\n        List<Result> results = new ArrayList<>();\n        for (Order o : orders) {\n            results.add(processor.process(o));\n        }\n        return results;\n    }\n}",
+          "title": "SequentialRunner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Variant 1: producer-consumer with a BlockingQueue"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.ArrayBlockingQueue;\nimport java.util.concurrent.BlockingQueue;\nimport java.util.concurrent.ConcurrentLinkedQueue;\n\n/** Classic producer-consumer: one producer thread, N consumer threads, a bounded queue. */\npublic class QueueRunner implements Runner {\n    private static final Order POISON = new Order(-1, \"poison\", 0);\n\n    private final OrderProcessor processor;\n    private final int consumers;\n    private final int capacity;\n\n    public QueueRunner(OrderProcessor processor, int consumers, int capacity) {\n        this.processor = processor;\n        this.consumers = consumers;\n        this.capacity = capacity;\n    }\n\n    @Override\n    public String name() {\n        return \"queue(\" + consumers + \" consumers)\";\n    }\n\n    @Override\n    public List<Result> run(List<Order> orders) throws InterruptedException {\n        BlockingQueue<Order> queue = new ArrayBlockingQueue<>(capacity);\n        ConcurrentLinkedQueue<Result> results = new ConcurrentLinkedQueue<>();\n\n        Thread producer = new Thread(() -> {\n            try {\n                for (Order o : orders) {\n                    queue.put(o);                    // blocks when the queue is full: back-pressure\n                }\n                for (int i = 0; i < consumers; i++) {\n                    queue.put(POISON);               // one pill per consumer\n                }\n            } catch (InterruptedException e) {\n                Thread.currentThread().interrupt();\n            }\n        }, \"producer\");\n\n        List<Thread> workers = new ArrayList<>();\n        for (int i = 0; i < consumers; i++) {\n            Thread w = new Thread(() -> {\n                try {\n                    while (true) {\n                        Order o = queue.take();      // blocks when the queue is empty\n                        if (o == POISON) {\n                            return;\n                        }\n                        results.add(processor.process(o));\n                    }\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }, \"consumer-\" + i);\n            workers.add(w);\n        }\n\n        producer.start();\n        workers.forEach(Thread::start);\n        producer.join();\n        for (Thread w : workers) {\n            w.join();\n        }\n        return new ArrayList<>(results);\n    }\n}",
+          "title": "QueueRunner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The queue is **bounded** (`ArrayBlockingQueue`). When consumers are slower than the producer, `put` blocks the producer. That is back-pressure: memory use stays bounded instead of growing without limit, which is how an unbounded queue turns a slow downstream into an OutOfMemoryError.\n- Shutdown uses a **poison pill**: a special sentinel object, one per consumer. Each consumer exits when it takes one. Comparing with `==` is intentional; it is the identity of that exact object that matters.\n- Results go into a `ConcurrentLinkedQueue`, a thread-safe collection, so consumers do not need explicit locks.\n- `join()` on every thread establishes a happens-before edge: after the joins, the main thread is guaranteed to see everything the workers wrote (see the memory model chapter).\n- Threads have names (`consumer-0`). Always name threads you create; stack dumps become readable.\n\n#### Variant 2: a thread pool"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.Callable;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\nimport java.util.concurrent.TimeUnit;\n\n/** A fixed thread pool; invokeAll submits everything and waits for all the futures. */\npublic class PoolRunner implements Runner {\n    private final OrderProcessor processor;\n    private final int threads;\n\n    public PoolRunner(OrderProcessor processor, int threads) {\n        this.processor = processor;\n        this.threads = threads;\n    }\n\n    @Override\n    public String name() {\n        return \"pool(\" + threads + \" threads)\";\n    }\n\n    @Override\n    public List<Result> run(List<Order> orders) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(threads);\n        try {\n            List<Callable<Result>> tasks = new ArrayList<>();\n            for (Order o : orders) {\n                tasks.add(() -> processor.process(o));\n            }\n            List<Result> results = new ArrayList<>();\n            for (Future<Result> f : pool.invokeAll(tasks)) {\n                results.add(f.get());                // rethrows task failures as ExecutionException\n            }\n            return results;\n        } finally {\n            shutdownGracefully(pool);\n        }\n    }\n\n    /** Stop accepting work, wait a while, then interrupt whatever is still running. */\n    static void shutdownGracefully(ExecutorService pool) throws InterruptedException {\n        pool.shutdown();\n        if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {\n            pool.shutdownNow();\n            pool.awaitTermination(5, TimeUnit.SECONDS);\n        }\n    }\n}",
+          "title": "PoolRunner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`invokeAll` submits every task and blocks until all are done, returning futures in the same order as the tasks. `f.get()` returns the value or throws `ExecutionException` wrapping whatever the task threw. The `finally` block always shuts the pool down, using the standard three steps in `shutdownGracefully`: `shutdown()` stops intake, `awaitTermination` waits, `shutdownNow()` interrupts the stragglers. Forgetting to shut down a fixed pool leaves non-daemon worker threads alive, and the JVM never exits.\n\n#### Variant 3: CompletableFuture"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.List;\nimport java.util.concurrent.CompletableFuture;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\n\n/** One CompletableFuture per order; failures become REJECTED results instead of lost tasks. */\npublic class FutureRunner implements Runner {\n    private final OrderProcessor processor;\n    private final int threads;\n\n    public FutureRunner(OrderProcessor processor, int threads) {\n        this.processor = processor;\n        this.threads = threads;\n    }\n\n    @Override\n    public String name() {\n        return \"completable(\" + threads + \" threads)\";\n    }\n\n    @Override\n    public List<Result> run(List<Order> orders) throws Exception {\n        ExecutorService pool = Executors.newFixedThreadPool(threads);\n        try {\n            List<CompletableFuture<Result>> futures = orders.stream()\n                    .map(o -> CompletableFuture\n                            .supplyAsync(() -> validate(o), pool)\n                            .thenApplyAsync(processor::process, pool)\n                            .exceptionally(ex -> Result.rejected(o, \"failed: \" + ex.getMessage())))\n                    .toList();\n            CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();\n            return futures.stream().map(CompletableFuture::join).toList();\n        } finally {\n            PoolRunner.shutdownGracefully(pool);\n        }\n    }\n\n    private static Order validate(Order o) {\n        if (o.amountCents() <= 0) {\n            throw new IllegalArgumentException(\"non-positive amount\");\n        }\n        return o;\n    }\n}",
+          "title": "FutureRunner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Each order becomes a small pipeline: validate, then process, with `exceptionally` turning any failure into a rejected result. Both stages run on our own pool; passing the executor explicitly avoids silently using the shared `ForkJoinPool.commonPool()`, which is sized for CPU work, not blocking calls. `allOf(...).join()` waits for every future. A realistic extension would add a stage per external call (inventory, payment, notification).\n\n#### Variant 4: virtual threads"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.run;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\n\n/** Java 21: one cheap virtual thread per order, no pool size to tune. */\npublic class VirtualRunner implements Runner {\n    private final OrderProcessor processor;\n\n    public VirtualRunner(OrderProcessor processor) {\n        this.processor = processor;\n    }\n\n    @Override\n    public String name() {\n        return \"virtual threads\";\n    }\n\n    @Override\n    public List<Result> run(List<Order> orders) throws Exception {\n        try (ExecutorService exec = Executors.newVirtualThreadPerTaskExecutor()) {\n            List<Future<Result>> futures = new ArrayList<>();\n            for (Order o : orders) {\n                futures.add(exec.submit(() -> processor.process(o)));\n            }\n            List<Result> results = new ArrayList<>();\n            for (Future<Result> f : futures) {\n                results.add(f.get());\n            }\n            return results;\n        }     // close() waits for the tasks: shutdown() + awaitTermination()\n    }\n}",
+          "title": "VirtualRunner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Virtual threads (Java 21, see the virtual threads chapter) are so cheap that you create one **per task** and never pool them. When a virtual thread blocks in `sleep` or on a socket, the JVM unmounts it from its carrier thread and runs another one. The try-with-resources block works because `ExecutorService` implements `AutoCloseable` since Java 19; `close()` waits for submitted tasks to finish.\n\n#### The driver"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.app;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.model.Summary;\nimport com.example.orders.run.FutureRunner;\nimport com.example.orders.run.PoolRunner;\nimport com.example.orders.run.QueueRunner;\nimport com.example.orders.run.Runner;\nimport com.example.orders.run.SequentialRunner;\nimport com.example.orders.run.VirtualRunner;\nimport com.example.orders.work.OrderGenerator;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.List;\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        int count = args.length > 0 ? Integer.parseInt(args[0]) : 200;\n        long latency = args.length > 1 ? Long.parseLong(args[1]) : 10;\n        List<Order> orders = OrderGenerator.generate(count, 42L);\n        OrderProcessor processor = new OrderProcessor(latency);\n\n        List<Runner> runners = List.of(\n                new SequentialRunner(processor),\n                new QueueRunner(processor, 8, 16),\n                new PoolRunner(processor, 8),\n                new FutureRunner(processor, 8),\n                new VirtualRunner(processor));\n\n        System.out.printf(\"%d orders, %d ms simulated latency each%n\", count, latency);\n        Summary expected = null;\n        for (Runner r : runners) {\n            long t0 = System.nanoTime();\n            List<Result> results = r.run(orders);\n            long ms = (System.nanoTime() - t0) / 1_000_000;\n            Summary s = Summary.of(results);\n            if (expected == null) {\n                expected = s;\n            }\n            System.out.printf(\"%-24s %5d ms  ok=%d rejected=%d sum=%d %s%n\", r.name(), ms,\n                    s.accepted(), s.rejected(), s.checksum(),\n                    s.equals(expected) ? \"(matches baseline)\" : \"(MISMATCH!)\");\n        }\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Running it"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ rm -rf out testout\n$ javac -d out $(find src -name '*.java')\n$ java -cp out com.example.orders.app.Main\n200 orders, 10 ms simulated latency each\nsequential                2122 ms  ok=172 rejected=28 sum=22627 (matches baseline)\nqueue(8 consumers)         271 ms  ok=172 rejected=28 sum=22627 (matches baseline)\npool(8 threads)            264 ms  ok=172 rejected=28 sum=22627 (matches baseline)\ncompletable(8 threads)     263 ms  ok=172 rejected=28 sum=22627 (matches baseline)\nvirtual threads             38 ms  ok=172 rejected=28 sum=22627 (matches baseline)",
+          "title": "Compile and run all five variants"
+        },
+        {
+          "type": "markdown",
+          "text": "The timings above are typical for the build machine (2 CPU cores) and will differ on yours, but the pattern should be the same."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Variant",
+            "About",
+            "Why"
+          ],
+          "rows": [
+            [
+              "sequential",
+              "N x latency",
+              "each order waits for the previous one: 200 x 10 ms is just over 2 s"
+            ],
+            [
+              "queue, pool, completable (8 threads)",
+              "N / 8 x latency",
+              "eight orders wait at once; about 8 times faster, the wait dominates"
+            ],
+            [
+              "virtual threads",
+              "about one latency",
+              "all 200 wait at once; no limit of 8 to hit"
+            ]
+          ],
+          "caption": "Reading the result (timings are typical, not guaranteed)."
+        },
+        {
+          "type": "markdown",
+          "text": "The last column of every line says \"matches baseline\": the accepted and rejected counts and the checksum are identical. Without that check, a faster-but-wrong implementation would look like a win."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Do not write micro-benchmarks like this and then quote them as facts about Java. A single cold run includes JIT warm-up, thread start cost and noise. We use it to see an order-of-magnitude effect (about 8x and then about 80x), which is large enough to survive the noise. For real measurements use JMH, the benchmark harness from the OpenJDK project."
+        },
+        {
+          "type": "markdown",
+          "text": "### Graceful shutdown\n\nReal services must stop cleanly: finish what is running, refuse new work, and report what was dropped. `ShutdownDemo` queues 40 tasks of 50 ms on 4 threads, waits a short time, then stops the pool."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.app;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.List;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicInteger;\n\n/** Shows the three-step shutdown: stop intake, wait politely, then interrupt. */\npublic class ShutdownDemo {\n    public static void main(String[] args) throws InterruptedException {\n        OrderProcessor processor = new OrderProcessor(50);\n        AtomicInteger done = new AtomicInteger();\n        AtomicInteger interrupted = new AtomicInteger();\n\n        ExecutorService pool = Executors.newFixedThreadPool(4);\n        for (int i = 1; i <= 40; i++) {\n            Order o = new Order(i, \"cust\" + i, 1000);\n            pool.submit(() -> {\n                try {\n                    processor.process(o);\n                    done.incrementAndGet();\n                } catch (IllegalStateException e) {\n                    interrupted.incrementAndGet();\n                }\n            });\n        }\n\n        Thread.sleep(130);                       // let some work happen, then decide to stop\n        pool.shutdown();                         // 1. no new tasks; queued ones still run\n        boolean clean = pool.awaitTermination(60, TimeUnit.MILLISECONDS);   // 2. wait politely\n        List<Runnable> neverStarted = List.of();\n        if (!clean) {\n            neverStarted = pool.shutdownNow();   // 3. drain the queue and interrupt workers\n            pool.awaitTermination(1, TimeUnit.SECONDS);\n        }\n        System.out.println(\"clean shutdown : \" + clean);\n        System.out.println(\"completed      : \" + done.get());\n        System.out.println(\"interrupted    : \" + interrupted.get());\n        System.out.println(\"never started  : \" + neverStarted.size());\n        int total = done.get() + interrupted.get() + neverStarted.size();\n        System.out.println(\"accounted for  : \" + total);\n    }\n}",
+          "title": "ShutdownDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -cp out com.example.orders.app.ShutdownDemo\nclean shutdown : false\ncompleted      : 12\ninterrupted    : 4\nnever started  : 24\naccounted for  : 40",
+          "title": "Run the shutdown demo (typical output)"
+        },
+        {
+          "type": "markdown",
+          "text": "The exact split between completed, interrupted and never-started varies from run to run because it depends on timing, but the **accounted for** line must always equal 40: no task disappears silently. `shutdownNow()` returns the queued tasks that never began, so you can log or persist them. Tasks already running get an interrupt; they stop quickly only because `OrderProcessor` reacts to interruption. A task that ignores interrupts (a tight CPU loop that never checks the flag) will keep running regardless.\n\nIn a real application you would hook this into JVM shutdown with `Runtime.getRuntime().addShutdownHook(...)`, so that Ctrl+C or a container stop signal triggers the same three steps.\n\n### Why shared counters are dangerous\n\nThe processors above never share mutable counters. Here is what happens when you do. Four threads each increment four counters 250,000 times."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders.app;\n\nimport java.util.concurrent.atomic.AtomicInteger;\nimport java.util.concurrent.atomic.LongAdder;\n\n/** Why shared counters need care: 4 threads x 250,000 increments should give 1,000,000. */\npublic class RaceDemo {\n    static int plain;\n    static volatile int volatileCounter;\n    static final AtomicInteger atomic = new AtomicInteger();\n    static final LongAdder adder = new LongAdder();\n\n    public static void main(String[] args) throws InterruptedException {\n        Thread[] threads = new Thread[4];\n        for (int t = 0; t < threads.length; t++) {\n            threads[t] = new Thread(() -> {\n                for (int i = 0; i < 250_000; i++) {\n                    plain++;                   // read, add, write: three steps, not atomic\n                    volatileCounter++;         // visible, but still three steps\n                    atomic.incrementAndGet();  // one atomic hardware operation\n                    adder.increment();         // striped cells, merged on sum()\n                }\n            });\n            threads[t].start();\n        }\n        for (Thread t : threads) {\n            t.join();\n        }\n        System.out.println(\"plain int       : \" + plain);\n        System.out.println(\"volatile int    : \" + volatileCounter);\n        System.out.println(\"AtomicInteger   : \" + atomic.get());\n        System.out.println(\"LongAdder       : \" + adder.sum());\n    }\n}",
+          "title": "RaceDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -cp out com.example.orders.app.RaceDemo\nplain int       : 967756\nvolatile int    : 968756\nAtomicInteger   : 1000000\nLongAdder       : 1000000",
+          "title": "Run the race demo (typical output; plain and volatile vary)"
+        },
+        {
+          "type": "markdown",
+          "text": "`plain++` is read, add one, write: three steps. Two threads can read the same value and both write back the same result, so updates are **lost**. `volatile` guarantees visibility of the latest write, but does not make the three steps atomic, so it loses updates too. `AtomicInteger` uses a compare-and-set instruction and is exact. `LongAdder` keeps several cells to reduce contention and sums them on demand; it is the best choice for a hot statistics counter that is written often and read rarely. If your run happened to print exactly 1,000,000 for the first two, that is luck, not correctness; the bug is still there.\n\n### Tests\n\nConcurrent code is tested by checking **properties that must hold on every schedule**, not exact interleavings: all runners agree with the baseline, no id is lost or duplicated, and the system terminates. Tests use a 1 ms latency to stay fast. The queue test with capacity 1 and 16 consumers is a stress shape: a tiny queue and many consumers force constant blocking and wake-ups, which is where shutdown bugs show up."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.orders;\n\nimport static com.example.orders.MiniTest.assertEquals;\nimport static com.example.orders.MiniTest.assertThrows;\nimport static com.example.orders.MiniTest.assertTrue;\n\nimport com.example.orders.model.Order;\nimport com.example.orders.model.Result;\nimport com.example.orders.model.Summary;\nimport com.example.orders.run.FutureRunner;\nimport com.example.orders.run.PoolRunner;\nimport com.example.orders.run.QueueRunner;\nimport com.example.orders.run.Runner;\nimport com.example.orders.run.SequentialRunner;\nimport com.example.orders.run.VirtualRunner;\nimport com.example.orders.work.OrderGenerator;\nimport com.example.orders.work.OrderProcessor;\nimport java.util.List;\nimport java.util.Set;\nimport java.util.stream.Collectors;\n\npublic class OrderTests {\n    static final OrderProcessor FAST = new OrderProcessor(1);\n\n    public static void main(String[] args) {\n        MiniTest t = new MiniTest();\n        List<Order> orders = OrderGenerator.generate(120, 7L);\n        Summary baseline = Summary.of(new SequentialRunner(FAST).run(orders));\n\n        t.test(\"business rules: limit and blocked customer\", () -> {\n            assertEquals(Result.Status.REJECTED,\n                    FAST.process(new Order(1, \"cust1\", 95_000)).status());\n            assertEquals(Result.Status.REJECTED,\n                    FAST.process(new Order(2, \"cust13\", 100)).status());\n            assertEquals(Result.Status.ACCEPTED,\n                    FAST.process(new Order(3, \"cust2\", 100)).status());\n        });\n        t.test(\"generator is deterministic\", () ->\n                assertEquals(OrderGenerator.generate(50, 1L), OrderGenerator.generate(50, 1L)));\n\n        List<Runner> runners = List.of(new QueueRunner(FAST, 4, 8), new PoolRunner(FAST, 4),\n                new FutureRunner(FAST, 4), new VirtualRunner(FAST));\n        for (Runner r : runners) {\n            t.test(r.name() + \" matches the sequential baseline\", () -> {\n                List<Result> results = r.run(orders);\n                assertEquals(baseline, Summary.of(results));\n                Set<Integer> ids = results.stream().map(Result::orderId)\n                        .collect(Collectors.toSet());\n                assertEquals(orders.size(), ids.size());     // no order lost or duplicated\n            });\n        }\n        t.test(\"queue runner copes with a tiny queue and many consumers\", () ->\n                assertEquals(baseline, Summary.of(new QueueRunner(FAST, 16, 1).run(orders))));\n        t.test(\"interrupt makes the processor fail fast and keeps the flag\", () -> {\n            Thread.currentThread().interrupt();\n            assertThrows(IllegalStateException.class, () -> new OrderProcessor(50)\n                    .process(new Order(1, \"c\", 1)));\n            assertTrue(Thread.interrupted(), \"interrupt flag was lost\");   // also clears it\n        });\n\n        System.exit(t.runAll() == 0 ? 0 : 1);\n    }\n}",
+          "title": "OrderTests.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d testout -cp out $(find test -name '*.java')\n$ java -cp out:testout com.example.orders.OrderTests\nPASS business rules: limit and blocked customer\nPASS generator is deterministic\nPASS queue(4 consumers) matches the sequential baseline\nPASS pool(4 threads) matches the sequential baseline\nPASS completable(4 threads) matches the sequential baseline\nPASS virtual threads matches the sequential baseline\nPASS queue runner copes with a tiny queue and many consumers\nPASS interrupt makes the processor fail fast and keeps the flag\n8 tests, 0 failed",
+          "title": "Run the tests"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A passing concurrency test is weak evidence. Races depend on timing and may fail one run in a thousand. Run such tests many times (a loop in the shell is enough), keep thread counts above the CPU count to provoke interleavings, and prefer designs that are correct by construction (no shared mutable state, immutable messages, thread-safe collections) over designs you have to test into confidence."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "When would you pick a platform-thread pool, and when virtual threads? Virtual threads suit many concurrent tasks that mostly block on I/O (HTTP calls, database queries): create one per task and do not pool them. A bounded pool of platform threads suits CPU-bound work (size about the number of cores) or when you must cap concurrency against a limited resource such as a database. Virtual threads do not make computation faster, and a semaphore is the tool for limiting them, not a small pool."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Spring Boot 3.2+ can run request handling on virtual threads with one property (`spring.threads.virtual.enabled=true`). The service code stays blocking and simple, which is the appeal: you get thread-per-request readability with close to reactive scalability for I/O-bound services."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n1. Add a `StructuredTaskScope` variant (preview in Java 21 and later releases; run with `--enable-preview`) and compare error handling.\n2. Add retries: an order whose charge \"times out\" (random failure) is retried up to three times with a delay; count retries in a `LongAdder`.\n3. Limit in-flight payments to 20 with a `Semaphore` in the virtual-thread variant.\n4. Add a priority: premium customers' orders jump the queue using `PriorityBlockingQueue`.\n5. Make the consumer count a command-line argument and plot (by hand) time against 1, 2, 4, 8, 16, 32 threads. Where does it stop improving, and why?\n6. Replace `ConcurrentLinkedQueue` for results with a per-thread list merged at the end, and think about which is faster and why."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Separate the work from the scheduling; compare every concurrent version against a sequential baseline using an order-independent summary."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Bounded queues give back-pressure; poison pills (one per consumer) give a clean stop; always join or close to get happens-before."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Shut down in three steps: `shutdown`, `awaitTermination`, `shutdownNow`, and make tasks respond to interruption."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Blocking I/O workloads gain from many threads; virtual threads make \"one thread per task\" affordable. Shared counters need atomics."
+        }
+      ]
+    },
+    {
+      "id": "ch-13-5",
+      "type": "concept",
+      "title": "Project D: An in-memory key-value store",
+      "subtopicId": "13-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "### Goal\n\nRedis, Memcached and the caches inside every web framework are, at heart, a map with rules: values can expire, memory is bounded, and many threads use it at once. This project builds a small version and exposes it through a text shell:\n\n**Shell commands**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SET token abc123 100     store a value that expires after 100 ms\nGET token                read it, or (nil)\nINCR visits              atomic counter\nDEL / SIZE / KEYS / PURGE"
+        },
+        {
+          "type": "markdown",
+          "text": "You will build **three** store implementations behind one interface, so you can compare designs side by side:\n\n1. `LockedStore`: a `HashMap` protected by a `ReentrantReadWriteLock`.\n2. `ConcurrentStore`: a `ConcurrentHashMap` with no explicit locks.\n3. `LruStore`: a size-bounded cache using `LinkedHashMap` in access order.\n\nA background `ExpiryCleaner` built on `ScheduledExecutorService` removes dead entries, and the same contract tests run against every implementation.\n\n### Design\n\n- **Interface first.** `KeyValueStore` lists the operations: `put` (with optional TTL, time to live), `get`, `delete`, `incr`, `size`, `keys`, `purgeExpired`. Every implementation must obey the same contract; the tests enforce it.\n- **Entries are immutable records.** `Entry(value, expiresAtMillis)`. To change a value you replace the entry. Immutable entries are safe to share between threads without locking.\n- **Time is injected** as a `LongSupplier` of milliseconds. Production passes `System::currentTimeMillis`; tests pass a clock they control and call `advance(100)` instead of sleeping. Tests that sleep are slow and flaky.\n- **Two kinds of expiry.** *Lazy*: `get` treats an expired entry as missing. *Active*: the cleaner periodically calls `purgeExpired`. Lazy expiry alone would leave dead entries in memory forever if nobody reads them; active expiry alone would return stale data between sweeps. Real caches (Redis included) use both.\n- **Strings only.** Values are strings without spaces so the shell parser stays tiny. A real store would use bytes and a proper protocol.\n\n### The code\n\n#### Entry and the interface"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\n/** An immutable stored value. expiresAtMillis == 0 means \"never expires\". */\npublic record Entry(String value, long expiresAtMillis) {\n    public boolean expired(long nowMillis) {\n        return expiresAtMillis != 0 && nowMillis >= expiresAtMillis;\n    }\n\n    public static Entry of(String value, long ttlMillis, long nowMillis) {\n        return new Entry(value, ttlMillis <= 0 ? 0 : nowMillis + ttlMillis);\n    }\n}",
+          "title": "Entry.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\nimport java.util.List;\nimport java.util.Optional;\n\npublic interface KeyValueStore {\n    /** Store a value that never expires. */\n    default void put(String key, String value) {\n        put(key, value, 0);\n    }\n\n    /** Store a value that expires ttlMillis from now (ttlMillis <= 0 means never). */\n    void put(String key, String value, long ttlMillis);\n\n    Optional<String> get(String key);\n\n    /** Returns true if a live entry existed. */\n    boolean delete(String key);\n\n    /** Atomically add one to a numeric value (a missing key counts as 0); returns the result. */\n    long incr(String key);\n\n    /** Number of live (not expired) entries. */\n    int size();\n\n    List<String> keys();\n\n    /** Physically remove expired entries; returns how many were removed. */\n    int purgeExpired();\n}",
+          "title": "KeyValueStore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "An expiry time of `0` means \"never\". The check `nowMillis >= expiresAtMillis` means an entry is dead **at** its expiry instant, not after it; a test pins that boundary down.\n\n#### Version 1: HashMap plus ReadWriteLock"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\nimport java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.concurrent.locks.ReadWriteLock;\nimport java.util.concurrent.locks.ReentrantReadWriteLock;\nimport java.util.function.LongSupplier;\n\n/** Version 1: a plain HashMap guarded by a read-write lock. Many readers OR one writer. */\npublic class LockedStore implements KeyValueStore {\n    private final Map<String, Entry> map = new HashMap<>();\n    private final ReadWriteLock lock = new ReentrantReadWriteLock();\n    private final LongSupplier clock;\n\n    public LockedStore(LongSupplier clock) {\n        this.clock = clock;\n    }\n\n    @Override\n    public void put(String key, String value, long ttlMillis) {\n        lock.writeLock().lock();\n        try {\n            map.put(key, Entry.of(value, ttlMillis, clock.getAsLong()));\n        } finally {\n            lock.writeLock().unlock();\n        }\n    }\n\n    @Override\n    public Optional<String> get(String key) {\n        lock.readLock().lock();\n        try {\n            Entry e = map.get(key);\n            // Expired entries are only hidden here; removing needs the write lock (see purge).\n            return e == null || e.expired(clock.getAsLong())\n                    ? Optional.empty() : Optional.of(e.value());\n        } finally {\n            lock.readLock().unlock();\n        }\n    }\n\n    @Override\n    public boolean delete(String key) {\n        lock.writeLock().lock();\n        try {\n            Entry e = map.remove(key);\n            return e != null && !e.expired(clock.getAsLong());\n        } finally {\n            lock.writeLock().unlock();\n        }\n    }\n\n    @Override\n    public long incr(String key) {\n        lock.writeLock().lock();\n        try {\n            long now = clock.getAsLong();\n            Entry old = map.get(key);\n            boolean live = old != null && !old.expired(now);\n            long next = (live ? Long.parseLong(old.value()) : 0) + 1;\n            map.put(key, new Entry(Long.toString(next), live ? old.expiresAtMillis() : 0));\n            return next;\n        } finally {\n            lock.writeLock().unlock();\n        }\n    }\n\n    @Override\n    public int size() {\n        lock.readLock().lock();\n        try {\n            long now = clock.getAsLong();\n            return (int) map.values().stream().filter(e -> !e.expired(now)).count();\n        } finally {\n            lock.readLock().unlock();\n        }\n    }\n\n    @Override\n    public List<String> keys() {\n        lock.readLock().lock();\n        try {\n            long now = clock.getAsLong();\n            List<String> keys = new ArrayList<>();\n            map.forEach((k, e) -> {\n                if (!e.expired(now)) {\n                    keys.add(k);\n                }\n            });\n            keys.sort(null);\n            return keys;\n        } finally {\n            lock.readLock().unlock();\n        }\n    }\n\n    @Override\n    public int purgeExpired() {\n        lock.writeLock().lock();\n        try {\n            int before = map.size();\n            long now = clock.getAsLong();\n            map.values().removeIf(e -> e.expired(now));\n            return before - map.size();\n        } finally {\n            lock.writeLock().unlock();\n        }\n    }\n}",
+          "title": "LockedStore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- A `ReadWriteLock` allows **many readers at once or one writer alone**. For read-heavy workloads this beats a single `synchronized` because readers do not block each other. `get`, `size` and `keys` take the read lock; everything that changes the map takes the write lock.\n- Every `lock()` is paired with `unlock()` in a `finally` block. If an exception escapes between them, the lock must still be released, or the next caller blocks forever.\n- `get` does **not** delete an expired entry. Removing needs the write lock, and a read lock cannot be upgraded to a write lock: trying to take the write lock while holding the read lock **deadlocks** the thread against itself. So the read path only hides dead entries, and `purgeExpired` (write lock) removes them.\n- `incr` is read-modify-write. It must happen under one write lock; two separate calls \"get, then put\" would lose updates."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`ReentrantReadWriteLock` is not always faster than a plain lock. Taking a read lock still updates shared state, so with very short critical sections (like a `HashMap.get`) the lock bookkeeping costs more than the work it protects. It pays off when the protected work is longer, or reads vastly outnumber writes."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Version 2: ConcurrentHashMap"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.concurrent.ConcurrentHashMap;\nimport java.util.function.LongSupplier;\n\n/** Version 2: no explicit locks; ConcurrentHashMap makes each single-key operation atomic. */\npublic class ConcurrentStore implements KeyValueStore {\n    private final ConcurrentHashMap<String, Entry> map = new ConcurrentHashMap<>();\n    private final LongSupplier clock;\n\n    public ConcurrentStore(LongSupplier clock) {\n        this.clock = clock;\n    }\n\n    @Override\n    public void put(String key, String value, long ttlMillis) {\n        map.put(key, Entry.of(value, ttlMillis, clock.getAsLong()));\n    }\n\n    @Override\n    public Optional<String> get(String key) {\n        Entry e = map.get(key);\n        if (e == null) {\n            return Optional.empty();\n        }\n        if (e.expired(clock.getAsLong())) {\n            map.remove(key, e);          // only if still the same entry: a fresh put survives\n            return Optional.empty();\n        }\n        return Optional.of(e.value());\n    }\n\n    @Override\n    public boolean delete(String key) {\n        Entry e = map.remove(key);\n        return e != null && !e.expired(clock.getAsLong());\n    }\n\n    @Override\n    public long incr(String key) {\n        long now = clock.getAsLong();\n        long[] result = new long[1];\n        map.compute(key, (k, old) -> {           // runs atomically for this key\n            boolean live = old != null && !old.expired(now);\n            result[0] = (live ? Long.parseLong(old.value()) : 0) + 1;\n            return new Entry(Long.toString(result[0]), live ? old.expiresAtMillis() : 0);\n        });\n        return result[0];\n    }\n\n    @Override\n    public int size() {\n        long now = clock.getAsLong();\n        return (int) map.values().stream().filter(e -> !e.expired(now)).count();\n    }\n\n    @Override\n    public List<String> keys() {\n        long now = clock.getAsLong();\n        return map.entrySet().stream().filter(e -> !e.getValue().expired(now))\n                .map(Map.Entry::getKey).sorted().toList();\n    }\n\n    @Override\n    public int purgeExpired() {\n        long now = clock.getAsLong();\n        int removed = 0;\n        for (Map.Entry<String, Entry> e : map.entrySet()) {\n            if (e.getValue().expired(now) && map.remove(e.getKey(), e.getValue())) {\n                removed++;\n            }\n        }\n        return removed;\n    }\n}",
+          "title": "ConcurrentStore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- There are no locks in our code. `ConcurrentHashMap` makes each single-key operation (`get`, `put`, `remove`, `compute`) atomic internally, using compare-and-swap for empty buckets and short per-bucket locking otherwise (see the concurrent collections chapter).\n- `get` can safely remove an expired entry using the **two-argument** `map.remove(key, e)`, which removes only if the key is still mapped to that exact entry. Between our `get` and our `remove`, another thread may have stored a fresh value; the conditional remove leaves it alone. This is the check-then-act race solved with one atomic call.\n- `incr` uses `compute`, which runs our lambda atomically for that key. The lambda must be short and must not touch the same map. The one-element array `result` is the usual trick to get a value out of a lambda.\n- `purgeExpired` iterates while other threads modify the map. That is allowed: `ConcurrentHashMap` iterators are *weakly consistent*, never throw `ConcurrentModificationException`, and may or may not see concurrent changes.\n- `size()` here counts live entries, so it is O(n). The built-in `map.size()` would be cheap but would also count expired entries. Production stores keep counters; we keep the code simple."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "The classic bug is `if (!map.containsKey(k)) map.put(k, v);` on a concurrent map. Each call is atomic but the pair is not: two threads can both pass the check. Use `putIfAbsent`, `computeIfAbsent` or `compute`, which do the check and the write as one operation."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Version 3: a bounded LRU cache\n\nAn **LRU** (least recently used) cache holds at most N entries and, when full, evicts the one that has gone unused the longest. `LinkedHashMap` has this built in: constructed with `accessOrder = true`, it moves each accessed entry to the end of its internal linked list, and overriding `removeEldestEntry` lets you evict the head after each insert."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\nimport java.util.ArrayList;\nimport java.util.LinkedHashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Optional;\nimport java.util.function.LongSupplier;\n\n/**\n * Version 3: a bounded cache. LinkedHashMap in access order moves every entry we read to the\n * \"newest\" end, so the eldest entry is the least recently used. Because even get() changes the\n * order, reads are writes: a read-write lock would be wrong here, so we use plain synchronized.\n */\npublic class LruStore implements KeyValueStore {\n    private final LongSupplier clock;\n    private final int capacity;\n    private long evictions;\n    private final Map<String, Entry> map;\n\n    public LruStore(int capacity, LongSupplier clock) {\n        this.capacity = capacity;\n        this.clock = clock;\n        this.map = new LinkedHashMap<>(16, 0.75f, true) {\n            @Override\n            protected boolean removeEldestEntry(Map.Entry<String, Entry> eldest) {\n                boolean evict = size() > LruStore.this.capacity;\n                if (evict) {\n                    evictions++;\n                }\n                return evict;\n            }\n        };\n    }\n\n    public synchronized long evictions() {\n        return evictions;\n    }\n\n    @Override\n    public synchronized void put(String key, String value, long ttlMillis) {\n        map.put(key, Entry.of(value, ttlMillis, clock.getAsLong()));\n    }\n\n    @Override\n    public synchronized Optional<String> get(String key) {\n        Entry e = map.get(key);                // this call also marks the key as recently used\n        if (e == null) {\n            return Optional.empty();\n        }\n        if (e.expired(clock.getAsLong())) {\n            map.remove(key);\n            return Optional.empty();\n        }\n        return Optional.of(e.value());\n    }\n\n    @Override\n    public synchronized boolean delete(String key) {\n        Entry e = map.remove(key);\n        return e != null && !e.expired(clock.getAsLong());\n    }\n\n    @Override\n    public synchronized long incr(String key) {\n        long now = clock.getAsLong();\n        Entry old = map.get(key);\n        boolean live = old != null && !old.expired(now);\n        long next = (live ? Long.parseLong(old.value()) : 0) + 1;\n        map.put(key, new Entry(Long.toString(next), live ? old.expiresAtMillis() : 0));\n        return next;\n    }\n\n    @Override\n    public synchronized int size() {\n        long now = clock.getAsLong();\n        return (int) map.values().stream().filter(e -> !e.expired(now)).count();\n    }\n\n    @Override\n    public synchronized List<String> keys() {\n        long now = clock.getAsLong();\n        List<String> keys = new ArrayList<>();\n        map.forEach((k, e) -> {\n            if (!e.expired(now)) {\n                keys.add(k);\n            }\n        });\n        keys.sort(null);\n        return keys;\n    }\n\n    @Override\n    public synchronized int purgeExpired() {\n        int before = map.size();\n        long now = clock.getAsLong();\n        map.values().removeIf(e -> e.expired(now));\n        return before - map.size();\n    }\n}",
+          "title": "LruStore.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Here the lesson is the opposite of version 1: with access ordering, **even** `get` **modifies the map** (it relinks a node). A read lock would let several threads reorder the list at once and corrupt it. So every method is `synchronized`. If you need an LRU under heavy contention, real libraries (Caffeine) use sophisticated buffered designs; for most programs a synchronized `LinkedHashMap` is the right size of solution. The anonymous subclass of `LinkedHashMap` also demonstrates an inner class reading the outer instance's field (`LruStore.this.capacity`) and its own state, which you met in the nested classes chapter.\n\n#### The background cleaner"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.store;\n\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.ScheduledExecutorService;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicLong;\n\n/** Background sweeper: calls purgeExpired() on a fixed delay until closed. */\npublic class ExpiryCleaner implements AutoCloseable {\n    private final ScheduledExecutorService scheduler;\n    private final AtomicLong totalRemoved = new AtomicLong();\n\n    public ExpiryCleaner(KeyValueStore store, long periodMillis) {\n        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {\n            Thread t = new Thread(r, \"kv-expiry-cleaner\");\n            t.setDaemon(true);                     // never keeps the JVM alive by itself\n            return t;\n        });\n        scheduler.scheduleWithFixedDelay(() -> {\n            try {\n                totalRemoved.addAndGet(store.purgeExpired());\n            } catch (RuntimeException e) {        // an uncaught exception would cancel the schedule\n                System.err.println(\"cleaner error: \" + e);\n            }\n        }, periodMillis, periodMillis, TimeUnit.MILLISECONDS);\n    }\n\n    public long totalRemoved() {\n        return totalRemoved.get();\n    }\n\n    @Override\n    public void close() throws InterruptedException {\n        scheduler.shutdown();\n        scheduler.awaitTermination(1, TimeUnit.SECONDS);\n    }\n}",
+          "title": "ExpiryCleaner.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Points to study: the thread factory names the thread and marks it **daemon**, so a forgotten cleaner cannot keep the program alive. `scheduleWithFixedDelay` waits the period *after each run finishes*, so runs never overlap or pile up (`scheduleAtFixedRate` would try to catch up). The `try/catch` inside the task is essential: if a scheduled task throws, the executor silently cancels all future runs of it. The class implements `AutoCloseable` so try-with-resources shuts it down.\n\n#### The command shell"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.shell;\n\nimport com.example.kv.store.KeyValueStore;\nimport java.util.Locale;\nimport java.util.Optional;\n\n/** Parses one command line and returns the reply text. Redis-flavoured on purpose. */\npublic class Shell {\n    private final KeyValueStore store;\n\n    public Shell(KeyValueStore store) {\n        this.store = store;\n    }\n\n    public String execute(String line) {\n        String[] w = line.trim().split(\"\\\\s+\");\n        if (w.length == 0 || w[0].isEmpty()) {\n            return \"\";\n        }\n        try {\n            return switch (w[0].toUpperCase(Locale.ROOT)) {\n                case \"SET\" -> set(w);\n                case \"GET\" -> {\n                    need(w, 2, \"GET key\");\n                    Optional<String> v = store.get(w[1]);\n                    yield v.map(s -> \"\\\"\" + s + \"\\\"\").orElse(\"(nil)\");\n                }\n                case \"DEL\" -> {\n                    need(w, 2, \"DEL key\");\n                    yield \"(integer) \" + (store.delete(w[1]) ? 1 : 0);\n                }\n                case \"INCR\" -> {\n                    need(w, 2, \"INCR key\");\n                    yield \"(integer) \" + store.incr(w[1]);\n                }\n                case \"SIZE\" -> \"(integer) \" + store.size();\n                case \"KEYS\" -> store.keys().isEmpty() ? \"(empty)\" : String.join(\" \", store.keys());\n                case \"PURGE\" -> \"(integer) \" + store.purgeExpired();\n                case \"SLEEP\" -> {                     // demo helper: let real time pass\n                    need(w, 2, \"SLEEP millis\");\n                    Thread.sleep(Long.parseLong(w[1]));\n                    yield \"OK\";\n                }\n                default -> \"ERR unknown command '\" + w[0] + \"'\";\n            };\n        } catch (IllegalArgumentException e) {\n            return \"ERR \" + e.getMessage();\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n            return \"ERR interrupted\";\n        }\n    }\n\n    private String set(String[] w) {\n        if (w.length != 3 && w.length != 4) {\n            throw new IllegalArgumentException(\"usage: SET key value [ttlMillis]\");\n        }\n        long ttl = w.length == 4 ? Long.parseLong(w[3]) : 0;\n        store.put(w[1], w[2], ttl);\n        return \"OK\";\n    }\n\n    private static void need(String[] w, int count, String usage) {\n        if (w.length != count) {\n            throw new IllegalArgumentException(\"usage: \" + usage);\n        }\n    }\n}",
+          "title": "Shell.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv.shell;\n\nimport com.example.kv.store.ConcurrentStore;\nimport com.example.kv.store.ExpiryCleaner;\nimport com.example.kv.store.KeyValueStore;\nimport com.example.kv.store.LockedStore;\nimport com.example.kv.store.LruStore;\nimport java.util.Scanner;\n\npublic class Main {\n    public static void main(String[] args) throws Exception {\n        String kind = args.length > 0 ? args[0] : \"concurrent\";\n        KeyValueStore store = switch (kind) {\n            case \"locked\" -> new LockedStore(System::currentTimeMillis);\n            case \"lru\" -> new LruStore(3, System::currentTimeMillis);\n            default -> new ConcurrentStore(System::currentTimeMillis);\n        };\n        System.out.println(\"store: \" + store.getClass().getSimpleName());\n        Shell shell = new Shell(store);\n        try (ExpiryCleaner cleaner = new ExpiryCleaner(store, 50);\n             Scanner in = new Scanner(System.in)) {\n            while (in.hasNextLine()) {\n                String line = in.nextLine();\n                if (line.isBlank()) {\n                    continue;\n                }\n                if (line.trim().equalsIgnoreCase(\"QUIT\")) {\n                    break;\n                }\n                System.out.println(\"> \" + line);\n                System.out.println(shell.execute(line));\n            }\n            System.out.println(\"cleaner removed \" + cleaner.totalRemoved() + \" expired entries\");\n        }\n    }\n}",
+          "title": "Main.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The shell returns a string for each command instead of printing, so it can be tested. The `switch` expression with `yield` gives each branch a value. `Locale.ROOT` in `toUpperCase` avoids the Turkish-i problem described in the Unicode chapter (a command `get` must map to `GET` on every machine). Errors from bad input come back as `ERR ...` text, never as exceptions that kill the loop. `Main` picks the implementation from a command-line argument, which is the strategy pattern in its simplest form.\n\n### Running it\n\nSave the session below as `session.txt`. The `SLEEP` command makes the shell pause so a 100 ms entry really expires and the cleaner runs.\n\n**session.txt**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SET name asha\nGET name\nSET token abc123 100\nGET token\nINCR visits\nINCR visits\nGET visits\nSIZE\nSLEEP 250\nGET token\nSIZE\nDEL name\nDEL name\nGET name\nSET a\nFLY away\nKEYS\nQUIT"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ rm -rf out testout\n$ javac -d out $(find src -name '*.java')\n$ java -cp out com.example.kv.shell.Main < session.txt\nstore: ConcurrentStore\n> SET name asha\nOK\n> GET name\n\"asha\"\n> SET token abc123 100\nOK\n> GET token\n\"abc123\"\n> INCR visits\n(integer) 1\n> INCR visits\n(integer) 2\n> GET visits\n\"2\"\n> SIZE\n(integer) 3\n> SLEEP 250\nOK\n> GET token\n(nil)\n> SIZE\n(integer) 2\n> DEL name\n(integer) 1\n> DEL name\n(integer) 0\n> GET name\n(nil)\n> SET a\nERR usage: SET key value [ttlMillis]\n> FLY away\nERR unknown command 'FLY'\n> KEYS\nvisits\ncleaner removed 1 expired entries",
+          "title": "Compile and run the default (ConcurrentStore)"
+        },
+        {
+          "type": "markdown",
+          "text": "The SIZE before the sleep is 3 (name, token, visits); after, 2, because `token` expired. The final line shows the cleaner removed one entry. Whether the cleaner or the lazy `GET` removes an expired entry first depends on timing, so on your machine that count can be 0 or 1; the replies to the commands do not change either way.\n\nNow the LRU variant with capacity 3. We touch `a` so that `b` becomes the eldest, then insert a fourth key:\n\n**lru.txt**"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SET a 1\nSET b 2\nSET c 3\nGET a\nSET d 4\nKEYS\nQUIT"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -cp out com.example.kv.shell.Main lru < lru.txt\nstore: LruStore\n> SET a 1\nOK\n> SET b 2\nOK\n> SET c 3\nOK\n> GET a\n\"1\"\n> SET d 4\nOK\n> KEYS\na c d\ncleaner removed 0 expired entries",
+          "title": "LRU eviction in action"
+        },
+        {
+          "type": "markdown",
+          "text": "`b` is gone, although it was inserted before `c`; `a` survived because reading it counted as use.\n\n### Tests\n\nThe tests have three layers. First, **contract tests** run in a loop over a list of factories, so each behaviour is asserted for all three stores with no copy-paste. Second, tests of behaviour unique to one class (LRU order, the cleaner thread). Third, the shell's parsing and error replies. A `ManualTime` clock makes expiry tests instant and exact."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.kv;\n\nimport static com.example.kv.MiniTest.assertEquals;\nimport static com.example.kv.MiniTest.assertThrows;\nimport static com.example.kv.MiniTest.assertTrue;\n\nimport com.example.kv.shell.Shell;\nimport com.example.kv.store.ConcurrentStore;\nimport com.example.kv.store.ExpiryCleaner;\nimport com.example.kv.store.KeyValueStore;\nimport com.example.kv.store.LockedStore;\nimport com.example.kv.store.LruStore;\nimport java.util.List;\nimport java.util.Optional;\nimport java.util.concurrent.atomic.AtomicLong;\nimport java.util.function.Function;\nimport java.util.function.LongSupplier;\n\npublic class KvTests {\n    /** A clock we control: tests move time forward by hand instead of sleeping. */\n    static final class ManualTime implements LongSupplier {\n        final AtomicLong now = new AtomicLong(1_000);\n\n        @Override\n        public long getAsLong() {\n            return now.get();\n        }\n\n        void advance(long millis) {\n            now.addAndGet(millis);\n        }\n    }\n\n    public static void main(String[] args) {\n        MiniTest t = new MiniTest();\n\n        // The same contract tests run against every implementation.\n        List<Function<LongSupplier, KeyValueStore>> factories = List.of(\n                LockedStore::new, ConcurrentStore::new, clock -> new LruStore(100, clock));\n        for (var factory : factories) {\n            String n = factory.apply(() -> 0).getClass().getSimpleName();\n\n            t.test(n + \": put, get, overwrite, delete\", () -> {\n                KeyValueStore s = factory.apply(new ManualTime());\n                s.put(\"k\", \"v1\");\n                s.put(\"k\", \"v2\");\n                assertEquals(Optional.of(\"v2\"), s.get(\"k\"));\n                assertTrue(s.delete(\"k\"), \"delete should report true\");\n                assertTrue(!s.delete(\"k\"), \"second delete should report false\");\n                assertEquals(Optional.empty(), s.get(\"k\"));\n            });\n            t.test(n + \": entries expire after their ttl\", () -> {\n                ManualTime time = new ManualTime();\n                KeyValueStore s = factory.apply(time);\n                s.put(\"short\", \"x\", 100);\n                s.put(\"forever\", \"y\");\n                time.advance(99);\n                assertEquals(Optional.of(\"x\"), s.get(\"short\"));\n                time.advance(1);                                  // exactly at expiry: gone\n                assertEquals(Optional.empty(), s.get(\"short\"));\n                assertEquals(1, s.size());\n                assertEquals(List.of(\"forever\"), s.keys());\n            });\n            t.test(n + \": purgeExpired removes only expired entries\", () -> {\n                ManualTime time = new ManualTime();\n                KeyValueStore s = factory.apply(time);\n                s.put(\"a\", \"1\", 10);\n                s.put(\"b\", \"2\", 10);\n                s.put(\"c\", \"3\", 1000);\n                time.advance(50);\n                assertEquals(2, s.purgeExpired());\n                assertEquals(0, s.purgeExpired());\n                assertEquals(List.of(\"c\"), s.keys());\n            });\n            t.test(n + \": incr is atomic across 4 threads\", () -> {\n                KeyValueStore s = factory.apply(new ManualTime());\n                Thread[] ts = new Thread[4];\n                for (int i = 0; i < ts.length; i++) {\n                    ts[i] = new Thread(() -> {\n                        for (int j = 0; j < 10_000; j++) {\n                            s.incr(\"counter\");\n                        }\n                    });\n                    ts[i].start();\n                }\n                for (Thread th : ts) {\n                    th.join();\n                }\n                assertEquals(Optional.of(\"40000\"), s.get(\"counter\"));\n            });\n        }\n\n        t.test(\"LRU evicts the least recently used entry\", () -> {\n            LruStore s = new LruStore(3, new ManualTime());\n            s.put(\"a\", \"1\");\n            s.put(\"b\", \"2\");\n            s.put(\"c\", \"3\");\n            s.get(\"a\");                       // a is now the newest; b is the eldest\n            s.put(\"d\", \"4\");\n            assertEquals(List.of(\"a\", \"c\", \"d\"), s.keys());\n            assertEquals(1L, s.evictions());\n        });\n        t.test(\"cleaner thread removes expired entries on its own\", () -> {\n            KeyValueStore s = new LockedStore(System::currentTimeMillis);\n            try (ExpiryCleaner cleaner = new ExpiryCleaner(s, 10)) {\n                s.put(\"x\", \"1\", 20);\n                Thread.sleep(150);\n                assertEquals(1L, cleaner.totalRemoved());\n            }\n        });\n        t.test(\"shell parses commands and reports errors\", () -> {\n            Shell sh = new Shell(new ConcurrentStore(new ManualTime()));\n            assertEquals(\"OK\", sh.execute(\"set a 1\"));\n            assertEquals(\"\\\"1\\\"\", sh.execute(\"GET a\"));\n            assertEquals(\"(nil)\", sh.execute(\"GET zzz\"));\n            assertEquals(\"ERR usage: SET key value [ttlMillis]\", sh.execute(\"SET a\"));\n            assertEquals(\"ERR unknown command 'NOPE'\", sh.execute(\"NOPE\"));\n            assertTrue(sh.execute(\"SET a 1 abc\").startsWith(\"ERR\"), \"bad ttl must be an error\");\n        });\n        t.test(\"incr on a non-number value fails clearly\", () -> {\n            KeyValueStore s = new ConcurrentStore(new ManualTime());\n            s.put(\"name\", \"asha\");\n            assertThrows(NumberFormatException.class, () -> s.incr(\"name\"));\n        });\n\n        System.exit(t.runAll() == 0 ? 0 : 1);\n    }\n}",
+          "title": "KvTests.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ javac -d testout -cp out $(find test -name '*.java')\n$ java -cp out:testout com.example.kv.KvTests\nPASS LockedStore: put, get, overwrite, delete\nPASS LockedStore: entries expire after their ttl\nPASS LockedStore: purgeExpired removes only expired entries\nPASS LockedStore: incr is atomic across 4 threads\nPASS ConcurrentStore: put, get, overwrite, delete\nPASS ConcurrentStore: entries expire after their ttl\nPASS ConcurrentStore: purgeExpired removes only expired entries\nPASS ConcurrentStore: incr is atomic across 4 threads\nPASS LruStore: put, get, overwrite, delete\nPASS LruStore: entries expire after their ttl\nPASS LruStore: purgeExpired removes only expired entries\nPASS LruStore: incr is atomic across 4 threads\nPASS LRU evicts the least recently used entry\nPASS cleaner thread removes expired entries on its own\nPASS shell parses commands and reports errors\nPASS incr on a non-number value fails clearly\n16 tests, 0 failed",
+          "title": "Compile and run the tests"
+        },
+        {
+          "type": "markdown",
+          "text": "The `incr` test starts four threads that each increment 10,000 times and expects exactly 40,000. If you replace the lock in `LockedStore.incr` by nothing, this test fails with a lower number; try it.\n\n### Which one is faster? A measurement, and its limits\n\n`Bench` runs 4 threads doing 4 million operations in total (95% reads) against the two concurrent stores, three rounds each."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java -cp out com.example.kv.shell.Bench\nround 1\n  LockedStore        762 ms  (4000000 ops)\n  ConcurrentStore    383 ms  (4000000 ops)\nround 2\n  LockedStore        489 ms  (4000000 ops)\n  ConcurrentStore    379 ms  (4000000 ops)\nround 3\n  LockedStore        443 ms  (4000000 ops)\n  ConcurrentStore    345 ms  (4000000 ops)",
+          "title": "Throughput comparison (typical, noisy)"
+        },
+        {
+          "type": "markdown",
+          "text": "Read the numbers honestly. On the 2-core build machine neither store wins consistently; the differences between rounds are as large as the differences between stores. Much of the time is spent building the `\"key\" + n` strings and generating random numbers, not in the store. With 2 cores there is little real parallelism to exploit, and the first round includes JIT warm-up. The lesson is methodological: a hand-made benchmark can show *whether something is badly* *wrong*, not which of two similar designs is better. Use JMH (the OpenJDK Microbenchmark Harness) for real decisions, and decide on correctness and simplicity first: `ConcurrentStore` has less code, no locks to forget to release, and scales when cores are many."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Implement an LRU cache. What data structures and what complexity? A hash map for O(1) lookup plus a doubly linked list ordering keys by recency, with the map pointing into the list; get moves the node to the front, put inserts at the front and evicts the tail when over capacity: O(1) for both. In Java, `LinkedHashMap(capacity, 0.75f, true)` with `removeEldestEntry` does exactly this. Thread safety must be added separately, and note that `get` mutates the structure, so a read lock is not enough."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "`HashMap`, `Hashtable`, `Collections.synchronizedMap`, `ConcurrentHashMap`: the differences? `HashMap` is not thread-safe. `Hashtable` and `synchronizedMap` lock the whole map on every call and still need external locking for compound actions like iteration or check-then-put. `ConcurrentHashMap` locks at a much finer grain (CAS for empty bins, per-bin locks), allows lock-free reads, forbids null keys and values, and offers atomic compound operations (`compute`, `merge`, `putIfAbsent`)."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In production you would use Redis or Caffeine instead of writing your own. Spring Boot's cache abstraction (`@Cacheable`) plugs those in. Knowing how TTL, eviction and atomic counters work inside tells you what to configure and what failure modes to expect: a cache without a size bound or a TTL is a memory leak with a nice name."
+        },
+        {
+          "type": "markdown",
+          "text": "### Extension ideas\n\n1. Add an `EXPIRE key ms` command and a `TTL key` command that reports remaining milliseconds.\n2. Persist the store: write a snapshot to a file on `SAVE` and load it at startup; skip entries that already expired. Reuse the write-then-rename trick from the bank project.\n3. Make `LruStore` evict expired entries before live ones, using `purgeExpired` when the map is full.\n4. Replace `size()`'s O(n) scan with an `AtomicInteger` or `LongAdder` maintained on put and delete. What race makes it hard with TTL?\n5. Serve the shell over TCP: a `ServerSocket` that creates a virtual thread per connection and uses one shared store (see the networking mentions in Part 5).\n6. Add a `MULTI`/`EXEC`-like batch that applies several commands atomically in `LockedStore` by holding the write lock, and explain why `ConcurrentStore` cannot do that cheaply."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Design to an interface and run one contract test suite against every implementation."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "`ReadWriteLock` helps read-heavy code but cannot upgrade a read lock; `ConcurrentHashMap` needs atomic compound operations (`compute`, `putIfAbsent`, conditional `remove`) instead of check-then-act."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "`LinkedHashMap` with access order and `removeEldestEntry` is a three-line LRU, but because `get` mutates it, guard it with a single lock."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Combine lazy and active expiry; run the cleaner on a daemon scheduled thread and catch exceptions inside it."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Inject time so tests are fast and exact; hand-made benchmarks show gross problems only."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### How to work through the projects"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why does the project pass a `Clock` into the service instead of calling `LocalDate.now()` inside it?",
+              "answer": "A fixed clock makes dates deterministic, so tests and book output never change from day to day."
+            },
+            {
+              "question": "Source file `src/com/example/bank/model/Account.java` declares `package com.example.bank.models;`. What goes wrong and where?",
+              "answer": "javac compiles it, but the class file lands in `out/com/example/bank/models/` and other classes importing `...model.Account` will not find it; the error appears when compiling or running the importing code. Directory and package should match."
+            },
+            {
+              "question": "What does `javac -d out` do that plain `javac` does not?",
+              "answer": "It writes class files into the given directory, creating directories that match the packages; without it they land next to the sources."
+            },
+            {
+              "question": "Why does a test runner need to call `System.exit` with a non-zero code on failure?",
+              "answer": "Build servers and shell scripts decide success from the exit code; printing FAIL alone would still look like success to `&&` chains and CI."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Project A: A bank account manager"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In `Account`, what happens if `history()` returned the field directly, and how would you notice in the tests?",
+              "answer": "Callers could mutate or clear the history; the \"history view cannot be modified\" test would fail because no `UnsupportedOperationException` is thrown."
+            },
+            {
+              "question": "What does this print? `System.out.println(Money.format(-5) + \" \" + Money.format(1005));`",
+              "answer": "`-0.05 10.05` (verified by the unit test for the first value; the second follows the same formula)."
+            },
+            {
+              "question": "Why does `transfer` call `get(to)` before `src.withdraw(...)`?",
+              "answer": "So an unknown destination fails before any money moves; otherwise the source would already be debited."
+            },
+            {
+              "question": "Why is `InsufficientFundsException` checked while `InvalidAmountException` is not?",
+              "answer": "Running out of money is an expected business outcome callers must handle; a negative amount is a caller bug or bad input."
+            },
+            {
+              "question": "What is the purpose of writing a `.tmp` file and then moving it?",
+              "answer": "A crash while writing leaves only a half-written `.tmp`; the rename is atomic, so the real file is always complete."
+            },
+            {
+              "question": "What is wrong with this alternative, and why? `catch (Exception e) { System.out.println(\"ERROR\"); }` around the whole dispatch.",
+              "answer": "It hides the cause (message lost), swallows programming bugs such as `NullPointerException`, and treats business declines like errors. Catch the specific exceptions you can handle."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Project B: A log file analyzer"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does this print? `Optional.of(1).stream().count() + Optional.empty().stream().count()`",
+              "answer": "`1` (a present Optional streams one element, an empty one streams none; 1 + 0 as longs)."
+            },
+            {
+              "question": "Why is `Pattern` a `static final` field in `LogParser` and not created inside `parse`?",
+              "answer": "Compiling a regex is expensive and `Pattern` is immutable and thread-safe, so one shared instance is correct and faster; only `Matcher` is per-use and not thread-safe."
+            },
+            {
+              "question": "What is the difference between `Matcher.matches()` and `Matcher.find()`?",
+              "answer": "`matches()` requires the entire input to match; `find()` looks for the next match anywhere inside."
+            },
+            {
+              "question": "What is wrong with `Stream<String> s = Files.lines(p); return s.count();` in a long-running program?",
+              "answer": "The stream (and its file handle) is never closed; use try-with-resources."
+            },
+            {
+              "question": "In the analyzer, why is `partitioningBy` a better fit than `groupingBy` for the success-versus-failure split?",
+              "answer": "It is for a boolean split and always returns both keys, so there are no missing-key surprises and the intent (two buckets) is clear."
+            },
+            {
+              "question": "Two entries have the same latency. Why does the \"slowest\" sort add `.thenComparing(LogEntry::time)`?",
+              "answer": "`sorted` on ties follows input order in the sequential case, but an explicit tie-breaker makes the result deterministic regardless of how the data was produced."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Project C: A concurrent order processor"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What does `ExecutorService.shutdown()` do to tasks already queued? And `shutdownNow()`?",
+              "answer": "`shutdown()` lets queued and running tasks finish but accepts no new ones. `shutdownNow()` drops the queue (returning those tasks), and interrupts running tasks."
+            },
+            {
+              "question": "Why does the producer put one poison pill per consumer instead of just one?",
+              "answer": "A consumer exits after taking one pill and never takes another. With N consumers, one pill would stop only one of them and the rest would block on `take` forever."
+            },
+            {
+              "question": "What is wrong with this handler, and what should it do? `catch (InterruptedException e) { }`",
+              "answer": "It swallows the interrupt, so the thread cannot be cancelled. Restore the flag with `Thread.currentThread().interrupt()` or propagate the exception, and stop the work."
+            },
+            {
+              "question": "Four threads each run `count++` on a shared `volatile int` 1000 times. Can the final value be less than 4000? Why?",
+              "answer": "Yes. `count++` is read-modify-write; `volatile` ensures visibility but not atomicity, so concurrent increments can be lost (use `AtomicInteger` or `LongAdder`)."
+            },
+            {
+              "question": "Why pass an explicit executor to `supplyAsync` for blocking work?",
+              "answer": "The default common pool has about as many threads as cores; blocking tasks would occupy them and starve other CompletableFuture work in the JVM."
+            },
+            {
+              "question": "Why is the queue in `QueueRunner` bounded?",
+              "answer": "To apply back-pressure: a fast producer blocks instead of filling memory with queued orders."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Project D: An in-memory key-value store"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why can `LockedStore.get` not simply call `map.remove(key)` when it finds an expired entry?",
+              "answer": "It holds only the read lock, and a read lock cannot be upgraded to a write lock; requesting it deadlocks. Also, removing under a read lock would be a data race with other readers."
+            },
+            {
+              "question": "What is the bug? `if (!map.containsKey(k)) { map.put(k, 1); }` where `map` is a `ConcurrentHashMap`.",
+              "answer": "Check-then-act race: two threads can both see the key absent and both put. Use `putIfAbsent` or `compute`."
+            },
+            {
+              "question": "Why would a `ReadWriteLock` be wrong for the LRU cache?",
+              "answer": "In access order `get` relinks nodes, i.e. it writes to the map, so concurrent \"readers\" would corrupt the list. Use `synchronized` or a write lock."
+            },
+            {
+              "question": "What does this print? `var m = new LinkedHashMap<String,Integer>(16, 0.75f, true); m.put(\"a\",1);` `m.put(\"b\",2); m.get(\"a\"); System.out.println(m.keySet());`",
+              "answer": "`[b, a]`, because the `get(\"a\")` moved `a` to the most-recent end (verify in jshell)."
+            },
+            {
+              "question": "What happens to a `scheduleWithFixedDelay` task whose body throws an uncaught exception?",
+              "answer": "The executor suppresses the exception and never runs the task again, silently. Catch exceptions inside the task."
+            },
+            {
+              "question": "Why do the tests use a manual clock instead of `Thread.sleep`?",
+              "answer": "A manual clock makes expiry exact, instant and deterministic; sleeping makes tests slow and flaky on busy machines."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

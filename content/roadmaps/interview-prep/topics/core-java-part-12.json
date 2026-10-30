@@ -1,0 +1,1010 @@
+{
+  "source": {
+    "document": "Core_Java_In_Depth.pdf",
+    "pages": "468-509"
+  },
+  "sections": [
+    {
+      "id": "ch-12-1",
+      "type": "concept",
+      "title": "Creational patterns in modern Java",
+      "subtopicId": "12-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A design pattern is a named, proven solution to a problem that keeps coming back. The value is less in the code than in the vocabulary: when a colleague says \"wrap it in a decorator\" or \"make that a builder\", both of you instantly picture the same structure. Interviewers use the names for the same reason.\n\nPatterns also age. The classic 1994 book was written for C++ and early Java, and several patterns shrank or vanished when the language gained lambdas, records, enums, sealed types and pattern matching. This Part therefore shows each pattern in the form you would actually write today, and says plainly when the language already does the job.\n\nCreational patterns answer one question: **who creates the object, and how much of the construction does the** **caller need to know?** We cover four: Singleton, Factory, Builder and Prototype.\n\n### Singleton: exactly one instance\n\n**Problem.** Some things should exist once per JVM: a configuration holder, an ID generator, a registry. A global variable would work but gives you no control over creation. A singleton is a class that (1) hides its constructor, (2) creates its single instance itself and (3) hands it out through one access point.\n\nThere are three implementations worth knowing. Ranked from best to worst for most code: the enum, the holder idiom, and the eager static field. A fourth, double-checked locking, is mostly of interview interest."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.Constructor;\nimport java.util.concurrent.atomic.AtomicInteger;\n\npublic class SingletonDemo {\n\n    // 1. Enum singleton: the JVM guarantees one instance, even against reflection/serialization.\n    enum AppConfig {\n        INSTANCE;\n        private final String env = System.getProperty(\"app.env\", \"dev\");\n        String env() { return env; }\n    }\n\n    // 2. Initialization-on-demand holder: lazy, thread-safe, no locks in our code.\n    static final class IdGenerator {\n        private static final AtomicInteger created = new AtomicInteger();\n        private final AtomicInteger next = new AtomicInteger(1000);\n\n        private IdGenerator() { created.incrementAndGet(); }\n\n        private static class Holder {\n            static final IdGenerator INSTANCE = new IdGenerator();\n        }\n\n        static IdGenerator getInstance() { return Holder.INSTANCE; }\n        int nextId() { return next.getAndIncrement(); }\n    }\n\n    // 3. Eager singleton with a private constructor: reflection can still break it.\n    static final class Registry {\n        static final Registry INSTANCE = new Registry();\n        private Registry() { }\n    }\n\n    public static void main(String[] args) throws Exception {\n        System.out.println(\"env = \" + AppConfig.INSTANCE.env());\n        boolean same = AppConfig.INSTANCE == AppConfig.valueOf(\"INSTANCE\");\n        System.out.println(\"same enum instance: \" + same);\n\n        System.out.println(\"instances before first use: \" + IdGenerator.created.get());\n        System.out.println(\"id \" + IdGenerator.getInstance().nextId());\n        System.out.println(\"id \" + IdGenerator.getInstance().nextId());\n        System.out.println(\"instances after: \" + IdGenerator.created.get());\n\n        Constructor<Registry> c = Registry.class.getDeclaredConstructor();\n        c.setAccessible(true);\n        Registry second = c.newInstance();\n        System.out.println(\"registry broken by reflection: \" + (second != Registry.INSTANCE));\n\n        try {\n            Constructor<?> ec = AppConfig.class.getDeclaredConstructors()[0];\n            ec.setAccessible(true);\n            ec.newInstance(\"X\", 1);\n        } catch (Exception e) {\n            System.out.println(\"enum reflection: \" + e.getClass().getSimpleName()\n                + \": \" + e.getMessage());\n        }\n    }\n}",
+          "title": "SingletonDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java SingletonDemo.java\nenv = dev\nsame enum instance: true\ninstances before first use: 0\nid 1000\nid 1001\ninstances after: 1\nregistry broken by reflection: true\nenum reflection: IllegalArgumentException: Cannot reflectively create enum objects",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `enum AppConfig { INSTANCE; }` is the simplest correct singleton. The language guarantees one instance per class loader, and the JVM refuses reflective construction (`Cannot reflectively create enum objects`). Serialization also preserves identity for enums. Effective Java recommends it as the default.\n- The holder idiom (`IdGenerator.Holder`) is lazy for free. The nested class `Holder` is not initialized until `getInstance()` first touches it, and class initialization is thread-safe by the JVM specification. The output shows `instances before first use: 0`, proving the laziness.\n- A plain `private` constructor is only a convention against reflection: `setAccessible(true)` created a second `Registry`. (On a modular application the module system can block that, but do not rely on it.)\n\n#### Double-checked locking\n\nBefore the holder idiom was popular, people wrote lazy singletons with a synchronized check. The correct version needs `volatile`, and it is easy to get wrong:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "public final class LazyService {\n    private static volatile LazyService instance;   // volatile is essential\n\n    private LazyService() { }\n\n    public static LazyService getInstance() {\n        LazyService local = instance;               // one volatile read on the fast path\n        if (local == null) {\n            synchronized (LazyService.class) {\n                local = instance;\n                if (local == null) {\n                    instance = local = new LazyService();\n                }\n            }\n        }\n        return local;\n    }\n}",
+          "title": "DoubleChecked.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Without `volatile`, another thread may see a non-null `instance` whose fields are not yet visible, because the compiler and CPU may reorder the stores inside the constructor with the store to `instance`. Part 8 explains this with the Java memory model (happens-before). The holder idiom gives the same result with no locking code at all, so prefer it."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Singletons and testing A singleton is global state. Code that calls `AppConfig.INSTANCE` directly is hard to unit test, because you cannot substitute a fake. The usual cure is to create the object once in `main` (or let Spring do it) and pass it to whoever needs it through a constructor. That keeps \"one instance\" without making every class depend on a global. Spring beans are singletons in exactly this sense: one per application context, but not enforced by the class itself."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you make a thread-safe singleton in Java, and which way do you prefer? Enum singleton (`enum X { INSTANCE }`) when no lazy loading is needed, or the initialization-on-demand holder when it is. Both rely on JVM class initialization, which is thread-safe. Double-checked locking works only with a `volatile` field. Mention that reflection can break a plain private constructor and that the enum cannot be broken that way."
+        },
+        {
+          "type": "markdown",
+          "text": "### Factory: hide which class gets created\n\n**Problem.** `new Circle(1.5)` ties the caller to a concrete class. If the caller really needs \"a shape from this description\" or \"a notifier for this channel\", the choice of class should live in one place that can change.\n\nThree flavours cover almost every real use:\n\n- **Static factory method**: a named `static` method on the class or interface (`List.of`, `Integer.valueOf`, `LocalDate.of`). It can have a descriptive name, return a cached instance, return a subtype and validate. Effective Java makes this the first item.\n- **Simple factory**: one method with a `switch` that picks the class from a key, as `of(String kind, ...)` below. With a sealed interface the compiler can also check that you covered every subtype elsewhere.\n- **Registry of suppliers**: a `Map<String, Supplier<T>>` so that new kinds can be registered without editing a `switch`. This replaces the heavyweight \"Abstract Factory class hierarchy\" of the original book."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.List;\nimport java.util.Map;\nimport java.util.function.Supplier;\n\npublic class FactoryDemo {\n\n    sealed interface Shape permits Circle, Rect, Square { double area(); }\n    record Circle(double r) implements Shape {\n        public double area() { return Math.PI * r * r; }\n    }\n    record Rect(double w, double h) implements Shape {\n        public double area() { return w * h; }\n    }\n    record Square(double side) implements Shape {\n        public double area() { return side * side; }\n    }\n\n    // Static factory method with a descriptive name and validation.\n    static Shape of(String kind, double... dims) {\n        return switch (kind) {\n            case \"circle\" -> new Circle(dims[0]);\n            case \"rect\"   -> new Rect(dims[0], dims[1]);\n            case \"square\" -> new Square(dims[0]);\n            default -> throw new IllegalArgumentException(\"unknown shape: \" + kind);\n        };\n    }\n    // A registry of suppliers: new kinds can be added without editing a switch.\n    interface Notifier { String send(String msg); }\n    static final Map<String, Supplier<Notifier>> NOTIFIERS = Map.of(\n        \"email\", () -> msg -> \"EMAIL: \" + msg,\n        \"sms\",   () -> msg -> \"SMS: \" + msg\n    );\n\n    static Notifier notifier(String channel) {\n        Supplier<Notifier> s = NOTIFIERS.get(channel);\n        if (s == null) throw new IllegalArgumentException(\"no channel \" + channel);\n        return s.get();\n    }\n\n    public static void main(String[] args) {\n        List<Shape> shapes = List.of(of(\"circle\", 1.5), of(\"rect\", 2, 3), of(\"square\", 4));\n        for (Shape s : shapes) {\n            System.out.printf(\"%-28s area=%.2f%n\", s, s.area());\n        }\n        System.out.println(notifier(\"sms\").send(\"order shipped\"));\n        try {\n            of(\"hexagon\");\n        } catch (IllegalArgumentException e) {\n            System.out.println(\"caught: \" + e.getMessage());\n        }\n        // JDK examples of static factories\n        System.out.println(List.of(1, 2, 3) + \" \" + Integer.valueOf(127)\n            + \" \" + java.time.LocalDate.of(2026, 10, 11));\n    }\n}",
+          "title": "FactoryDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java FactoryDemo.java\nCircle[r=1.5]                area=7.07\nRect[w=2.0, h=3.0]           area=6.00\nSquare[side=4.0]             area=16.00\nSMS: order shipped\ncaught: unknown shape: hexagon\n[1, 2, 3] 127 2026-10-11",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "The caller sees `Shape` and `Notifier`, never `Circle` or the lambda. Adding a `triangle` means changing the factory only. Adding `push` as a notification channel means adding one map entry."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Pick the lightest form that works If there is one product type and the choice is made once, a static method is enough. Reach for the registry when the set of kinds is open (plugins, configuration-driven choices). Reach for a full factory class hierarchy almost never; if you find yourself writing `AbstractWidgetFactory`, check whether a lambda would do."
+        },
+        {
+          "type": "markdown",
+          "text": "### Builder: construct complex objects step by step\n\n**Problem.** A class with many fields, several of them optional, produces either a telescope of constructors (`Order(a)`, `Order(a, b)`, `Order(a, b, c, d)`) or a constructor call full of `null, false, 0`. Nobody can tell what the arguments mean.\n\nA **builder** is a separate mutable object with a method per field and a final `build()`. Calls chain because each setter returns `this`. The finished product can then be immutable, and `build()` is the right place to enforce cross-field rules."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class BuilderDemo {\n\n    static final class Order {\n        private final String customer;\n        private final List<String> items;\n        private final boolean express;\n        private final String note;\n        private Order(Builder b) {\n            this.customer = b.customer;\n            this.items = List.copyOf(b.items);\n            this.express = b.express;\n            this.note = b.note;\n        }\n\n        static Builder builder(String customer) { return new Builder(customer); }\n\n        @Override public String toString() {\n            return \"Order[\" + customer + \", items=\" + items + \", express=\" + express\n                + \", note=\" + note + \"]\";\n        }\n\n        static final class Builder {\n            private final String customer;\n            private final List<String> items = new ArrayList<>();\n            private boolean express;\n            private String note = \"\";\n\n            private Builder(String customer) { this.customer = customer; }\n\n            Builder item(String name) { items.add(name); return this; }\n            Builder express(boolean v) { this.express = v; return this; }\n            Builder note(String n) { this.note = n; return this; }\n\n            Order build() {\n                if (customer == null || customer.isBlank())\n                    throw new IllegalStateException(\"customer required\");\n                if (items.isEmpty())\n                    throw new IllegalStateException(\"at least one item required\");\n                if (express && items.size() > 3)\n                    throw new IllegalStateException(\"express orders hold at most 3 items\");\n                return new Order(this);\n            }\n        }\n    }\n\n    // Records need no builder for small cases: use a compact constructor for validation.\n    record Point(int x, int y) {\n        Point {\n            if (x < 0 || y < 0) throw new IllegalArgumentException(\"negative coordinate\");\n        }\n    }\n\n    public static void main(String[] args) {\n        Order o = Order.builder(\"Asha\").item(\"book\").item(\"pen\").express(true)\n                       .note(\"gift wrap\").build();\n        System.out.println(o);\n\n        try {\n            Order.builder(\"Ravi\").build();\n        } catch (IllegalStateException e) {\n            System.out.println(\"rejected: \" + e.getMessage());\n        }\n        try {\n            Order.builder(\"Ravi\").item(\"a\").item(\"b\").item(\"c\").item(\"d\").express(true).build();\n        } catch (IllegalStateException e) {\n            System.out.println(\"rejected: \" + e.getMessage());\n        }\n        System.out.println(new Point(1, 2));\n        // StringBuilder and Stream.Builder are builders in the JDK\n        System.out.println(new StringBuilder().append(\"a\").append(1).append(true));\n    }\n}",
+          "title": "BuilderDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java BuilderDemo.java\nOrder[Asha, items=[book, pen], express=true, note=gift wrap]\nrejected: at least one item required\nrejected: express orders hold at most 3 items\nPoint[x=1, y=2]\na1true",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The `Order` constructor is private and takes the builder. The only way to obtain an `Order` is through `build()`, so an invalid order cannot exist.\n- `List.copyOf(b.items)` snapshots the list. If the builder were reused afterwards, the already-built order would not change. That is the defensive copy discussed again in the Effective Java chapter.\n- The rule \"express orders hold at most 3 items\" involves two fields, which a setter could not check on its own. `build()` sees them all.\n- A `record` with a compact constructor is often all you need for a handful of required fields. Use a builder when there are many optional parameters or when construction has several steps."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In real code You meet builders constantly: `StringBuilder`, `Stream.builder()`, `HttpRequest.newBuilder()`, `HttpClient.newBuilder()`, Spring's `ResponseEntity.ok().header(...).body(...)`, and Lombok's `@Builder`, which generates the boilerplate shown above. Lombok is an annotation processor and not part of the JDK; many teams use it, others prefer writing builders or using records."
+        },
+        {
+          "type": "markdown",
+          "text": "### Prototype: create by copying\n\n**Problem.** Sometimes building an object from scratch is expensive or fiddly, but copying a ready-made one and tweaking it is cheap: a document template, a configured test fixture, a game unit. The **prototype** pattern says: give the object a way to produce a copy of itself.\n\nJava has `Object.clone()` and the `Cloneable` marker interface for this, and both are widely regarded as a design mistake: `clone()` is protected, bypasses constructors, is shallow by default and has a confusing contract. Effective Java advises a **copy constructor** or **copy factory** instead. The program contrasts the options and shows the classic trap of a shallow copy."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\n\npublic class PrototypeDemo {\n\n    static class Template {\n        String title;\n        List<String> tags;\n\n        Template(String title, List<String> tags) {\n            this.title = title;\n            this.tags = tags;\n        }\n\n        // Copy constructor: the recommended replacement for clone()\n        Template(Template other) {\n            this.title = other.title;\n            this.tags = new ArrayList<>(other.tags);   // deep copy of the mutable part\n        }\n\n        Template shallowCopy() { return new Template(title, tags); } // shares the list!\n\n        @Override public String toString() { return title + tags; }\n    }\n\n    static class LegacyDoc implements Cloneable {\n        int[] data = {1, 2, 3};\n        @Override public LegacyDoc clone() {\n            try {\n                return (LegacyDoc) super.clone();        // shallow: data array is shared\n            } catch (CloneNotSupportedException e) {\n                throw new AssertionError(e);\n            }\n        }\n    }\n\n    public static void main(String[] args) {\n        Template base = new Template(\"Report\", new ArrayList<>(List.of(\"draft\")));\n\n        Template shallow = base.shallowCopy();\n        shallow.tags.add(\"shared-bug\");\n        System.out.println(\"after shallow edit, base = \" + base);\n\n        Template base2 = new Template(\"Report\", new ArrayList<>(List.of(\"draft\")));\n        Template deep = new Template(base2);\n        deep.title = \"Report (copy)\";\n        deep.tags.add(\"v2\");\n        System.out.println(\"base2 = \" + base2 + \"  deep = \" + deep);\n\n        LegacyDoc a = new LegacyDoc();\n        LegacyDoc b = a.clone();\n        b.data[0] = 99;\n        System.out.println(\"clone() shares the array: a.data[0] = \" + a.data[0]);\n    }\n}",
+          "title": "PrototypeDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java PrototypeDemo.java\nafter shallow edit, base = Report[draft, shared-bug]\nbase2 = Report[draft]  deep = Report (copy)[draft, v2]\nclone() shares the array: a.data[0] = 99",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "The shallow copy shares the `tags` list with the original, so editing the copy changed `base` too. The copy constructor builds a new `ArrayList`, so the two objects are independent. The same trap exists with `clone()`: it copies the reference to the `int[]`, not the array.\n\nImmutable objects need no prototype at all, because sharing them is safe. Records give you a cheap version of \"copy with a change\": write a `withTitle(...)` method that calls the canonical constructor.\n\n### Choosing among the four"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "Use it when",
+            "Modern Java form"
+          ],
+          "rows": [
+            [
+              "Singleton",
+              "exactly one shared instance",
+              "`enum`, holder class, or a bean created once in `main`/Spring"
+            ],
+            [
+              "Factory",
+              "the class to create depends on input or config",
+              "static factory method, `switch` on sealed type, `Map<String, Supplier<T>>`"
+            ],
+            [
+              "Builder",
+              "many optional fields, validation across fields",
+              "nested `Builder` class; `record` with compact constructor for small cases"
+            ],
+            [
+              "Prototype",
+              "copying beats constructing",
+              "copy constructor or copy factory; avoid `clone()`"
+            ]
+          ],
+          "caption": "Creational patterns at a glance."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- A pattern is a vocabulary plus a trade-off, not a template to copy; language features have absorbed parts of several of them.\n- Singleton: prefer `enum` or the holder idiom; plain private constructors can be bypassed with reflection; DCL needs `volatile`.\n- Factory: static factory methods, a switch over a sealed type, or a map of suppliers cover nearly every need.\n- Builder: use for many optional parameters and cross-field validation; snapshot mutable inputs in `build()`.\n- Prototype: write a copy constructor and copy mutable parts deeply; avoid `clone()`."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-2",
+      "type": "concept",
+      "title": "Structural and behavioural patterns",
+      "subtopicId": "12-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Creational patterns decide how objects are born. **Structural patterns** decide how objects and classes are composed into larger structures. **Behavioural patterns** decide how objects divide responsibility and talk to each other. This chapter walks through eleven patterns, each in the form a Java 21 programmer would write, with a complete program you can run.\n\nA recurring theme: since Java 8, many behavioural patterns collapse into \"pass a lambda\". Since Java 17 to 21, the Visitor pattern collapses into a `switch` over a sealed hierarchy. Knowing the classic shape still matters, because libraries, interviews and legacy code use it.\n\n### Adapter and Decorator\n\n#### Adapter: make an incompatible class fit\n\n**Problem.** You have code that expects interface `Thermometer`, and a third-party `LegacyFahrenheitSensor` you cannot change. An **adapter** implements the interface you want and delegates to the object you have, translating as it goes.\n\n#### Decorator: add behaviour by wrapping\n\n**Problem.** You want to add features (buffering, upper-casing, compression, logging) to an object, in any combination, at run time. Subclassing explodes into `BufferedGzipUpperCaseStream` classes. A **decorator** has the same interface as the thing it wraps, holds a reference to it and adds behaviour before or after delegating. Because the type is unchanged, decorators stack.\n\nThe JDK's `java.io` package is the textbook example. `InputStreamReader` is an adapter (bytes to characters). `BufferedReader` and `FilterInputStream` subclasses are decorators. The program builds one of each of our own and then plugs a custom decorator into a real `java.io` chain."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.BufferedReader;\nimport java.io.ByteArrayInputStream;\nimport java.io.FilterInputStream;\nimport java.io.IOException;\nimport java.io.InputStream;\nimport java.io.InputStreamReader;\nimport java.nio.charset.StandardCharsets;\n\npublic class AdapterDecoratorDemo {\n\n    // ---- Adapter: make an old API fit the interface our code expects ----\n    interface Thermometer { double celsius(); }\n    static class LegacyFahrenheitSensor {          // we cannot change this class\n        double readFahrenheit() { return 98.6; }\n    }\n\n    static class SensorAdapter implements Thermometer {\n        private final LegacyFahrenheitSensor sensor;\n        SensorAdapter(LegacyFahrenheitSensor sensor) { this.sensor = sensor; }\n        @Override public double celsius() { return (sensor.readFahrenheit() - 32) * 5 / 9; }\n    }\n\n    // ---- Decorator on our own interface: wrap, add behaviour, same type ----\n    interface Text { String render(); }\n    record Plain(String s) implements Text { public String render() { return s; } }\n    record Bold(Text inner) implements Text {\n        public String render() { return \"<b>\" + inner.render() + \"</b>\"; }\n    }\n    record Shout(Text inner) implements Text {\n        public String render() { return inner.render().toUpperCase() + \"!\"; }\n    }\n\n    // ---- Decorator in the style of java.io: a FilterInputStream subclass ----\n    static class UpperCaseInputStream extends FilterInputStream {\n        UpperCaseInputStream(InputStream in) { super(in); }\n        @Override public int read() throws IOException {\n            int c = super.read();\n            return c == -1 ? -1 : Character.toUpperCase(c);\n        }\n        @Override public int read(byte[] b, int off, int len) throws IOException {\n            int n = super.read(b, off, len);\n            for (int i = off; i < off + Math.max(n, 0); i++) {\n                b[i] = (byte) Character.toUpperCase(b[i]);\n            }\n            return n;\n        }\n    }\n\n    public static void main(String[] args) throws IOException {\n        Thermometer t = new SensorAdapter(new LegacyFahrenheitSensor());\n        System.out.printf(\"body temperature: %.1f C%n\", t.celsius());\n\n        Text msg = new Shout(new Bold(new Plain(\"sale\")));\n        System.out.println(msg.render());\n        System.out.println(new Bold(new Shout(new Plain(\"sale\"))).render());\n\n        byte[] bytes = \"hello\\ndecorators\\n\".getBytes(StandardCharsets.UTF_8);\n        InputStream raw = new ByteArrayInputStream(bytes);\n        // InputStreamReader ADAPTS bytes to chars; BufferedReader DECORATES a Reader with buffering\n        try (BufferedReader r = new BufferedReader(\n                new InputStreamReader(new UpperCaseInputStream(raw), StandardCharsets.UTF_8))) {\n            String line;\n            while ((line = r.readLine()) != null) System.out.println(line);\n        }\n    }\n}",
+          "title": "AdapterDecoratorDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java AdapterDecoratorDemo.java\nbody temperature: 37.0 C\n<B>SALE</B>!\n<b>SALE!</b>\nHELLO\nDECORATORS",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- `Shout(Bold(Plain(..)))` and `Bold(Shout(Plain(..)))` give different results (`<B>SALE</B>!` versus `<b>SALE!</b>`). Order of wrapping is part of the design; document it.\n- `UpperCaseInputStream` overrides both `read()` forms of `FilterInputStream`. Forgetting the bulk `read(byte[], int,` `int)` is a classic bug: `BufferedReader` calls the bulk method, so single-byte conversion alone would not have shown.\n- The chain `BufferedReader(InputStreamReader(UpperCaseInputStream(raw)))` reads inside out: raw bytes, then upper-casing, then charset decoding, then line buffering. The same shape appears with `new` `BufferedOutputStream(new GZIPOutputStream(new FileOutputStream(f)))`."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Adapter versus decorator Both wrap an object. An adapter changes the interface (Fahrenheit sensor becomes `Thermometer`). A decorator keeps the interface and adds behaviour. If a code review asks \"which one is this\", answer with that sentence."
+        },
+        {
+          "type": "markdown",
+          "text": "### Facade and Proxy\n\n#### Facade: one simple door to a complicated subsystem\n\n**Problem.** Placing an order touches inventory, payment and shipping, and every caller must remember the order of calls and the failure handling. A **facade** is a class with a small, task-oriented API (`placeOrder`) that hides the subsystem. It adds no new behaviour; it reduces what callers need to know. Service classes in layered Spring applications often play exactly this role.\n\n#### Proxy: a stand-in that controls access\n\n**Problem.** You want to add access control, lazy loading, caching, logging, retries or transactions around an object without the caller noticing. A **proxy** implements the same interface as the real object and sits in front of it. Unlike a decorator, which is about adding features, a proxy is about controlling access to the target, but in code the two look nearly the same.\n\nJava supports two ways: write the proxy by hand (`CachingRepository`), or generate one at run time with `java.lang.reflect.Proxy`, which creates a class implementing your interfaces and routes every call to one `InvocationHandler`. The second is the foundation of declarative features such as transaction management in Spring (which uses JDK proxies or CGLIB subclassing, depending on the bean)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.lang.reflect.InvocationHandler;\nimport java.lang.reflect.InvocationTargetException;\nimport java.lang.reflect.Proxy;\nimport java.util.ArrayList;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\n\npublic class FacadeProxyDemo {\n\n    // ---- Facade: one simple entry point over several subsystems ----\n    static class Inventory {\n        boolean reserve(String sku) { System.out.println(\"  reserve \" + sku); return true; }\n    }\n    static class Payment {\n        boolean charge(double amt) { System.out.println(\"  charge \" + amt); return true; }\n    }\n    static class Shipping {\n        void ship(String sku) { System.out.println(\"  ship \" + sku); }\n    }\n\n    static class OrderFacade {\n        private final Inventory inventory = new Inventory();\n        private final Payment payment = new Payment();\n        private final Shipping shipping = new Shipping();\n\n        boolean placeOrder(String sku, double price) {\n            if (!inventory.reserve(sku)) return false;\n            if (!payment.charge(price)) return false;\n            shipping.ship(sku);\n            return true;\n        }\n    }\n\n    // ---- Proxy: same interface, controls access to the real object ----\n    interface Repository {\n        String find(int id);\n        void save(String value);\n    }\n\n    static class RealRepository implements Repository {\n        public String find(int id) { return \"row-\" + id; }\n        public void save(String value) {\n            if (value.isEmpty()) throw new IllegalArgumentException(\"empty\");\n        }\n    }\n\n    // Static proxy: a caching proxy written by hand\n    static class CachingRepository implements Repository {\n        private final Repository target;\n        private final Map<Integer, String> cache = new HashMap<>();\n        CachingRepository(Repository target) { this.target = target; }\n        public String find(int id) {\n            return cache.computeIfAbsent(id, k -> {\n                System.out.println(\"  (cache miss \" + k + \")\");\n                return target.find(k);\n            });\n        }\n        public void save(String v) { cache.clear(); target.save(v); }\n    }\n\n    // Dynamic proxy: one handler can wrap ANY interface (the idea behind Spring AOP)\n    @SuppressWarnings(\"unchecked\")\n    static <T> T logging(T target, Class<T> iface, List<String> log) {\n        InvocationHandler h = (proxy, method, args) -> {\n            try {\n                Object result = method.invoke(target, args);\n                log.add(method.getName() + \" ok\");\n                return result;\n            } catch (InvocationTargetException e) {\n                log.add(method.getName() + \" failed: \" + e.getCause().getMessage());\n                throw e.getCause();\n            }\n        };\n        return (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[] {iface}, h);\n    }\n\n    public static void main(String[] args) {\n        System.out.println(\"facade:\");\n        System.out.println(\"  result \" + new OrderFacade().placeOrder(\"BOOK-1\", 12.5));\n\n        Repository cached = new CachingRepository(new RealRepository());\n        System.out.println(\"caching proxy:\");\n        System.out.println(\"  \" + cached.find(7));\n        System.out.println(\"  \" + cached.find(7));\n\n        List<String> log = new ArrayList<>();\n        Repository repo = logging(new RealRepository(), Repository.class, log);\n        repo.find(1);\n        try {\n            repo.save(\"\");\n        } catch (IllegalArgumentException e) {\n            log.add(\"caller saw \" + e.getMessage());\n        }\n        System.out.println(\"dynamic proxy log: \" + log);\n        System.out.println(\"proxy class is generated: \" + Proxy.isProxyClass(repo.getClass()));\n    }\n}",
+          "title": "FacadeProxyDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java FacadeProxyDemo.java\nfacade:\n  reserve BOOK-1\n  charge 12.5\n  ship BOOK-1\n  result true\ncaching proxy:\n  (cache miss 7)\n  row-7\n  row-7\ndynamic proxy log: [find ok, save failed: empty, caller saw empty]\nproxy class is generated: true",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "A few details deserve attention. `method.invoke` wraps any exception thrown by the target in `InvocationTargetException`; the handler unwraps it with `getCause()` and rethrows, so the caller sees the original `IllegalArgumentException` and not a reflection wrapper. A JDK dynamic proxy needs an interface (it cannot proxy a plain class). The caching proxy is not thread safe because it uses a plain `HashMap`; a real one would use `ConcurrentHashMap` or a cache library."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Where proxies hide in production A Spring `@Transactional` or `@Cacheable` method works because the bean you inject is really a proxy: the proxy opens the transaction, calls your method, then commits or rolls back. This explains the famous gotcha that calling a `@Transactional` method from another method of the same class does nothing special: the call goes `this.method()`, bypassing the proxy."
+        },
+        {
+          "type": "markdown",
+          "text": "### Strategy, Observer and Template Method\n\n#### Strategy: pass the algorithm in\n\n**Problem.** A checkout needs a discount rule, and the rules change often (none, 10 percent, flat 15 off). Hard-coding `if` `(type == ...)` chains makes every new rule an edit of a stable class. A **strategy** is an interchangeable algorithm behind a small interface. Since Java 8, any interface with a single abstract method can be implemented with a lambda, so a strategy is usually just a lambda. `Comparator` is the best-known strategy in the JDK: `list.sort(comparator)` receives the ordering algorithm as an argument.\n\n#### Observer: publish/subscribe inside one JVM\n\n**Problem.** One object changes and several others must react, without the subject knowing who they are. The subject keeps a list of listeners and calls them on every change. Swing's `ActionListener`, JavaBeans `PropertyChangeListener` and Spring's `ApplicationEvent` all follow this shape. The old `java.util.Observable` and `Observer` classes were deprecated in Java 9 and should not be used (they are not type safe and `Observable` is a class, not an interface).\n\n#### Template Method: fixed skeleton, variable steps\n\n**Problem.** Several jobs follow the same sequence (load, print header, format rows, print count) and differ in some steps. Put the sequence in a `final` method of an abstract class and let subclasses implement the abstract steps. Servlets (`doGet`), `AbstractList` and JUnit's lifecycle are examples. Composition via Strategy is usually more flexible; use Template Method when the skeleton is truly fixed."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.List;\nimport java.util.function.Consumer;\nimport java.util.function.DoubleUnaryOperator;\n\npublic class StrategyObserverDemo {\n\n    // ---- Strategy: the algorithm is a parameter. A functional interface + lambdas ----\n    @FunctionalInterface\n    interface DiscountPolicy { double apply(double total); }\n\n    static double checkout(double total, DiscountPolicy policy) { return policy.apply(total); }\n\n    // ---- Observer: subject keeps a list of listeners and notifies them ----\n    static class PriceFeed {\n        private final List<Consumer<Double>> listeners = new ArrayList<>();\n        Runnable subscribe(Consumer<Double> l) {\n            listeners.add(l);\n            return () -> listeners.remove(l);          // unsubscribe handle\n        }\n        void publish(double price) {\n            // iterate over a copy so a listener may unsubscribe while being notified\n            for (Consumer<Double> l : List.copyOf(listeners)) l.accept(price);\n        }\n    }\n\n    // ---- Template Method: fixed skeleton, subclasses fill the steps ----\n    abstract static class ReportJob {\n        final void run() {                  // final: subclasses cannot reorder the steps\n            List<String> rows = load();\n            System.out.println(header());\n            rows.stream().map(this::format).forEach(System.out::println);\n            System.out.println(\"rows: \" + rows.size());\n        }\n        abstract List<String> load();\n        abstract String format(String row);\n        String header() { return \"== report ==\"; }       // hook with a default\n    }\n\n    static class CsvReport extends ReportJob {\n        List<String> load() { return List.of(\"1,Asha\", \"2,Ravi\"); }\n        String format(String row) { return row.replace(',', ';'); }\n    }\n\n    public static void main(String[] args) {\n        DiscountPolicy none = t -> t;\n        DiscountPolicy tenPercent = t -> t * 0.9;\n        DiscountPolicy flat = t -> Math.max(0, t - 15);\n        for (DiscountPolicy p : List.of(none, tenPercent, flat)) {\n            System.out.println(checkout(100, p));\n        }\n        DoubleUnaryOperator composed = ((DoubleUnaryOperator) (t -> t * 0.9)).andThen(t -> t - 5);\n        System.out.println(\"composed: \" + composed.applyAsDouble(100));\n\n        PriceFeed feed = new PriceFeed();\n        List<String> audit = new ArrayList<>();\n        Runnable stopPrinting = feed.subscribe(p -> System.out.println(\"display: \" + p));\n        feed.subscribe(p -> audit.add(\"seen \" + p));\n        feed.publish(101.5);\n        stopPrinting.run();\n        feed.publish(102.0);\n        System.out.println(audit);\n\n        new CsvReport().run();\n    }\n}",
+          "title": "StrategyObserverDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java StrategyObserverDemo.java\n100.0\n90.0\n85.0\ncomposed: 85.0\ndisplay: 101.5\n[seen 101.5, seen 102.0]\n== report ==\n1;Asha\n2;Ravi\nrows: 2",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- The three discount policies are one-liners. The composed policy uses `andThen`, a hint that strategies built from `Function`-like types combine naturally.\n- `subscribe` returns a `Runnable` that unsubscribes, which avoids a separate `unsubscribe(listener)` method. The notify loop iterates over `List.copyOf(listeners)`: without the copy, a listener that unsubscribes itself during a callback would trigger a `ConcurrentModificationException`.\n- Observer callbacks run on the publisher's thread, so a slow or throwing listener affects everyone. In production, decide whether to catch exceptions per listener or dispatch asynchronously.\n- `run()` is `final` in `ReportJob`: that is what makes it a template and not just an inheritance hook."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Observer memory leaks A subject holds strong references to its listeners. If a short-lived object subscribes to a long-lived subject and never unsubscribes, it can never be garbage collected. This is one of the classic Java leak patterns (see the memory leak chapter in Part 9). Always provide, and use, an unsubscribe path."
+        },
+        {
+          "type": "markdown",
+          "text": "### Command and State\n\n#### Command: a request as an object\n\n**Problem.** You want to queue operations, log them, retry them or undo them. If each action is just a method call, it is gone the moment it returns. A **command** wraps one action and its data in an object with `execute()` (and optionally `undo()`). `Runnable` and `Callable` are commands, and a task submitted to an `ExecutorService` is a command in a queue.\n\n#### State: behaviour depends on the current state\n\n**Problem.** An order can be new, paid or shipped, and the allowed actions differ. Scattering `if (status == PAID)` checks across the code is how invalid transitions sneak in. In the **state** pattern, each state encapsulates its own behaviour and decides the next state. A Java `enum` with abstract methods, as below, is a compact and safe way to write it. The alternative for larger machines is a `Map<State, Set<State>>` of legal transitions."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayDeque;\nimport java.util.Deque;\n\npublic class CommandStateDemo {\n\n    // ---- Command: a request as an object, so it can be queued, logged, undone ----\n    static class Editor { final StringBuilder text = new StringBuilder(); }\n\n    interface Command { void execute(); void undo(); }\n\n    record Append(Editor ed, String s) implements Command {\n        public void execute() { ed.text.append(s); }\n        public void undo() { ed.text.setLength(ed.text.length() - s.length()); }\n    }\n\n    static class History {\n        private final Deque<Command> done = new ArrayDeque<>();\n        void run(Command c) { c.execute(); done.push(c); }\n        void undo() { if (!done.isEmpty()) done.pop().undo(); }\n    }\n\n    // ---- State: behaviour depends on the current state; each state decides the next ----\n    enum OrderState {\n        NEW {\n            OrderState pay() { return PAID; }\n            OrderState ship() { throw new IllegalStateException(\"pay first\"); }\n        },\n        PAID {\n            OrderState pay() { throw new IllegalStateException(\"already paid\"); }\n            OrderState ship() { return SHIPPED; }\n        },\n        SHIPPED {\n            OrderState pay() { throw new IllegalStateException(\"already paid\"); }\n            OrderState ship() { throw new IllegalStateException(\"already shipped\"); }\n        };\n        abstract OrderState pay();\n        abstract OrderState ship();\n    }\n\n    public static void main(String[] args) {\n        Editor ed = new Editor();\n        History h = new History();\n        h.run(new Append(ed, \"Hello\"));\n        h.run(new Append(ed, \", world\"));\n        System.out.println(ed.text);\n        h.undo();\n        System.out.println(ed.text);\n        h.undo();\n        System.out.println(\"[\" + ed.text + \"]\");\n\n        OrderState s = OrderState.NEW;\n        try {\n            s.ship();\n        } catch (IllegalStateException e) {\n            System.out.println(\"NEW.ship(): \" + e.getMessage());\n        }\n        s = s.pay();\n        System.out.println(s);\n        s = s.ship();\n        System.out.println(s);\n        try {\n            s.pay();\n        } catch (IllegalStateException e) {\n            System.out.println(\"SHIPPED.pay(): \" + e.getMessage());\n        }\n    }\n}",
+          "title": "CommandStateDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java CommandStateDemo.java\nHello, world\nHello\n[]\nNEW.ship(): pay first\nPAID\nSHIPPED\nSHIPPED.pay(): already paid",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "`History` keeps executed commands on a stack, so `undo()` reverses them in last-in first-out order. `Append.undo` works because the command remembers exactly what it appended. For a command whose effect cannot be computed backwards (say \"delete line 3\"), store a snapshot of the old state in the command.\n\n### Visitor and Iterator\n\n#### Visitor: add operations without touching the classes\n\n**Problem.** You have a family of types (expression nodes) and want many operations over them (evaluate, print, optimise, type-check) without adding a method to every class for each operation. The classic **visitor** uses double dispatch: each node has `accept(Visitor v)`, which calls `v.visitAdd(this)`. It is verbose, and adding a new node type breaks every visitor.\n\nWith a `sealed` interface and records (Part 3), the compiler knows the full list of subtypes. A `switch` with record patterns then does the same job with one method per operation, and the compiler reports an error if you forget a case. The cost of the trade is the usual one: it is easy to add operations and hard to add a node type. Visitor with `accept` has the opposite emphasis only slightly; both make \"add a node\" costly."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.Iterator;\nimport java.util.NoSuchElementException;\n\npublic class VisitorIteratorDemo {\n\n    // ---- Visitor, modern style: a sealed hierarchy + pattern-matching switch ----\n    sealed interface Expr permits Num, Add, Mul, Neg { }\n    record Num(double value) implements Expr { }\n    record Add(Expr left, Expr right) implements Expr { }\n    record Mul(Expr left, Expr right) implements Expr { }\n    record Neg(Expr operand) implements Expr { }\n\n    // Each \"visitor\" is just a method. No accept(), no Visitor interface, exhaustive checking.\n    static double eval(Expr e) {\n        return switch (e) {\n            case Num n -> n.value();\n            case Add(Expr l, Expr r) -> eval(l) + eval(r);\n            case Mul(Expr l, Expr r) -> eval(l) * eval(r);\n            case Neg(Expr o) -> -eval(o);\n        };\n    }\n\n    static String show(Expr e) {\n        return switch (e) {\n            case Num n -> String.valueOf(n.value());\n            case Add(Expr l, Expr r) -> \"(\" + show(l) + \" + \" + show(r) + \")\";\n            case Mul(Expr l, Expr r) -> show(l) + \" * \" + show(r);\n            case Neg(Expr o) -> \"-\" + show(o);\n        };\n    }\n\n    // ---- Iterator: walk a structure without exposing it ----\n    static class Countdown implements Iterable<Integer> {\n        private final int from;\n        Countdown(int from) { this.from = from; }\n\n        @Override public Iterator<Integer> iterator() {\n            return new Iterator<>() {\n                private int next = from;\n                @Override public boolean hasNext() { return next > 0; }\n                @Override public Integer next() {\n                    if (next <= 0) throw new NoSuchElementException();\n                    return next--;\n                }\n            };\n        }\n    }\n\n    public static void main(String[] args) {\n        Expr e = new Add(new Num(2), new Mul(new Num(3), new Neg(new Num(4))));\n        System.out.println(show(e) + \" = \" + eval(e));\n\n        for (int i : new Countdown(3)) System.out.print(i + \" \");\n        System.out.println(\"liftoff\");\n    }\n}",
+          "title": "VisitorIteratorDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java VisitorIteratorDemo.java\n(2.0 + 3.0 * -4.0) = -10.0\n3 2 1 liftoff",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Iterator: walk without exposing the structure\n\n**Problem.** Callers should traverse a collection (list, tree, database cursor) without knowing how it stores its data. Java built this into the language: any class implementing `Iterable<T>` works in an enhanced `for` loop, as `Countdown` does above. `hasNext()` and `next()` are the whole contract. `Iterator.remove()` is optional. Most collection iterators are **fail-fast**: modifying the collection during iteration, other than through the iterator, throws `ConcurrentModificationException` (the details are in Part 6).\n\n### Patterns in the JDK: a reading list"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Pattern",
+            "In the JDK or common libraries"
+          ],
+          "rows": [
+            [
+              "Adapter",
+              "`'InputStreamReader', 'Arrays.asList', 'Collections.enumeration'`"
+            ],
+            [
+              "Decorator",
+              "`'BufferedReader', 'GZIPOutputStream', 'Collections.unmodifiableList'`"
+            ],
+            [
+              "Facade",
+              "`'java.net.http.HttpClient', 'javax.sql.DataSource'-based helpers`"
+            ],
+            [
+              "Proxy",
+              "`'java.lang.reflect.Proxy', Spring AOP, Hibernate lazy proxies`"
+            ],
+            [
+              "Strategy",
+              "`'Comparator', 'ThreadPoolExecutor.RejectedExecutionHandler'`"
+            ],
+            [
+              "Observer",
+              "`'PropertyChangeListener', Swing listeners, 'CompletableFuture' callbacks`"
+            ],
+            [
+              "Template Method",
+              "`'AbstractList.get', 'HttpServlet.doGet', 'InputStream.read(byte[])'`"
+            ],
+            [
+              "Command",
+              "`'Runnable', 'Callable', tasks in an 'ExecutorService'`"
+            ],
+            [
+              "State",
+              "`'Thread.State', enum state machines`"
+            ],
+            [
+              "Visitor",
+              "`'java.nio.file.FileVisitor' with 'Files.walkFileTree'`"
+            ],
+            [
+              "Iterator",
+              "`'Iterator', 'Iterable', 'Scanner', 'ResultSet'`"
+            ]
+          ],
+          "caption": "Where to see each pattern in code you already use."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Which design patterns have you used, and where? Pick three you can defend with a concrete case: for example Strategy for pluggable discount or sorting rules (a `Comparator` or lambda), Builder for a request object with many optional parts, and Proxy via Spring's `@Transactional`. For each, state the problem, the structure in one sentence, and the trade-off (indirection, extra classes, harder debugging). Interviewers care that you chose a pattern because of a problem, not the other way round."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Adapter changes an interface, Decorator adds behaviour behind the same interface, Proxy controls access, Facade simplifies a subsystem.\n- Strategy and Command are usually lambdas in modern Java; Observer needs an unsubscribe path to avoid leaks.\n- Template Method fixes the skeleton in a `final` method; prefer composition when the skeleton is not truly fixed.\n- State fits naturally in an `enum` with abstract methods; Visitor becomes a `switch` over a sealed hierarchy with exhaustiveness checking.\n- `java.io` and `java.lang.reflect.Proxy` are the JDK's best examples of Decorator, Adapter and Proxy."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-3",
+      "type": "concept",
+      "title": "Effective Java in practice",
+      "subtopicId": "12-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Design patterns tell you how to arrange classes. This chapter is about something smaller and more frequent: the habits that separate code that merely works from code that stays correct as it grows. The best-known collection of these habits is *Effective Java* by Joshua Bloch, who designed much of `java.util` and the Java collections. Its 90 or so \"items\" are rules of thumb backed by real failures. We do not reproduce the book; we pick the dozen items that matter most to a working engineer and demonstrate each with code you can run. Where a rule has a reason, the reason is given, because a rule you understand can be applied to cases the book never mentioned.\n\nThe theme of nearly every item is the same: **make misuse impossible, or at least obvious**. Do it with types (enums, records, `Optional`), with immutability, and with small public surfaces.\n\n### Creating objects\n\n#### Prefer static factories and builders\n\nCovered in the creational patterns chapter, so only the summary. Use a static factory (`Money.ofCents(250)`) when a name or caching helps, and a builder when there are many optional parameters. Both let you keep the real constructor `private`, which leaves the class free to change how objects are made later. A public constructor is a promise you can never take back.\n\n#### Prefer dependency injection to hard-wired resources\n\nA class that does `new DatabaseConnection(\"prod-host\")` inside its methods cannot be tested without a database. Accept the collaborator through the constructor instead. The clean code chapter that follows shows this step by step.\n\n#### Avoid creating needless objects\n\n`new String(\"hello\")` creates a second object where the literal `\"hello\"` is already shared; `Boolean.valueOf(true)` reuses an instance while `new Boolean(true)` (deprecated for removal) does not. A subtler version: `Long sum = 0L;` `sum += i;` inside a loop allocates a new `Long` on every iteration (the performance chapter at the end of this Part measures it). The balance matters: do not contort code to save objects that the JIT will remove anyway (see escape analysis in Part 9). Reuse expensive objects (a compiled `Pattern`, a `DateTimeFormatter`, an `ObjectMapper`) by putting them in a `static final` field.\n\n### Immutability and defensive copies\n\nAn **immutable** class is one whose instances cannot change after construction (`String`, `Integer`, `LocalDate`, records of immutables). Immutable objects are thread-safe without locks, safe to share and cache, safe as `HashMap` keys, and trivial to reason about. Bloch's advice: *classes should be immutable unless there is a very good reason to make them* *mutable.* The recipe:\n\n1. No setters or other methods that change state.\n2. Make the class `final` (or make all constructors private), so a subclass cannot add mutable behaviour.\n3. Make all fields `private final`.\n4. Copy any mutable object that comes in through the constructor, and never hand out the internal mutable object.\n\nStep 4 is where most mistakes hide, because `final` only protects the *reference*, not the object it points to. The next listing shows the attack in `BrokenPeriod`, and the cure."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Effective {\n    // Item: defensive copies. Broken version.\n    static final class BrokenPeriod {\n        private final Date start, end;\n        BrokenPeriod(Date start, Date end) { this.start = start; this.end = end; }\n        Date end() { return end; }\n    }\n    // Good version with java.time\n    record Period(java.time.LocalDate start, java.time.LocalDate end) {\n        Period {\n            if (start.isAfter(end)) throw new IllegalArgumentException(start + \" after \" + end);\n        }\n    }\n\n    // Immutable class with a mutable component\n    static final class Roster {\n        private final List<String> names;\n        Roster(List<String> names) { this.names = List.copyOf(names); }\n        List<String> names() { return names; }\n    }\n    static final class LeakyRoster {\n        private final List<String> names;\n        LeakyRoster(List<String> names) { this.names = names; }\n        List<String> names() { return names; }\n    }\n\n    // Static factory with caching and a named constructor\n    static final class Money {\n        private static final Money ZERO = new Money(0);\n        private final long cents;\n        private Money(long cents) { this.cents = cents; }\n        static Money ofCents(long c) { return c == 0 ? ZERO : new Money(c); }\n        static Money ofDollars(double d) { return ofCents(Math.round(d * 100)); }\n        @Override public String toString() {\n            return \"$\" + cents / 100 + \".\" + String.format(\"%02d\", cents % 100);\n        }\n    }\n\n    // int constants vs enum\n    static final int APPLE = 0, ORANGE = 1;\n    enum Fruit { APPLE, ORANGE }\n\n    // Optional as return type\n    static Optional<String> findEmail(Map<String, String> db, String user) {\n        return Optional.ofNullable(db.get(user));\n    }\n\n    // Composition vs inheritance: classic InstrumentedHashSet\n    static class InstrumentedSet<E> extends HashSet<E> {\n        int addCount;\n        @Override public boolean add(E e) { addCount++; return super.add(e); }\n        @Override public boolean addAll(Collection<? extends E> c) {\n            addCount += c.size();\n            return super.addAll(c);\n        }\n    }\n\n    public static void main(String[] args) {\n        Date start = new Date(0), end = new Date(86_400_000L);\n        BrokenPeriod p = new BrokenPeriod(start, end);\n        long before = p.end().getTime();\n        end.setTime(0);              // attack from the outside\n        System.out.println(\"end changed: \" + (p.end().getTime() != before));\n        p.end().setTime(-5);         // attack through the accessor\n        System.out.println(\"end now: \" + p.end().getTime());\n\n        try {\n            new Period(java.time.LocalDate.of(2026, 5, 2), java.time.LocalDate.of(2026, 5, 1));\n        } catch (IllegalArgumentException e) { System.out.println(e.getMessage()); }\n\n        List<String> src = new ArrayList<>(List.of(\"Asha\", \"Ravi\"));\n        Roster safe = new Roster(src);\n        LeakyRoster leaky = new LeakyRoster(src);\n        src.add(\"Mallory\");\n        System.out.println(safe.names() + \" vs \" + leaky.names());\n        try { safe.names().add(\"x\"); }\n        catch (UnsupportedOperationException e) { System.out.println(\"immutable view\"); }\n\n        System.out.println(Money.ofDollars(12.5) + \" \" + (Money.ofCents(0) == Money.ofDollars(0)));\n\n        System.out.println((APPLE == ORANGE - 1) + \" \" + Fruit.APPLE\n            + \" \" + Fruit.valueOf(\"ORANGE\").ordinal());\n\n        Map<String, String> db = Map.of(\"asha\", \"asha@example.com\");\n        System.out.println(findEmail(db, \"asha\").map(String::toUpperCase).orElse(\"none\"));\n        System.out.println(findEmail(db, \"bob\").orElse(\"none\"));\n\n        InstrumentedSet<String> s = new InstrumentedSet<>();\n        s.addAll(List.of(\"a\", \"b\", \"c\"));\n        System.out.println(\"addCount = \" + s.addCount);\n    }\n}",
+          "title": "Effective.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Effective.java\nend changed: true\nend now: -5\n2026-05-02 after 2026-05-01\n[Asha, Ravi] vs [Asha, Ravi, Mallory]\nimmutable view\n$12.50 true\ntrue APPLE 1\nASHA@EXAMPLE.COM\nnone\naddCount = 6",
+          "title": "Run it (Java 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "`Date` is used here only to demonstrate the attack; the chapter on date and time in Part 4 explains why `java.time` replaced it.\n\n**What to notice.** `BrokenPeriod` looks immutable: both fields are `private final`. Yet `end.setTime(0)`, called on the original `Date` the caller still holds, changed the period, and `p.end().setTime(-5)` changed it through the accessor. Output lines 1 and 2 prove it. There are two fixes: copy on the way in and out (`new Date(start.getTime())`), or, better, use a type that is itself immutable. `java.time.LocalDate` is immutable, which is why the `Period` record needs only a validation check in its compact constructor and no copying at all. Choose immutable field types and the problem disappears.\n\nThe `Roster`/`LeakyRoster` pair shows the same bug with collections. `LeakyRoster` kept the caller's list, so `Mallory` appeared later in a roster that \"never changes\". `Roster` takes a snapshot with `List.copyOf` and exposes an immutable list, so any attempt to modify it throws `UnsupportedOperationException`. Note the order of the checks: when you copy a mutable parameter, **copy first, then validate the copy**; otherwise another thread can change the original between the check and the copy (a time-of-check to time-of-use race)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Records are shallow. A record's fields are `final`, but `record Team(List<String> members)` still shares whatever list it is given. Use the compact constructor to copy: `members = List.copyOf(members);`. The records chapter in Part 3 covers this."
+        },
+        {
+          "type": "markdown",
+          "text": "### Methods every class gets: equals, hashCode, toString\n\nThe `equals` contract (reflexive, symmetric, transitive, consistent, never equal to `null`) and the rule *equal objects must* *have equal hash codes* were demonstrated in the chapter on the `Object` class in Part 3. The practical advice here is how to avoid hand-writing them:\n\n- For a value type, **use a** `record`: `equals`, `hashCode` and `toString` are generated from all components and are correct by construction.\n- If you must write them, use `Objects.equals(a, b)` and `Objects.hash(a, b, c)`, and compare exactly the fields that define identity.\n- If you override `equals`, always override `hashCode`; breaking this makes `HashMap` and `HashSet` lose your objects.\n- Always override `toString` on any class whose objects appear in logs. Include the fields useful for debugging, but never secrets (see the secure coding chapter).\n- Never put mutable fields in `hashCode` of an object used as a map key. Mutating the object after insertion strands it in the wrong bucket.\n\nImplement `Comparable` when a type has a natural order, and keep it consistent with `equals` (`compareTo` returning 0 should mean `equals` is true), or sorted collections and hash collections will disagree about duplicates. Compare primitives with `Integer.compare`, not by subtracting, which overflows.\n\n### Classes and inheritance\n\n#### Favour composition over inheritance\n\nInheritance couples a subclass to the *implementation* of its superclass, not just its interface. The last block in the listing is Bloch's famous example. `InstrumentedSet` extends `HashSet` to count how many elements were added. We add three elements with `addAll` and expect `addCount` to be 3. It is **6**. The reason is hidden in `HashSet`'s implementation: `addAll` internally calls `add` for each element, so each element is counted twice, once in our `addAll` and once in our overridden `add`. A later JDK version could change `addAll` to not call `add`, and our class would silently change behaviour again.\n\nThe fix is **composition with forwarding**: hold a `Set` in a private field, implement the `Set` interface by forwarding each method to it, and add the counting in your own methods. Then you depend on the *contract* of `Set`, not on how `HashSet` happens to be written. Inheritance is appropriate when the subclass truly *is a* kind of the superclass, both are under your control, and the superclass was designed and documented for extension. Otherwise either make the class `final`, or forbid overriding by making methods `final`.\n\n#### Minimise accessibility\n\nMake every class and member as inaccessible as it can be: `private` by default, package-private next, `public` only for the real API. In a module (Part 11) export only the packages that form the API. Public fields are almost always wrong (except `public static final` constants of immutable type), because you can never validate or change them. Keep a class's public surface small: each public method is a commitment.\n\n#### Use interfaces to define types; prefer them as parameter and return types\n\nDeclare `List<String> names = new ArrayList<>();` and write methods that accept `Collection<String>` or `List<String>` rather than `ArrayList<String>`. Callers keep their freedom, and you can change the implementation. Use `Set`, `Map` and `Queue` the same way.\n\n### Enums, not integer constants\n\nBefore Java 5 programmers wrote `static final int APPLE = 0, ORANGE = 1;`. Nothing stops `eat(42)`, printing shows `0`, and a name cannot be recovered. In the listing the `Fruit` enum fixes all of this: it is type-safe (a method taking a `Fruit` cannot be passed `42`), prints as `APPLE`, can carry fields and methods (Part 3, chapter on enums), works in `switch` with exhaustiveness checking, and has fast specialised collections `EnumMap` and `EnumSet`. Use enums for any fixed set known at compile time: days, states, roles, operations. Two warnings: never rely on `ordinal()` for anything persisted (reordering the constants silently changes it), and never use bit-field integer flags where an `EnumSet` expresses the same thing readably.\n\n### Generics and collections\n\n- **Do not use raw types.** `List list = new ArrayList();` throws away compile-time checking and moves `ClassCastException` to run time. Use `List<String>`, or `List<?>` when you truly do not care.\n- **Prefer lists to arrays** when combining with generics. Arrays are covariant and reified (`String[]` is a subtype of `Object[]`, and the store check happens at run time); generics are invariant and erased. Mixing them gives warnings for good reason.\n- **Use bounded wildcards for flexibility: PECS.** *Producer extends, Consumer super.* A method that only reads items out of a collection takes `Collection<? extends E>`; one that only puts items in takes `Collection<? super` `E>`. This is why `Collections.copy(List<? super T> dest, List<? extends T> src)` has that signature (see the wildcard chapter in Part 6).\n- **Eliminate unchecked warnings** or, when you can prove safety, suppress the narrowest scope possible with `@SuppressWarnings(\"unchecked\")` plus a comment explaining why it is safe.\n- **Return empty collections, never** `null`**.** `Collections.emptyList()` or `List.of()` costs nothing and saves every caller a `null` check.\n\n### Methods\n\n#### Check parameters for validity, early, and document it\n\nValidate arguments at the top of public methods and fail with a clear message: `Objects.requireNonNull(name,` `\"name\")`, `if (qty <= 0) throw new IllegalArgumentException(\"qty must be positive: \" + qty)`. Failing fast puts the stack trace at the real cause. For private methods use `assert`.\n\n#### Design signatures carefully\n\nChoose names that follow convention, avoid long parameter lists (more than about four: introduce a parameter object, a record, or a builder), and prefer two-element enums to `boolean` parameters when the call site would be unreadable (`render(true, false)` versus `render(Mode.DRAFT, Colour.MONO)`). Avoid overloads with the same number of parameters in the same position, and especially ones that differ only by a boxed/primitive pair (`remove(int)` versus `remove(Object)` on `List` is the famous trap).\n\n#### Return `Optional` for \"might be absent\", not `null`\n\n`Optional<T>` as a *return type* tells the caller in the signature that there may be no result, and its methods (`map`, `orElse`, `ifPresent`) make handling it fluent, as `findEmail` does in the listing: `ASHA@EXAMPLE.COM` for a known user, `none` for an unknown one. Use it only for return values. Do not use `Optional` for fields, method parameters or collection elements (it adds an object and noise without benefit), never call `get()` without checking `isPresent()` (prefer `orElseThrow()`), and never return `null` from a method whose type is `Optional`. For collections and arrays return an empty one."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "`Optional.of(null)` throws. `Optional.of(x)` requires a non-null `x` and throws `NullPointerException` otherwise. Use `Optional.ofNullable(x)` when `x` may be null. Passing a possibly-null value to `of` is a common beginner bug."
+        },
+        {
+          "type": "markdown",
+          "text": "### Exceptions\n\nPart 5 covers the mechanics. The Effective Java advice, in one list:\n\n- Use exceptions only for exceptional conditions, never for ordinary control flow (such as ending a loop by catching `ArrayIndexOutOfBoundsException`).\n- Use **checked** exceptions for conditions a caller can reasonably recover from, and **unchecked** (`RuntimeException`) for programming errors such as a violated precondition. Many modern codebases lean to unchecked exceptions everywhere, since checked ones do not compose well with lambdas.\n- Prefer the standard exceptions: `IllegalArgumentException`, `IllegalStateException`, `NullPointerException`, `IndexOutOfBoundsException`, `UnsupportedOperationException`, `ConcurrentModificationException`. Readers already know what they mean.\n- Throw exceptions that fit the abstraction level and keep the cause: `throw new OrderException(\"cannot load` `order 7\", sqlException);`. Never swallow an exception with an empty `catch` block; if you really mean to ignore it, name the variable `ignored` and say why in a comment.\n- Include the values that caused the failure in the message (`\"qty must be positive: -3\"`), but not secrets.\n- Use try-with-resources for anything `AutoCloseable`; it closes in reverse order and records secondary failures as suppressed exceptions instead of losing them.\n\n### Other items worth knowing\n\n#### Use `@Override` always\n\nIt turns a typo (`equals(Foo f)` instead of `equals(Object o)`, which overloads instead of overriding) into a compile error.\n\n#### Prefer the standard library\n\nDo not write your own random number code, sort, or `Pair`; use `ThreadLocalRandom`, `List.sort`, a record. The JDK is better tested and your readers know it.\n\n#### Beware of `float` and `double` for money\n\nThey cannot represent 0.1 exactly. Use `BigDecimal`, or store integer cents as the `Money` class in the listing does (Part 4 shows why).\n\n#### Prefer `for-each` loops and `StringBuilder`\n\nThe enhanced `for` loop avoids index and iterator bugs. Use `StringBuilder` for repeated appends in loops.\n\n#### Do not use finalizers or `Cleaner` for resources\n\nFinalization is deprecated for removal. Release resources with `AutoCloseable` and try-with-resources (Part 9 has the details).\n\n### Evolving an API without breaking users\n\nA public API ages. Code written against version 1 must keep compiling and running against version 2, and the longer a library lives the more careful it must be. These rules apply to any shared library or internal module with many callers.\n\n- **Never remove or change a public method in a way that breaks callers.** Instead add a new method and mark the old one `@Deprecated(since = \"2.0\", forRemoval = false)` with a Javadoc `@deprecated` tag pointing to the replacement. Use `forRemoval = true` only when you really plan to delete it; the compiler then emits a stronger warning, as it does for `Thread.stop`.\n- **Adding a method to an interface** breaks every implementor unless you give it a `default` implementation. That is the reason `default` methods exist (they let `List.sort` and `Collection.stream` be added in Java 8 without breaking decade-old implementations).\n- **Adding a component to a record** changes its canonical constructor, which breaks callers. Keep an old constructor delegating to the new one.\n- **Distinguish source from binary compatibility.** Changing a method's return type or making a parameter type more general can still compile but breaks already compiled callers, which look methods up by the exact descriptor (see the class file chapter in Part 1). Tools such as `japicmp` check this in a build.\n- **Seal or hide what you may want to change.** Final classes, package-private helpers and unexported module packages cannot be depended on, so you can change them freely. A sealed interface lets you add subtypes without outside implementors existing.\n- **Document the contract**, including thread safety, null handling and exceptions, with Javadoc, and follow *semantic* *versioning* (major.minor.patch) so users know what an upgrade may break."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is composition preferred over inheritance? Give an example. Inheritance exposes a subclass to the superclass's implementation details, so a change in the parent, or a self-call inside it, can break the child, and it ties the child to one parent for life. Composition holds the other object in a field and delegates, so you depend only on its public contract, can swap it, and can combine several. Example: a counting `HashSet` subclass reports 6 after `addAll` of 3 elements because `HashSet.addAll` calls `add`; a wrapper that holds a `Set` and forwards counts correctly."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you make a class immutable? Make it final (or have private constructors), make all fields private and final, provide no mutators, copy mutable inputs in the constructor and mutable outputs in accessors (or hold immutable types such as `List.copyOf`, `LocalDate`), and do not let `this` escape during construction. A record is a shortcut, but remember it is shallow for mutable components."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot code, DTOs are increasingly records, entities keep a no-argument constructor because the persistence framework needs it, and services are immutable objects with `final` fields set by constructor injection. Following the items above, `final` fields plus constructor injection, is what makes a Spring bean easy to test without starting any framework."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Effective Java boils down to making wrong code hard to write.\n\n- Prefer immutability: `private final` fields, no setters, copy mutable inputs and outputs, or choose immutable field types such as `LocalDate` and `List.copyOf`.\n- Prefer composition and interfaces to inheritance; a subclass depends on how its parent is implemented, and the counting-set example shows how that goes wrong.\n- Use enums instead of int constants, `Optional` as a return type for absence, empty collections instead of `null`, and standard exceptions with clear messages and causes.\n- Validate arguments early, avoid raw types, apply PECS to wildcards, and override `equals` and `hashCode` together, or use a record.\n- Evolve APIs by adding and deprecating, not by changing or removing; use `default` methods to extend interfaces."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-4",
+      "type": "concept",
+      "title": "Clean code and code smells in Java",
+      "subtopicId": "12-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Code is read far more often than it is written: by teammates, by reviewers, and by you six months from now. \"Clean code\" is simply code that a competent stranger can understand and change safely. This chapter turns that vague goal into specific habits: how to name things, how big a method should be, the design principles known as SOLID applied to small Java examples, a catalogue of **code smells** (surface signs that the design underneath is in trouble), a worked before/after refactoring that you can run, and **dependency injection by hand**, the one technique that makes the rest testable.\n\nNone of this is law. They are heuristics that experienced developers converge on, and each has exceptions. Learn them as questions to ask of your code, not as rules to follow blindly.\n\n### Naming\n\nA good name removes the need for a comment. Names are the cheapest and most powerful tool you have.\n\n- **Say what, not how.** `calculateTax(order)` over `doStuff(o)`. A reader should be able to guess what a method does from its call site.\n- **Be consistent with Java conventions.** Classes and records `UpperCamelCase` nouns (`OrderService`); methods and variables `lowerCamelCase` (verbs for methods: `findByEmail`, `isEmpty`, `hasNext`); constants `UPPER_SNAKE_CASE`; packages all lower case. Booleans read as questions: `active`, `isExpired()`, `canRetry()`.\n- **Length proportional to scope.** `i` in a three-line loop is fine; a field used across a 500-line class deserves a full name. Avoid abbreviations nobody else would guess (`cstmrLst`).\n- **No noise words.** `OrderData`, `OrderInfo`, `OrderObject` add nothing over `Order`. Do not encode the type: `nameString`, `ListOfUsers`.\n- **One word per concept.** If you call fetching `get` in one class, `fetch` in another and `retrieve` in a third, the reader wonders what the difference is. Pick one.\n- **Use domain words.** If the business says \"invoice\", the class is `Invoice`, not `BillingDocument`.\n\n### Methods and classes: small, focused, at one level\n\n**A method should do one thing, and do it at one level of abstraction.** A useful test: can you describe what the method does in one sentence without using \"and\"? A method that parses input, validates it, computes a price and writes a file does four things, and any change to one risks the other three. Typical guidelines: a method that does not fit on one screen (say 20 to 30 lines) deserves a look; more than three or four parameters suggest a missing object; a flag parameter (`process(order, true)`) means the method does two things and should be split in two.\n\n**Nesting is a smell.** Deeply nested `if`s hide the main path. Use **guard clauses** to handle the odd cases first and return early:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Nested\ndouble discount(Customer c) {\n    if (c != null) {\n        if (c.isActive()) {\n            if (c.orders() > 10) {\n                return 0.1;\n            }\n        }\n    }\n    return 0;\n}\n\n// Guard clauses: the same logic, flat\ndouble discountFlat(Customer c) {\n    if (c == null || !c.isActive()) return 0;\n    if (c.orders() <= 10) return 0;\n    return 0.1;\n}",
+          "title": "(fragment)"
+        },
+        {
+          "type": "markdown",
+          "text": "**Comments explain why, not what.** `// increment i` is noise. `// the API returns 1-based pages, we use` `0-based` explains a decision the code cannot show. If you feel the need to write a comment explaining a block, first try extracting the block into a method whose name says the same thing. Javadoc on public API is different: document the contract.\n\n**Classes should be cohesive.** All the fields should be used by most of the methods. A class with two groups of fields each used by separate groups of methods is two classes. A good class can be described in one sentence.\n\n### SOLID, with small examples\n\nSOLID is a set of five object-oriented design principles. Each one is short; the skill is spotting when your code violates it.\n\n#### S: Single Responsibility Principle\n\n*A class should have one reason to change.* An `OrderService` that calculates prices, saves to the database, formats e-mails and prints PDFs changes whenever pricing, storage, wording or layout changes. Split by responsibility: `PriceCalculator`, `OrderRepository`, `ReceiptFormatter`. Each can then be tested alone, and a change in e-mail wording cannot break pricing.\n\n#### O: Open/Closed Principle\n\n*Open for extension, closed for modification.* Adding a new kind of discount should not mean editing a growing `if/else` chain in a pricing method. Put the varying part behind an interface (strategy pattern) and add a new implementation. Enums with per-constant behaviour, and sealed interfaces with a pattern `switch`, are lighter-weight ways to reach the same goal. The refactoring below does exactly this.\n\n#### L: Liskov Substitution Principle\n\n*A subtype must be usable wherever its supertype is expected, without surprises.* The classic violation: `Square extends` `Rectangle` with `setWidth` that also changes height. Code that sets width and height independently and then computes the area gets the wrong answer when handed a `Square`. In Java terms, an overriding method must accept at least what the parent accepts, promise at least what it promises, and not throw new unexpected exceptions. If you find yourself overriding a method to throw `UnsupportedOperationException`, the inheritance is probably wrong (the JDK's own `Collections.unmodifiableList` and `List.of` are a known compromise, which is why `List.add` is documented as optional).\n\n#### I: Interface Segregation Principle\n\n*Do not force clients to depend on methods they do not use.* One fat `Worker` interface with `work()`, `eat()` and `sleep()` forces a robot class to implement `eat()`. Split it into small role interfaces. The JDK follows this: `Iterable`, `Comparable`, `Closeable` and `Runnable` are one-method roles that classes combine freely.\n\n#### D: Dependency Inversion Principle\n\n*High-level code should depend on abstractions, not on concrete low-level classes.* A `WelcomeService` should know that it can \"notify someone\", not that it sends mail through a specific SMTP library. Define a `Notifier` interface owned by the high-level code, and let the concrete class implement it. The mechanism that wires the concrete choice in is dependency injection, below.\n\n### A catalogue of code smells\n\nA **code smell** does not mean the code is wrong; it means look closer. The most common ones in Java, each with the usual cure:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Smell",
+            "What it looks like",
+            "Usual cure"
+          ],
+          "rows": [
+            [
+              "Long method",
+              "one method of 80 lines with comments marking \"sections\"",
+              "extract method (each section becomes a named method)"
+            ],
+            [
+              "Long parameter list",
+              "`createUser(a, b, c, d, e, f, g)`",
+              "parameter object (a record) or builder"
+            ],
+            [
+              "Primitive obsession",
+              "`String email`, `double price`, `int status` passed everywhere",
+              "small types: `record Email(String value)`, enum, `Money`"
+            ],
+            [
+              "Flag arguments",
+              "`render(true)`",
+              "two methods, or an enum"
+            ],
+            [
+              "Duplicated code",
+              "the same five lines pasted in three classes",
+              "extract method or class"
+            ],
+            [
+              "Feature envy",
+              "method uses another object's getters more than its own fields",
+              "move the method to that object"
+            ],
+            [
+              "God class",
+              "3000 lines, 60 fields, \"Manager\" or \"Util\" in its name",
+              "split by responsibility"
+            ],
+            [
+              "Switch on type",
+              "`if (x instanceof A) ... else if (x` `instanceof B)` repeated",
+              "polymorphism, or sealed type with pattern `switch`"
+            ],
+            [
+              "Magic numbers",
+              "`price * 1.05`",
+              "named constant or enum field"
+            ],
+            [
+              "Mutable shared state",
+              "static mutable fields, public setters",
+              "immutability, pass state explicitly"
+            ],
+            [
+              "Catch and ignore",
+              "`catch (Exception e) { }`",
+              "handle, rethrow with cause, or log with context"
+            ],
+            [
+              "Train wreck",
+              "`a.getB().getC().getD().doIt()`",
+              "tell, don't ask; add a method on `a`"
+            ]
+          ],
+          "caption": "Common smells and the usual refactoring."
+        },
+        {
+          "type": "markdown",
+          "text": "### Worked refactoring: before and after\n\nThe listing shows one realistic small method, written the way it often arrives in a pull request, and a cleaned version with identical behaviour. Both are in one file, so the output proves they agree. The second half of the file is dependency injection, explained after it."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.*;\n\npublic class Refactor {\n    // BEFORE: one method, mixed concerns, flag argument, magic numbers, deep nesting\n    static double process(List<String[]> o, boolean vip, String type) {\n        double t = 0;\n        if (o != null) {\n            for (String[] i : o) {\n                if (i.length == 2) {\n                    double p = Double.parseDouble(i[1]);\n                    if (type.equals(\"food\")) { t += p * 1.05; }\n                    else { t += p * 1.2; }\n                }\n            }\n            if (vip) { t = t * 0.9; }\n        }\n        return t;\n    }\n\n    // AFTER\n    record Item(String name, double price) {}\n    enum Category {\n        FOOD(0.05), GENERAL(0.20);\n        private final double taxRate;\n        Category(double taxRate) { this.taxRate = taxRate; }\n        double withTax(double price) { return price * (1 + taxRate); }\n    }\n    interface Discount { double apply(double total); }\n    static final Discount NONE = total -> total;\n    static final Discount VIP = total -> total * 0.9;\n\n    static double total(List<Item> items, Category category, Discount discount) {\n        double subtotal = items.stream().mapToDouble(i -> category.withTax(i.price())).sum();\n        return discount.apply(subtotal);\n    }\n\n    // Dependency injection by hand\n    interface Notifier { void send(String to, String msg); }\n    interface UserRepo { Optional<String> emailOf(String user); }\n    static class WelcomeService {\n        private final UserRepo repo;\n        private final Notifier notifier;\n        WelcomeService(UserRepo repo, Notifier notifier) {\n            this.repo = repo;\n            this.notifier = notifier;\n        }\n        boolean welcome(String user) {\n            return repo.emailOf(user)\n                .map(email -> { notifier.send(email, \"Welcome, \" + user); return true; })\n                .orElse(false);\n        }\n    }\n\n    public static void main(String[] args) {\n        List<String[]> old = List.of(new String[] {\"rice\", \"100\"}, new String[] {\"dal\", \"50\"});\n        System.out.printf(\"before: %.2f%n\", process(old, true, \"food\"));\n        List<Item> items = List.of(new Item(\"rice\", 100), new Item(\"dal\", 50));\n        System.out.printf(\"after:  %.2f%n\", total(items, Category.FOOD, VIP));\n\n        // production wiring\n        UserRepo repo = u -> u.equals(\"asha\") ? Optional.of(\"asha@example.com\") : Optional.empty();\n        Notifier console = (to, msg) -> System.out.println(\"MAIL to \" + to + \": \" + msg);\n        System.out.println(new WelcomeService(repo, console).welcome(\"asha\"));\n\n        // test wiring: a fake notifier records what was sent\n        List<String> sent = new ArrayList<>();\n        WelcomeService svc = new WelcomeService(repo, (to, msg) -> sent.add(to + \"|\" + msg));\n        System.out.println(svc.welcome(\"bob\") + \" \" + sent);\n        System.out.println(svc.welcome(\"asha\") + \" \" + sent);\n    }\n}",
+          "title": "Refactor.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Refactor.java\nbefore: 141.75\nafter:  141.75\nMAIL to asha@example.com: Welcome, asha\ntrue\nfalse []\ntrue [asha@example.com|Welcome, asha]",
+          "title": "Run it (Java 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "Both versions print `141.75` (two items of 100 and 50 with 5% food tax is 157.5, then 10% off for VIP). Now compare how each reads.\n\n#### What was wrong with the before version\n\nEvery one-letter name (`o`, `t`, `i`, `p`) forces you to decode. The input is a `List<String[]>` of \"name, price\" pairs, a stringly-typed structure whose meaning lives only in the author's head (primitive obsession). The boolean `vip` and the string `type` are flag arguments: a typo such as `\"Food\"` silently takes the 20% branch. The numbers `1.05`, `1.2` and `0.9` are magic. The method parses, validates, taxes and discounts, four jobs in one, with four levels of nesting. Adding a third category or discount means editing the middle of it, an Open/Closed violation, and testing the discount logic means constructing string arrays.\n\n#### What the after version does\n\n- `Item` is a record: the data has a name and type. Parsing strings becomes the job of the layer that reads input, not of the pricing code.\n- `Category` is an enum that owns its tax rate. A new category is one new constant, a typo is a compile error, and the arithmetic lives next to the data it uses. The `switch` on a string is gone.\n- `Discount` is a one-method interface (a strategy), so `NONE` and `VIP` are lambdas, and a new discount is a new lambda. The `total` method has no flag.\n- `total` itself is two lines at one level of abstraction: add up taxed prices, then apply the discount.\n\nBehaviour is identical, but the new code is split into pieces that can each be understood and tested alone. Note also what we did **not** do: no `AbstractPricingStrategyFactory`. The cure for a smell should be smaller than the smell."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never refactor without a safety net. A refactoring changes structure but not behaviour, and you can only claim that if something checks it. Write or run tests first (the testing chapter in Part 11 shows how), change in small steps, and run the tests after each step. In the listing, `main` itself acts as the net: both versions must print the same number."
+        },
+        {
+          "type": "markdown",
+          "text": "### Dependency injection by hand\n\nA class that creates its own collaborators is welded to them. If `WelcomeService` did `new SmtpNotifier(\"mail.corp\")` internally, you could not run it without a mail server, and every test would send e-mail. **Dependency injection** (DI) inverts this: the class declares what it needs, as constructor parameters of interface type, and whoever builds the object decides which concrete implementations to supply.\n\nIn the second half of `Refactor.java` there is no framework. `WelcomeService` takes a `UserRepo` and a `Notifier`, both interfaces. In `main`, \"production\" wiring passes a console notifier, and \"test\" wiring passes a fake notifier that records messages into a list. The test asserts on that list: `true [asha@example.com|Welcome, asha]` shows the right message went to the right address, and `false []` shows an unknown user sends nothing. No mail server, no database, no framework, just constructors.\n\nThree reasons to prefer **constructor injection** over field or setter injection:\n\n- Dependencies are `final`, so the object is never half-built.\n- The constructor makes the dependencies visible. A constructor with eight parameters is the class telling you it violates single responsibility.\n- The class can be created in a plain unit test with `new`.\n\n#### The composition root\n\nAll the wiring should happen in one place near the program's entry point, often called the **composition root**: `main` creates the repository, the notifier and the services and connects them. Nothing else in the code base calls `new` on a service. A DI container such as Spring does the same job with annotations: `@Component` and `@Service` mark the classes, constructor parameters declare the needs, and the container acts as an automated composition root. Understanding the manual version first means Spring's `@Autowired` is no longer magic, just a machine that calls your constructors in the right order."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In a Spring Boot service the layering is almost always `Controller` (HTTP) calls `Service` (rules) calls `Repository` (database), each depending on the next through an interface and constructor injection. A unit test for the service builds it with `new`, passing a mock or fake repository (Mockito generates such fakes). Tests that need the whole container are slower and used sparingly."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What are the SOLID principles? Give one example violation. Single responsibility (one reason to change), open/closed (extend without modifying), Liskov substitution (subtypes honour the parent's contract), interface segregation (small client-specific interfaces), dependency inversion (depend on abstractions). Example: `Square extends Rectangle` where `setWidth` also sets the height violates Liskov, because code written for rectangles breaks when given a square. Another: a `ReportService` with an `if (type.equals(\"pdf\")) ... else if (type.equals(\"csv\"))` chain violates open/closed; each new format edits the method, while with a `Formatter` interface it is a new class."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between dependency injection and dependency inversion? Dependency inversion is the design principle: high-level modules and low-level modules both depend on abstractions, and the abstraction is owned by the high-level side. Dependency injection is a technique to achieve it: objects receive their dependencies from outside (usually through the constructor) instead of creating them. Inversion of control is the broader idea, that a framework or caller controls object creation and flow rather than your code."
+        },
+        {
+          "type": "markdown",
+          "text": "### A habit to take away: the review checklist\n\nBefore you push code, read your own diff as a reviewer would, with these questions: Could a new teammate name what each method does from its name alone? Is anything duplicated? Is there a method I would have to scroll to read? Does any class have two reasons to change? Is every value that could be wrong (null, negative, empty) checked where it enters? Can I test this with plain `new`? Is there a comment explaining *what* the code does that a better name would make unnecessary? One or two \"no\" answers per change is normal; the habit is to notice them."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Clean code is code that is cheap to change safely.\n\n- Choose names from the domain, keep methods small and at one level of abstraction, flatten nesting with guard clauses, and comment the why.\n- SOLID in one line each: one reason to change; extend without editing; subtypes honour contracts; small interfaces; depend on abstractions.\n- Learn the smell catalogue (long method, primitive obsession, flag arguments, god class, feature envy, switch on type), and cure each with the smallest refactoring that works.\n- Refactor only under test, in small steps.\n- Inject dependencies through constructors, wire everything in one composition root, and your classes become testable with plain `new`."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-5",
+      "type": "concept",
+      "title": "Secure coding in Java",
+      "subtopicId": "12-5",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Security is not a feature you add at the end; it is a property of how every line handles data it did not create. Most real-world breaches of Java services are not exotic cryptographic attacks. They are old, boring bugs: a string pasted into a SQL query, a file path taken from a request, an object deserialized from the network, a password in a log file, a library with a known hole that nobody upgraded. This chapter covers those, because they account for most of the damage and because each has a small, specific habit that prevents it.\n\nJava gives you a head start: no buffer overflows or dangling pointers (the JVM checks array bounds and manages memory), and a strong standard library. It does not protect you from trusting the wrong input. The central mindset is therefore one sentence: **treat all data that crosses a trust boundary as hostile until validated**. Trust boundaries are the HTTP request, the file you read, the message from a queue, the environment variable, the response from another service, and the bytes of a serialized object.\n\n### Input validation: allow-lists, at the boundary\n\n**Problem.** Code downstream assumes its inputs are sane: that a username has no quotes, a quantity is positive, a name is not 10 MB long. If the assumption is false, something breaks, sometimes something exploitable.\n\n**Idea.** Validate at the boundary, where untrusted data enters, and validate against what is *allowed*, not against what is known to be bad. A **deny-list** (\"reject input containing `DROP`\") is endlessly bypassable: `dRoP`, comment tricks, encodings. An **allow-list** (\"a username is 3 to 16 letters, digits or underscores\") is short and complete. In the listing below, `validateUsername` is exactly that, and the result shows `a; DROP` rejected without any attempt to recognise attacks.\n\nPractical rules:\n\n- Check **type, length, range and format**, in that order. Reject, do not silently \"fix\" input.\n- Convert strings to real types as early as possible (`int`, `UUID`, enum, `LocalDate`, a record such as `Email`). A parsed `UUID` cannot contain a quote.\n- Cap sizes: maximum request body, maximum string length, maximum collection size, maximum nesting. Unbounded input is a denial-of-service vector.\n- **Canonicalise before you check**: decode and normalise (Unicode `Normalizer`, `Path.normalize()`), then validate the canonical form. Checking first and decoding later is a classic bypass.\n- Validation is not escaping. Validating that input \"looks fine\" does not make it safe to paste into SQL, HTML or a shell command. Each destination needs its own safe mechanism (below).\n- Frameworks help: Bean Validation (`@NotNull`, `@Size`, `@Pattern`) in Spring Boot declares these rules on request objects. They still need to be applied on every endpoint.\n\nBeware your own regular expressions: a pattern with nested quantifiers such as `(a+)+$` can take exponential time on crafted input (see the regex chapter in Part 4). Keep patterns simple and bounded, which also helps here since `{3,16}` caps the length.\n\n### Injection: never build commands out of strings\n\n**Injection** is the family of attacks in which data is interpreted as code. SQL injection is the famous one, but the same bug exists for operating-system commands, LDAP queries, JNDI lookups and HTML (cross-site scripting).\n\n#### SQL injection and the PreparedStatement\n\nLook at what string concatenation produces. In the listing the user name is `x' OR '1'='1`, and the query built by `+` comes out as:"
+        },
+        {
+          "type": "code",
+          "language": "plaintext",
+          "code": "SELECT * FROM users WHERE name = 'x' OR '1'='1'"
+        },
+        {
+          "type": "markdown",
+          "text": "The quote in the data ended the string literal, and the rest became part of the SQL: the condition is now always true and every row matches. With a semicolon the attacker could also append a second statement. The fix is **parameterised queries**: the SQL text and the values travel separately, and the database driver treats the value strictly as data, whatever characters it contains."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "// Safe: the ? placeholder is bound as a value, never parsed as SQL\nString findName(Connection con, String user) throws SQLException {\n    String sql = \"SELECT display_name FROM users WHERE name = ?\";\n    try (PreparedStatement ps = con.prepareStatement(sql)) {\n        ps.setString(1, user);\n        try (ResultSet rs = ps.executeQuery()) {\n            return rs.next() ? rs.getString(1) : null;\n        }\n    }\n}",
+          "title": "(fragment, needs a database to run)"
+        },
+        {
+          "type": "markdown",
+          "text": "Rules that follow: always use `PreparedStatement` (or the equivalent in your framework: Spring Data's derived queries, JPA's named parameters `:name`, `JdbcTemplate` with `?`); never concatenate or `String.format` values into SQL; and remember that **placeholders only stand for values**, not for table names, column names or `ORDER BY` directions. If those must vary, choose them from a fixed allow-list (an enum or a `Map`) in your own code, never from raw input. JDBC itself is outside the scope of this book, but this habit is not."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "ORMs do not make you immune. JPA/Hibernate protects you only when you use parameters. A JPQL string built by concatenation (`\"from User where name = '\" + n + \"'\"`) is just as injectable as raw SQL. The same holds for `@Query` strings and native queries."
+        },
+        {
+          "type": "markdown",
+          "text": "#### Command injection\n\n`Runtime.exec(\"convert \" + filename)` is the same bug for the shell. Use `ProcessBuilder` with a list of arguments, which never goes through a shell: `new ProcessBuilder(\"convert\", filename, \"out.png\")`. Even so, a value starting with `-` can be read as an option by the program, so validate it first or place it after `--` where the tool supports that. If you can avoid starting a process at all (use a library), do.\n\n#### Output encoding\n\nWhen data goes into HTML, escape it for HTML; into JSON, use a JSON library rather than concatenation; into a log line, strip newlines (log injection lets an attacker forge entries). Template engines such as Thymeleaf escape by default; turning that off is a decision to review.\n\n### Path traversal\n\n**Problem.** A download endpoint takes `?file=report.pdf` and opens `uploads/` plus that name. An attacker sends `../../etc/passwd` and reads files outside the folder. This is **path traversal**.\n\n**Fix.** Resolve the user-supplied part against the base directory, normalise, and check the result still starts with the base. The helper `resolveSafe` in the listing does that, and the output shows each case.\n\nThe interesting part is the last pair of lines of the first block: `base.resolve(\"../../etc/passwd\").normalize()` gives `/srv/etc/passwd`, a path outside `/srv/app/uploads`, which is what the `startsWith` check catches. Three details matter:\n\n- `Path.normalize()` removes `.` and `..` segments **lexically**, without touching the file system. It does not resolve symbolic links. If users can create symlinks inside the base directory, additionally compare `toRealPath()` results.\n- `Path.resolve(other)` returns `other` unchanged when it is absolute. That is why `\"/etc/passwd\"` is also rejected: resolving it against the base yields `/etc/passwd`, which fails the check.\n- `Path.startsWith(Path)` compares **path elements**, not characters. `Path.of(\"/srv/up2/f\").startsWith(\"/srv/up\")` is `false`, whereas a plain string `startsWith` would wrongly say true. Always use the `Path` method, never `toString().startsWith`.\n\nAlso never trust a client-supplied file *name* for the saved name: generate your own (a `UUID`), and keep the original only as metadata. Check the real content type, not just the extension, and cap the size.\n\n### Deserialization\n\nJava's built-in serialization (Part 5) rebuilds objects from a byte stream by choosing classes named *inside the stream*, and runs their `readObject` code while doing so. If an attacker controls the bytes, and a class on your class path has a \"gadget\" (code that does something dangerous when deserialized, such as running a command through a chain of method calls), they can execute code on your server before your `readObject` call even returns. Libraries such as Apache Commons Collections have been the source of many such chains, and this has been behind remote-code-execution bugs in many well-known Java products.\n\nThe rules, in order of strength:\n\n1. **Never deserialize untrusted data with** `ObjectInputStream`**.** Use a data format instead: JSON (Jackson, Gson), Protocol Buffers, or plain text. These do not name arbitrary classes in the stream.\n2. If you must, install a **deserialization filter** (JEP 290, Java 9, backported; context-specific filters from Java 17 on). A filter is an allow-list of classes, plus limits on depth and size, checked *before* each class is instantiated.\n3. Remember that a JSON library can also be configured dangerously: enabling polymorphic \"default typing\" on Jackson recreates the same problem in JSON form. Bind to concrete, known types.\n4. Records and sealed hierarchies deserialized through a JSON binding are safer than `Serializable` classes, but still validate the values.\n\nThe listing shows rule 2 in about ten lines. The filter `java.lang.Integer;java.lang.Number;java.lang.Object;java.util.ArrayList;!*` means: allow these four, reject everything else (`!*`). An `ArrayList` of integers is accepted and prints `[1, 2]`; a `HashSet` is rejected with `InvalidClassException: filter status: REJECTED` before any of its code runs. Why do `Number` and `Object` appear? Because `Integer` extends `Number`, the stream describes the superclass as well, and an `ArrayList` is stored internally with an `Object[]` array, and the filter sees each of those. Finding the minimal allow-list is trial and error, which is a good indication of how much code runs during deserialization.\n\n### The complete example"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.*;\nimport java.nio.file.*;\nimport java.security.*;\nimport java.util.*;\n\npublic class Secure {\n    // Path traversal: resolve, normalize, then check the result is still inside the base\n    static Path resolveSafe(Path base, String userPath) {\n        Path p = base.resolve(userPath).normalize();\n        if (!p.startsWith(base)) throw new SecurityException(\"path escapes base: \" + userPath);\n        return p;\n    }\n\n    // Allow-list validation\n    static void validateUsername(String s) {\n        if (!s.matches(\"[A-Za-z0-9_]{3,16}\")) throw new IllegalArgumentException(\"bad username\");\n    }\n\n    // Secrets must not leak through toString\n    record Token(String value) {\n        @Override public String toString() { return \"Token[****]\"; }\n    }\n\n    static byte[] serialize(Object o) throws IOException {\n        ByteArrayOutputStream bos = new ByteArrayOutputStream();\n        try (ObjectOutputStream oos = new ObjectOutputStream(bos)) { oos.writeObject(o); }\n        return bos.toByteArray();\n    }\n\n    static Object deserialize(byte[] data, ObjectInputFilter filter) throws Exception {\n        try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {\n            ois.setObjectInputFilter(filter);\n            return ois.readObject();\n        }\n    }\n\n    public static void main(String[] args) throws Exception {\n        Path base = Path.of(\"/srv/app/uploads\").toAbsolutePath().normalize();\n        System.out.println(resolveSafe(base, \"report.pdf\"));\n        for (String evil : new String[] {\"../../etc/passwd\", \"/etc/passwd\"}) {\n            try { System.out.println(resolveSafe(base, evil)); }\n            catch (SecurityException e) { System.out.println(e.getMessage()); }\n        }\n        System.out.println(\"unchecked: \" + base.resolve(\"../../etc/passwd\").normalize());\n\n        String user = \"x' OR '1'='1\";\n        System.out.println(\"SELECT * FROM users WHERE name = '\" + user + \"'\");\n\n        for (String name : new String[] {\"asha_01\", \"a; DROP\"}) {\n            try { validateUsername(name); System.out.println(\"ok \" + name); }\n            catch (IllegalArgumentException e) { System.out.println(e.getMessage() + \": \" + name); }\n        }\n\n        byte[] raw = new byte[16];\n        new SecureRandom().nextBytes(raw);\n        System.out.println(\"token chars: \" + HexFormat.of().formatHex(raw).length());\n\n        byte[] a = \"secret\".getBytes(), b = \"secret\".getBytes();\n        System.out.println(\"constant-time equal: \" + MessageDigest.isEqual(a, b));\n        System.out.println(new Token(\"abc123\"));\n\n        ObjectInputFilter allow = ObjectInputFilter.Config.createFilter(\n            \"java.lang.Integer;java.lang.Number;java.lang.Object;java.util.ArrayList;!*\");\n        System.out.println(deserialize(serialize(new ArrayList<>(List.of(1, 2))), allow));\n        try {\n            deserialize(serialize(new HashSet<>(List.of(\"x\"))), allow);\n        } catch (InvalidClassException e) {\n            System.out.println(\"rejected: \" + e.getMessage());\n        }\n    }\n}",
+          "title": "Secure.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java Secure.java\n/srv/app/uploads/report.pdf\npath escapes base: ../../etc/passwd\npath escapes base: /etc/passwd\nunchecked: /srv/etc/passwd\nSELECT * FROM users WHERE name = 'x' OR '1'='1'\nok asha_01\nbad username: a; DROP\ntoken chars: 32\nconstant-time equal: true\nToken[****]\n[1, 2]\nrejected: filter status: REJECTED",
+          "title": "Run it (Java 21)"
+        },
+        {
+          "type": "markdown",
+          "text": "### Secrets: passwords, keys, tokens\n\n**Never put a secret in source code or in version control.** Once a password or API key has been committed, it lives in the repository history forever, in every clone; the only safe response is to revoke it and issue a new one. Bots scan public repositories for keys within minutes.\n\nWhere secrets should live instead:\n\n- **Environment variables or mounted files** injected at deploy time: `System.getenv(\"DB_PASSWORD\")`. Better than code, but visible to anyone who can inspect the process or its container, and often leaked by crash dumps and debug endpoints.\n- **A secrets manager** (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault, Kubernetes Secrets with proper access control) that issues short-lived credentials and logs every access. For production this is the standard answer.\n- Separate secrets per environment, with the least privilege each service needs (a read-only database user for a read-only service), and a rotation plan.\n\nIn code: keep secrets out of `toString` (the `Token` record in the listing prints `Token[****]`; a record's default would print the value), out of exception messages, and out of logs. A console password prompt (`System.console().readPassword()`) returns a `char[]` that you can overwrite with `Arrays.fill(chars, '\\0')` once done, which shortens the time it lives in memory, a defence in depth rather than a guarantee, since the garbage collector may copy objects.\n\n**Do not store passwords; store password hashes**, and never with a plain fast hash such as `SHA-256` or `MD5`, which can be attacked at billions of guesses per second on a GPU. Use a deliberately slow, salted algorithm designed for passwords: **bcrypt**, **scrypt** or **Argon2** (Spring Security supplies `BCryptPasswordEncoder` and `Argon2PasswordEncoder`). The JDK itself does not include Argon2 or bcrypt, so use a maintained library. The same advice covers cryptography generally: do not invent your own scheme. Use `AES/GCM/NoPadding` for symmetric encryption (not ECB), the platform's TLS for transport, and well-reviewed libraries for anything else.\n\n### Randomness and comparisons\n\n`java.util.Random` and `ThreadLocalRandom` are fast and **predictable**: from a few outputs one can compute all later ones. They are for simulations and tests. Anything that must not be guessed (session identifiers, password-reset tokens, API keys, salts, one-time codes) must come from `java.security.SecureRandom`, which draws from the operating system's entropy source. In the listing, `new SecureRandom().nextBytes(raw)` fills 16 bytes (32 hex characters). Use at least 128 bits for tokens. `UUID.randomUUID()` uses `SecureRandom` internally and is fine for unguessable identifiers, though a dedicated 256-bit token is better for credentials.\n\nWhen comparing secrets (a token from a request against the stored one), `String.equals` stops at the first differing byte, so response time leaks how many leading bytes were correct, a **timing attack**. Use `MessageDigest.isEqual(a,` `b)`, which takes the same time wherever the bytes differ (it prints `true` in the listing for equal arrays).\n\n### Logging without leaking\n\nLogs are widely readable, copied to third-party services and retained for months. Do not log: passwords, tokens, API keys, session ids, full card numbers, national ids, or whole request bodies by default. Mask what must be shown (`****-****-****-1111`). Log identifiers (user id, order id), not personal data, and write structured fields instead of concatenated strings. Strip or encode newline characters in user-controlled values before logging, so an attacker cannot inject fake log lines. A `toString` that includes every field is convenient for debugging and dangerous for logging; override it for sensitive types, as `Token` does.\n\n### Dependency hygiene\n\nA modern service is perhaps 10% your code and 90% libraries. The December 2021 Log4Shell vulnerability in the popular Log4j logging library, which allowed remote code execution by logging a crafted string, made the point: you are responsible for the security of everything on your class path, including libraries pulled in indirectly (*transitive* dependencies).\n\n- **Know what you ship.** `mvn dependency:tree` or `gradle dependencies` lists everything. Generate an SBOM (software bill of materials, e.g. CycloneDX) in the build.\n- **Scan automatically.** OWASP Dependency-Check, GitHub Dependabot or Renovate, and commercial scanners compare your dependencies against vulnerability databases (CVEs) and open upgrade pull requests.\n- **Upgrade routinely**, in small steps, with tests, rather than every three years in one terrifying jump. Run a supported JDK: patch releases of the LTS versions carry security fixes.\n- **Minimise dependencies.** Each one is attack surface. Do not add a library for one function the JDK already has.\n- **Pin and verify.** Use exact versions (or a lock file), a trusted artifact repository, and checksum or signature verification, because supply-chain attacks publish malicious packages with names similar to real ones.\n- **Do not disable certificate validation** \"just to make it work\". A trust-all `TrustManager` copied from a forum answer turns TLS into theatre."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The Security Manager is gone. Older books show `System.setSecurityManager` as a sandbox for untrusted code. It was deprecated in Java 17 and permanently disabled in Java 24, and it was never a good isolation boundary. Today isolation means separate processes, containers, and least-privilege operating-system accounts."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you prevent SQL injection in Java? Never concatenate user input into SQL. Use `PreparedStatement` with `?` placeholders (or a framework that does, like JPA named parameters or Spring `JdbcTemplate`) so values are sent separately from the query text and cannot change its structure. Placeholders cannot stand for identifiers, so table or column names that vary must be chosen from an allow-list. Add input validation and a least-privilege database account as extra layers."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Why is Java deserialization dangerous and what do you do about it? `ObjectInputStream` instantiates classes named in the byte stream and runs their `readObject` logic. With a suitable gadget class on the class path, crafted bytes lead to code execution before the application sees the object. Avoid it for untrusted input: use JSON or Protobuf into known types. If serialization is unavoidable, set an `ObjectInputFilter` allow-list with depth and size limits, and keep dependencies patched."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot services most of this is covered by defaults you must not turn off: Spring Data and `JdbcTemplate` use parameters, Thymeleaf escapes output, Spring Security stores bcrypt hashes and protects against CSRF, and secrets arrive from environment variables or a vault through `application.yml` placeholders. Typical audit findings are not framework bugs, but: a secret in `application.yml` committed to Git, an actuator endpoint exposed without authentication, verbose stack traces returned to clients, and outdated transitive dependencies."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Secure coding is mostly a few disciplined habits.\n\n- Treat everything crossing a trust boundary as hostile: validate with allow-lists, parse to real types early, cap sizes, canonicalise before checking.\n- Keep data and commands apart: `PreparedStatement` for SQL, `ProcessBuilder` with an argument list for processes, escaping for HTML and logs.\n- Defeat path traversal with `resolve`, `normalize` and `startsWith` on `Path`; avoid `ObjectInputStream` on untrusted data and use filters or JSON.\n- Use `SecureRandom` for anything secret, `MessageDigest.isEqual` for comparing secrets, slow salted hashes (bcrypt, Argon2) for passwords, and keep secrets out of code and logs.\n- Patch and scan dependencies continuously; you ship your libraries' vulnerabilities too."
+        }
+      ]
+    },
+    {
+      "id": "ch-12-6",
+      "type": "concept",
+      "title": "Performance rules of thumb",
+      "subtopicId": "12-6",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Most Java code is fast enough, and the code that is not is rarely slow where you expect. This chapter gives you a short list of rules that pay off in practice, the order in which to apply them, and a way to check your beliefs with numbers. It deliberately avoids folklore such as \"use `final` to speed up methods\" or \"avoid creating objects\": the JIT compiler (Part 9) removes many such costs, and chasing them makes code worse.\n\n### Rule zero: measure first\n\nDonald Knuth's line is worth knowing in full: *\"We should forget about small efficiencies, say about 97% of the time:* *premature optimization is the root of all evil. Yet we should not pass up our opportunities in that critical 3%.\"* The method that follows from it:\n\n1. Define the goal in numbers (latency at the 99th percentile under 200 ms, 5,000 requests per second, startup under 3 s).\n2. Measure the real system under realistic load, with a **profiler**, not a hunch. Java Flight Recorder (`-XX:StartFlightRecording`, Part 10) is built in and cheap enough for production; async-profiler and your IDE's profiler are common alternatives.\n3. Fix the biggest cost you found, re-measure, stop when the goal is met.\n\nThe usual finding: the time goes into one database query, one remote call, one accidental O(n squared) loop, or the garbage collector, not into the places a developer would guess.\n\n### Rule one: algorithms and data structures beat tuning\n\nChoosing a better algorithm changes the growth curve; tuning only changes the constant. The program below measures a few such choices, plus others from this chapter, on the build machine."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.util.ArrayList;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Set;\nimport java.util.function.Supplier;\nimport java.util.stream.IntStream;\n\npublic class PerfDemo {\n    static long sink;                       // consume results so the JIT cannot discard the work\n\n    // Crude harness: warm up, then take the best of 5. NOT a substitute for JMH.\n    static void time(String label, Supplier<Object> work) {\n        for (int i = 0; i < 3; i++) sink += work.get().hashCode();\n        long best = Long.MAX_VALUE;\n        for (int i = 0; i < 5; i++) {\n            long t0 = System.nanoTime();\n            sink += work.get().hashCode();\n            best = Math.min(best, System.nanoTime() - t0);\n        }\n        System.out.printf(\"%-34s %9.2f ms%n\", label, best / 1e6);\n    }\n\n    public static void main(String[] args) {\n        // 1. String building\n        time(\"string += in a loop (20k)\", () -> {\n            String s = \"\";\n            for (int i = 0; i < 20_000; i++) s += \"x\";\n            return s;\n        });\n        time(\"StringBuilder (20k)\", () -> {\n            StringBuilder sb = new StringBuilder();\n            for (int i = 0; i < 20_000; i++) sb.append(\"x\");\n            return sb.toString();\n        });\n\n        // 2. Boxing\n        time(\"sum with Long (20M)\", () -> {\n            Long sum = 0L;\n            for (int i = 0; i < 20_000_000; i++) sum += i;\n            return sum;\n        });\n        time(\"sum with long (20M)\", () -> {\n            long sum = 0L;\n            for (int i = 0; i < 20_000_000; i++) sum += i;\n            return sum;\n        });\n\n        // 3. Collection sizing\n        time(\"ArrayList default, 3M adds\", () -> {\n            List<Integer> l = new ArrayList<>();\n            for (int i = 0; i < 3_000_000; i++) l.add(i);\n            return l.size();\n        });\n        time(\"ArrayList presized, 3M adds\", () -> {\n            List<Integer> l = new ArrayList<>(3_000_000);\n            for (int i = 0; i < 3_000_000; i++) l.add(i);\n            return l.size();\n        });\n\n        // 4. Algorithm choice: 20k lookups in 100k elements\n        List<Integer> list = new ArrayList<>();\n        for (int i = 0; i < 100_000; i++) list.add(i * 2);\n        Set<Integer> set = new HashSet<>(list);\n        time(\"List.contains x 20k\", () -> {\n            int hits = 0;\n            for (int i = 0; i < 20_000; i++) if (list.contains(i * 7)) hits++;\n            return hits;\n        });\n        time(\"HashSet.contains x 20k\", () -> {\n            int hits = 0;\n            for (int i = 0; i < 20_000; i++) if (set.contains(i * 7)) hits++;\n            return hits;\n        });\n\n        // 5. Streams vs loops over primitives\n        int[] data = IntStream.range(0, 10_000_000).toArray();\n        time(\"loop: sum of squares (10M)\", () -> {\n            long s = 0;\n            for (int v : data) s += (long) v * v;\n            return s;\n        });\n        time(\"IntStream: sum of squares\", () ->\n            IntStream.of(data).mapToLong(v -> (long) v * v).sum());\n        time(\"boxed Stream<Integer> version\", () ->\n            java.util.Arrays.stream(data).boxed().mapToLong(v -> (long) v * v).sum());\n    }\n}",
+          "title": "PerfDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java PerfDemo.java\nstring += in a loop (20k)              37.43 ms\nStringBuilder (20k)                     0.13 ms\nsum with Long (20M)                    95.60 ms\nsum with long (20M)                     7.16 ms\nArrayList default, 3M adds            107.71 ms\nArrayList presized, 3M adds            31.61 ms\nList.contains x 20k                  1106.91 ms\nHashSet.contains x 20k                  0.38 ms\nloop: sum of squares (10M)              1.59 ms\nIntStream: sum of squares               1.70 ms\nboxed Stream<Integer> version          48.27 ms",
+          "title": "Terminal"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "About these numbers Measured on the build machine with JDK 21; typical figures only. Your numbers will differ, and individual lines vary a lot between runs (the `ArrayList` lines moved by a factor of five between two runs because garbage collection kicked in at different moments). Read them as orders of magnitude. The harness is a crude warm-up-and-take-the-best; it is **not** a trustworthy benchmark, which is exactly why the JMH section below exists."
+        },
+        {
+          "type": "markdown",
+          "text": "#### What the numbers show\n\n- `List.contains` **versus** `HashSet.contains`: roughly a thousand milliseconds against a fraction of one. `List.contains` scans (O(n)); the hash lookup is O(1) on average. Twenty thousand lookups in a 100,000-element list is 2 billion comparisons. This is the single most common real-world performance bug: a `contains` or `remove` on a list inside a loop. Put the lookup data into a `HashSet` or `HashMap` first.\n- `String +=` **in a loop** versus `StringBuilder`: hundreds of times slower at 20,000 iterations and getting worse quadratically, because each `+=` copies the whole string built so far. A single expression such as `\"a\" + b + \"c\"` is fine (the compiler turns it into one efficient `invokedynamic` call); the problem is repeated concatenation across loop iterations. Details are in the strings chapter in Part 4.\n- `Long` **versus** `long`: the boxed loop is about ten times slower, because every `sum += i` unboxes, adds and allocates a new `Long` (for values outside the small cache of -128 to 127). Boxing also costs memory: an `Integer` object is 16 bytes plus a reference; an `int` in an array is 4 bytes. `List<Integer>` with a million elements is several times larger than an `int[]`.\n- **Pre-sizing an** `ArrayList`: when the final size is known, `new ArrayList<>(n)` avoids the repeated grow-and-copy cycles (each growth allocates about 1.5 times the old capacity and copies the elements). For a `HashMap`, Java 19 added `HashMap.newHashMap(expectedEntries)` which computes the right table size for the 0.75 load factor.\n- **Streams versus loops**: on primitives, `IntStream` matched the hand-written loop in this run. The version that boxes every element with `.boxed()` was far slower. Streams are not slow; boxing is. For ordinary business code (filter, map, collect over a few thousand objects) readability should decide. Do not use `parallelStream()` as a speed-up without measuring; it helps only for large, CPU-bound, independent work (Part 7)."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Suspiciously fast results The loop doing 10 million multiplications in under 2 ms is plausible only because the JIT compiler can vectorise and unroll simple loops over arrays. A loop whose result is never used may be removed entirely, which is why the harness accumulates every result into `sink`. If a benchmark is \"impossibly fast\", the JIT probably deleted your work."
+        },
+        {
+          "type": "markdown",
+          "text": "### Rule two: do less I/O, and buffer it\n\nEach call to a system service (`read`, `write`, a network send, a database round trip) costs thousands of times more than a method call. The remedy is the same everywhere: **batch the work**."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import java.io.BufferedOutputStream;\nimport java.io.FileOutputStream;\nimport java.io.IOException;\nimport java.io.OutputStream;\nimport java.nio.file.Files;\nimport java.nio.file.Path;\nimport java.util.HashMap;\nimport java.util.Map;\nimport java.util.regex.Pattern;\n\npublic class PerfIoDemo {\n    static final int BYTES = 300_000;\n    static final Pattern ORDER_ID = Pattern.compile(\"\\\\w+-\\\\d+\");     // compile once, reuse\n    static final Map<Integer, Long> memo = new HashMap<>();\n\n    static long fibSlow(int n) { return n < 2 ? n : fibSlow(n - 1) + fibSlow(n - 2); }\n    static long fibMemo(int n) {\n        if (n < 2) return n;\n        Long cached = memo.get(n);\n        if (cached != null) return cached;\n        long v = fibMemo(n - 1) + fibMemo(n - 2);\n        memo.put(n, v);\n        return v;\n    }\n\n    static long timeMs(Runnable r) {\n        long t0 = System.nanoTime();\n        r.run();\n        return (System.nanoTime() - t0) / 1_000_000;\n    }\n\n    static void write(Path p, boolean buffered) {\n        try (OutputStream raw = new FileOutputStream(p.toFile());\n             OutputStream out = buffered ? new BufferedOutputStream(raw) : raw) {\n            for (int i = 0; i < BYTES; i++) out.write('x');\n        } catch (IOException e) {\n            throw new RuntimeException(e);\n        }\n    }\n\n    public static void main(String[] args) throws IOException {\n        Path file = Files.createTempFile(\"perf\", \".bin\");\n        write(file, true);                                    // warm up\n        System.out.println(\"unbuffered, \" + BYTES + \" write() calls: \"\n            + timeMs(() -> write(file, false)) + \" ms\");\n        System.out.println(\"buffered,   \" + BYTES + \" write() calls: \"\n            + timeMs(() -> write(file, true)) + \" ms\");\n        Files.delete(file);\n\n        System.out.println(\"fib(35) recursive: \" + timeMs(() -> fibSlow(35)) + \" ms\");\n        System.out.println(\"fib(35) memoized:  \" + timeMs(() -> fibMemo(35)) + \" ms\");\n\n        long t = timeMs(() -> {\n            int c = 0;\n            for (int i = 0; i < 200_000; i++) if (\"order-12345\".matches(\"\\\\w+-\\\\d+\")) c++;\n        });\n        long u = timeMs(() -> {\n            int c = 0;\n            for (int i = 0; i < 200_000; i++) if (ORDER_ID.matcher(\"order-12345\").matches()) c++;\n        });\n        System.out.println(\"String.matches, 200k calls: \" + t + \" ms\");\n        System.out.println(\"precompiled Pattern, 200k:  \" + u + \" ms\");\n    }\n}",
+          "title": "PerfIoDemo.java"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ java PerfIoDemo.java\nunbuffered, 300000 write() calls: 331 ms\nbuffered,   300000 write() calls: 58 ms\nfib(35) recursive: 101 ms\nfib(35) memoized:  0 ms\nString.matches, 200k calls: 392 ms\nprecompiled Pattern, 200k:  53 ms",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "#### What to notice\n\n- Writing 300,000 single bytes straight to a `FileOutputStream` makes 300,000 system calls. Wrapping it in a `BufferedOutputStream` (an 8 KiB buffer by default) turns that into a few dozen. That is a ten-fold or better gain from one line, and the decorator pattern from the earlier chapter is what makes it a one-line change. Wrap `FileReader` in `BufferedReader`, and use `Files.readAllLines`/`Files.lines` or `Files.newBufferedReader` for text.\n- The same principle drives database code (JDBC batch inserts, `IN` lists instead of N queries, avoiding the \"N+1 selects\" pattern of ORMs), network code (fewer, larger requests) and logging (asynchronous appenders).\n- **Caching** turned `fib(35)` from tens of milliseconds into near zero: the memo table makes the recursion linear instead of exponential. A cache trades memory and staleness for speed, so decide the invalidation rule (time to live, size bound, explicit evict) before you write it. In production use a library such as Caffeine rather than a bare `HashMap`, which is unbounded and not thread safe. Spring's `@Cacheable` puts a cache in front of a method.\n- Compiling a regular expression is expensive. `String.matches(regex)` compiles the pattern on every call; a `static` `final Pattern` compiles it once. The precompiled version is roughly ten times faster here. The same holds for `DateTimeFormatter`, `ObjectMapper`, `MessageDigest` factories and other costly-to-build, safe-to-share objects: build once, reuse (check that the class is thread safe first; `SimpleDateFormat` is not).\n\n### Rule three: understand allocation, but do not fear it\n\nThe JVM allocates small objects quickly: a bump of a pointer in the thread-local allocation buffer, plus work later in the young generation (Part 9). Short-lived objects are cheap to collect, because the collector only pays for what survives. The practical consequences:\n\n- **Do not pool ordinary objects.** An object pool is almost always slower and buggier than letting the allocator work. Pool only objects that are expensive to create and manage outside the heap: database connections (HikariCP), threads (`ExecutorService`), direct buffers.\n- **Do avoid allocation in the hottest loops** when a profiler shows allocation pressure (a high allocation rate in the JFR \"Allocation\" view, or frequent young collections in `-Xlog:gc`): use primitives instead of boxes, reuse a `StringBuilder`, return a count instead of a new list.\n- **Watch for hidden allocation**: lambdas that capture variables allocate on each evaluation, `String.format` allocates a formatter and several strings, `stream()` creates a pipeline of objects, varargs creates an array, autoboxing creates `Integer`s.\n- **Prefer primitive collections** only after measuring: `List<Integer>` and `Map<Integer, Integer>` box everything, and libraries such as Eclipse Collections, fastutil or Trove provide `int`-keyed versions. For most programs the standard collections are fine.\n- **Memory is also speed.** Data that fits in the CPU cache is much faster to process. Iterating an `int[]` is faster than iterating a `LinkedList<Integer>`, partly because the array is contiguous and partly because there are no objects to dereference. This is why `ArrayList` beats `LinkedList` in most benchmarks, including many where the textbook says `LinkedList` should win."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Never tune the GC first Garbage collector flags are the last knob, not the first. The default G1 collector is a good choice for most services. Reduce the amount of garbage and the size of the live set, and choose heap size from measurements (`-Xmx`), before you consider switching collectors. The GC tuning chapter in Part 9 shows how to read the logs."
+        },
+        {
+          "type": "markdown",
+          "text": "### Rule four: know your concurrency costs\n\nContention is performance's silent killer. A `synchronized` method or a single lock that every request needs serialises the program no matter how many cores it has. Prefer immutable data, thread-confined state, `ConcurrentHashMap`, `LongAdder` for hot counters, and sensible thread pool sizing (CPU-bound work: about the number of cores; blocking I/O: more threads or virtual threads). Part 8 covers each of these. For database-heavy services the connection pool size and the slowest query usually determine throughput long before Java code does.\n\n### Benchmarking properly: JMH\n\nA naive `System.nanoTime()` around a loop, like the harness above, is fragile for reasons you now know: the JVM interprets code first and compiles it later (warm-up), the JIT may remove work whose result is unused (dead code elimination), compute constants at compile time (constant folding), inline differently depending on what ran before (profile pollution), and garbage collection pauses land at random.\n\n**JMH** (the Java Microbenchmark Harness, an OpenJDK project, used by the JDK team itself) handles forks, warm-up, measurement iterations and the \"black hole\" that stops dead-code elimination. A benchmark looks like this (JMH is a separate dependency, so this listing is shown as text and was not run here):"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "import org.openjdk.jmh.annotations.*;\nimport java.util.concurrent.TimeUnit;\n\n@State(Scope.Thread)\n@BenchmarkMode(Mode.AverageTime)\n@OutputTimeUnit(TimeUnit.NANOSECONDS)\n@Warmup(iterations = 3, time = 1)\n@Measurement(iterations = 5, time = 1)\n@Fork(2)\npublic class StringBench {\n    @Param({\"10\", \"1000\"})\n    int n;\n\n    @Benchmark\n    public String builder() {\n        StringBuilder sb = new StringBuilder();\n        for (int i = 0; i < n; i++) sb.append('x');\n        return sb.toString();            // returning the value keeps it \"used\"\n    }\n}",
+          "title": "StringBench.java (needs the JMH dependency; not run here)"
+        },
+        {
+          "type": "markdown",
+          "text": "You build it with the JMH archetype in Maven or the JMH Gradle plugin and run the resulting jar. Even with JMH, treat microbenchmarks as hints: the real question is always whether the change helps the whole application under load.\n\n### A practical checklist"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Habit",
+            "Typical gain"
+          ],
+          "rows": [
+            [
+              "Use the right data structure (`HashSet` or `HashMap` for lookups)",
+              "orders of magnitude when n is large"
+            ],
+            [
+              "Fix N+1 queries, batch database and network calls",
+              "often the largest win in a service"
+            ],
+            [
+              "Buffer I/O, reuse connections and threads through pools",
+              "10x or more for chatty I/O"
+            ],
+            [
+              "Cache results of expensive pure computations, with a bound",
+              "large; adds staleness risk"
+            ],
+            [
+              "Build with `StringBuilder` in loops, reuse `Pattern` and formatters",
+              "10x to 100x in the hot spot"
+            ],
+            [
+              "Avoid boxing in numeric hot paths (`long`, `IntStream`)",
+              "several times"
+            ],
+            [
+              "Pre-size collections when the size is known",
+              "modest (up to 2x on building)"
+            ],
+            [
+              "Measure with a profiler, then with JMH",
+              "prevents wasted effort"
+            ]
+          ],
+          "caption": "Performance habits in order of payoff."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How would you approach a Java service that is slow? Reproduce the problem and measure: look at the metrics (CPU, memory, GC, thread states, database time), take a profile or a Flight Recorder recording, and find where the time goes before touching code. Typical culprits are N+1 queries and slow SQL, lock contention, excessive allocation or garbage collection, blocking calls on too few threads, and algorithmic inefficiency. Change one thing, re-measure, and keep the result only if it helps."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "In Spring Boot services Expect the first wins from: connection pool sizing, query tuning and `JOIN FETCH` or batching instead of lazy-loading in a loop, response compression and pagination, `@Cacheable` for hot reference data, and keeping startup lean (fewer auto-configurations, lazy beans). Micrometer metrics plus Actuator expose what to measure."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Measure first with a profiler (JFR, async-profiler); set a numeric goal and stop when you reach it.\n- Algorithms and data structures dominate: replace list scans with hash lookups, avoid N+1 queries, avoid quadratic string building.\n- Batch and buffer I/O, cache expensive pure results with a bound, and precompile or reuse costly shared objects such as `Pattern`.\n- Avoid boxing in numeric hot paths, and pre-size collections when the size is known, but do not pool ordinary objects or tune GC flags before reducing garbage.\n- Naive timing loops lie; use JMH for microbenchmarks and treat their results as hints."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Creational patterns in modern Java"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why is `enum Config { INSTANCE }` safe against both reflection and serialization attacks while a normal singleton is not?",
+              "answer": "The language specification forbids reflective instantiation of enum constants, and the serialization mechanism writes only the constant's name and resolves it back to the existing instance. A normal singleton can be duplicated with `setAccessible(true)` or by deserializing a copy."
+            },
+            {
+              "question": "What does this print, and why? `static class A { static { System.out.println(\"A loaded\"); } static A` `get() { return H.I; } private static class H { static final A I = new A(); } }`, then `main` only declares `A a = null;` and prints `\"start\"`.",
+              "answer": "It prints only `start`. `A` is never initialized because no static member is touched and `A a = null;` does not trigger initialization (and the holder is never touched either)."
+            },
+            {
+              "question": "What is wrong with this double-checked locking field: `private static LazyService instance;`?",
+              "answer": "It is not `volatile`. Without it, a second thread can observe a non-null reference to an object whose construction is not yet visible, because of instruction reordering."
+            },
+            {
+              "question": "A builder is reused: `b.item(\"x\"); Order o1 = b.build(); b.item(\"y\"); Order o2 = b.build();`. In the builder shown in this chapter, does `o1` change when `item(\"y\")` is called? Why?",
+              "answer": "No. The constructor of `Order` calls `List.copyOf`, so each order owns an immutable snapshot of the items at build time."
+            },
+            {
+              "question": "Name two reasons Effective Java prefers a copy constructor over `Cloneable`.",
+              "answer": "`clone()` bypasses constructors (invariants and `final` fields are awkward) and is shallow by default with a fragile contract (`Cloneable` has no methods; the copy logic lives in `Object`). A copy constructor is type-safe, can take any related type and is explicit about depth."
+            },
+            {
+              "question": "When would you choose a registry of `Supplier`s over a `switch` factory?",
+              "answer": "When the set of kinds is open or configuration-driven (plugins, strategies registered at startup), so adding a kind does not mean editing the factory."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Structural and behavioural patterns"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "In one sentence each: how does a decorator differ from an adapter, and from a proxy?",
+              "answer": "An adapter changes the interface, a decorator keeps the interface and adds behaviour, a proxy keeps the interface and controls access to the target (cache, security, lazy load, remote call)."
+            },
+            {
+              "question": "What does this print? `Text t = new Bold(new Shout(new Plain(\"a\"))); System.out.println(t.render());` using the `Bold`/`Shout` records of this chapter.",
+              "answer": "`<b>A!</b>`. `Shout` wraps `Plain(\"a\")` giving `A!`, then `Bold` wraps that."
+            },
+            {
+              "question": "Why does the observer loop iterate over `List.copyOf(listeners)` and not `listeners`?",
+              "answer": "A listener may unsubscribe (or subscribe another) during notification. Modifying the list while iterating it would throw `ConcurrentModificationException`; iterating over a snapshot is safe."
+            },
+            {
+              "question": "A `java.lang.reflect.Proxy` handler calls `method.invoke(target, args)` and the target throws `IllegalArgumentException`. What does `invoke` throw, and what should the handler do?",
+              "answer": "It throws `InvocationTargetException` whose cause is the original exception. The handler should unwrap it and rethrow `e.getCause()` so callers see the real exception."
+            },
+            {
+              "question": "Why is a `final` method the heart of the Template Method pattern?",
+              "answer": "`final` stops subclasses from changing the order of the steps; they can only fill the abstract steps and optional hooks."
+            },
+            {
+              "question": "What does the compiler do for you when a `switch` over a sealed interface misses a subtype, and why does that matter for the Visitor replacement?",
+              "answer": "A compile-time error (\"the switch expression does not cover all possible input values\"). So adding a new node type forces you to update every operation, which is the safety the classic Visitor tried to give."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Effective Java in practice"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "A class has `private final Date created;` assigned from its constructor argument and returned from `getCreated()`. Name two ways a caller can change `created`, and a one-line fix for each.",
+              "answer": "Through the argument (the caller keeps the `Date` and mutates it) and through the getter (the caller mutates the returned `Date`). Fix: `this.created = new Date(created.getTime())` and `return new Date(created.getTime())`, or better use `Instant`, which is immutable."
+            },
+            {
+              "question": "What does this print? `Long s = 0L; System.out.println(s.equals(0) + \" \" + s.equals(0L));`",
+              "answer": "`false true`. `0` is an `Integer`, so `Long.equals(Integer)` is false (different classes); `0L` is a `Long` with equal value."
+            },
+            {
+              "question": "Why does a `HashSet` subclass that counts `add` calls report 6 after `addAll` of three elements?",
+              "answer": "`HashSet.addAll` calls `add` for each element, so each element is counted once by the overridden `addAll` and again by the overridden `add`: 3 + 3 = 6."
+            },
+            {
+              "question": "What is wrong with `Optional<String> name = Optional.of(map.get(key));` when `key` may be missing?",
+              "answer": "`Optional.of(null)` throws `NullPointerException`; use `Optional.ofNullable(map.get(key))`."
+            },
+            {
+              "question": "You change a public method `int size()` to `long size()` in a library. Callers' source code still compiles. Why might already compiled callers still break?",
+              "answer": "Compiled classes refer to the method by name plus exact descriptor (`size()I`); the new method is `size()J`, so the old one no longer exists, and linking fails with `NoSuchMethodError` until callers are recompiled."
+            },
+            {
+              "question": "When should you use an enum instead of `int` constants, and what should you never persist from an enum?",
+              "answer": "Use an enum for any fixed set of related constants (type-safe, printable, with behaviour, `EnumMap`/`EnumSet`). Do not persist `ordinal()`; store the `name()` or an explicit code, because reordering constants changes ordinals."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Clean code and code smells in Java"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Rewrite as guard clauses: `if (user != null) { if (user.isActive()) { return user.name(); } } return` `\"anonymous\";`",
+              "answer": "`if (user == null || !user.isActive()) return \"anonymous\"; return user.name();` The special cases leave first and the main path stays unindented."
+            },
+            {
+              "question": "Which smell is `parse(text, true, false)` and what is a better design?",
+              "answer": "Flag arguments (and primitive obsession): the call site does not say what `true, false` mean. Use an options record or enums, or separate methods such as `parseStrict(text)`."
+            },
+            {
+              "question": "A `Bird` class has `fly()`. `Penguin extends Bird` overrides `fly()` to throw `UnsupportedOperationException`. Which SOLID principle is violated, and what would you change?",
+              "answer": "Liskov substitution: code that calls `fly()` on any `Bird` breaks for a `Penguin`. Redesign: do not put `fly()` on `Bird`; add a `Flyer` interface (interface segregation) implemented only by birds that fly."
+            },
+            {
+              "question": "What is wrong with this class, for testing? `class Mailer { private final Smtp smtp = new Smtp(\"mail.corp\");` `void send(String s) { smtp.send(s); } }`",
+              "answer": "The collaborator is created inside the class, so a test cannot replace it and would talk to a real mail server. Inject an interface through the constructor."
+            },
+            {
+              "question": "What does the following print? Use the `Category` enum from the listing: `System.out.println(Category.FOOD.withTax(100) + \" \" + Category.GENERAL.withTax(100));`",
+              "answer": "`105.0 120.0`. The value is `100 * (1 + 0.05)` and `100 * (1 + 0.20)`. (Doubles happen to print cleanly here; for real money use `BigDecimal` or integer cents.)"
+            },
+            {
+              "question": "Why is constructor injection preferred over setter injection?",
+              "answer": "Dependencies become `final`, the object is fully built once constructed, a class with too many dependencies is visible at a glance, and no framework is needed to instantiate it in a test."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Secure coding in Java"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why is `\"...\"` plus a user-supplied string unsafe in `statement.executeQuery(\"SELECT * FROM t WHERE n = '\" + n` `+ \"'\")`, and what is the fix in one sentence?",
+              "answer": "A quote in `n` ends the literal and the rest of the input is parsed as SQL (injection). Use a `PreparedStatement` with `?` and `setString`, so the value is never parsed as SQL."
+            },
+            {
+              "question": "What does this print? `System.out.println(Path.of(\"/srv/up\").resolve(\"/etc/passwd\"));` and what does it imply for a path-traversal check?",
+              "answer": "It prints `/etc/passwd`. Resolving an absolute path against a base returns the absolute path itself, so you must check the resolved, normalised result against the base (`startsWith`), not just reject `..`."
+            },
+            {
+              "question": "Does `Path.of(\"/srv/up2/f\").normalize().startsWith(\"/srv/up\")` return true or false, and why does that matter?",
+              "answer": "`false`. `Path.startsWith` compares whole path elements, so `up2` is not `up`. A string `startsWith` would say true and allow a sibling directory."
+            },
+            {
+              "question": "Name two properties that make `SecureRandom` the right choice for a session token and `Random` the wrong one.",
+              "answer": "`SecureRandom` uses an unpredictable OS entropy source with a cryptographic algorithm; `Random` is a linear generator whose future output can be computed from a few observed values (and has only 48 bits of state)."
+            },
+            {
+              "question": "A token comparison is written `stored.equals(provided)`. What attack does this enable and what do you use instead?",
+              "answer": "A timing attack: `equals` returns at the first difference, so response time reveals correct prefixes. Use `MessageDigest.isEqual` for a constant-time comparison."
+            },
+            {
+              "question": "List three places a password should never appear.",
+              "answer": "Any three of: source code or Git history, log files, exception messages, `toString` output, URLs or query strings, plain text in a database, client-side code."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Performance rules of thumb"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "You find `ids.contains(x)` inside a loop over 50,000 orders, where `ids` is an `ArrayList<Long>` of 100,000 entries. What is the problem and the fix?",
+              "answer": "Each `contains` scans the list (O(n)), so the loop is O(n times m), billions of comparisons. Copy the ids into a `HashSet<Long>` once and use its `contains` (O(1) average)."
+            },
+            {
+              "question": "Why is `String s = \"\"; for (...) s += part;` slow, while `String t = a + b + c;` is fine?",
+              "answer": "`+=` creates a new string and copies all previous characters every iteration, which is quadratic overall. A single `+` expression is compiled to one concatenation call that sizes the result once; for loops, use a `StringBuilder`."
+            },
+            {
+              "question": "What does `Long total = 0L; for (int i = 0; i < n; i++) total += i;` do wrong compared with `long total`?",
+              "answer": "It boxes: every iteration unboxes `total`, adds, and allocates a new `Long` (outside the -128 to 127 cache). It is several times slower and creates garbage. Use `long`."
+            },
+            {
+              "question": "A colleague reports \"method A is 3x faster than B\" from timing one run with `System.nanoTime()`. Give three reasons the result may be wrong.",
+              "answer": "No warm-up (the code ran interpreted), JIT optimisations such as dead-code elimination or constant folding removed the work, GC pauses or other processes on the machine disturbed one run, and the result may differ for other inputs. Use JMH and several forks."
+            },
+            {
+              "question": "Why does wrapping a `FileOutputStream` in a `BufferedOutputStream` speed up writing single bytes?",
+              "answer": "Each `write(int)` on the raw stream is a system call; the buffered stream collects bytes in memory (8 KiB by default) and issues one system call per full buffer."
+            },
+            {
+              "question": "When is it right to pre-size an `ArrayList` or `HashMap`, and why is it not a big win in most programs?",
+              "answer": "When you know the approximate final size, which avoids repeated resize-and-copy. The gain is modest (growth is amortised O(1)); it matters mainly for very large collections or hot paths found by a profiler."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

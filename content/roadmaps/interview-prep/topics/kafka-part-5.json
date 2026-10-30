@@ -1,0 +1,334 @@
+{
+  "source": {
+    "document": "Kafka_Complete_Guide.pdf",
+    "pages": "81-88"
+  },
+  "sections": [
+    {
+      "id": "ch-5-1",
+      "type": "concept",
+      "title": "Spring Boot and Kafka: Project Setup",
+      "subtopicId": "5-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The plain Kafka clients of the earlier Parts are powerful and low-level. You create the producer and the consumer, you run the `poll()` loop on a thread of your own, you commit offsets, you react to rebalances and you shut everything down cleanly. **Spring for Apache Kafka** (the `spring-kafka` project) keeps the same clients underneath and takes over the repetitive parts: a `KafkaTemplate` for sending, the `@KafkaListener` annotation for receiving, listener containers that own the poll loops, error handling and retries, and integration with transactions, testing and observability. **Spring Boot** then configures all of it from `application.yml`.\n\nThe versions in this Part are Spring Boot 4.1.x (built on Spring Framework 7), Spring for Apache Kafka 4.1.x, Java 21, and the Kafka client library that the Spring Boot BOM manages. Do not pin the client version yourself in a Boot project. The broker is the Kafka 4.3.1 setup from the hands-on Part.\n\n### What Spring adds"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Concern",
+            "Plain Kafka client",
+            "With Spring Kafka"
+          ],
+          "rows": [
+            [
+              "Sending",
+              "Create a `KafkaProducer`, call `send`, pass a callback",
+              "Inject a `KafkaTemplate`; `send` returns a `CompletableFuture`"
+            ],
+            [
+              "Receiving",
+              "Write the `poll()` loop and the thread around it",
+              "Annotate a method with `@KafkaListener`; a container runs the loop"
+            ],
+            [
+              "Threads",
+              "You start and stop them",
+              "Containers manage them; `concurrency` adds consumers"
+            ],
+            [
+              "Offsets",
+              "Call `commitSync` or `commitAsync`",
+              "Choose an acknowledgment mode on the container"
+            ],
+            [
+              "Failures",
+              "`try`/`catch` inside the loop",
+              "Error handlers, back-off, retry topics, dead-letter topics"
+            ],
+            [
+              "Topics",
+              "Admin client calls",
+              "`NewTopic` beans created at startup"
+            ],
+            [
+              "Configuration",
+              "`Properties` objects",
+              "`spring.kafka.*` properties, or your own beans"
+            ]
+          ],
+          "caption": "What changes when you move from the plain clients to Spring for Apache Kafka."
+        },
+        {
+          "type": "markdown",
+          "text": "### Creating the project\n\nThe project below is the `order-service` of ShopStream. It needs the web starter for its REST API and the Kafka starter. In Spring Boot 4 the Kafka support is packaged in `spring-boot-starter-kafka`, with `spring-boot-starter-kafka-test` for tests, and the starter for Spring MVC is called `spring-boot-starter-webmvc` (the older name `spring-boot-starter-web` still exists but is deprecated)."
+        },
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<parent>\n  <groupId>org.springframework.boot</groupId>\n  <artifactId>spring-boot-starter-parent</artifactId>\n  <version>4.1.1</version>\n</parent>\n\n<properties>\n  <java.version>21</java.version>\n</properties>\n\n<dependencies>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-webmvc</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-kafka</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-jackson</artifactId>\n  </dependency>\n  <dependency>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-kafka-test</artifactId>\n    <scope>test</scope>\n  </dependency>\n</dependencies>\n\n<build>\n  <plugins>\n    <plugin>\n      <groupId>org.springframework.boot</groupId>\n      <artifactId>spring-boot-maven-plugin</artifactId>\n    </plugin>\n  </plugins>\n</build>",
+          "title": "pom.xml (the parts that matter)"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** None of the dependencies has a version: the Boot parent manages them, including `spring-kafka` and the Kafka client. `spring-boot-starter-jackson` brings Jackson 3 (package `tools.jackson`), which Spring Kafka's JSON classes need; a web starter usually pulls it in already, but a worker service without a web layer, like the notification service later in this Part, should declare it explicitly.\n\nThe application class is the usual one; no Kafka annotation is needed, because auto-configuration enables the Kafka infrastructure when it sees the classes on the classpath."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport org.springframework.boot.SpringApplication;\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\n\n@SpringBootApplication\npublic class OrderServiceApplication {\n\n    public static void main(String[] args) {\n        SpringApplication.run(OrderServiceApplication.class, args);\n    }\n}",
+          "title": "OrderServiceApplication.java"
+        },
+        {
+          "type": "markdown",
+          "text": "### Configuration in application.yml\n\nEverything under `spring.kafka` is bound to a `KafkaProperties` object. The sections mirror the client types:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Namespace",
+            "What it configures"
+          ],
+          "rows": [
+            [
+              "`spring.kafka.bootstrap-servers`",
+              "The broker addresses, shared by all clients"
+            ],
+            [
+              "`spring.kafka.producer.*`",
+              "Producer settings such as `acks`, `batch-size`, `compression-type`, `key-serializer`, `value-serializer`, `transaction-id-prefix`"
+            ],
+            [
+              "`spring.kafka.consumer.*`",
+              "Consumer settings such as `group-id`, `auto-offset-reset`, `enable-auto-commit`, `max-poll-records`, `isolation-level`, `key-deserializer`, `value-deserializer`"
+            ],
+            [
+              "`spring.kafka.listener.*`",
+              "The listener containers: `ack-mode`, `concurrency`, `type`, `poll-timeout`, `idle-event-interval`, `missing-topics-fatal`"
+            ],
+            [
+              "`spring.kafka.admin.*`",
+              "The `KafkaAdmin` that creates topics: `auto-create`, `fail-fast`, `modify-topic-configs`"
+            ],
+            [
+              "`spring.kafka.template.*`",
+              "Defaults of the `KafkaTemplate`, for example `default-topic`"
+            ],
+            [
+              "`spring.kafka.properties.*`",
+              "Any client property, passed through to all clients (producer, consumer, admin)"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Namespace",
+            "What it configures"
+          ],
+          "rows": [
+            [
+              "`spring.kafka.producer.properties.*`",
+              "Any producer property, with the real Kafka name as key"
+            ]
+          ],
+          "caption": "The namespaces under spring.kafka."
+        },
+        {
+          "type": "markdown",
+          "text": "The dedicated properties cover the common cases. For everything else use the `properties` pass-through with the original Kafka key. The Boot reference puts it this way: properties that do not include a client type (`producer`, `consumer`, `admin` or `streams`) in their name are considered common and apply to all clients. Here is a configuration for the order service:"
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "spring:\n  application:\n    name: order-service\n  kafka:\n    bootstrap-servers: localhost:9092\n    producer:\n      acks: all\n      key-serializer: org.apache.kafka.common.serialization.StringSerializer\n      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer\n      properties:\n        spring.json.add.type.headers: false\n        linger.ms: 5",
+          "title": "application.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "The producer's `acks` and idempotence defaults already come from the Kafka 4 client (`acks=all`, `enable.idempotence=true`); the line is there to make the intent visible. `JacksonJsonSerializer` is Spring's generic JSON serializer, and `spring.json.add.type.headers` is one of its settings, explained in the next chapter. Boot's own defaults for keys and values, when you configure nothing, are the `String` serializer and deserializer.\n\n### What auto-configuration gives you\n\nWith `spring-kafka` on the classpath Boot creates, unless you define a bean of the same type yourself:\n\n- a `KafkaAdmin`, which creates the topics declared as `NewTopic` beans;\n- a `ProducerFactory` and a `KafkaTemplate`, built from `spring.kafka.producer.*`;\n- a `ConsumerFactory` and a `ConcurrentKafkaListenerContainerFactory` (bean name `kafkaListenerContainerFactory`), built from `spring.kafka.consumer.*` and `spring.kafka.listener.*`, and the switch that turns `@KafkaListener` processing on (what `@EnableKafka` does in a non-Boot application);\n- a `KafkaTransactionManager`, but only if `spring.kafka.producer.transaction-id-prefix` is set;\n- with Kafka Streams on the classpath and `@EnableKafkaStreams`, the Streams configuration (a later Part).\n\nBoot also attaches some beans to the container factory automatically if it finds exactly one of them: a `CommonErrorHandler`, a `RecordFilterStrategy`, an `AfterRollbackProcessor`, a rebalance listener and a record message converter. That is the least-effort way to customise listener behaviour, and the next chapters use it.\n\n### Declaring topics\n\nA `NewTopic` bean tells the `KafkaAdmin` to create a topic during startup if it does not exist. `TopicBuilder` makes these beans readable."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport org.apache.kafka.clients.admin.NewTopic;\nimport org.apache.kafka.common.config.TopicConfig;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.config.TopicBuilder;\n\n@Configuration\npublic class KafkaTopicConfig {\n\n    @Bean\n    NewTopic ordersTopic() {\n        return TopicBuilder.name(\"orders\")\n                .partitions(3)\n                .replicas(1)\n                .config(TopicConfig.MIN_IN_SYNC_REPLICAS_CONFIG, \"1\")\n                .build();\n    }\n\n    @Bean\n    NewTopic orderStatusTopic() {\n        return TopicBuilder.name(\"order-status\")\n                .partitions(3)\n                .replicas(1)\n                .compact()\n                .build();\n    }\n}",
+          "title": "KafkaTopicConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If the broker is not reachable at startup, the admin logs a message and the application context still starts (set the admin's `fail-fast` property to make this fatal). If a topic exists with fewer partitions than declared, the admin increases the partition count; it never reduces it. For the local single-broker setup `replicas(1)` is the only option; in production use at least 3 replicas and a higher `min.insync.replicas`. Omitting `partitions()` or `replicas()` makes the broker's defaults apply."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Declared topics are a convenience for development and tests, not a topic-management strategy. Partition counts, replication factors and configs of production topics usually come from reviewed infrastructure code, because a wrong value is expensive: the partition count can only grow, and growing it changes which partition each key maps to. Switch `auto-create` off for the admin in environments where the application must not create topics."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "A new consumer group starts at the end of the topic by default. Kafka's `auto.offset.reset` defaults to `latest`, and Boot does not change it. A listener started for the first time sees only records produced after it joined, which looks as if \"messages disappear\". During development set `spring.kafka.consumer.auto-offset-reset: earliest`, and decide deliberately for production."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Project setup\n\n- Spring for Apache Kafka wraps the plain clients: a template for sending, annotated listeners and containers for receiving. Boot configures everything from `spring.kafka.*`.\n- In Boot 4 add `spring-boot-starter-kafka` (and `spring-boot-starter-kafka-test` for tests); versions come from the Boot BOM.\n- Dedicated properties cover the common settings; `spring.kafka.properties.*` and `spring.kafka.producer.properties.*` pass any Kafka property through.\n- Auto-configuration creates `KafkaAdmin`, `KafkaTemplate`, the factories and the listener container factory, and backs off when you define your own beans.\n- `NewTopic` beans create missing topics at startup; partitions can grow but never shrink."
+        }
+      ]
+    },
+    {
+      "id": "ch-5-2",
+      "type": "concept",
+      "title": "Producing with KafkaTemplate",
+      "subtopicId": "5-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "`KafkaTemplate<K, V>` is the class you use to send records from Spring code. It wraps a Kafka producer obtained from a `ProducerFactory`. The default factory keeps a single shared producer, and the template is thread-safe, so you create one template per configuration (Boot creates it for you) and inject it wherever you need it. Never create a template per request.\n\n### The send methods\n\nAll send methods return a `CompletableFuture<SendResult<K, V>>`. They differ in how much of the record you specify."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`send(String topic, V data)`",
+              "No key; records are spread over the partitions"
+            ],
+            [
+              "`send(String topic, K key, V data)`",
+              "The normal case; the key decides the partition"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`send(String topic, Integer partition, K key, V data)`",
+              "Pin a record to a partition"
+            ],
+            [
+              "`send(String topic, Integer partition, Long timestamp, K` `key, V data)`",
+              "Also set the record timestamp, for example when importing history"
+            ],
+            [
+              "`send(ProducerRecord<K, V> record)`",
+              "Full control, including headers"
+            ],
+            [
+              "`send(Message<?> message)`",
+              "Spring Messaging style; topic, key and partition travel in headers"
+            ],
+            [
+              "`sendDefault(...) in four variants`",
+              "Same as the first four, but to the template's default topic"
+            ]
+          ],
+          "caption": "The send and sendDefault overloads (all return CompletableFuture<SendResult<K, V>>)."
+        },
+        {
+          "type": "markdown",
+          "text": "`sendDefault` needs a default topic, set with `spring.kafka.template.default-topic` or `setDefaultTopic`. The template also offers `flush()`, `partitionsFor(topic)` and `metrics()`, and methods for transactions that Part 8 covers.\n\n### What the future tells you\n\n`send` returns before the broker has answered. The record has been handed to the producer, which batches it (waiting up to `linger.ms`, 5 ms by default) and sends it in the background. The returned future completes when the producer knows the outcome, and the `SendResult` it carries holds the `ProducerRecord` that was sent and the `RecordMetadata` assigned by the broker: topic, partition, offset and timestamp. On failure the future completes exceptionally, typically with a `KafkaProducerException` that carries the failed record.\n\nYour choices for handling the result:\n\n- **Fire and forget.** Ignore the future. By default the template logs failures through a `LoggingProducerListener`, but your code will never know. Acceptable for metrics or best-effort events only.\n- **Callback.** Attach `whenComplete` and react asynchronously. This does not block the calling thread and is the right default.\n- **Wait.** Call `future.get(timeout, unit)` to block until the broker has answered. It turns throughput into latency, so use it where the caller truly needs the guarantee, for example before returning success to a client.\n- **Producer listener.** Register a `ProducerListener` on the template (methods `onSuccess` and `onError`) to get one central callback for every send instead of handling each future.\n\n### Keys, headers and JSON\n\nFor ShopStream every event of an order uses the `orderId` as the key. All records with the same key go to the same partition, so a consumer sees the events of one order in the order they were sent. Headers carry metadata that is not part of the business payload; with the `ProducerRecord` overload you add them directly:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "ProducerRecord<String, OrderCreated> record =\n        new ProducerRecord<>(\"orders\", event.orderId(), event);\nrecord.headers().add(\"source\", \"order-service\".getBytes(StandardCharsets.UTF_8));\nkafkaTemplate.send(record);"
+        },
+        {
+          "type": "markdown",
+          "text": "The `Message` overload is the Spring Messaging way to say the same thing. `KafkaHeaders.TOPIC`, `KafkaHeaders.KEY`, `KafkaHeaders.PARTITION` and `KafkaHeaders.TIMESTAMP` control the record; other headers become Kafka record headers:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "Message<OrderCreated> message = MessageBuilder.withPayload(event)\n        .setHeader(KafkaHeaders.TOPIC, \"orders\")\n        .setHeader(KafkaHeaders.KEY, event.orderId())\n        .setHeader(\"source\", \"order-service\")\n        .build();\nkafkaTemplate.send(message);"
+        },
+        {
+          "type": "markdown",
+          "text": "With `JacksonJsonSerializer` as the value serializer the event record becomes JSON text. By default the serializer also adds a record header named `__TypeId__` with the Java class name, so that a consumer's `JacksonJsonDeserializer` can rebuild the right class. That is convenient inside one codebase and a trap between services: the consumer then depends on the producer's package and class names. The next chapters show how to switch the header off (`spring.json.add.type.headers=false`) and give each consumer its own target type.\n\n### The event records and the order service\n\nThe events are plain Java records in the shared package `com.shopstream.events` (in a real project they live in a small library that producers and consumers both depend on, or are generated from a schema as in the previous Part)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.events;\nimport java.math.BigDecimal;\npublic record OrderLine(String sku, int qty, BigDecimal unitPrice) { }",
+          "title": "OrderLine.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.events;\n\nimport java.math.BigDecimal;\nimport java.time.Instant;\nimport java.util.List;\n\npublic record OrderCreated(String eventId, String orderId, String customerId,\n                           List<OrderLine> lines, BigDecimal total, String currency,\n                           Instant occurredAt) { }",
+          "title": "OrderCreated.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The publisher wraps the template. It builds the record, attaches the header, and logs the outcome in a callback:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport com.shopstream.events.OrderCreated;\nimport java.nio.charset.StandardCharsets;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.core.KafkaTemplate;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class OrderEventPublisher {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderEventPublisher.class);\n    private static final String TOPIC = \"orders\";\n\n    private final KafkaTemplate<String, OrderCreated> kafkaTemplate;\n\n    public OrderEventPublisher(KafkaTemplate<String, OrderCreated> kafkaTemplate) {\n        this.kafkaTemplate = kafkaTemplate;\n    }\n\n    public void publish(OrderCreated event) {\n        ProducerRecord<String, OrderCreated> record =\n                new ProducerRecord<>(TOPIC, event.orderId(), event);\n        record.headers().add(\"source\", \"order-service\".getBytes(StandardCharsets.UTF_8));\n\n        kafkaTemplate.send(record).whenComplete((result, ex) -> {\n            if (ex != null) {\n                log.error(\"Could not publish order {}\", event.orderId(), ex);\n            } else {\n                var meta = result.getRecordMetadata();\n                log.info(\"Published order {} to {}-{} at offset {}\",\n                        event.orderId(), meta.topic(), meta.partition(), meta.offset());\n            }\n        });\n    }\n}",
+          "title": "OrderEventPublisher.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The service turns a request into an event and the controller exposes it over HTTP:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport com.shopstream.events.OrderCreated;\nimport com.shopstream.events.OrderLine;\nimport java.math.BigDecimal;\nimport java.time.Instant;\nimport java.util.List;\nimport java.util.UUID;\nimport java.util.concurrent.atomic.AtomicLong;\nimport org.springframework.stereotype.Service;\n\n@Service\npublic class OrderService {\n\n    public record CreateOrderRequest(String customerId, List<OrderLine> lines) { }\n\n    private final AtomicLong sequence = new AtomicLong(1000);\n    private final OrderEventPublisher publisher;\n\n    public OrderService(OrderEventPublisher publisher) {\n        this.publisher = publisher;\n    }\n\n    public OrderCreated create(CreateOrderRequest request) {\n        BigDecimal total = request.lines().stream()\n                .map(line -> line.unitPrice().multiply(BigDecimal.valueOf(line.qty())))\n                .reduce(BigDecimal.ZERO, BigDecimal::add);\n        OrderCreated event = new OrderCreated(\n                UUID.randomUUID().toString(),\n                \"o-\" + sequence.incrementAndGet(),\n                request.customerId(),\n                request.lines(),\n                total,\n                \"INR\",\n                Instant.now());\n        publisher.publish(event);\n        return event;\n    }\n}",
+          "title": "OrderService.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.shopstream.order;\n\nimport com.shopstream.events.OrderCreated;\nimport com.shopstream.order.OrderService.CreateOrderRequest;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/orders\")\npublic class OrderController {\n\n    public record OrderAccepted(String orderId, String status) { }\n\n    private final OrderService orderService;\n\n    public OrderController(OrderService orderService) {\n        this.orderService = orderService;\n    }\n\n    @PostMapping\n    public ResponseEntity<OrderAccepted> create(@RequestBody CreateOrderRequest request) {\n        OrderCreated event = orderService.create(request);\n        return ResponseEntity.accepted().body(new OrderAccepted(event.orderId(), \"ACCEPTED\"));\n    }\n}",
+          "title": "OrderController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "**What to notice.** The template is injected through the constructor, with the key and value types spelled out; Boot's single `KafkaTemplate` bean satisfies it. The record key is the order id. `whenComplete` runs on the producer's I/O thread, so keep the callback short and never block in it. The HTTP request returns `202 Accepted` without waiting for Kafka. Orders get ids like `o-1001` from an in-memory counter, which is only good enough for a demo.\n\n### Running it\n\nStart the broker, the application, and a console consumer on the `orders` topic. The application creates the topic at startup. Then post an order:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ mvn spring-boot:run\n$ curl -s -X POST http://localhost:8080/orders -H \"Content-Type: application/json\" \\\n    -d '{\"customerId\":\"c-77\",\"lines\":[{\"sku\":\"SKU-RED-SHOE-42\",\"qty\":2,\"unitPrice\":499.00}]}'\n{\"orderId\":\"o-1001\",\"status\":\"ACCEPTED\"}\n$ bin/kafka-console-consumer.sh --topic orders --from-beginning --max-messages 1 \\\n    --formatter-property print.key=true --formatter-property key.separator=\" | \" \\\n    --bootstrap-server localhost:9092 | cut -c1-100\no-1001 | {\"eventId\":\"5d0e9a1c-3b77-4e0f-8a52-9c1d7e4b2f10\",\"orderId\":\"o-1001\",\"customerId\":\"c-",
+          "title": "Create an order and read the event"
+        },
+        {
+          "type": "markdown",
+          "text": "In the application log you should see a line like `Published order o-1001 to orders-1 at offset 0`. The partition number depends on the hash of the key, and the order of the JSON fields depends on the mapper configuration; both are examples here."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A successful `send` does not mean the order is safely stored. The controller above answers `202` even if Kafka is down: the failure only appears in the log. And if the service had saved the order in a database and then published the event, a crash between the two steps would leave the database and the topic disagreeing (the dual-write problem). The outbox pattern in the design patterns Part is the standard cure. For events where loss is unacceptable, at least wait for the future before replying, and keep the producer defaults (`acks=all`, idempotence on)."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Is `KafkaTemplate.send` synchronous? How do you know a message arrived? No. It returns a `CompletableFuture` immediately after handing the record to the producer's buffer. The future completes with a `SendResult` (carrying topic, partition and offset) once the broker acknowledges according to `acks`, or exceptionally after the producer gave up (`delivery.timeout.ms`). You attach `whenComplete` for asynchronous handling or call `get` with a timeout to wait. With `acks=all`, a successful result means all in-sync replicas have the record."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Producing with KafkaTemplate\n\n- One thread-safe `KafkaTemplate` wraps a shared producer; inject it, never create one per request.\n- `send` returns a `CompletableFuture<SendResult>` immediately; handle success and failure with `whenComplete`, or wait with `get` when the caller needs the guarantee.\n- Use the order id (or another business key) as record key for per-entity ordering; use `ProducerRecord` or `Message` to add headers.\n- `JacksonJsonSerializer` writes JSON and adds a type header by default; across services prefer to switch it off.\n- A 202 response only means the record was handed over. Real delivery guarantees need the future, the producer defaults, and for database changes the outbox pattern."
+        }
+      ]
+    }
+  ]
+}

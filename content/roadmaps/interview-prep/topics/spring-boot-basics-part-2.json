@@ -1,0 +1,763 @@
+{
+  "source": {
+    "document": "Spring_Boot_Basics.pdf",
+    "pages": "22-37"
+  },
+  "sections": [
+    {
+      "id": "ch-2-1",
+      "type": "concept",
+      "title": "Spring MVC and REST Controllers",
+      "subtopicId": "2-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Almost every Spring Boot job involves writing HTTP endpoints. A client (a browser, a phone app, another service) sends a request such as `GET /api/books/7`, and your code must turn that into a response, usually JSON. Doing this with raw sockets or even the bare Servlet API means parsing URLs, headers and bodies by hand. Spring MVC does that plumbing for you so a controller method can look like an ordinary Java method.\n\nThis chapter covers how a request travels through Spring MVC, how to map URLs to methods, how JSON conversion works, and how to structure the code in layers. Examples use a small book catalogue; the project in a later Part builds on the same shapes."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Versions. Spring Boot 4.x (built on Spring Framework 7) is the current line; Boot 3.5.x is the last 3.x line. All code in this Part uses `jakarta.*` imports, constructor injection and records, and works on both unless a NOTE says otherwise. Boot 4 requires Java 17 or newer; Boot 3.5 also needs Java 17+. None of the listings in this Part were executed in the build environment (it cannot download Spring artefacts), so treat them as carefully checked examples, and any output shown as \"typical output\"."
+        },
+        {
+          "type": "markdown",
+          "text": "### How a request flows through Spring MVC\n\nThe starter `spring-boot-starter-web` (named `spring-boot-starter-webmvc` in Boot 4; the old name still works as a compatibility alias) puts Spring MVC and an embedded Tomcat on the classpath. Boot starts Tomcat on port 8080 when the application starts, so there is no WAR file and no separate server to install.\n\nTomcat accepts the connection and hands the request to one servlet that Spring registers: the `DispatcherServlet`. It is the **front controller**: every request enters through it, and it delegates to specialised helpers."
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 502.9 140.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M370.0 98.0 L497.9 98.0 C499.6 98.0 500.9 96.7 500.9 95.0 L500.9 65.0 C500.9 63.3 499.6 62.0 497.9 62.0 L370.0 62.0 C368.3 62.0 367.0 63.3 367.0 65.0 L367.0 95.0 C367.0 96.7 368.3 98.0 370.0 98.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M367.0 80.0 L342.0 80.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M112.0 80.0 L82.0 80.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M433.9 62.0 L436.6 56.6 L431.3 56.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.0 98.0 L339.0 98.0 C340.7 98.0 342.0 96.7 342.0 95.0 L342.0 65.0 C342.0 63.3 340.7 62.0 339.0 62.0 L115.0 62.0 C113.3 62.0 112.0 63.3 112.0 65.0 L112.0 95.0 C112.0 96.7 113.3 98.0 115.0 98.0 Z\" fill=\"#25133f\" stroke=\"#8f67cb\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M342.0 80.0 L347.4 82.6 L347.4 77.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 98.0 L79.0 98.0 C80.7 98.0 82.0 96.7 82.0 95.0 L82.0 65.0 C82.0 63.3 80.7 62.0 79.0 62.0 L5.0 62.0 C3.3 62.0 2.0 63.3 2.0 65.0 L2.0 95.0 C2.0 96.7 3.3 98.0 5.0 98.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M82.0 80.0 L87.4 82.6 L87.4 77.4 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 38.0 L79.0 38.0 C80.7 38.0 82.0 36.7 82.0 35.0 L82.0 5.0 C82.0 3.3 80.7 2.0 79.0 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 35.0 C2.0 36.7 3.3 38.0 5.0 38.0 Z\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M115.0 38.0 L219.0 38.0 C220.7 38.0 222.0 36.7 222.0 35.0 L222.0 5.0 C222.0 3.3 220.7 2.0 219.0 2.0 L115.0 2.0 C113.3 2.0 112.0 3.3 112.0 5.0 L112.0 35.0 C112.0 36.7 113.3 38.0 115.0 38.0 Z\" fill=\"#122840\" stroke=\"#5d95d5\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M255.0 38.0 L339.0 38.0 C340.7 38.0 342.0 36.7 342.0 35.0 L342.0 5.0 C342.0 3.3 340.7 2.0 339.0 2.0 L255.0 2.0 C253.3 2.0 252.0 3.3 252.0 5.0 L252.0 35.0 C252.0 36.7 253.3 38.0 255.0 38.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M370.0 38.0 L497.9 38.0 C499.6 38.0 500.9 36.7 500.9 35.0 L500.9 5.0 C500.9 3.3 499.6 2.0 497.9 2.0 L370.0 2.0 C368.3 2.0 367.0 3.3 367.0 5.0 L367.0 35.0 C367.0 36.7 368.3 38.0 370.0 38.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M82.0 20.0 L112.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M222.0 20.0 L252.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M342.0 20.0 L367.0 20.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M112.0 20.0 L106.6 17.4 L106.6 22.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M252.0 20.0 L246.6 17.4 L246.6 22.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M367.0 20.0 L361.6 17.4 L361.6 22.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"32.6\" y=\"18.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"18.8\" lengthAdjust=\"spacingAndGlyphs\">Client</text><text x=\"134.1\" y=\"18.0\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"65.8\" lengthAdjust=\"spacingAndGlyphs\">DispatcherServlet</text><text x=\"270.3\" y=\"18.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"53.3\" lengthAdjust=\"spacingAndGlyphs\">HandlerMapping</text><text x=\"404.4\" y=\"18.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"59.1\" lengthAdjust=\"spacingAndGlyphs\">Controller method</text><text x=\"20.2\" y=\"27.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"43.5\" lengthAdjust=\"spacingAndGlyphs\">HTTP request</text><text x=\"139.0\" y=\"27.0\" font-size=\"7.2\" fill=\"#e7e9f3\" font-weight=\"700\" textLength=\"56.1\" lengthAdjust=\"spacingAndGlyphs\">front controller</text><text x=\"272.6\" y=\"27.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"48.8\" lengthAdjust=\"spacingAndGlyphs\">finds controller</text><text x=\"411.0\" y=\"27.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"45.8\" lengthAdjust=\"spacingAndGlyphs\">@GetMapping</text><text x=\"32.6\" y=\"78.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"18.8\" lengthAdjust=\"spacingAndGlyphs\">Client</text><text x=\"180.3\" y=\"78.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"93.5\" lengthAdjust=\"spacingAndGlyphs\">Message converter (Jackson)</text><text x=\"402.4\" y=\"78.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"63.1\" lengthAdjust=\"spacingAndGlyphs\">Service / repository</text><text x=\"18.2\" y=\"87.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"47.6\" lengthAdjust=\"spacingAndGlyphs\">JSON response</text><text x=\"203.7\" y=\"87.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"46.5\" lengthAdjust=\"spacingAndGlyphs\">object to JSON</text><text x=\"411.2\" y=\"87.0\" font-size=\"7.2\" fill=\"#e7e9f3\" textLength=\"45.5\" lengthAdjust=\"spacingAndGlyphs\">returns object</text><text x=\"177.2\" y=\"124.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"148.5\" lengthAdjust=\"spacingAndGlyphs\">interceptors run before and after the controller</text></svg>",
+          "width": 503,
+          "caption": "The DispatcherServlet looks up a handler, runs interceptors, converts arguments and the return value with message converters, and writes the response.",
+          "alt": "Client DispatcherServlet HandlerMapping Controller method | HTTP request front controller finds controller @GetMapping | Client Message converter (Jackson) Service / repository | JSON response object to JSON returns object | interceptors run before and after the controller"
+        },
+        {
+          "type": "markdown",
+          "text": "The steps, in order:\n\n1. The `HandlerMapping` finds the controller method that matches the URL, the HTTP method and other conditions (such as `Content-Type`).\n2. Filters (servlet level) have already run, and interceptors (`HandlerInterceptor`) run before the method is called.\n3. A `HandlerAdapter` prepares the arguments. `@PathVariable`, `@RequestParam` and `@RequestBody` are resolved here; JSON is turned into Java objects by an `HttpMessageConverter` (Jackson).\n4. Your method runs and returns an object.\n5. The return value is converted back to JSON by a message converter and written to the response with the status code.\n6. If any step throws, exception resolvers (your `@ExceptionHandler` methods, covered in the next chapter) turn the exception into a response."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "Describe what happens when a request reaches a Spring Boot application. Tomcat receives it and passes it through the servlet filter chain to the `DispatcherServlet`. It asks the handler mappings for the matching controller method, runs interceptors, resolves method arguments (converting the JSON body with Jackson), invokes the method, converts the return value to the response body with a message converter, and sends it. Exceptions are routed to exception handlers."
+        },
+        {
+          "type": "markdown",
+          "text": "### Your first controller\n\nAnnotate a class with `@RestController`. It combines `@Controller` and `@ResponseBody`, which means \"every return value is written to the response body\" instead of being treated as a view name."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\nimport java.util.List;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\n\n@RestController\n@RequestMapping(\"/api/books\")\npublic class BookController {\n\n    private final BookService service;\n\n    public BookController(BookService service) {\n        this.service = service;\n    }\n\n    @GetMapping\n    public List<BookResponse> list(@RequestParam(defaultValue = \"\") String title) {\n        return service.search(title);\n    }\n\n    @GetMapping(\"/{id}\")\n    public BookResponse get(@PathVariable long id) {\n        return service.get(id);\n    }\n}",
+          "title": "BookController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: `@RequestMapping(\"/api/books\")` on the class gives a common prefix; `@GetMapping` with no path means `GET /api/books`. The class has one constructor, so Spring injects `BookService` without any annotation. The controller contains no business logic, only translation between HTTP and Java.\n\nTry it with curl (typical output):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s \"localhost:8080/api/books?title=java\"\n[{\"id\":1,\"title\":\"Core Java\",\"author\":\"A. Rao\",\"year\":2023}]\n$ curl -s localhost:8080/api/books/1\n{\"id\":1,\"title\":\"Core Java\",\"author\":\"A. Rao\",\"year\":2023}",
+          "title": "Call the endpoints"
+        },
+        {
+          "type": "markdown",
+          "text": "### Mapping annotations and parameters\n\nEach HTTP verb has a shortcut annotation. They are all specialised forms of `@RequestMapping(method = ...)`."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Annotation",
+            "Reads from",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`@GetMapping`",
+              "`HTTP GET`",
+              "`@GetMapping(\"/{id}\")`"
+            ],
+            [
+              "`@PostMapping`",
+              "`HTTP POST`",
+              "`@PostMapping` creates a resource"
+            ],
+            [
+              "`@PutMapping`",
+              "`HTTP PUT`",
+              "replace a whole resource"
+            ],
+            [
+              "`@PatchMapping`",
+              "`HTTP PATCH`",
+              "partial update"
+            ],
+            [
+              "`@DeleteMapping`",
+              "`HTTP DELETE`",
+              "remove a resource"
+            ],
+            [
+              "`@PathVariable`",
+              "`URL segment`",
+              "`/books/{id}` gives `long id`"
+            ],
+            [
+              "`@RequestParam`",
+              "`query string`",
+              "`?page=2` gives `int page`"
+            ],
+            [
+              "`@RequestBody`",
+              "`request body`",
+              "JSON turned into a record"
+            ],
+            [
+              "`@RequestHeader`",
+              "`a header`",
+              "`@RequestHeader(\"X-Trace-Id\")`"
+            ]
+          ],
+          "caption": "Mapping and binding annotations."
+        },
+        {
+          "type": "markdown",
+          "text": "Details worth knowing:\n\n- Names are taken from the parameter name when the code is compiled with `-parameters`. Spring Boot's Maven parent enables that flag, so `@PathVariable long id` works. If you ever compile without it, write `@PathVariable(\"id\")`.\n- `@RequestParam` is required by default. A missing one gives HTTP 400. Use `required = false`, `defaultValue =` `\"...\"`, or `Optional<T>`.\n- A path variable of the wrong type (`/books/abc` for a `long`) gives 400 automatically.\n- Narrow a mapping with `consumes` and `produces`, for example `@PostMapping(consumes = \"application/json\")`. A wrong `Content-Type` then gives 415 (Unsupported Media Type).\n\n### DTOs, records and JSON\n\n**Jackson** is the library that converts Java objects to JSON and back. Boot configures it for you. A **DTO** (data transfer object) is a class whose only job is to carry data across a boundary. Java records are ideal DTOs: immutable, short, and Jackson supports them."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\npublic record BookRequest(String title, String author, int year) { }",
+          "title": "BookRequest.java"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\npublic record BookResponse(long id, String title, String author, int year) {\n\n    static BookResponse from(Book book) {\n        return new BookResponse(book.getId(), book.getTitle(), book.getAuthor(), book.getYear());\n    }\n}",
+          "title": "BookResponse.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Why not return the database entity directly? Three reasons you can give in an interview:\n\n1. **Leaking fields.** An entity may hold a password hash, an internal flag or a collection you did not mean to expose. A DTO exposes only what you list.\n2. **Coupling.** If the JSON is your entity, renaming a column breaks every client. A DTO lets the API and the database evolve separately.\n3. **Lazy loading.** Serialising an entity with lazy relations can trigger database queries during JSON writing, or throw `LazyInitializationException` (covered in the JPA Part).\n\nUseful Jackson behaviour to know:\n\n- Unknown JSON properties are ignored by default in Spring Boot (`FAIL_ON_UNKNOWN_PROPERTIES` is turned off), so adding a field on the client does not break the server.\n- `LocalDate` and friends are written as ISO strings (`2026-10-12`), not numbers, because Boot disables `WRITE_DATES_AS_TIMESTAMPS`.\n- Rename a field with `@JsonProperty(\"published_year\")`, hide one with `@JsonIgnore`. Both annotations still live in the `com.fasterxml.jackson.annotation` package in Jackson 3.\n- To change global behaviour use properties such as `spring.jackson.default-property-inclusion=non_null`. In Boot 4 the same namespace applies for Jackson 3; check the property reference when you upgrade."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "Jackson 3. Spring Boot 4 uses Jackson 3 by default. Its core packages moved from `com.fasterxml.jackson.databind` to `tools.jackson.databind`, and the main class `ObjectMapper` is created through `JsonMapper`. If you only write DTOs and controllers, as here, you notice nothing. You only touch the difference when you inject an `ObjectMapper` or write custom serialisers. Boot 4 also ships a Jackson 2 compatibility module for gradual migration."
+        },
+        {
+          "type": "markdown",
+          "text": "### Responses, status codes and ResponseEntity\n\nReturning an object gives status 200. For anything else you control the status in one of two ways."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\nimport java.net.URI;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.annotation.DeleteMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestBody;\nimport org.springframework.web.bind.annotation.RequestMapping;\nimport org.springframework.web.bind.annotation.ResponseStatus;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.servlet.support.ServletUriComponentsBuilder;\n\n@RestController\n@RequestMapping(\"/api/books\")\npublic class BookWriteController {\n\n    private final BookService service;\n\n    public BookWriteController(BookService service) {\n        this.service = service;\n    }\n\n    @PostMapping\n    public ResponseEntity<BookResponse> create(@RequestBody BookRequest request) {\n        BookResponse created = service.create(request);\n        URI location = ServletUriComponentsBuilder.fromCurrentRequest()\n                .path(\"/{id}\").buildAndExpand(created.id()).toUri();\n        return ResponseEntity.created(location).body(created);\n    }\n\n    @DeleteMapping(\"/{id}\")\n    @ResponseStatus(HttpStatus.NO_CONTENT)\n    public void delete(@PathVariable long id) {\n        service.delete(id);\n    }\n}",
+          "title": "BookWriteController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "`ResponseEntity<T>` lets you set the status, headers and body together; here it returns 201 Created with a `Location` header pointing at the new resource, which is the REST convention. `@ResponseStatus` is the simpler choice when the status is always the same."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -i -X POST localhost:8080/api/books \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\"title\":\"Spring Basics\",\"author\":\"M. Rao\",\"year\":2026}'\nHTTP/1.1 201\nLocation: http://localhost:8080/api/books/2\nContent-Type: application/json\n\n{\"id\":2,\"title\":\"Spring Basics\",\"author\":\"M. Rao\",\"year\":2026}",
+          "title": "Create a book (typical output)"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Returning `null` from a controller method gives an empty 200 response, not a 404. Return `ResponseEntity.notFound().build()` or, better, throw a custom exception that your error handler maps to 404 (next chapter)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Layering: controller, service, repository"
+        },
+        {
+          "type": "diagram",
+          "format": "svg",
+          "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 465.5 128.9\" font-family=\"Inter Variable, ui-sans-serif, system-ui, sans-serif\"><path d=\"M5.0 120.0 L248.4 120.0 C250.1 120.0 251.4 118.7 251.4 117.0 L251.4 89.0 C251.4 87.3 250.1 86.0 248.4 86.0 L5.0 86.0 C3.3 86.0 2.0 87.3 2.0 89.0 L2.0 117.0 C2.0 118.7 3.3 120.0 5.0 120.0 Z\" fill=\"#1b3723\" stroke=\"#66cc93\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M331.3 116.0 L401.3 116.0 L401.3 84.0 L331.3 84.0 Z\" fill=\"#23282e\" stroke=\"#eef0f3\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M331.3 116.0 L331.3 84.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M401.3 116.0 L401.3 84.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\"/><path d=\"M251.4 103.0 L331.3 100.0\" fill=\"none\" stroke=\"#9a9a9a\" stroke-width=\"1.10\" stroke-linejoin=\"round\"/><path d=\"M5.0 78.0 L248.4 78.0 C250.1 78.0 251.4 76.7 251.4 75.0 L251.4 47.0 C251.4 45.3 250.1 44.0 248.4 44.0 L5.0 44.0 C3.3 44.0 2.0 45.3 2.0 47.0 L2.0 75.0 C2.0 76.7 3.3 78.0 5.0 78.0 Z\" fill=\"#18383a\" stroke=\"#46deec\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M401.3 116.0 C401.3 113.8 385.6 112.0 366.3 112.0 C346.9 112.0 331.3 113.8 331.3 116.0 C331.3 118.2 346.9 120.0 366.3 120.0 C385.6 120.0 401.3 118.2 401.3 116.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M401.3 84.0 C401.3 81.8 385.6 80.0 366.3 80.0 C346.9 80.0 331.3 81.8 331.3 84.0 C331.3 86.2 346.9 88.0 366.3 88.0 C385.6 88.0 401.3 86.2 401.3 84.0\" fill=\"#23282e\" stroke=\"#9a9a9a\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M126.7 86.0 L129.3 80.6 L124.1 80.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M331.3 100.0 L325.8 97.6 L326.0 102.8 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M5.0 36.0 L248.4 36.0 C250.1 36.0 251.4 34.7 251.4 33.0 L251.4 5.0 C251.4 3.3 250.1 2.0 248.4 2.0 L5.0 2.0 C3.3 2.0 2.0 3.3 2.0 5.0 L2.0 33.0 C2.0 34.7 3.3 36.0 5.0 36.0 Z\" fill=\"#492c08\" stroke=\"#e09952\" stroke-width=\"0.90\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><path d=\"M126.7 44.0 L129.3 38.6 L124.1 38.6 Z\" fill=\"#667085\" stroke=\"#9a9a9a\" stroke-width=\"0.50\" stroke-linejoin=\"round\" fill-rule=\"evenodd\"/><text x=\"110.3\" y=\"16.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"32.9\" lengthAdjust=\"spacingAndGlyphs\">Controller</text><text x=\"88.6\" y=\"26.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"76.3\" lengthAdjust=\"spacingAndGlyphs\">HTTP, DTOs, validation</text><text x=\"368.7\" y=\"26.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"94.8\" lengthAdjust=\"spacingAndGlyphs\">DTOs cross the web boundary</text><text x=\"386.4\" y=\"38.0\" font-size=\"7.0\" fill=\"#e7e9f3\" font-style=\"italic\" textLength=\"59.4\" lengthAdjust=\"spacingAndGlyphs\">entities stay inside</text><text x=\"114.4\" y=\"58.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"24.6\" lengthAdjust=\"spacingAndGlyphs\">Service</text><text x=\"75.0\" y=\"68.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"103.4\" lengthAdjust=\"spacingAndGlyphs\">business rules, @Transactional</text><text x=\"108.9\" y=\"100.9\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"35.7\" lengthAdjust=\"spacingAndGlyphs\">Repository</text><text x=\"350.2\" y=\"102.6\" font-size=\"7.5\" fill=\"#e7e9f3\" textLength=\"32.2\" lengthAdjust=\"spacingAndGlyphs\">Database</text><text x=\"99.9\" y=\"110.2\" font-size=\"7.4\" fill=\"#e7e9f3\" textLength=\"53.7\" lengthAdjust=\"spacingAndGlyphs\">entities, queries</text></svg>",
+          "width": 465,
+          "caption": "Each layer talks only to the one below it; DTOs cross the web boundary and entities stay inside the data layer.",
+          "alt": "Controller | HTTP, DTOs, validation DTOs cross the web boundary | entities stay inside | Service | business rules, @Transactional | Repository Database | entities, queries"
+        },
+        {
+          "type": "markdown",
+          "text": "A layered structure keeps each class small and testable.\n\n- **Controller**: HTTP only. Parse input, call one service method, choose the status code. No business rules, no SQL.\n- **Service**: business rules and transactions. Works with entities and throws domain exceptions (`BookNotFoundException`). Knows nothing about HTTP.\n- **Repository**: reads and writes the database (Spring Data, next Part).\n\nEach layer receives the next one through its constructor. The service in our example:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\nimport java.util.List;\nimport org.springframework.stereotype.Service;\nimport org.springframework.transaction.annotation.Transactional;\n\n@Service\npublic class BookService {\n\n    private final BookRepository repository;\n\n    public BookService(BookRepository repository) {\n        this.repository = repository;\n    }\n\n    @Transactional(readOnly = true)\n    public List<BookResponse> search(String title) {\n        return repository.findByTitleContainingIgnoreCase(title).stream()\n                .map(BookResponse::from)\n                .toList();\n    }\n\n    @Transactional(readOnly = true)\n    public BookResponse get(long id) {\n        return repository.findById(id)\n                .map(BookResponse::from)\n                .orElseThrow(() -> new BookNotFoundException(id));\n    }\n    @Transactional\n    public BookResponse create(BookRequest request) {\n        Book book = new Book(request.title(), request.author(), request.year());\n        return BookResponse.from(repository.save(book));\n    }\n\n    @Transactional\n    public void delete(long id) {\n        if (!repository.existsById(id)) {\n            throw new BookNotFoundException(id);\n        }\n        repository.deleteById(id);\n    }\n}",
+          "title": "BookService.java"
+        },
+        {
+          "type": "markdown",
+          "text": "The mapping from entity to DTO happens inside the transactional service, so lazy fields can still be read. The controller never sees an entity."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Do not create an interface plus one implementation for every service by reflex. Spring does not need it (it can proxy classes). Add an interface when you truly have two implementations or need a seam for a test."
+        },
+        {
+          "type": "markdown",
+          "text": "### Common mistakes\n\n- **Field injection** (`@Autowired` on a field) in controllers makes them hard to test. Use the constructor.\n- **Fat controllers** that call repositories directly: business rules end up scattered and untestable.\n- **Returning entities** from endpoints, as discussed.\n- **Blocking forever**: a controller that calls a slow service without a timeout holds a Tomcat thread. Timeouts are covered in the API design chapter.\n- **Wrong package for component scan**: `@SpringBootApplication` scans its own package and below. A controller placed in a sibling package is silently ignored, and you get 404 for every URL."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Remember these points.\n\n- A request enters the `DispatcherServlet`, is routed to a controller method, and message converters (Jackson) translate JSON both ways.\n- Use `@RestController`, the verb-specific mapping annotations, and bind inputs with `@PathVariable`, `@RequestParam`, `@RequestBody`.\n- Use records as request and response DTOs; keep entities inside the service and repository layers.\n- Set status deliberately: 201 with a `Location` header for creates, 204 for deletes, 404 through an exception.\n- Controller handles HTTP, service handles rules and transactions, repository handles storage; wire them with constructor injection."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-2",
+      "type": "concept",
+      "title": "Validation and Exception Handling",
+      "subtopicId": "2-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "Never trust input. A client can send an empty title, a negative year, or a 5 MB string. If your service code assumes good data, bad data ends as a `NullPointerException` deep in the stack and a confusing 500 response. The rule: **reject bad** **input at the edge with a clear 4xx message, and turn every failure into a predictable JSON error**.\n\n### Bean Validation\n\n**Bean Validation** (Jakarta Validation, with Hibernate Validator as the implementation) lets you declare constraints as annotations. Add the starter `spring-boot-starter-validation` (same name in Boot 3.5 and 4)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\nimport jakarta.validation.constraints.Max;\nimport jakarta.validation.constraints.Min;\nimport jakarta.validation.constraints.NotBlank;\nimport jakarta.validation.constraints.Size;\n\npublic record BookRequest(\n        @NotBlank(message = \"title is required\")\n        @Size(max = 200, message = \"title must be at most 200 characters\")\n        String title,\n\n        @NotBlank(message = \"author is required\")\n        String author,\n\n        @Min(value = 1450, message = \"year must be 1450 or later\")\n        @Max(value = 2100, message = \"year must be 2100 or earlier\")\n        int year) { }",
+          "title": "BookRequest.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Common constraints:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Annotation",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`@NotNull`",
+              "value must not be null"
+            ],
+            [
+              "`@NotBlank`",
+              "string is not null and has a non-whitespace character"
+            ],
+            [
+              "`@NotEmpty`",
+              "string, collection or map is not empty"
+            ],
+            [
+              "`@Size(min, max)`",
+              "length of a string or size of a collection"
+            ],
+            [
+              "`@Min / @Max`",
+              "numeric bounds"
+            ],
+            [
+              "`@Positive / @PositiveOrZero`",
+              "greater than zero / zero or more"
+            ],
+            [
+              "`@Email`",
+              "looks like an email address"
+            ],
+            [
+              "`@Pattern(regexp)`",
+              "string matches a regular expression"
+            ],
+            [
+              "`@Past / @Future`",
+              "date is before / after now"
+            ],
+            [
+              "`@Valid`",
+              "validate the nested object too (cascade)"
+            ]
+          ],
+          "caption": "Frequently used constraints."
+        },
+        {
+          "type": "markdown",
+          "text": "Constraints do nothing until you ask for validation. Put `@Valid` on the `@RequestBody` parameter:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@PostMapping\npublic ResponseEntity<BookResponse> create(@Valid @RequestBody BookRequest request) {\n    BookResponse created = service.create(request);\n    return ResponseEntity.status(HttpStatus.CREATED).body(created);\n}",
+          "title": "CreateEndpoint.java"
+        },
+        {
+          "type": "markdown",
+          "text": "If validation fails, Spring throws `MethodArgumentNotValidException` before your method body runs. Without a handler, Boot answers 400 with a default error body. Next we customise it.\n\n#### Validating other inputs\n\nFor `@RequestParam` and `@PathVariable`, put `@Validated` on the controller class and constraints on the parameters (`@RequestParam @Min(1) int page`). Spring 6.1 and later (so both Boot 3.5 and 4) validate controller method parameters natively and raise `HandlerMethodValidationException` in that case, a different exception from the body one. Handle both. Validation also works on any Spring bean when the class is annotated `@Validated`, which is handy for service methods; that path throws `ConstraintViolationException`.\n\n#### A custom constraint\n\nWhen no built-in annotation fits, write your own: an annotation plus a validator."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.validation;\n\nimport jakarta.validation.Constraint;\nimport jakarta.validation.ConstraintValidator;\nimport jakarta.validation.ConstraintValidatorContext;\nimport jakarta.validation.Payload;\nimport java.lang.annotation.Documented;\nimport java.lang.annotation.ElementType;\nimport java.lang.annotation.Retention;\nimport java.lang.annotation.RetentionPolicy;\nimport java.lang.annotation.Target;\n\n@Documented\n@Constraint(validatedBy = Isbn.Validator.class)\n@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.RECORD_COMPONENT})\n@Retention(RetentionPolicy.RUNTIME)\npublic @interface Isbn {\n\n    String message() default \"must be a valid ISBN-13\";\n\n    Class<?>[] groups() default {};\n\n    Class<? extends Payload>[] payload() default {};\n\n    class Validator implements ConstraintValidator<Isbn, String> {\n        @Override\n        public boolean isValid(String value, ConstraintValidatorContext context) {\n            if (value == null) {\n                return true; // combine with @NotNull when the field is mandatory\n            }\n            String digits = value.replace(\"-\", \"\");\n            if (!digits.matches(\"\\\\d{13}\")) {\n                return false;\n            }\n            int sum = 0;\n            for (int i = 0; i < 13; i++) {\n                int d = digits.charAt(i) - '0';\n                sum += (i % 2 == 0) ? d : 3 * d;\n            }\n            return sum % 10 == 0;\n        }\n    }\n}",
+          "title": "Isbn.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the three attributes `message`, `groups`, `payload` are required by the specification. Treat `null` as valid and let `@NotNull` handle presence, so each rule has one job. Use it like any other: `@Isbn String isbn` in a record. **Validation groups** let one DTO have different rules for create and update (`@NotNull(groups = OnCreate.class)`, `@Validated(OnCreate.class)`). They add complexity, so most teams prefer two small DTOs (`CreateBookRequest`, `UpdateBookRequest`) instead.\n\n### Handling exceptions in one place\n\nWithout a plan, every controller grows `try/catch` blocks. Spring lets you declare, once, how each exception type becomes a response.\n\n- `@ExceptionHandler` on a method of a controller handles exceptions from that controller only.\n- `@RestControllerAdvice` on a separate class applies to all controllers. This is the normal choice.\n\n#### ProblemDetail (RFC 9457)\n\nEvery API invents its own error JSON unless you agree on a format. **RFC 9457** (\"Problem Details for HTTP APIs\", the successor of RFC 7807) defines one, content type `application/problem+json`, with standard fields: `type`, `title`, `status`, `detail`, `instance`, plus any extra properties you add. Spring has the class `ProblemDetail` built in (Framework 6+). Setting `spring.mvc.problemdetails.enabled=true` makes Spring's own MVC exceptions (such as a missing parameter or wrong media type) use that format automatically. In Boot 3.5 the property defaults to false, so set it explicitly; check the reference for your version if you rely on the default.\n\n#### The advice class"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport com.example.library.book.BookNotFoundException;\nimport com.example.library.book.DuplicateIsbnException;\nimport java.net.URI;\nimport java.util.List;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.http.HttpHeaders;\nimport org.springframework.http.HttpStatus;\nimport org.springframework.http.HttpStatusCode;\nimport org.springframework.http.ProblemDetail;\nimport org.springframework.http.ResponseEntity;\nimport org.springframework.web.bind.MethodArgumentNotValidException;\nimport org.springframework.web.bind.annotation.ExceptionHandler;\nimport org.springframework.web.bind.annotation.RestControllerAdvice;\nimport org.springframework.web.context.request.WebRequest;\nimport org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;\n\n@RestControllerAdvice\npublic class ApiExceptionHandler extends ResponseEntityExceptionHandler {\n\n    private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);\n\n    @ExceptionHandler(BookNotFoundException.class)\n    ProblemDetail notFound(BookNotFoundException ex) {\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());\n        pd.setTitle(\"Book not found\");\n        pd.setType(URI.create(\"https://api.example.com/problems/book-not-found\"));\n        return pd;\n    }\n\n    @ExceptionHandler(DuplicateIsbnException.class)\n    ProblemDetail conflict(DuplicateIsbnException ex) {\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());\n        pd.setTitle(\"Duplicate ISBN\");\n        return pd;\n    }\n\n    @Override\n    protected ResponseEntity<Object> handleMethodArgumentNotValid(\n            MethodArgumentNotValidException ex, HttpHeaders headers,\n            HttpStatusCode status, WebRequest request) {\n        List<FieldProblem> errors = ex.getBindingResult().getFieldErrors().stream()\n                .map(f -> new FieldProblem(f.getField(), f.getDefaultMessage()))\n                .toList();\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(\n                HttpStatus.UNPROCESSABLE_ENTITY, \"Validation failed\");\n        pd.setTitle(\"Invalid request\");\n        pd.setProperty(\"errors\", errors);\n        return ResponseEntity.unprocessableEntity().body(pd);\n    }\n\n    @ExceptionHandler(Exception.class)\n    ProblemDetail unexpected(Exception ex) {\n        log.error(\"Unhandled exception\", ex);\n        ProblemDetail pd = ProblemDetail.forStatusAndDetail(\n                HttpStatus.INTERNAL_SERVER_ERROR, \"Something went wrong. Try again later.\");\n        pd.setTitle(\"Internal error\");\n        return pd;\n    }\n\n    record FieldProblem(String field, String message) { }\n}",
+          "title": "ApiExceptionHandler.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Supporting types:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.book;\n\npublic class BookNotFoundException extends RuntimeException {\n\n    public BookNotFoundException(long id) {\n        super(\"No book with id \" + id);\n    }\n}",
+          "title": "BookNotFoundException.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice:\n\n- Extending `ResponseEntityExceptionHandler` gives sensible handling for all Spring MVC's own exceptions (400, 404, 405, 415 and so on) rendered as `ProblemDetail`. We override only the validation one. Your own `@ExceptionHandler` methods are for your domain exceptions.\n- The catch-all `Exception` handler logs the full stack trace on the server and returns a generic message. **Never put** `ex.getMessage()` **or a stack trace of an unexpected exception in the response**: it leaks class names, SQL and internals to attackers. Our domain exceptions return their message because we wrote those messages for clients.\n- The 422 versus 400 choice for validation is a style decision. 400 (Bad Request) is what Spring uses by default; 422 (Unprocessable Content) says \"the syntax was fine but the content breaks the rules\". Pick one and be consistent."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ curl -s -X POST localhost:8080/api/books -H \"Content-Type: application/json\" \\\n    -d '{\"title\":\"\",\"author\":\"X\",\"year\":1200}'\n{\"type\":\"about:blank\",\"title\":\"Invalid request\",\"status\":422,\"detail\":\"Validation failed\",\n\"instance\":\"/api/books\",\"errors\":[{\"field\":\"title\",\"message\":\"title is required\"},\n{\"field\":\"year\",\"message\":\"year must be 1450 or later\"}]}",
+          "title": "Typical output for an invalid POST"
+        },
+        {
+          "type": "markdown",
+          "text": "### Mapping exceptions to status codes"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Situation",
+            "Status",
+            "Typical cause"
+          ],
+          "rows": [
+            [
+              "Malformed JSON, wrong type",
+              "`400`",
+              "client sent bad syntax"
+            ],
+            [
+              "Validation constraint violated",
+              "`400 or 422`",
+              "field rules broken"
+            ],
+            [
+              "Not authenticated",
+              "`401`",
+              "missing or bad credentials"
+            ],
+            [
+              "Authenticated but not allowed",
+              "`403`",
+              "role missing"
+            ],
+            [
+              "Resource does not exist",
+              "`404`",
+              "custom exception thrown in service"
+            ],
+            [
+              "Business conflict (duplicate, version clash)",
+              "`409`",
+              "unique ISBN already exists"
+            ],
+            [
+              "Method not supported",
+              "`405`",
+              "`DELETE` on a read-only URL"
+            ],
+            [
+              "Unexpected failure",
+              "`500`",
+              "bug; log it, hide details"
+            ]
+          ],
+          "caption": "Which exception becomes which status."
+        },
+        {
+          "type": "markdown",
+          "text": "You can also annotate an exception class with `@ResponseStatus(HttpStatus.NOT_FOUND)`. It is quick for tiny apps, but it ties the domain class to HTTP and produces the default body, so the advice class above scales better."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you handle exceptions globally in Spring Boot? Create a class annotated `@RestControllerAdvice` with `@ExceptionHandler` methods for each exception type. Each returns a `ProblemDetail` (RFC 9457) or `ResponseEntity` with the right status. Domain exceptions map to 404/409, validation errors to 400/422 with per-field details, and a catch-all handler logs the stack trace and returns a generic 500 without internals."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "A `catch (Exception e) { e.printStackTrace(); }` in a controller swallows the failure and still returns 200. Let exceptions propagate to the advice class."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Remember these points.\n\n- Declare constraints on DTOs, add `@Valid` at the controller, and include the validation starter.\n- Centralise error mapping in one `@RestControllerAdvice` and answer in the `ProblemDetail` format (RFC 9457).\n- Domain exceptions map to 404 or 409; validation maps to 400 or 422 with per-field messages.\n- Never expose stack traces or raw exception messages for unexpected errors; log them server-side."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-3",
+      "type": "concept",
+      "title": "REST API Design in Practice",
+      "subtopicId": "2-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A working endpoint is not yet a good API. Clients depend on your URLs, status codes and error shapes for years, so small design decisions made now are expensive to change. This chapter collects the conventions that experienced teams follow.\n\n### Resources, verbs and idempotency\n\nREST models your domain as **resources** (nouns) and uses HTTP methods as the verbs.\n\n- Use plural nouns: `/api/books`, `/api/books/7`, `/api/books/7/loans`. Not `/getBook` or `/createLoan`.\n- Nesting shows ownership but keep it to two levels. `/authors/3/books` is fine; `/authors/3/books/7/loans/9/items` is not.\n- Use lowercase and hyphens in paths (`/book-copies`), and camelCase for JSON properties.\n- Actions that are not CRUD can be a sub-resource or a verb endpoint when nothing fits: `POST /api/loans/9/return`.\n\nAn operation is **idempotent** if calling it many times has the same effect as calling it once. A **safe** operation also changes nothing. This matters because networks retry: clients, proxies and load balancers resend requests after timeouts."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Method",
+            "Safe",
+            "Idempotent",
+            "Typical use"
+          ],
+          "rows": [
+            [
+              "`GET`",
+              "yes",
+              "yes",
+              "read one or a list"
+            ],
+            [
+              "`POST`",
+              "no",
+              "no",
+              "create; run an action"
+            ],
+            [
+              "`PUT`",
+              "no",
+              "yes",
+              "replace a whole resource"
+            ],
+            [
+              "`PATCH`",
+              "no",
+              "not guaranteed",
+              "change some fields"
+            ],
+            [
+              "`DELETE`",
+              "no",
+              "yes",
+              "remove (second call may return 404, state is the same)"
+            ]
+          ],
+          "caption": "HTTP methods and their guarantees."
+        },
+        {
+          "type": "markdown",
+          "text": "A retried `POST /loans` could create two loans. For payments and similar cases, accept an `Idempotency-Key` header and remember processed keys. Mention this in interviews; it shows you think about retries.\n\n### Status code cheat table"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Code",
+            "Meaning",
+            "Use when"
+          ],
+          "rows": [
+            [
+              "`200`",
+              "OK",
+              "successful read or update with a body"
+            ],
+            [
+              "`201`",
+              "Created",
+              "POST created a resource; send `Location`"
+            ],
+            [
+              "`204`",
+              "No Content",
+              "successful delete or update with no body"
+            ],
+            [
+              "`400`",
+              "Bad Request",
+              "malformed JSON, bad parameter type"
+            ],
+            [
+              "`401`",
+              "Unauthorized",
+              "not authenticated (really \"unauthenticated\")"
+            ],
+            [
+              "`403`",
+              "Forbidden",
+              "authenticated but not permitted"
+            ],
+            [
+              "`404`",
+              "Not Found",
+              "unknown id or URL"
+            ],
+            [
+              "`409`",
+              "Conflict",
+              "duplicate or version conflict"
+            ],
+            [
+              "`422`",
+              "Unprocessable Content",
+              "valid syntax, rules violated"
+            ],
+            [
+              "`429`",
+              "Too Many Requests",
+              "rate limit hit"
+            ],
+            [
+              "`500`",
+              "Internal Server Error",
+              "unexpected bug"
+            ],
+            [
+              "`503`",
+              "Service Unavailable",
+              "dependency down, overloaded"
+            ]
+          ],
+          "caption": "Status codes you will use most."
+        },
+        {
+          "type": "markdown",
+          "text": "### Pagination and sorting\n\nNever return an unbounded list. A table with a million rows will exhaust memory and time out. Use query parameters: `GET /api/books?page=0&size=20&sort=year,desc`. Spring Data turns these into a `Pageable` argument automatically (details in the data access Part)."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@GetMapping\npublic PageResponse<BookResponse> list(\n        @PageableDefault(size = 20, sort = \"title\") Pageable pageable) {\n    return service.page(pageable);\n}\n\npublic record PageResponse<T>(List<T> items, int page, int size, long totalItems, int totalPages) {\n\n    public static <T> PageResponse<T> of(Page<T> page) {\n        return new PageResponse<>(page.getContent(), page.getNumber(), page.getSize(),\n                page.getTotalElements(), page.getTotalPages());\n    }\n}",
+          "title": "PagedController.java"
+        },
+        {
+          "type": "markdown",
+          "text": "Returning your own `PageResponse` instead of Spring's `Page` keeps the JSON shape stable (Spring Data warns that serialising `PageImpl` directly is not a supported stable format). Cap `size` so a client cannot ask for 100000 rows: the property `spring.data.web.pageable.max-page-size` (default 2000) does it. Offset pagination slows on deep pages; for huge feeds, **keyset** pagination (`?after=lastId`) scales better.\n\n### Versioning\n\nWhen you must break clients, version the API. The common options:\n\n- **URI path**: `/api/v1/books`. Simplest, visible, cache friendly. Most popular.\n- **Header**: `X-API-Version: 2` or a vendor media type `Accept: application/vnd.library.v2+json`. Cleaner URLs, harder to test with a browser.\n- **Query parameter**: `?version=2`. Easy, but easy to forget.\n\nSpring Framework 7 (Boot 4) adds first-class support: configure a resolver in `WebMvcConfigurer.configureApiVersioning(...)` and write `@GetMapping(path = \"/{id}\", version = \"1.1+\")`. On Boot 3.5 use path prefixes. Whatever you choose, avoid breaking changes in the first place: adding optional fields is safe, removing or renaming is not.\n\n**HATEOAS** (hypermedia links in responses, from the `spring-boot-starter-hateoas` starter) completes the REST theory, but few real APIs use it. Know the term for interviews.\n\n### CORS\n\n**CORS** (cross-origin resource sharing) is a browser rule: JavaScript on `https://app.example.com` may not call `https://api.example.com` unless the API says it allows that origin. It does not protect your API from curl; it only restricts browsers. Configure it centrally:"
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.web;\n\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.web.servlet.config.annotation.CorsRegistry;\nimport org.springframework.web.servlet.config.annotation.WebMvcConfigurer;\n\n@Configuration\npublic class WebConfig implements WebMvcConfigurer {\n\n    @Override\n    public void addCorsMappings(CorsRegistry registry) {\n        registry.addMapping(\"/api/**\")\n                .allowedOrigins(\"https://app.example.com\")\n                .allowedMethods(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\")\n                .allowedHeaders(\"Authorization\", \"Content-Type\")\n                .maxAge(3600);\n    }\n}",
+          "title": "WebConfig.java"
+        },
+        {
+          "type": "markdown",
+          "text": "For a single controller, `@CrossOrigin(origins = \"...\")` works. Avoid `allowedOrigins(\"*\")` together with credentials. If Spring Security is on the classpath, you must also enable CORS in the security filter chain (see the security chapter), because the security filters run first.\n\n### Filters versus interceptors\n\nBoth run code around requests, at different layers."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Aspect",
+            "Servlet `Filter`",
+            "Spring `HandlerInterceptor`"
+          ],
+          "rows": [
+            [
+              "Runs",
+              "before the DispatcherServlet",
+              "inside it, around the controller"
+            ],
+            [
+              "Knows the handler",
+              "no",
+              "yes (`preHandle`, `postHandle`, `afterCompletion`)"
+            ],
+            [
+              "Typical use",
+              "security, logging, compression, request ids",
+              "auth checks per handler, timing, locale"
+            ],
+            [
+              "Registered as",
+              "a `@Component` bean or `FilterRegistrationBean`",
+              "`WebMvcConfigurer.addInterceptors`"
+            ]
+          ],
+          "caption": "Filter and interceptor compared."
+        },
+        {
+          "type": "markdown",
+          "text": "Rule of thumb: use a filter for anything that must also apply to non-Spring-MVC requests (security, tracing ids), and an interceptor when you need handler information. Spring Security itself is a chain of filters.\n\n### Calling other services with RestClient\n\nYour API will often call another HTTP service. `RestClient` (Spring 6.1+) is the modern synchronous client with a fluent API. It replaces `RestTemplate` for new code (which is in maintenance mode). Build one with a base URL and **always set** **timeouts**: the defaults can wait indefinitely, and a slow dependency would then exhaust your Tomcat threads."
+        },
+        {
+          "type": "code",
+          "language": "java",
+          "code": "package com.example.library.integration;\n\nimport java.net.http.HttpClient;\nimport java.time.Duration;\nimport org.springframework.http.client.JdkClientHttpRequestFactory;\nimport org.springframework.stereotype.Component;\nimport org.springframework.web.client.RestClient;\n\n@Component\npublic class IsbnClient {\n\n    private final RestClient restClient;\n\n    public IsbnClient(RestClient.Builder builder) {\n        HttpClient httpClient = HttpClient.newBuilder()\n                .connectTimeout(Duration.ofSeconds(2))\n                .build();\n        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);\n        factory.setReadTimeout(Duration.ofSeconds(3));\n        this.restClient = builder\n                .baseUrl(\"https://isbn.example.com\")\n                .requestFactory(factory)\n                .build();\n    }\n\n    public IsbnInfo lookup(String isbn) {\n        return restClient.get()\n                .uri(\"/v1/isbn/{isbn}\", isbn)\n                .retrieve()\n                .body(IsbnInfo.class);\n    }\n\n    public record IsbnInfo(String isbn, String title) { }\n}",
+          "title": "IsbnClient.java"
+        },
+        {
+          "type": "markdown",
+          "text": "What to notice: the injected `RestClient.Builder` is pre-configured by Boot (message converters, observability), so build from it instead of calling `RestClient.create()`. `retrieve()` throws `HttpClientErrorException` / `HttpServerErrorException` for 4xx and 5xx responses; catch these and translate to your own exceptions. Newer Boot versions also offer shared timeout properties and declarative `@HttpExchange` client interfaces; check the reference for your version. For retries and circuit breaking, look at Resilience4j or Spring's `@Retryable` (core retry support moved into Spring Framework 7)."
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "`RestClient` is blocking. For reactive stacks use `WebClient` (Spring WebFlux), which is outside this guide."
+        },
+        {
+          "type": "markdown",
+          "text": "### Virtual threads and documentation\n\n**Virtual threads** (Java 21+, see the concurrency Part of the Core Java book) let a blocking request handler wait cheaply. In Boot 3.2 and later, set one property and Tomcat plus the async executors use virtual threads:"
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "spring.threads.virtual.enabled=true",
+          "title": "application.properties"
+        },
+        {
+          "type": "markdown",
+          "text": "It helps most for I/O-bound services that call databases and other services. It does not speed up CPU-bound work. Pitfalls: connection pools (a database pool of 10 still limits concurrency) and old code that holds `synchronized` blocks around I/O (pinning is much reduced from Java 24 on).\n\n**OpenAPI docs.** The library `springdoc-openapi` (dependency `springdoc-openapi-starter-webmvc-ui`) reads your controllers and publishes an OpenAPI description at `/v3/api-docs` and an interactive page at `/swagger-ui.html`. Use it so frontend developers and testers can try the API without reading code. Pick the springdoc release that matches your Boot generation (the 2.x line targets Boot 3; Boot 4 needs the 3.x line). Protect or disable the page in production."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between PUT and PATCH, and why does idempotency matter? PUT replaces the whole resource with the body, so repeating it gives the same state (idempotent). PATCH applies a partial change and may not be idempotent (for example \"increment by 1\"). Idempotency matters because clients and proxies retry on timeouts; an idempotent operation is safe to repeat, while a non-idempotent POST needs an idempotency key to avoid duplicates."
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Production APIs commonly add a request id filter that puts a UUID in the logging context and returns it in a response header, so a client can quote it when reporting a problem and you can find the exact log lines."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "Remember these points.\n\n- Name resources with plural nouns, pick HTTP verbs by semantics, and know which are idempotent.\n- Return the right status code, paginate every list, and choose a versioning scheme before you need it.\n- Configure CORS centrally; remember it is a browser-only rule. Filters wrap the whole servlet pipeline, interceptors wrap controllers.\n- Use `RestClient` with explicit connect and read timeouts for outbound calls.\n- `spring.threads.virtual.enabled=true` suits I/O-bound services; springdoc generates OpenAPI docs."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "#### Spring MVC and REST Controllers"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which component receives every HTTP request first inside Spring MVC, and what is the pattern called?",
+              "answer": "The `DispatcherServlet`; it is the front controller pattern."
+            },
+            {
+              "question": "What does `@RestController` add compared with `@Controller`?",
+              "answer": "`@ResponseBody` on every method, so return values are serialised into the body instead of resolved as view names."
+            },
+            {
+              "question": "What is wrong here, and what does the client see for `GET /api/books/abc`? `@GetMapping(\"/{id}\") BookResponse` `get(@PathVariable long id)`",
+              "answer": "Nothing is wrong with the code; the path value `abc` cannot convert to `long`, so Spring answers 400 Bad Request."
+            },
+            {
+              "question": "A controller method has return type `BookResponse` and returns `null`. What status code is sent?",
+              "answer": "200 with an empty body. Throw an exception or use `ResponseEntity` to send 404."
+            },
+            {
+              "question": "Give two reasons not to return a JPA entity from a controller.",
+              "answer": "It can leak internal fields and it couples the API to the schema; lazy relations may also fail or query during serialisation."
+            },
+            {
+              "question": "Where should the check \"a member may not borrow more than 5 books\" live?",
+              "answer": "In the service layer, because it is a business rule independent of HTTP."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### Validation and Exception Handling"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "You added `@NotBlank` on a record component but blank titles are accepted. What did you most likely forget?",
+              "answer": "`@Valid` on the controller parameter, or the validation starter on the classpath."
+            },
+            {
+              "question": "Which exception does `@Valid @RequestBody` raise on failure?",
+              "answer": "`MethodArgumentNotValidException`."
+            },
+            {
+              "question": "What is wrong with this handler? `@ExceptionHandler(Exception.class) String h(Exception e) { return` `e.toString(); }`",
+              "answer": "It leaks internal details (`toString()` of any exception) and is returned as plain text with status 200 unless a status is set; log the error and return a generic `ProblemDetail`."
+            },
+            {
+              "question": "Which media type does a `ProblemDetail` use?",
+              "answer": "`application/problem+json`."
+            },
+            {
+              "question": "A user registers an email that already exists. Which status code fits best, and why?",
+              "answer": "409 Conflict, since the request is valid but clashes with current server state."
+            },
+            {
+              "question": "What is the difference between `@NotNull`, `@NotEmpty` and `@NotBlank` for a string?",
+              "answer": "`@NotNull` forbids null only; `@NotEmpty` also forbids `\"\"`; `@NotBlank` also forbids whitespace-only strings."
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "#### REST API Design in Practice"
+        },
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Which of these URLs follows REST conventions: `/api/getBooks`, `/api/books`, `/api/book/list`?",
+              "answer": "`/api/books`; the verb comes from the HTTP method, the URL is a plural noun."
+            },
+            {
+              "question": "A client retries `PUT /books/5` after a timeout. Is anything wrong? What if it was `POST /books`?",
+              "answer": "PUT is idempotent, so the retry is harmless. A repeated POST may create a duplicate unless you use an idempotency key."
+            },
+            {
+              "question": "What is wrong here? `RestClient.create().get().uri(\"https://slow.example.com\").retrieve().body(String.class)`",
+              "answer": "No timeouts are set, so a slow server can hold the thread indefinitely; also it ignores Boot's pre-configured builder."
+            },
+            {
+              "question": "Why does a browser report a CORS error while the same call works from curl?",
+              "answer": "CORS is enforced only by browsers; the server must send allow headers for the calling origin."
+            },
+            {
+              "question": "What status should a successful `DELETE` return when there is no body?",
+              "answer": "204 No Content."
+            },
+            {
+              "question": "What does `spring.threads.virtual.enabled=true` change?",
+              "answer": "Tomcat request handling and Spring's async task executors run on virtual threads instead of platform threads."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

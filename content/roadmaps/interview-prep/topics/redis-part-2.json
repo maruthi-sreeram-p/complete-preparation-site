@@ -1,0 +1,1363 @@
+{
+  "source": {
+    "document": "Redis_Complete_Guide.pdf",
+    "pages": "34-68"
+  },
+  "sections": [
+    {
+      "id": "ch-2-1",
+      "type": "concept",
+      "title": "Installing Redis",
+      "subtopicId": "2-1",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "You cannot learn a server by reading about it. In the next hour you will have a real Redis running on your machine, and by the end of this Part you will have broken it, restarted it, replicated it, and clustered it on purpose. This chapter gets the server and its tools installed. Pick **one** route below; the Docker route is the one the rest of the book assumes because it behaves the same on Linux, macOS and Windows, and because it is trivial to throw away and recreate.\n\n### What you are installing\n\nRedis Open Source 8 ships as one package. Since version 8.0 the JSON, Query Engine (search), time series and probabilistic data types, and the new vector set type are bundled with the server instead of living in a separate \"Redis Stack\" download. You get three programs that matter:\n\n- `redis-server`: the server process itself.\n- `redis-cli`: the command-line client you will use constantly (next chapter).\n- `redis-benchmark`: a load generator, used in the last lab. Also shipped: `redis-check-aof` and `redis-check-rdb`, two repair tools used in the persistence lab.\n\nRedis listens on TCP port **6379** by default. It talks plain text over that port, with no password and no encryption unless you configure them. That is acceptable on your laptop and a disaster on a public network. We come back to this in the security chapters; for now remember that a lab Redis should only be reachable from `localhost`.\n\n### Route 1: Docker (recommended)\n\nIf you have Docker Desktop (macOS, Windows) or Docker Engine (Linux), one command is enough. The image `redis` on Docker Hub is the official image; `redis:8` follows the 8.x line, so you get the latest 8 release when you pull. For anything you care about, pin an exact tag instead of a moving one (see the tip below)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name redis -p 6379:6379 redis:8\n$ docker ps --filter name=redis --format \"{{.Names}}  {{.Image}}  {{.Status}}\"\nredis  redis:8  Up 5 seconds\n$ docker exec -it redis redis-cli\n127.0.0.1:6379> PING\nPONG",
+          "title": "Start Redis in a container"
+        },
+        {
+          "type": "markdown",
+          "text": "What the flags mean: `-d` runs the container in the background, `--name redis` gives it a name you can refer to later, and `-p 6379:6379` publishes the container's port 6379 on your machine's port 6379. `docker exec -it redis redis-cli` starts the CLI **inside** the container, so you do not need to install any client on the host.\n\nContainers are disposable: `docker rm -f redis` deletes the container and, unless you mounted a volume, its data. To keep data between container re-creations, mount a volume at `/data`, which is where the image writes its files:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name redis -p 6379:6379 -v redis-data:/data redis:8 \\\n    redis-server --appendonly yes\n$ docker logs redis 2>&1 | tail -n 3\n1:M 10 Oct 2026 09:14:02.411 * Ready to accept connections tcp",
+          "title": "Persist data in a named volume"
+        },
+        {
+          "type": "markdown",
+          "text": "Everything after the image name replaces the container's default command. Here it starts `redis-server` with AOF persistence enabled (explained properly in the persistence lab). Without that, the default is RDB snapshots only.\n\n### Docker Compose: the shape we use for most labs\n\nCompose describes the same container in a file you can commit and reuse. This is the single-node file you will start from throughout the book. Save it as `docker-compose.yml`."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  redis:\n    image: redis:8\n    container_name: shopstream-redis\n    ports:\n      - \"6379:6379\"\n    command: [\"redis-server\", \"--appendonly\", \"yes\"]\n    volumes:\n      - redis-data:/data\n    healthcheck:\n      test: [\"CMD\", \"redis-cli\", \"ping\"]\n      interval: 5s\n      timeout: 3s\n      retries: 5\n\n  redisinsight:\n    image: redis/redisinsight:latest\n    container_name: shopstream-insight\n    ports:\n      - \"5540:5540\"\n    depends_on:\n      redis:\n        condition: service_healthy\n\nvolumes:\n  redis-data:",
+          "title": "docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "Start it with `docker compose up -d`, stop it with `docker compose down` (add `-v` to delete the volume too). The `healthcheck` runs `redis-cli ping` inside the container so that other services can wait until Redis actually answers."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "\"localhost\" inside a container is the container itself. In the file above, RedisInsight runs in its own container. When you add a database in its web UI (http://localhost:5540), the host name is `redis` (the Compose service name), not `localhost` or `127.0.0.1`. From your own terminal or from a Spring Boot application running on the host, use `localhost:6379`. Mixing these up is the most common \"Redis is down\" report from new users."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Pin the version for anything you share. `redis:8` is convenient for learning. In a project, a team repository or a CI pipeline, pin an exact patch tag, for example `redis:8.6.6` (check Docker Hub for the tags that exist today). A floating tag means two colleagues can run different server versions without noticing."
+        },
+        {
+          "type": "markdown",
+          "text": "### Route 2: Linux packages and building from source\n\n#### Ubuntu and Debian (official APT repository)\n\nRedis publishes its own package repository, which carries current releases (distribution repositories often lag by years). These are the commands from the Redis documentation:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "sudo apt-get install lsb-release curl gpg\ncurl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor \\\n  -o /usr/share/keyrings/redis-archive-keyring.gpg\nsudo chmod 644 /usr/share/keyrings/redis-archive-keyring.gpg\necho \"deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] \\\nhttps://packages.redis.io/deb $(lsb_release -cs) main\" \\\n  | sudo tee /etc/apt/sources.list.d/redis.list\nsudo apt-get update\nsudo apt-get install redis",
+          "title": "install-ubuntu.sh"
+        },
+        {
+          "type": "markdown",
+          "text": "The `redis` package pulls in `redis-tools` (the CLI and friends) and registers a systemd service. It normally starts on boot; if not, run `sudo systemctl enable --now redis-server`. Check it with `systemctl status redis-server` and `redis-cli ping`. On Red Hat family distributions the Redis documentation describes an equivalent RPM repository; follow the page for your distribution.\n\n#### Building from source\n\nBuilding from source is worthwhile once, because it shows you how small the project is and gives you the exact binaries the documentation talks about. Download a release tarball from the Redis releases page (verify it against the published digests), unpack it, and run `make`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "cd /usr/src\ntar xvf redis-8.x.y.tar.gz        # the release you downloaded\ncd redis-8.x.y\nexport BUILD_TLS=yes              # TLS support (needs OpenSSL headers)\nexport BUILD_WITH_MODULES=yes     # JSON, search, time series, ... (needs a Rust toolchain)\nmake -j \"$(nproc)\" all\n./src/redis-server --version\nsudo make install                 # optional: copies binaries to /usr/local/bin",
+          "title": "build-from-source.sh"
+        },
+        {
+          "type": "markdown",
+          "text": "The module build needs extra tooling (a C/C++ toolchain, CMake and a Rust toolchain; the exact list is on the per-distribution build pages in the documentation). If that is more than you want, a plain `make` still builds the core server with all the classic data types, and the Docker route gives you the full package with no toolchain at all.\n\n### Route 3: macOS and Windows\n\n#### macOS with Homebrew"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "brew install redis\nbrew services start redis      # start now and at login\nredis-cli ping                 # PONG\nbrew services stop redis       # when you are done",
+          "title": "install-macos.sh"
+        },
+        {
+          "type": "markdown",
+          "text": "The Redis documentation says the Homebrew formula tracks the latest Open Source release. Whether a given formula build includes the bundled modules (JSON, search and so on) depends on the version, so after installing run `redis-cli` `MODULE LIST`. If it is empty and you want those features, use Docker for the labs that need them. Also note that after a `brew upgrade` Homebrew keeps your old `redis.conf` and writes the new default next to it as `redis.conf.default`; an old config file may lack the directives that load the modules.\n\n#### Windows\n\nRedis is built for Linux and macOS; there is no native Windows server from the Redis project. You have two good options:\n\n- **Docker Desktop**: open PowerShell and use the Docker commands above. This is the route the Redis documentation points to.\n- **WSL2**: install Ubuntu from the Microsoft Store (`wsl --install`), open the Ubuntu shell, and follow the Ubuntu steps above. Redis is then reachable from Windows at `localhost:6379`, because WSL2 forwards localhost ports by default.\n\nAvoid old unofficial Windows ports of Redis 3.x that still turn up in search results. They are decades behind and miss everything this book teaches.\n\n### RedisInsight, the graphical client\n\nRedisInsight is Redis's free desktop and web GUI. It lets you browse keys with their types and TTLs, run commands with auto-complete, watch memory and slow commands, and inspect streams and JSON. It is a convenience, not a replacement for `redis-cli`: everything it does is a command underneath, and you will be asked in interviews about the commands, not the buttons. Install the desktop application from the Redis site, or run the container shown in the Compose file above and open http://localhost:5540. Add a database with host `localhost` (or `redis` from another container) and port `6379`.\n\n### Verify the installation\n\nWhatever route you took, these four checks should pass before you continue."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-server --version\nRedis server v=8.6.6 sha=00000000:0 malloc=jemalloc-5.3.0 bits=64 build=3f2a1c9e7d4b8a10\n$ redis-cli ping\nPONG\n$ redis-cli INFO server | head -n 4\n# Server\nredis_version:8.6.6\nredis_git_sha1:00000000\nredis_git_dirty:0\n$ redis-cli JSON.SET install:test $ '{\"ok\":true}'\nOK\n$ redis-cli JSON.GET install:test\n\"{\\\"ok\\\":true}\"\n$ redis-cli DEL install:test\n(integer) 1",
+          "title": "Verification checklist"
+        },
+        {
+          "type": "markdown",
+          "text": "Your version number and build id will differ; the shape of the output should not. The `JSON.SET` line proves that the bundled modules are loaded (Redis 8 distributions have them). If it answers `ERR unknown command 'JSON.SET'`, you are running a core-only build, which is fine for everything except the JSON, search and time series chapters."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Use Docker for the labs: one command to start, one to destroy, identical on every operating system.\n- Redis listens on port 6379 with no password by default; keep lab instances on `localhost`.\n- Inside Compose, services reach each other by service name (`redis`), not by `localhost`.\n- Pin exact image tags for anything shared; use `redis:8` only for personal learning.\n- Verify with `redis-cli ping`, `INFO server` and (for the bundled modules) a `JSON.SET` round trip."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-2",
+      "type": "concept",
+      "title": "redis-cli in Depth",
+      "subtopicId": "2-2",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "`redis-cli` is the screwdriver of Redis work. You use it to learn commands, to debug production, to load data, to measure latency, to find big keys, and to build clusters. Developers who master it solve problems in minutes that others solve with a day of logging code. This chapter covers the parts you will actually use.\n\n### Two ways to run it\n\n**Interactive mode** is what you get when you type `redis-cli` with no command. You see a prompt, type a command, and read the reply. The CLI knows every command's syntax, so it shows hints while you type and keeps a history (up-arrow works; the history lives in `~/.rediscli_history`).\n\n**One-shot mode** is when you pass the command as arguments. It prints the reply and exits, which is what you want in scripts."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli\n127.0.0.1:6379> SET product:1001:name \"Steel Mug\"\nOK\n127.0.0.1:6379> GET product:1001:name\n\"Steel Mug\"\n127.0.0.1:6379> EXIT\n$ redis-cli GET product:1001:name\n\"Steel Mug\"\n$ redis-cli GET product:1001:name > /tmp/name.txt && cat /tmp/name.txt\nSteel Mug",
+          "title": "Interactive versus one-shot"
+        },
+        {
+          "type": "markdown",
+          "text": "Look at the last command: when the output is not a terminal, `redis-cli` switches to **raw** output and drops the quotes. That is deliberate (scripts want clean values) and it surprises people exactly once. Use `--no-raw` to force the decorated format, `--raw` to force raw output at a terminal.\n\n### Connecting: host, port, user, database"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Option",
+            "Meaning"
+          ],
+          "rows": [
+            [
+              "`-h host`",
+              "Server host name or IP (default 127.0.0.1)"
+            ],
+            [
+              "`-p port`",
+              "Server port (default 6379)"
+            ],
+            [
+              "`-a password`",
+              "Password. Prints a warning because the password shows in `ps`; prefer the next two"
+            ],
+            [
+              "`--askpass`",
+              "Prompts for the password with masked input"
+            ],
+            [
+              "`REDISCLI_AUTH`",
+              "Environment variable holding the password (not visible in the process list)"
+            ],
+            [
+              "`--user name`",
+              "ACL user name; with `-a` or `--askpass` it sends `AUTH name password`"
+            ],
+            [
+              "`-u uri`",
+              "A URI: `redis://user:pass@host:6379/2`, or `rediss://` for TLS"
+            ],
+            [
+              "`-n 2`",
+              "Select logical database 2 (databases are numbered 0 to 15)"
+            ],
+            [
+              "`-s path`",
+              "Connect through a Unix socket instead of TCP"
+            ],
+            [
+              "`-3`",
+              "Use the RESP3 protocol for the session"
+            ],
+            [
+              "`-c`",
+              "Cluster mode: follow `MOVED` and `ASK` redirects automatically"
+            ],
+            [
+              "`--tls, --cacert, --cert, --key`",
+              "TLS connections, covered in the security chapter"
+            ]
+          ],
+          "caption": "Connection options."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ export REDISCLI_AUTH='s3cret'\n$ redis-cli -h cache.internal -p 6380 --user shop-app -n 2 PING\nPONG\n$ redis-cli -u redis://shop-app:s3cret@cache.internal:6380/2 DBSIZE\n(integer) 1204",
+          "title": "Connecting to a protected, remote server"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not put real passwords on the command line. Anything after `-a` is visible to every user on the machine through `ps`, and it lands in your shell history. Use `REDISCLI_AUTH` or `--askpass`. The CLI itself warns you with \"Warning: Using a password with '-a' or '-u' option on the command line interface may not be safe.\" (`--no-auth-warning` silences it; do not use that as an excuse)."
+        },
+        {
+          "type": "markdown",
+          "text": "### Getting help and reading output\n\nInside the CLI, `HELP <command>` shows syntax, summary, version and group; `HELP @string` lists all commands of a group (`@list`, `@hash`, `@set`, `@sorted_set`, `@stream`, ...). The same reference lives at redis.io/docs/latest/commands/."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HELP SET\n\n  SET key value [NX|XX] [GET] [EX seconds|PX milliseconds|EXAT unix-time-seconds|\n  PXAT unix-time-milliseconds|KEEPTTL]\n  summary: Set the string value of a key\n  since: 1.0.0\n  group: string",
+          "title": "The help command"
+        },
+        {
+          "type": "markdown",
+          "text": "The exact `SET` syntax line grows with each release (Redis 8.4 added further options), so do not be alarmed if yours differs. The CLI decorates replies according to their **type**, and learning to read these decorations is half of using it:"
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Reply type",
+            "Looks like",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`Simple string`",
+              "`'OK'`",
+              "reply to `SET`"
+            ],
+            [
+              "`Integer`",
+              "`'(integer) 42'`",
+              "reply to `INCR`, `DEL`"
+            ],
+            [
+              "`Bulk string`",
+              "`'\"Steel Mug\"' (quoted, escaped)`",
+              "reply to `GET`"
+            ],
+            [
+              "`Null`",
+              "`'(nil)'`",
+              "`GET` of a missing key"
+            ],
+            [
+              "`Array`",
+              "`numbered lines '1) \"a\"'`",
+              "reply to `LRANGE`, `SMEMBERS`"
+            ],
+            [
+              "`Nested array`",
+              "`indented numbering '1) 1) \"a\"'`",
+              "reply to `XRANGE`"
+            ],
+            [
+              "`Empty array`",
+              "`'(empty array)'`",
+              "`LRANGE` of a missing list"
+            ]
+          ]
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Reply type",
+            "Looks like",
+            "Example"
+          ],
+          "rows": [
+            [
+              "`Error`",
+              "`'(error) ERR ...' or '(error) WRONGTYPE` `...'`",
+              "misuse of a command"
+            ]
+          ],
+          "caption": "How redis-cli prints reply types."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET views 41\nOK\n127.0.0.1:6379> INCR views\n(integer) 42\n127.0.0.1:6379> GET nosuchkey\n(nil)\n127.0.0.1:6379> RPUSH recent:42 \"mug\" \"kettle\"\n(integer) 2\n127.0.0.1:6379> LRANGE recent:42 0 -1\n1) \"mug\"\n2) \"kettle\"\n127.0.0.1:6379> LRANGE nosuchlist 0 -1\n(empty array)\n127.0.0.1:6379> INCR recent:42\n(error) WRONGTYPE Operation against a key holding the wrong kind of value",
+          "title": "Types in action"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Quoting and binary data\n\nArguments with spaces need quotes. Inside double quotes you can use C-style escapes such as `\\n`, `\\t` and `\\x00`; single quotes are literal. Redis strings are binary safe, so the CLI shows non-printable bytes as escapes: a stored UTF-8 character such as the rupee sign appears as `\"\\xe2\\x82\\xb9\"` unless you start the CLI with `--raw`, which prints the real characters.\n\n### Output formats for scripts\n\nThree options change the shape of the output; they matter when you pipe replies into other tools."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli RPUSH tags:42 kitchen steel gift\n(integer) 3\n$ redis-cli --no-raw LRANGE tags:42 0 -1\n1) \"kitchen\"\n2) \"steel\"\n3) \"gift\"\n$ redis-cli LRANGE tags:42 0 -1\nkitchen\nsteel\ngift\n$ redis-cli --csv LRANGE tags:42 0 -1\n\"kitchen\",\"steel\",\"gift\"\n$ redis-cli --json LRANGE tags:42 0 -1\n[\"kitchen\",\"steel\",\"gift\"]",
+          "title": "--raw, --csv and --json"
+        },
+        {
+          "type": "markdown",
+          "text": "`--json` and `--quoted-json` (ASCII-safe escapes instead of raw Unicode) exist in current versions of `redis-cli`; they use RESP3 replies by default (add `-2` if you want RESP2). With JSON output you can feed results to `jq`.\n\n### Repeating commands, reading from files and stdin\n\n`-r N` repeats a command N times and `-i seconds` waits between repetitions. This turns the CLI into a tiny monitoring tool and a data generator:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli -r 3 -i 1 INFO clients | grep connected_clients\nconnected_clients:1\nconnected_clients:1\nconnected_clients:1\n$ redis-cli -r 1000 LPUSH queue:emails \"welcome\"\n(integer) 1\n...",
+          "title": "Repeat and watch"
+        },
+        {
+          "type": "markdown",
+          "text": "The `-x` flag reads the **last argument** from standard input, which is the easy way to store a file or the output of another program:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ cat banner.html | redis-cli -x SET page:home:banner\nOK\n$ redis-cli STRLEN page:home:banner\n(integer) 2048\n$ redis-cli --raw GET page:home:banner > banner-copy.html",
+          "title": "Store a file as a value"
+        },
+        {
+          "type": "markdown",
+          "text": "To run a list of commands from a file, redirect it into the CLI: `redis-cli < commands.txt`. Each line is a command, exactly as you would type it. The next section shows the faster, safer way for bulk loads.\n\n### Bulk loading with --pipe\n\nSending one million `SET` commands with one process per command would take hours; sending them one at a time over a socket still wastes a round trip per command. `redis-cli --pipe` reads raw Redis protocol (RESP) from standard input and streams it to the server as fast as the network allows, without waiting for each reply. It then reports how many replies it received.\n\nYou must feed it RESP, not plain commands. This small shell function generates the format (each command is `*<argc>` then, for every argument, `$<length>` and the bytes, all lines ended with `\\r\\n`):"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "#!/usr/bin/env bash\n# usage: gen_resp.sh SET product:1 \"Steel Mug\"\ncmd=(\"$@\")\nprintf '*%d\\r\\n' \"${#cmd[@]}\"\nfor arg in \"${cmd[@]}\"; do\n  printf '$%d\\r\\n%s\\r\\n' \"${#arg}\" \"$arg\"\ndone",
+          "title": "gen_resp.sh"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ for i in $(seq 1 100000); do ./gen_resp.sh SET \"product:$i:name\" \"item-$i\"; done \\\n    | redis-cli --pipe\nAll data transferred. Waiting for the last reply...\nLast reply received from server.\nerrors: 0, replies: 100000\n$ redis-cli DBSIZE\n(integer) 100000",
+          "title": "Load 100,000 products"
+        },
+        {
+          "type": "markdown",
+          "text": "In real projects you would generate the protocol from a script in Python or Java instead of Bash, but the principle is the same. Notice the final message: `errors: 0, replies: 100000`. Always check that the two numbers match your expectation; `--pipe` is how large imports are done safely (the official `redis-cli --pipe` documentation calls this \"mass insertion\"). The same idea in application code is called **pipelining**, covered in the engine and client chapters.\n\n### Scanning the keyspace\n\nNever run `KEYS *` on a real server. `KEYS` walks the whole keyspace in one blocking command, and since Redis runs commands one at a time on a single thread, every other client waits. The safe alternative is `SCAN`, which returns a small batch plus a cursor. `redis-cli --scan` runs the cursor loop for you:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli --scan --pattern 'product:100*:name' | head -n 3\nproduct:1000:name\nproduct:10001:name\nproduct:10002:name\n$ redis-cli --scan --pattern 'product:*' --count 1000 | wc -l\n100000\n$ redis-cli --scan --pattern 'session:*' | xargs -n 100 redis-cli UNLINK\n(integer) 100\n(integer) 100",
+          "title": "Safe key listing"
+        },
+        {
+          "type": "markdown",
+          "text": "`--pattern` filters by a glob (`*`, `?`, `[a-c]`) and `--count` is the batch size hint passed to `SCAN`. The last line deletes matching keys in batches of 100 with `UNLINK`, which frees the memory in a background thread instead of blocking. The `SCAN` guarantees (and its duplicates) are covered in the chapter on iterating safely in Part 3.\n\n### Finding big keys and memory hogs\n\nThree sampling modes answer \"what is eating my memory?\". They all use `SCAN` internally, so they are safe on a live server (but still add load; use `-i 0.1` to pause 0.1 seconds per 100 scan steps on busy systems)."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli --bigkeys\n\n# Scanning the entire keyspace to find biggest keys as well as\n# average sizes per key type.  You can use -i 0.1 to sleep 0.1 sec\n# per 100 SCAN commands (not usually needed).\n\n[00.00%] Biggest string found so far '\"product:77:name\"' with 11 bytes\n[00.00%] Biggest list   found so far '\"queue:emails\"' with 1000 items\n[00.00%] Biggest hash   found so far '\"cart:u-17\"' with 3 fields\n\n-------- summary -------\n\nSampled 100003 keys in the keyspace!\nTotal key length in bytes is 1788915 (avg len 17.89)\n\nBiggest string found '\"product:77:name\"' has 11 bytes\nBiggest   list found '\"queue:emails\"' has 1000 items\nBiggest   hash found '\"cart:u-17\"' has 3 fields\n\n100000 strings with 1099000 bytes (99.99% of keys, avg size 10.99)\n1 lists with 1000 items (00.00% of keys, avg size 1000.00)\n2 hashs with 5 fields (00.00% of keys, avg size 2.50)",
+          "title": "--bigkeys (abridged)"
+        },
+        {
+          "type": "markdown",
+          "text": "`--bigkeys` reports the biggest key of each type **by element count** (items, fields, members; string length for strings). `--memkeys` reports the same by **bytes of memory** (it calls `MEMORY USAGE` per key), which is usually the question you really have. Newer versions add `--keystats`, which combines both and adds a distribution of key sizes; check `redis-cli --help` for the options in your version. `--hotkeys` finds frequently accessed keys, but only works when `maxmemory-policy` is one of the LFU policies. Redis 8.6 additionally introduces a server-side `HOTKEYS` command; the troubleshooting chapter in the operations Part uses it.\n\n### Latency tools"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ redis-cli --latency\nmin: 0, max: 1, avg: 0.11 (1893 samples)^C\n$ redis-cli --latency-history -i 5\nmin: 0, max: 1, avg: 0.10 (402 samples) -- 5.01 seconds range\nmin: 0, max: 3, avg: 0.13 (398 samples) -- 5.01 seconds range\n$ redis-cli --stat -i 1\n------- data ------ --------------------- load -------------------- - child -\nkeys       mem      clients blocked requests            connections\n100003     12.35M   1       0       10243 (+0)          5\n100003     12.35M   1       0       10244 (+1)          5",
+          "title": "Measuring latency from the client side"
+        },
+        {
+          "type": "markdown",
+          "text": "`--latency` sends `PING` in a loop and reports min, max and average round trip in **milliseconds**; press Ctrl-C to stop. `--latency-history` prints one line per interval so you can see change over time. `--stat` is a rolling one-line-per-second summary of keys, memory, clients and request rate, ideal during a load test. Remember that these numbers include your network: run them from the application host, not from the server, to see what the application sees. `--intrinsic-latency 5` (run on the server) measures the jitter of the machine itself with no Redis involved, which separates \"slow hardware or noisy virtualisation\" from \"slow Redis\".\n\n### MONITOR, a taste of the firehose\n\n`MONITOR` streams every command the server executes, in real time. It is the quickest way to see what a Spring application really sends."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> MONITOR\nOK\n1791623402.114872 [0 127.0.0.1:52144] \"SET\" \"product:1001:name\" \"Steel Mug\"\n1791623402.116031 [0 127.0.0.1:52144] \"GET\" \"product:1001:name\"\n1791623403.002294 [0 127.0.0.1:52150] \"HGETALL\" \"cart:u-17\"",
+          "title": "MONITOR (run in a second terminal, then use another client)"
+        },
+        {
+          "type": "markdown",
+          "text": "Each line shows a Unix timestamp with microseconds, the database number, the client address and the command."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Watch out",
+          "text": "Do not leave MONITOR running on a busy production server. `MONITOR` copies every command to a client output buffer. The Redis documentation warns that a running `MONITOR` can cut throughput substantially (more than half on a busy instance, in their benchmark). Use it for a few seconds on staging; in production prefer `SLOWLOG`, the latency tools, or sampling. Also remember that it prints arguments, including passwords sent with `AUTH` and any sensitive values, to whoever runs it."
+        },
+        {
+          "type": "markdown",
+          "text": "### Other options worth knowing\n\n- `--rdb dump.rdb` downloads an RDB snapshot from a running server (it asks the server to produce one and streams it). A cheap way to take a backup copy or to seed a test instance; `--functions-rdb` fetches only the Functions.\n- `--replica` makes the CLI pretend to be a replica and print every write command the primary propagates. Useful for seeing exactly what gets replicated.\n- `-e` makes `redis-cli` exit with a non-zero status when a command fails, which you need in CI scripts.\n- `--eval script.lua key1 key2 , arg1 arg2` runs a Lua script, with a comma separating the `KEYS` from the `ARGV` items (explained in the scripting chapter). `--ldb` starts the Lua debugger.\n- `--cluster ...` is the cluster manager: `create`, `check`, `reshard`, `rebalance`, `add-node`, `del-node`, `fix`. You will use it in the cluster lab.\n- `--version` prints the CLI version.\n\n### Scripting with redis-cli\n\nBecause one-shot mode prints raw values and sets exit codes, `redis-cli` fits naturally in shell scripts. A typical health check for a deployment pipeline:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "#!/usr/bin/env bash\nset -euo pipefail\nHOST=\"${REDIS_HOST:-127.0.0.1}\"\nPORT=\"${REDIS_PORT:-6379}\"\n\nif [ \"$(redis-cli -h \"$HOST\" -p \"$PORT\" PING)\" != \"PONG\" ]; then\n  echo \"redis not answering\" >&2\n  exit 1\nfi\n\nused=$(redis-cli -h \"$HOST\" -p \"$PORT\" INFO memory \\\n  | awk -F: '/^used_memory:/ {print $2}' | tr -d '\\r')\nrole=$(redis-cli -h \"$HOST\" -p \"$PORT\" INFO replication \\\n  | awk -F: '/^role:/ {print $2}' | tr -d '\\r')\necho \"role=$role used_memory_bytes=$used\"",
+          "title": "redis-health.sh"
+        },
+        {
+          "type": "markdown",
+          "text": "The `tr -d '\\r'` matters: `INFO` replies use `\\r\\n` line endings, and a stray carriage return inside a shell variable breaks comparisons in confusing ways. For multi-command scripts that must run atomically, use a Lua script or a `MULTI`/`EXEC` block instead of a shell loop; shell loops are not atomic."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "How do you find the biggest keys on a production Redis without blocking it? Use `redis-cli --bigkeys` (by element count) or `--memkeys` (by memory), which iterate with `SCAN` rather than `KEYS`, so they never block the server for long. Sampling is incremental and approximate, so on very busy systems add `-i 0.1`. For one key, `MEMORY USAGE key` gives its bytes. Never use `KEYS *` for this."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Interactive mode is for exploring; one-shot mode (with raw output when piped) is for scripts. Use `-e` for exit codes.\n- Pass secrets with `REDISCLI_AUTH` or `--askpass`, never with `-a` on the command line.\n- Learn to read reply types: `(integer)`, quoted bulk strings, numbered arrays, `(nil)`, `(error)`.\n- Use `--scan`, `--bigkeys`, `--memkeys` instead of `KEYS *`; use `--pipe` with RESP for bulk loads and check its error count.\n- `--latency`, `--latency-history` and `--stat` measure what the client sees; `MONITOR` is a debugging tool, not a production tool."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-3",
+      "type": "concept",
+      "title": "Configuration Basics",
+      "subtopicId": "2-3",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "A freshly installed Redis runs with sensible defaults, which is why the first chapters needed no configuration at all. Sooner or later you will need to change something: bind to another interface, set a memory limit, turn on the append-only file, add a password. This chapter shows where settings live, the three ways to change them, and the dozen directives that cover most real situations. Later Parts return to individual directives in context (persistence, eviction, replication, security); here you learn the mechanics.\n\n### Where configuration comes from\n\nRedis reads configuration from four places, applied in this order, with later ones overriding earlier ones:\n\n1. **Built-in defaults** compiled into the server.\n2. **A configuration file**, usually named `redis.conf`, passed as the first argument: `redis-server` `/etc/redis/redis.conf`. If you start `redis-server` with no file, only defaults and command-line options apply.\n3. **Command-line options**, which use the same names as the file with two dashes: `redis-server` `/etc/redis/redis.conf --port 6380 --maxmemory 256mb`.\n4. **Runtime changes** made with `CONFIG SET` while the server is running.\n\nThe file format is one directive per line, a name followed by its arguments, with `#` starting a comment. Memory sizes accept units (`1k`, `1kb`, `1m`, `1mb`, `1g`, `1gb`; the `k`/`m`/`g` forms mean powers of 1000, and the `kb`/`mb`/`gb` forms mean powers of 1024). Booleans are `yes` and `no`. A file can pull in others with `include /path/to/other.conf`, which is handy for keeping environment-specific overrides separate.\n\nThe configuration file shipped with the source tree is heavily commented and is the best documentation of each directive; the version for your release is also published on redis.io. Do not edit it in place for a new project. Write a **small** file of your own that contains only what you changed, so a reviewer can see your decisions at a glance.\n\n### Inspecting and changing configuration at runtime\n\n`CONFIG GET` reads a setting (glob patterns work), `CONFIG SET` changes it immediately without a restart, and `CONFIG` `REWRITE` writes the current running configuration back to the file that started the server. `INFO server` tells you which file that was."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CONFIG GET maxmemory\n1) \"maxmemory\"\n2) \"0\"\n127.0.0.1:6379> CONFIG SET maxmemory 100mb\nOK\n127.0.0.1:6379> CONFIG GET maxmemory\n1) \"maxmemory\"\n2) \"104857600\"\n127.0.0.1:6379> CONFIG SET maxmemory-policy allkeys-lru\nOK\n127.0.0.1:6379> CONFIG SET nosuch 1\n(error) ERR Unknown option or number of arguments for CONFIG SET - 'nosuch'\n127.0.0.1:6379> CONFIG GET save\n1) \"save\"\n2) \"3600 1 300 100 60 10000\"\n127.0.0.1:6379> CONFIG REWRITE\nOK\n127.0.0.1:6379> INFO server\n# Server\n...\nconfig_file:/usr/local/etc/redis/redis.conf",
+          "title": "CONFIG GET, SET and REWRITE"
+        },
+        {
+          "type": "markdown",
+          "text": "Three details deserve attention. First, `CONFIG GET` shows values in their canonical form: `100mb` became `104857600` bytes. Second, many parameters can be changed at runtime, but a few are **immutable** (for example the `daemonize` setting, and in practice anything that needs a new socket or a restart); `CONFIG SET` replies with an error for those. Third, `CONFIG SET` is **not persistent**: restart the server and the change is gone unless you ran `CONFIG REWRITE` or edited the file yourself."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "CONFIG REWRITE needs a file, and it rewrites the file. If the server was started without a config file, `CONFIG REWRITE` fails with \"The server is running without a config file\". If it was started with one, Redis rewrites it: it keeps your comments and other lines where possible, but it appends the values it changed, and it may add lines you never wrote (for example `user` `default on nopass ~* &* +@all`). In containers the file is often mounted read-only or owned by another user, and the rewrite then fails. Treat the file as the source of truth in version control, and use `CONFIG SET` for emergencies and experiments only."
+        },
+        {
+          "type": "markdown",
+          "text": "### The essential directives\n\nRedis has hundreds of settings. The table lists the ones you will meet in almost every deployment, with the default (as shipped for current Redis releases). Where I am not sure a default is stable across versions I say \"see docs\" instead of quoting one."
+        },
+        {
+          "type": "table",
+          "headers": [
+            "Directive",
+            "Default",
+            "What it does and when to change it"
+          ],
+          "rows": [
+            [
+              "`bind`",
+              "`'* -::*'`",
+              "Network interfaces to listen on. Production: list only the private addresses the app uses. Inside a container you need `0.0.0.0`"
+            ],
+            [
+              "`port`",
+              "`6379`",
+              "TCP port. `0` disables TCP (use with `unixsocket`)"
+            ],
+            [
+              "`protected-mode`",
+              "`yes`",
+              "If there is no `bind` and no password, Redis answers only loopback clients. A safety net, not a security design"
+            ],
+            [
+              "`requirepass`",
+              "`(none)`",
+              "A password for the `default` user. Legacy style; prefer ACL users (security chapter)"
+            ],
+            [
+              "`databases`",
+              "`16`",
+              "Number of logical databases. Cluster uses only database 0"
+            ],
+            [
+              "`dir`",
+              "`current directory`",
+              "Working directory where RDB and AOF files are written. In Docker: `/data`"
+            ],
+            [
+              "`save`",
+              "`'3600 1 300 100 60` `10000'`",
+              "RDB snapshot rules: after N seconds if at least M keys changed. `save` `\"\"` disables snapshots"
+            ],
+            [
+              "`appendonly`",
+              "`no`",
+              "Turns on the append-only file for durability"
+            ],
+            [
+              "`appendfsync`",
+              "`everysec`",
+              "AOF flush policy: `always`, `everysec`, `no`"
+            ],
+            [
+              "`maxmemory`",
+              "`0 (no limit)`",
+              "Memory ceiling for data. Always set it for a cache"
+            ],
+            [
+              "`maxmemory-policy`",
+              "`noeviction`",
+              "What to evict at the ceiling: `allkeys-lru`, `allkeys-lfu`, `volatile-ttl`, ..."
+            ],
+            [
+              "`maxclients`",
+              "`10000`",
+              "Maximum simultaneous client connections"
+            ],
+            [
+              "`timeout`",
+              "`0`",
+              "Close idle clients after N seconds (0 = never)"
+            ],
+            [
+              "`tcp-keepalive`",
+              "`300`",
+              "Seconds between TCP keepalive probes, to detect dead peers"
+            ],
+            [
+              "`loglevel`",
+              "`notice`",
+              "`debug`, `verbose`, `notice`, `warning`"
+            ],
+            [
+              "`logfile`",
+              "`\"\" (stdout)`",
+              "Empty means standard output, which is what containers and systemd want"
+            ],
+            [
+              "`io-threads`",
+              "`1`",
+              "Extra threads for socket reads and writes; see the engine chapter before touching"
+            ],
+            [
+              "`slowlog-log-slower-than`",
+              "`10000`",
+              "Log commands slower than this many **microseconds** (10 ms)"
+            ],
+            [
+              "`slowlog-max-len`",
+              "`128`",
+              "How many slow entries to remember"
+            ],
+            [
+              "`notify-keyspace-events`",
+              "`\"\"`",
+              "Which keyspace events to publish through Pub/Sub; empty means none"
+            ],
+            [
+              "`replicaof`",
+              "`(none)`",
+              "Make this server a replica of `host port`"
+            ]
+          ],
+          "caption": "Directives you will actually touch."
+        },
+        {
+          "type": "markdown",
+          "text": "Two of these deserve a sentence more. `dir` decides where `dump.rdb` and the AOF files land. People lose data by starting Redis from a different working directory and wondering where their snapshot went; set it explicitly. `maxmemory` defaults to unlimited; a Redis used as a cache and left at that default will keep growing until the operating system kills it. The eviction chapter in the engine Part explains how to pick the policy.\n\n### A small configuration file for the labs\n\nThis is a complete, minimal file for a single Redis in a container. It reflects the pattern recommended earlier: say only what you decided."
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "# --- network ---\nbind 0.0.0.0\nport 6379\nprotected-mode yes\n\n# --- access (lab only; use ACL users for real systems) ---\nrequirepass lab-secret\n\n# --- data ---\ndir /data\nsave 3600 1 300 100 60 10000\nappendonly yes\nappendfsync everysec\n\n# --- memory ---\nmaxmemory 256mb\nmaxmemory-policy allkeys-lru\n\n# --- diagnostics ---\nslowlog-log-slower-than 10000\nslowlog-max-len 256",
+          "title": "redis.conf"
+        },
+        {
+          "type": "markdown",
+          "text": "Notice `bind 0.0.0.0` inside a container: the container has its own network namespace, and Docker's published port reaches it through a non-loopback address. The real protection is that you publish the port only to your own machine (`-p 127.0.0.1:6379:6379`) and use a password.\n\n### Running with a config in Docker\n\nMount the file into the container and pass its path as the first argument. Mount a volume at `/data` so the files from `dir` `/data` survive."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name redis-conf -p 127.0.0.1:6380:6379 \\\n    -v \"$(pwd)/redis.conf\":/usr/local/etc/redis/redis.conf:ro \\\n    -v conf-data:/data \\\n    redis:8 redis-server /usr/local/etc/redis/redis.conf\n$ redis-cli -p 6380 PING\n(error) NOAUTH Authentication required.\n$ redis-cli -p 6380 -a lab-secret --no-auth-warning CONFIG GET maxmemory\n1) \"maxmemory\"\n2) \"268435456\"\n$ redis-cli -p 6380 -a lab-secret --no-auth-warning CONFIG GET appendonly\n1) \"appendonly\"\n2) \"yes\"\n$ docker rm -f redis-conf",
+          "title": "Start Redis with your own redis.conf"
+        },
+        {
+          "type": "markdown",
+          "text": "The `:ro` suffix mounts the file read-only, so `CONFIG REWRITE` would fail here; that is a feature, since the file in Git is the truth. In Docker Compose the same thing is `command: [\"redis-server\", \"/usr/local/etc/redis/redis.conf\"]` plus a `volumes:` entry."
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Tip",
+          "text": "Configuration is code: keep `redis.conf` in the same repository as your Compose file or Helm chart, and review changes to it like source changes. A silent `CONFIG SET maxmemory-policy noeviction` made by hand during an incident and never written back is a classic way for the next restart to behave differently."
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What is the difference between CONFIG SET and editing redis.conf? `CONFIG SET` changes the running server immediately and is lost on restart; editing `redis.conf` is durable but only takes effect on the next start (unless you also run `CONFIG` `SET`). `CONFIG REWRITE` bridges the two by writing the running configuration back to the file. A few settings cannot be changed at runtime at all."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Order of precedence: defaults, then the config file, then command-line options, then `CONFIG SET` at runtime.\n- `CONFIG GET` / `SET` / `REWRITE` inspect, change and persist settings; `INFO server` shows the active config file.\n- Always set `dir`, `maxmemory` (for caches) and an explicit persistence mode; do not rely on defaults you have not read.\n- Keep a small config file of only your decisions, in version control; mount it read-only in containers.\n- Never expose a Redis with `protected-mode` and a wide `bind` as your only defences; add a password or ACL and network rules."
+        }
+      ]
+    },
+    {
+      "id": "ch-2-4",
+      "type": "concept",
+      "title": "The Lab Workbook",
+      "subtopicId": "2-4",
+      "blocks": [
+        {
+          "type": "markdown",
+          "text": "The rest of this Part is a sequence of labs. Each has a goal, numbered steps with typical output, things to observe, and a cleanup. Work through them in order the first time; later labs assume you can already use `redis-cli`. The first four labs use the single instance from the installation chapter; the last ones use Docker Compose to build replication, Sentinel and Cluster topologies.\n\n### LAB 2.1 · Lab: Strings, counters and expiry\n\n**Goal.** Use `SET` options, atomic counters and TTLs the way ShopStream does for page-view counters, sessions, per-IP rate limits and a simple lock. About 15 minutes.\n\n**Setup.** Start from a clean single instance (Chapter on installing) and open a CLI:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name redis -p 6379:6379 redis:8\n$ docker exec -it redis redis-cli\n127.0.0.1:6379> FLUSHALL\nOK",
+          "title": "Setup"
+        },
+        {
+          "type": "markdown",
+          "text": "`FLUSHALL` deletes every key in every database. It is fine on a lab instance you just created; never type it on a server that holds data you care about.\n\n#### Step 1: a counter that cannot lose updates\n\n`INCR` reads, adds one and writes back as **one** command. Because Redis runs commands one at a time, two clients calling it at once never overwrite each other, which is the failure of \"read the value in the app, add one, write it back\"."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR views:product:1001\n(integer) 1\n127.0.0.1:6379> INCRBY views:product:1001 10\n(integer) 11\n127.0.0.1:6379> SET stock:sku-1001 50\nOK\n127.0.0.1:6379> DECRBY stock:sku-1001 3\n(integer) 47\n127.0.0.1:6379> SET stock:sku-1001 \"fifty\"\nOK\n127.0.0.1:6379> DECR stock:sku-1001\n(error) ERR value is not an integer or out of range\n127.0.0.1:6379> OBJECT ENCODING views:product:1001\n\"int\"",
+          "title": "Page views and stock"
+        },
+        {
+          "type": "markdown",
+          "text": "Redis stores numbers as strings, but it knows when a string holds an integer: `OBJECT ENCODING` reports `int`. Incrementing a non-numeric string is an error, not a silent zero.\n\n#### Step 2: expiry for sessions"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:s-9f2 \"u-17\" EX 30\nOK\n127.0.0.1:6379> TTL session:s-9f2\n(integer) 29\n127.0.0.1:6379> SET session:s-9f2 \"u-17-v2\" KEEPTTL\nOK\n127.0.0.1:6379> TTL session:s-9f2\n(integer) 24\n127.0.0.1:6379> SET session:s-9f2 \"u-17-v3\"\nOK\n127.0.0.1:6379> TTL session:s-9f2\n(integer) -1\n127.0.0.1:6379> TTL nosuchkey\n(integer) -2",
+          "title": "A session that disappears"
+        },
+        {
+          "type": "markdown",
+          "text": "Observe the three return values of `TTL`: a positive number of seconds, `-1` meaning \"key exists with no expiry\", and `-2` meaning \"key does not exist\". Observe also that a plain `SET` on an existing key **removes** its TTL, because it replaces the whole value; `KEEPTTL` is how you update a value without extending or dropping its life. Now slide the expiry forward on each access, the way a session works, and then make a key permanent:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET session:s-9f2 \"u-17\" EX 30\nOK\n127.0.0.1:6379> GETEX session:s-9f2 EX 30\n\"u-17\"\n127.0.0.1:6379> PERSIST session:s-9f2\n(integer) 1\n127.0.0.1:6379> TTL session:s-9f2\n(integer) -1\n127.0.0.1:6379> SET temp:x 1 PX 1500\nOK\n127.0.0.1:6379> GET temp:x\n\"1\"\n127.0.0.1:6379> GET temp:x\n(nil)",
+          "title": "Sliding expiry"
+        },
+        {
+          "type": "markdown",
+          "text": "The last two `GET` commands were issued a couple of seconds apart: after 1.5 seconds the key is simply gone. Expiry and how Redis implements it (lazily on access plus an active background sweep) are covered in the engine Part.\n\n#### Step 3: a fixed-window rate limit in two commands\n\nCombine `INCR` with an expiry that is set only once. `EXPIRE ... NX` sets a TTL only if the key has none:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR rl:203.0.113.7:/login\n(integer) 1\n127.0.0.1:6379> EXPIRE rl:203.0.113.7:/login 60 NX\n(integer) 1\n127.0.0.1:6379> INCR rl:203.0.113.7:/login\n(integer) 2\n127.0.0.1:6379> EXPIRE rl:203.0.113.7:/login 60 NX\n(integer) 0\n127.0.0.1:6379> TTL rl:203.0.113.7:/login\n(integer) 52",
+          "title": "Allow N requests per minute per IP and route"
+        },
+        {
+          "type": "markdown",
+          "text": "The second `EXPIRE` returns `0` because the key already has a TTL, so the window does not slide forward on every request. The application rejects the request when the counter exceeds its limit. (A crash between `INCR` and `EXPIRE` could leave a counter without TTL; the rate-limiting chapter shows the Lua version that closes that gap.)\n\n#### Step 4: `SET NX` as a lock"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET lock:order:9001 worker-1 NX PX 5000\nOK\n127.0.0.1:6379> SET lock:order:9001 worker-2 NX PX 5000\n(nil)\n127.0.0.1:6379> GET lock:order:9001\n\"worker-1\"\n127.0.0.1:6379> PTTL lock:order:9001\n(integer) 3118",
+          "title": "Only one worker wins"
+        },
+        {
+          "type": "markdown",
+          "text": "`NX` means \"only if the key does not exist\". The reply `(nil)` for worker-2 means it did not get the lock. This is the heart of a distributed lock; the lock chapter explains why releasing it correctly takes a little more.\n\n#### Step 5: `OBJECT ENCODING` and binary safety"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SET name:short \"Asha\"\nOK\n127.0.0.1:6379> OBJECT ENCODING name:short\n\"embstr\"\n127.0.0.1:6379> APPEND name:short \" Rao\"\n(integer) 8\n127.0.0.1:6379> OBJECT ENCODING name:short\n\"raw\"\n127.0.0.1:6379> STRLEN name:short\n(integer) 8",
+          "title": "Encodings"
+        },
+        {
+          "type": "markdown",
+          "text": "Short strings are stored as `embstr` (the header and bytes in one allocation). Modifying one converts it to `raw`. You never need to manage this; it is a first look at the memory-saving encodings the engine Part explains.\n\n**What to observe.** Counters are atomic; `TTL` has two special negative values; `SET` without options clears a TTL; `NX` turns `SET` into a try-lock.\n\n**Cleanup.** `FLUSHALL` (lab instance only), or leave the keys for the next lab.\n\n### LAB 2.2 · Lab: Lists and sets\n\n**Goal.** Build a work queue with a reliable hand-off, a capped \"recent searches\" list, and a tag system with set algebra. About 20 minutes. Start a fresh `redis-cli` with `FLUSHALL`.\n\n#### Part A: a queue of emails to send\n\nProducers push on the left, consumers take from the right, so the list behaves first-in, first-out."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LPUSH queue:emails \"welcome:u-1\"\n(integer) 1\n127.0.0.1:6379> LPUSH queue:emails \"welcome:u-2\"\n(integer) 2\n127.0.0.1:6379> LPUSH queue:emails \"receipt:o-9001\"\n(integer) 3\n127.0.0.1:6379> LRANGE queue:emails 0 -1\n1) \"receipt:o-9001\"\n2) \"welcome:u-2\"\n3) \"welcome:u-1\"",
+          "title": "Producer side"
+        },
+        {
+          "type": "markdown",
+          "text": "The newest item is at index 0, the oldest is at the right end. A plain `RPOP` would take `welcome:u-1`, but if the worker crashed right after popping, the email would be lost. `LMOVE` pops and pushes to a second \"processing\" list in one atomic step, so the item is never in limbo:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LMOVE queue:emails queue:emails:processing RIGHT LEFT\n\"welcome:u-1\"\n127.0.0.1:6379> LLEN queue:emails\n(integer) 2\n127.0.0.1:6379> LRANGE queue:emails:processing 0 -1\n1) \"welcome:u-1\"\n127.0.0.1:6379> LREM queue:emails:processing 1 \"welcome:u-1\"\n(integer) 1",
+          "title": "Consumer side with a processing list"
+        },
+        {
+          "type": "markdown",
+          "text": "After sending the email the worker removes it from the processing list with `LREM`. A janitor process would look at `queue:emails:processing` for items that have been there too long and move them back. This is the classic \"reliable queue\" pattern; the queue chapter in the Patterns Part builds a full one.\n\n#### Part B: blocking pop\n\nWorkers should not poll in a loop. `BLMOVE` waits until an item arrives or the timeout expires. Open a second terminal for the producer."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> DEL queue:emails queue:emails:processing\n(integer) 2\n127.0.0.1:6379> BLMOVE queue:emails queue:emails:processing RIGHT LEFT 30",
+          "title": "Terminal 1: worker waits up to 30 seconds"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LPUSH queue:emails \"welcome:u-3\"\n(integer) 1",
+          "title": "Terminal 2: producer"
+        },
+        {
+          "type": "markdown",
+          "text": "Terminal 1 returns `\"welcome:u-3\"` at once (and prints the wait time, for example `(2.41s)`). If nothing arrives within the timeout it returns `(nil)`. A blocked client consumes almost no server resources, which is why this beats polling.\n\n#### Part C: a capped list of recent searches"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> LPUSH recent:search:u-17 mug kettle toaster blender teapot grater peeler\n(integer) 7\n127.0.0.1:6379> LTRIM recent:search:u-17 0 4\nOK\n127.0.0.1:6379> LRANGE recent:search:u-17 0 -1\n1) \"peeler\"\n2) \"grater\"\n3) \"teapot\"\n4) \"blender\"\n5) \"toaster\"",
+          "title": "Keep only the last five searches"
+        },
+        {
+          "type": "markdown",
+          "text": "`LTRIM key 0 4` keeps indexes 0 to 4 and discards the rest. Run `LPUSH` then `LTRIM` on every search and the list never grows beyond five entries. (Pushed several values at once, `LPUSH` inserts them one after another at the head, so the last argument ends up first.) If a user searches the same word twice you will want to remove the old copy with `LREM` first; try it.\n\n#### Part D: tags with sets"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD tags:product:1001 kitchen steel gift\n(integer) 3\n127.0.0.1:6379> SADD tags:product:1002 kitchen plastic kids\n(integer) 3\n127.0.0.1:6379> SADD tags:product:1001 gift\n(integer) 0\n127.0.0.1:6379> SISMEMBER tags:product:1001 steel\n(integer) 1\n127.0.0.1:6379> SINTER tags:product:1001 tags:product:1002\n1) \"kitchen\"\n127.0.0.1:6379> SUNION tags:product:1001 tags:product:1002\n1) \"kitchen\"\n2) \"steel\"\n3) \"gift\"\n4) \"plastic\"\n5) \"kids\"\n127.0.0.1:6379> SDIFF tags:product:1001 tags:product:1002\n1) \"steel\"\n2) \"gift\"\n127.0.0.1:6379> SCARD tags:product:1001\n(integer) 3",
+          "title": "Products and their tags"
+        },
+        {
+          "type": "markdown",
+          "text": "A set stores each member once, so adding `gift` again returns `0`. The order of members in `SMEMBERS`, `SUNION` and friends is **not part of the contract**; your output may list them differently. Now flip the index around for lookups from the tag side:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> SADD tag:kitchen 1001 1002\n(integer) 2\n127.0.0.1:6379> SADD tag:steel 1001 1003\n(integer) 2\n127.0.0.1:6379> SINTER tag:kitchen tag:steel\n1) \"1001\"\n127.0.0.1:6379> SINTERCARD 2 tag:kitchen tag:steel\n(integer) 1",
+          "title": "A reverse index and a query"
+        },
+        {
+          "type": "markdown",
+          "text": "\"Kitchen products that are steel\" is one command. In a relational database that is a join across a tag table; here it is a set intersection, done in memory. `SINTERCARD` returns only the size of the intersection, cheaper when you need just a count.\n\n**What to observe.** `LPUSH`/`LMOVE`/`LTRIM` give you queues and capped lists with atomic steps; blocking pops avoid polling; sets give uniqueness and fast algebra, with no ordering promise.\n\n**Cleanup.** `FLUSHALL` on the lab instance.\n\n### LAB 2.3 · Lab: Hashes and sorted sets\n\n**Goal.** Model a user profile and a shopping cart with hashes, then build the daily bestsellers leaderboard with a sorted set. About 20 minutes. Use the instance from the earlier labs and run `FLUSHALL` first (lab instance only).\n\n#### Part A: a profile as a hash\n\nA hash stores several named fields under one key. It is the natural shape for an object whose fields you read and update separately."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET user:17:profile name Asha city Pune plan free\n(integer) 3\n127.0.0.1:6379> HGET user:17:profile city\n\"Pune\"\n127.0.0.1:6379> HMGET user:17:profile name plan nosuchfield\n1) \"Asha\"\n2) \"free\"\n3) (nil)\n127.0.0.1:6379> HGETALL user:17:profile\n1) \"name\"\n2) \"Asha\"\n3) \"city\"\n4) \"Pune\"\n5) \"plan\"\n6) \"free\"\n127.0.0.1:6379> HINCRBY user:17:profile logins 1\n(integer) 1\n127.0.0.1:6379> HDEL user:17:profile plan\n(integer) 1\n127.0.0.1:6379> HLEN user:17:profile\n(integer) 3",
+          "title": "Create and read a profile"
+        },
+        {
+          "type": "markdown",
+          "text": "`HSET` returns the number of **new** fields it created (three here); updating existing fields returns `0` for them. `HGETALL` returns a flat alternating list of field, value, field, value. `HINCRBY` works on one field atomically, so `logins` can be counted without reading the whole profile. Check how small hashes are stored:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> OBJECT ENCODING user:17:profile\n\"listpack\"",
+          "title": "Encoding"
+        },
+        {
+          "type": "markdown",
+          "text": "Small hashes use a compact `listpack` encoding, then switch to a real hash table above a size threshold. That switch is invisible to your code but matters for memory, and it is the subject of the memory chapter in the engine Part.\n\n#### Part B: a cart, with a field that expires"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET cart:u-17 sku-1001 2 sku-1002 1\n(integer) 2\n127.0.0.1:6379> HINCRBY cart:u-17 sku-1001 1\n(integer) 3\n127.0.0.1:6379> HGETALL cart:u-17\n1) \"sku-1001\"\n2) \"3\"\n3) \"sku-1002\"\n4) \"1\"\n127.0.0.1:6379> EXPIRE cart:u-17 86400\n(integer) 1",
+          "title": "The cart is a hash of sku to quantity"
+        },
+        {
+          "type": "markdown",
+          "text": "`EXPIRE` on the cart key expires the whole hash after a day. Since Redis 7.4 you can also give an individual **field** a lifetime, for example a flash-sale price that applies for 30 seconds:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> HSET product:1001 name \"Steel Mug\" price 9.90 sale_price 7.90\n(integer) 3\n127.0.0.1:6379> HEXPIRE product:1001 30 FIELDS 1 sale_price\n1) (integer) 1\n127.0.0.1:6379> HTTL product:1001 FIELDS 1 sale_price\n1) (integer) 28\n127.0.0.1:6379> HTTL product:1001 FIELDS 1 price\n1) (integer) -1",
+          "title": "Field-level expiry (Redis 7.4 and later, so also Redis 8)"
+        },
+        {
+          "type": "markdown",
+          "text": "The reply is an array with one result per named field: `1` means the TTL was set, and `HTTL` returns `-1` for a field without expiry, as with keys. After 30 seconds `sale_price` disappears while `name` and `price` stay.\n\n#### Part C: a leaderboard in a sorted set\n\nA sorted set keeps unique members ordered by a numeric **score**. For bestsellers, the member is the SKU and the score is units sold today."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> ZADD lb:bestsellers:daily 120 sku-1001 95 sku-1002 300 sku-1003\n(integer) 3\n127.0.0.1:6379> ZINCRBY lb:bestsellers:daily 5 sku-1002\n\"100\"\n127.0.0.1:6379> ZRANGE lb:bestsellers:daily 0 -1 REV WITHSCORES\n1) \"sku-1003\"\n2) \"300\"\n3) \"sku-1001\"\n4) \"120\"\n5) \"sku-1002\"\n6) \"100\"\n127.0.0.1:6379> ZRANGE lb:bestsellers:daily 0 0 REV\n1) \"sku-1003\"\n127.0.0.1:6379> ZREVRANK lb:bestsellers:daily sku-1002\n(integer) 2\n127.0.0.1:6379> ZSCORE lb:bestsellers:daily sku-1002\n\"100\"\n127.0.0.1:6379> ZRANGE lb:bestsellers:daily 100 200 BYSCORE WITHSCORES\n1) \"sku-1002\"\n2) \"100\"\n3) \"sku-1001\"\n4) \"120\"\n127.0.0.1:6379> ZCOUNT lb:bestsellers:daily 100 +inf\n(integer) 3",
+          "title": "Build and query the leaderboard"
+        },
+        {
+          "type": "markdown",
+          "text": "Things to notice. Ranks start at `0` (the third place has rank `2`, not `3`). `REV` flips the order so the biggest score comes first; this replaces the older `ZREVRANGE`. Scores are returned as strings because they are floating-point numbers. `ZINCRBY` is atomic, so thousands of order handlers can increment concurrently with no lost updates. Finally, ties are broken by the member name in byte order, which is stable but not always what you want; the leaderboard chapter deals with that.\n\n**Try it.** Add `sku-1004` with the same score as `sku-1001` and see which one comes first. Then use `ZPOPMAX` `lb:bestsellers:daily` and notice that it removes the leader.\n\n**What to observe.** Hashes are objects with per-field operations; sorted sets are ordered by score with `O(log N)` inserts; the same key can be expired as a whole, and in recent versions per field.\n\n**Cleanup.** `FLUSHALL`.\n\n### LAB 2.4 · Lab: Streams and a consumer group\n\n**Goal.** Publish order events to a stream, let a `notifier` group read them, acknowledge them, and recover a message from a worker that \"crashed\". About 25 minutes. This is the mechanism ShopStream's notification-service uses.\n\n#### Step 1: append events\n\n`XADD` appends an entry. `*` asks Redis to generate the ID, which is `<millisecond-timestamp>-<sequence>`."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XADD stream:orders * orderId 9001 userId u-17\n\"1760086441000-0\"\n127.0.0.1:6379> XADD stream:orders * orderId 9002 userId u-18\n\"1760086441015-0\"\n127.0.0.1:6379> XADD stream:orders * orderId 9003 userId u-17\n\"1760086441031-0\"\n127.0.0.1:6379> XLEN stream:orders\n(integer) 3",
+          "title": "Three orders arrive (your IDs will differ)"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Step 2: read without a group"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XRANGE stream:orders - + COUNT 2\n1) 1) \"1760086441000-0\"\n   2) 1) \"orderId\"\n      2) \"9001\"\n      3) \"userId\"\n      4) \"u-17\"\n2) 1) \"1760086441015-0\"\n   2) 1) \"orderId\"\n      2) \"9002\"\n      3) \"userId\"\n      4) \"u-18\"",
+          "title": "Read a range"
+        },
+        {
+          "type": "markdown",
+          "text": "- `-` and `+` mean \"from the smallest ID\" and \"to the largest\". Unlike a list, reading does **not** remove anything: the stream is\n\na log that many readers can read independently.\n\n#### Step 3: create a consumer group\n\nA group remembers, for the stream, which entries have been delivered and which are still unacknowledged. `0` means \"start from the beginning\"; `$` would mean \"only entries added from now on\"."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XGROUP CREATE stream:orders notifier 0\nOK\n127.0.0.1:6379> XREADGROUP GROUP notifier worker-1 COUNT 2 STREAMS stream:orders >\n1) 1) \"stream:orders\"\n   2) 1) 1) \"1760086441000-0\"\n         2) 1) \"orderId\"\n            2) \"9001\"\n            3) \"userId\"\n            4) \"u-17\"\n      2) 1) \"1760086441015-0\"\n         2) 1) \"orderId\"\n            2) \"9002\"\n            3) \"userId\"\n            4) \"u-18\"",
+          "title": "Group and first delivery"
+        },
+        {
+          "type": "markdown",
+          "text": "The `>` at the end means \"entries never delivered to anyone in this group\". Worker `worker-1` now owns two entries. Redis recorded them in the group's **pending entries list** (PEL) until someone acknowledges them."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XPENDING stream:orders notifier\n1) (integer) 2\n2) \"1760086441000-0\"\n3) \"1760086441015-0\"\n4) 1) 1) \"worker-1\"\n      2) \"2\"\n127.0.0.1:6379> XPENDING stream:orders notifier - + 10\n1) 1) \"1760086441000-0\"\n   2) \"worker-1\"\n   3) (integer) 41872\n   4) (integer) 1\n2) 1) \"1760086441015-0\"\n   2) \"worker-1\"\n   3) (integer) 41872\n   4) (integer) 1",
+          "title": "What is pending?"
+        },
+        {
+          "type": "markdown",
+          "text": "The summary shows the count, the smallest and largest pending IDs, and how many each consumer holds. The detailed form shows, per entry, the owning consumer, the **idle time** in milliseconds and how many times it has been delivered.\n\n#### Step 4: acknowledge, then simulate a crash\n\nWorker-1 finishes the first order and acknowledges it. It \"crashes\" before handling the second."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XACK stream:orders notifier 1760086441000-0\n(integer) 1\n127.0.0.1:6379> XPENDING stream:orders notifier\n1) (integer) 1\n2) \"1760086441015-0\"\n3) \"1760086441015-0\"\n4) 1) 1) \"worker-1\"\n      2) \"1\"",
+          "title": "Acknowledge one entry"
+        },
+        {
+          "type": "markdown",
+          "text": "Meanwhile worker-2 reads new work. It gets only order 9003, because the other two were already delivered to this group."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XREADGROUP GROUP notifier worker-2 COUNT 5 STREAMS stream:orders >\n1) 1) \"stream:orders\"\n   2) 1) 1) \"1760086441031-0\"\n         2) 1) \"orderId\"\n            2) \"9003\"\n            3) \"userId\"\n            4) \"u-17\"",
+          "title": "Another consumer in the same group"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Step 5: take over the stuck entry\n\nEntry 9002 is still pending for the dead worker. `XAUTOCLAIM` transfers ownership of entries that have been idle at least a given number of milliseconds. A real system uses a few seconds or more; use a small value in the lab."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XAUTOCLAIM stream:orders notifier worker-2 1000 0 COUNT 10\n1) \"0-0\"\n2) 1) 1) \"1760086441015-0\"\n      2) 1) \"orderId\"\n         2) \"9002\"\n         3) \"userId\"\n         4) \"u-18\"\n3) (empty array)\n127.0.0.1:6379> XACK stream:orders notifier 1760086441015-0 1760086441031-0\n(integer) 2\n127.0.0.1:6379> XPENDING stream:orders notifier\n1) (integer) 0\n2) (nil)\n3) (nil)\n4) (nil)",
+          "title": "Claim abandoned work"
+        },
+        {
+          "type": "markdown",
+          "text": "The reply has three parts: the cursor for the next call (`0-0` means the scan is complete), the claimed entries, and a list of IDs that no longer exist in the stream. Wait at least a second after step 4 before running it, or nothing is idle long enough to be claimed. After acknowledging, the PEL is empty.\n\n#### Step 6: block for new entries"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> XREADGROUP GROUP notifier worker-1 BLOCK 5000 STREAMS stream:orders >\n(nil)\n(5.01s)",
+          "title": "Wait up to five seconds for new events"
+        },
+        {
+          "type": "markdown",
+          "text": "Run `XADD stream:orders * orderId 9004 userId u-19` from a second terminal while this waits, and it returns the new entry at once. That is the loop of a real consumer: block, process, acknowledge, repeat.\n\n**What to observe.** A group gives each entry to exactly one consumer, tracks it until `XACK`, and lets another consumer take over after a crash: at-least-once delivery. Nothing is deleted when acknowledged; trim the stream with `XTRIM` or `XADD ... MAXLEN ~ N` to bound memory, as the streams chapter explains.\n\n**Cleanup.** `DEL stream:orders` (this also removes its groups).\n\n### LAB 2.5 · Lab: Persistence, RDB versus AOF, and a crash\n\n**Goal.** Prove with a `kill -9` what each persistence mode loses, inspect the files Redis writes, back up and restore a snapshot, and meet a damaged AOF. About 30 minutes. We use Docker volumes so data survives container restarts. `docker kill` sends `SIGKILL` by default, the same as a power failure for the process: no chance to flush or save.\n\n#### Part A: RDB only\n\nStart a container whose only persistence is a snapshot rule (\"save after 3600 seconds if at least 1 key changed\"), and store two orders."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name rdb-lab -v rdb-data:/data redis:8 \\\n    redis-server --save \"3600 1\" --appendonly no\n$ docker exec rdb-lab redis-cli SET order:1 \"paid\"\nOK\n$ docker exec rdb-lab redis-cli SET order:2 \"paid\"\nOK\n$ docker exec rdb-lab redis-cli BGSAVE\nBackground saving started\n$ docker exec rdb-lab redis-cli SET order:3 \"paid\"\nOK\n$ docker kill rdb-lab\nrdb-lab\n$ docker start rdb-lab\nrdb-lab\n$ docker exec rdb-lab redis-cli DBSIZE\n(integer) 2\n$ docker exec rdb-lab ls -l /data\ntotal 4\n-rw-r--r-- 1 redis redis 109 Oct 10 09:31 dump.rdb",
+          "title": "RDB: the data written after the last snapshot is lost"
+        },
+        {
+          "type": "markdown",
+          "text": "Make sure `BGSAVE` has finished before the third `SET` (a second or less for this size; `INFO persistence` shows `rdb_bgsave_in_progress:0`). The result: `order:3` is gone, because it was written after the snapshot and the process died before the next one. The snapshot rule `3600 1` would only have fired an hour later. That is the data-loss window of RDB-only persistence: everything since the last snapshot.\n\n#### Part B: AOF with fsync on every write"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name aof-lab -v aof-data:/data redis:8 \\\n    redis-server --appendonly yes --appendfsync always\n$ docker exec aof-lab redis-cli SET order:1 \"paid\"\nOK\n$ docker exec aof-lab redis-cli SET order:2 \"paid\"\nOK\n$ docker kill aof-lab\naof-lab\n$ docker start aof-lab\naof-lab\n$ docker exec aof-lab redis-cli DBSIZE\n(integer) 2\n$ docker exec aof-lab sh -c 'ls /data/appendonlydir; cat /data/appendonlydir/*.manifest'\nappendonly.aof.1.base.rdb\nappendonly.aof.1.incr.aof\nappendonly.aof.manifest\nfile appendonly.aof.1.base.rdb seq 1 type b\nfile appendonly.aof.1.incr.aof seq 1 type i",
+          "title": "AOF with appendfsync always"
+        },
+        {
+          "type": "markdown",
+          "text": "Both keys survived: with `appendfsync always`, Redis calls `fsync` before replying `OK`, so acknowledged writes are on disk. Since Redis 7 the AOF is a **directory** of files described by a manifest: a `base` file (an RDB snapshot written at the last rewrite) and one or more `incr` files (the commands since). The default policy is `everysec`, which flushes once per second: a crash then loses up to about a second of writes, and it is dramatically faster than `always`. You can see the log of commands in the incr file:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec aof-lab sh -c 'cat /data/appendonlydir/appendonly.aof.1.incr.aof'\n*2\n$6\nSELECT\n$1\n0\n*3\n$3\nSET\n$7\norder:1\n$4\npaid",
+          "title": "The AOF is a readable command log"
+        },
+        {
+          "type": "markdown",
+          "text": "That is the RESP protocol you met with `redis-cli --pipe`: `*3` means three arguments follow, `$3` means the next one is three bytes long. The file contains the write commands in order; the rest of the output (the second `SET`) is omitted here.\n\n#### Part C: back up and restore a snapshot\n\nTaking a copy of an RDB file is a valid backup, because the file is written to a temporary name and renamed atomically. The `rdb-lab` container is running again with two keys, so write the lost order once more, take a snapshot, and copy it out:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec rdb-lab redis-cli SET order:3 \"paid\"\nOK\n$ docker exec rdb-lab redis-cli SAVE\nOK\n$ docker cp rdb-lab:/data/dump.rdb ./backup-dump.rdb\nSuccessfully copied 3.07kB to /home/asha/backup-dump.rdb",
+          "title": "Backup"
+        },
+        {
+          "type": "markdown",
+          "text": "`SAVE` blocks the server until the snapshot is written (acceptable on a lab instance; use `BGSAVE` for real servers). To restore, start a **new** container with that file placed in `/data` before the server starts:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name restored -v \"$(pwd)/backup-dump.rdb\":/data/dump.rdb redis:8\n$ docker exec restored redis-cli DBSIZE\n(integer) 3\n$ docker exec restored redis-cli KEYS 'order:*'\n1) \"order:2\"\n2) \"order:3\"\n3) \"order:1\"",
+          "title": "Restore into a fresh instance"
+        },
+        {
+          "type": "markdown",
+          "text": "The restored instance has all three keys, because the `SAVE` ran after `order:3` was written. (The order of `KEYS` replies is arbitrary, and `KEYS` is acceptable here only because the instance is tiny and ours.) The lesson: a backup is worth exactly as much as the last time you restored from it successfully.\n\n#### Part D: a damaged AOF\n\nSimulate a crash in the middle of writing a command by appending half of a `SET` to the incr file of the stopped AOF container, then start it again."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker stop aof-lab\n$ docker run --rm -v aof-data:/data redis:8 sh -c \\\n    'printf \"*3\\r\\n\\$3\\r\\nSET\\r\\n\\$7\\r\\norder:9\\r\\n\\$5\\r\\nhel\" \\\n     >> /data/appendonlydir/appendonly.aof.1.incr.aof'\n$ docker start aof-lab\n$ docker logs aof-lab 2>&1 | grep -i -E \"truncat|short read|ready\"\nReady to accept connections tcp\n$ docker exec aof-lab redis-cli DBSIZE\n(integer) 2",
+          "title": "Truncated tail"
+        },
+        {
+          "type": "markdown",
+          "text": "With the default `aof-load-truncated yes`, Redis notices that the file ends in the middle of a command, discards the incomplete tail, writes a warning to the log and starts. The half-written `order:9` was never acknowledged to a client, so dropping it is correct. Corruption in the **middle** of the file is different: Redis refuses to start and tells you to run the repair tool. It works on the manifest:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run --rm -v aof-data:/data redis:8 \\\n    redis-check-aof /data/appendonlydir/appendonly.aof.manifest\n$ docker run --rm -it -v aof-data:/data redis:8 \\\n    redis-check-aof --fix /data/appendonlydir/appendonly.aof.manifest",
+          "title": "Check and repair (only after taking a copy of the files)"
+        },
+        {
+          "type": "markdown",
+          "text": "Without `--fix` the tool only reports the first invalid offset. With `--fix` it truncates the file at that point and asks for confirmation; everything after the damage is discarded, so copy the directory first.\n\n**What to observe.** RDB-only loses the window since the last snapshot; AOF `always` loses nothing acknowledged but costs throughput; the AOF is a directory in Redis 7 and later; restore is only real if you have practised it.\n\n**Cleanup.**"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker rm -f rdb-lab aof-lab restored\n$ docker volume rm rdb-data aof-data\n$ rm backup-dump.rdb",
+          "title": "Remove lab containers and volumes"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Note",
+          "text": "The numbers you see (file sizes, durations, exact log wording) will differ from the listings, which are typical rather than recorded from your machine. What should match is the behaviour: which keys survive, and which files exist."
+        },
+        {
+          "type": "markdown",
+          "text": "### LAB 2.6 · Lab: Replication with a primary and two replicas\n\n**Goal.** Run one primary and two replicas with Docker Compose, watch data flow, see why replicas refuse writes, observe that replication is asynchronous, survive a replica restart, and promote a replica by hand. About 35 minutes. Make a folder `lab-replication` and put this file in it."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  primary:\n    image: redis:8\n    container_name: shop-primary\n    command: [\"redis-server\", \"--appendonly\", \"yes\"]\n    ports:\n      - \"6379:6379\"\n\n  replica1:\n    image: redis:8\n    container_name: shop-replica1\n    command: [\"redis-server\", \"--replicaof\", \"primary\", \"6379\"]\n    depends_on:\n      - primary\n    ports:\n      - \"6380:6379\"\n\n  replica2:\n    image: redis:8\n    container_name: shop-replica2\n    command: [\"redis-server\", \"--replicaof\", \"primary\", \"6379\"]\n    depends_on:\n      - primary\n    ports:\n      - \"6381:6379\"",
+          "title": "lab-replication/docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "`--replicaof primary 6379` makes each replica connect to the host named `primary`, which Compose resolves to the primary container. The replicas publish different host ports (6380, 6381) only so you can also reach them from your machine; between containers they always use 6379.\n\n#### Step 1: start and inspect"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ cd lab-replication && docker compose up -d\n$ docker exec shop-primary redis-cli INFO replication\n# Replication\nrole:master\nconnected_slaves:2\nslave0:ip=172.19.0.3,port=6379,state=online,offset=210,lag=0\nslave1:ip=172.19.0.4,port=6379,state=online,offset=210,lag=0\nmaster_failover_state:no-failover\nmaster_replid:9c1b3e5f0a7d42e8b6f1a3c5d7e9f0a1b2c3d4e5\nmaster_replid2:0000000000000000000000000000000000000000\nmaster_repl_offset:210\nsecond_repl_offset:-1\nrepl_backlog_active:1\nrepl_backlog_size:1048576\nrepl_backlog_first_byte_offset:1\nrepl_backlog_histlen:210",
+          "title": "Bring the topology up"
+        },
+        {
+          "type": "markdown",
+          "text": "Even in Redis 8 the output still uses the old word `slave` in field names (`connected_slaves`, `slave0`); the commands use `replica`. Read the key fields: the **replication id** (`master_replid`) names this dataset's history; the **offset** (`master_repl_offset`) counts bytes of the replication stream; each replica line shows its own acknowledged `offset` and `lag` in seconds. Equal offsets mean the replica is fully caught up. The backlog is a buffer of recent stream data (1 MB by default) that lets a briefly disconnected replica resume without a full copy."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec shop-replica1 redis-cli INFO replication | head -n 9\n# Replication\nrole:slave\nmaster_host:primary\nmaster_port:6379\nmaster_link_status:up\nmaster_last_io_seconds_ago:0\nmaster_sync_in_progress:0\nslave_read_repl_offset:210\nslave_repl_offset:210",
+          "title": "The replica's view"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Step 2: writes flow one way"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec shop-primary redis-cli SET stock:sku-1001 50\nOK\n$ docker exec shop-replica1 redis-cli GET stock:sku-1001\n\"50\"\n$ docker exec shop-replica2 redis-cli GET stock:sku-1001\n\"50\"\n$ docker exec shop-replica1 redis-cli SET stock:sku-1001 49\n(error) READONLY You can't write against a read only replica.",
+          "title": "Write on the primary, read from a replica"
+        },
+        {
+          "type": "markdown",
+          "text": "Replicas are read-only by default (`replica-read-only yes`). The write must go to the primary, which sends it down the replication stream. Replication normally takes well under a millisecond on one machine, so the first `GET` seemed instant. On a real network that gap is the **replication lag**, and reading from a replica can return stale data. A cart that shows yesterday's quantity is annoying; a stock check against stale data can oversell. Decide per use case.\n\n#### Step 3: replication is asynchronous, `WAIT` makes it conditional\n\nBy default the primary answers `OK` before the replicas have the write. `WAIT numreplicas timeout-ms` blocks until that many replicas have acknowledged everything the connection wrote, or the timeout passes, and returns how many did."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec -it shop-primary redis-cli\n127.0.0.1:6379> SET order:9001:status paid\nOK\n127.0.0.1:6379> WAIT 2 100\n(integer) 2",
+          "title": "WAIT in one interactive session (terminal 1)"
+        },
+        {
+          "type": "markdown",
+          "text": "Now stop one replica from a second terminal and repeat in the same session:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker stop shop-replica2\nshop-replica2",
+          "title": "Terminal 2, then terminal 1 again"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> INCR stock:sku-1001\n(integer) 51\n127.0.0.1:6379> WAIT 2 100\n(integer) 1\n127.0.0.1:6379> EXIT",
+          "title": "Terminal 1"
+        },
+        {
+          "type": "markdown",
+          "text": "`WAIT` applies to the writes made on **its own connection**, which is why both commands ran in one interactive session; from a fresh `redis-cli` call it would have nothing to wait for. The second `WAIT` waited the full 100 ms and reported that only one replica had the write. Even so, `WAIT` is not a durability guarantee: it tells you the write reached memory on N replicas, and a failover can still lose writes that reached fewer. For real protection you also set `min-replicas-to-write`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec shop-primary redis-cli CONFIG SET min-replicas-to-write 2\nOK\n$ docker exec shop-primary redis-cli SET order:9002:status paid\n(error) NOREPLICAS Not enough good replicas to write.",
+          "title": "Refuse writes when too few replicas are healthy"
+        },
+        {
+          "type": "markdown",
+          "text": "With `shop-replica2` still stopped, only one replica is connected, and the primary now refuses writes. This trades availability for safety: a primary cut off from its replicas would otherwise keep accepting writes that nobody else has. (The companion setting `min-replicas-max-lag` defines how recent a replica's last acknowledgement must be to count as good.) Put the setting back and restart the replica:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec shop-primary redis-cli CONFIG SET min-replicas-to-write 0\nOK\n$ docker start shop-replica2\nshop-replica2\n$ docker logs shop-replica2 2>&1 | grep -i resynchronization\n* Trying a partial resynchronization (request 9c1b3e5f0a7d42e8b6f1a3c5d7e9f0a1b2c3d4e5:211).\n* Successful partial resynchronization with master.\n$ docker exec shop-replica2 redis-cli GET stock:sku-1001\n\"51\"",
+          "title": "Recovery by partial resynchronisation"
+        },
+        {
+          "type": "markdown",
+          "text": "The replica remembered the replication id and offset it had reached, asked the primary to continue from there, and the primary still had the missing bytes in its backlog. If the replica had been away so long that the backlog no longer covered its offset, you would see a **full** resynchronisation instead: the primary writes a new RDB snapshot and sends it, which is much more expensive. Sizing `repl-backlog-size` is how you avoid that.\n\n#### Step 4: promote a replica by hand\n\nNow kill the primary and perform the failover that Sentinel automates in the next lab."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker stop shop-primary\nshop-primary\n$ docker exec shop-replica1 redis-cli REPLICAOF NO ONE\nOK\n$ docker exec shop-replica2 redis-cli REPLICAOF replica1 6379\nOK\n$ docker exec shop-replica1 redis-cli SET order:9003:status paid\nOK\n$ docker exec shop-replica2 redis-cli GET order:9003:status\n\"paid\"\n$ docker exec shop-replica1 redis-cli INFO replication | head -n 4\n# Replication\nrole:master\nconnected_slaves:1\nslave0:ip=172.19.0.4,port=6379,state=online,offset=322,lag=0",
+          "title": "Manual failover"
+        },
+        {
+          "type": "markdown",
+          "text": "`REPLICAOF NO ONE` turns a replica into a primary. Then the other replica is told to follow it. Every client now has to be pointed at the new primary; with plain Redis nothing does that for you. That is exactly the job of Sentinel and of Cluster.\n\nFinally, bring the old primary back. It restarts with the command in the Compose file, which does **not** say `--replicaof`, so it believes it is still the primary: two primaries now exist (a split brain). Demote it:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker start shop-primary\nshop-primary\n$ docker exec shop-primary redis-cli GET order:9003:status\n(nil)\n$ docker exec shop-primary redis-cli REPLICAOF replica1 6379\nOK\n$ docker exec shop-primary redis-cli GET order:9003:status\n\"paid\"",
+          "title": "Rejoin the old primary as a replica"
+        },
+        {
+          "type": "markdown",
+          "text": "Before the demotion the old primary knew nothing about `order:9003`. After `REPLICAOF` it discarded its own dataset and copied the new primary's, so any write that had reached only the old primary during the split would be lost for good. This is the core of why asynchronous replication is not a durability guarantee.\n\n**What to observe.** One-way replication; offsets and replication ids; `READONLY`; `WAIT` and `min-replicas-to-write` as partial safety nets; partial versus full resync; the need to repoint clients after a manual failover.\n\n**Cleanup.**"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose down -v",
+          "title": "Terminal"
+        },
+        {
+          "type": "markdown",
+          "text": "### LAB 2.7 · Lab: High availability with Sentinel\n\n**Goal.** Add three Sentinel processes that watch the primary and promote a replica automatically. You will kill the primary and watch the election in the logs. About 30 minutes. Make a folder `lab-sentinel` with two files.\n\nSentinel needs a configuration file, and it **rewrites** that file as it learns the topology, so each Sentinel must have its own writable copy. The Compose file copies a template to `/tmp` on startup."
+        },
+        {
+          "type": "code",
+          "language": "ini",
+          "code": "port 26379\nsentinel resolve-hostnames yes\nsentinel monitor shopmaster primary 6379 2\nsentinel down-after-milliseconds shopmaster 5000\nsentinel failover-timeout shopmaster 15000\nsentinel parallel-syncs shopmaster 1",
+          "title": "lab-sentinel/sentinel.conf"
+        },
+        {
+          "type": "markdown",
+          "text": "The key line is `sentinel monitor <name> <host> <port> <quorum>`. The name `shopmaster` is what clients ask for. The **quorum** of 2 is the number of Sentinels that must agree the primary is unreachable before it is marked as objectively down; electing the Sentinel that carries out the failover additionally needs a majority of all Sentinels (2 of 3). `down-after-milliseconds` is how long a node must stay silent before one Sentinel considers it down. `resolve-hostnames yes` lets us use the Compose service name `primary` instead of an IP address."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "services:\n  primary:\n    image: redis:8\n    container_name: s-primary\n    command: [\"redis-server\", \"--appendonly\", \"yes\"]\n\n  replica1:\n    image: redis:8\n    container_name: s-replica1\n    command: [\"redis-server\", \"--replicaof\", \"primary\", \"6379\"]\n    depends_on: [primary]\n\n  replica2:\n    image: redis:8\n    container_name: s-replica2\n    command: [\"redis-server\", \"--replicaof\", \"primary\", \"6379\"]\n    depends_on: [primary]\n\n  sentinel1: &sentinel\n    image: redis:8\n    container_name: s-sentinel1\n    command: >\n      sh -c \"cp /conf/sentinel.conf /tmp/sentinel.conf &&\n             redis-sentinel /tmp/sentinel.conf\"\n    volumes:\n      - ./sentinel.conf:/conf/sentinel.conf:ro\n    depends_on: [primary, replica1, replica2]\n    ports:\n      - \"26379:26379\"\n\n  sentinel2:\n    <<: *sentinel\n    container_name: s-sentinel2\n    ports:\n      - \"26380:26379\"\n\n  sentinel3:\n    <<: *sentinel\n    container_name: s-sentinel3\n    ports:\n      - \"26381:26379\"",
+          "title": "lab-sentinel/docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Step 1: look at what Sentinel knows"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose up -d\n$ docker exec s-sentinel1 redis-cli -p 26379 SENTINEL get-master-addr-by-name shopmaster\n1) \"172.20.0.2\"\n2) \"6379\"\n$ docker exec s-sentinel1 redis-cli -p 26379 SENTINEL ckquorum shopmaster\nOK 3 usable Sentinels. Quorum and failover authorization can be reached",
+          "title": "Ask Sentinel for the primary"
+        },
+        {
+          "type": "markdown",
+          "text": "This is how a Sentinel-aware client finds the primary: it asks any Sentinel for the address instead of having it hard-coded. Sentinels discover each other and the replicas automatically through the primary, so the configuration only mentions the primary. `SENTINEL ckquorum` is the health check you run after deploying a Sentinel setup: it confirms that enough Sentinels are alive and agree.\n\n#### Step 2: kill the primary and watch\n\nOpen a second terminal and follow a Sentinel's log, then stop the primary in the first one."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker logs -f s-sentinel1 2>&1 | grep -E \"sdown|odown|elected|promoted|switch-master\"",
+          "title": "Terminal 2"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker stop s-primary\ns-primary",
+          "title": "Terminal 1"
+        },
+        {
+          "type": "markdown",
+          "text": "After roughly the `down-after-milliseconds` interval, the log shows the stages of a failover. The lines below are typical; addresses and timings differ:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "+sdown master shopmaster 172.20.0.2 6379\n+odown master shopmaster 172.20.0.2 6379 #quorum 2/2\n+elected-leader master shopmaster 172.20.0.2 6379\n+selected-slave slave 172.20.0.3:6379 172.20.0.3 6379 @ shopmaster 172.20.0.2 6379\n+promoted-slave slave 172.20.0.3:6379 172.20.0.3 6379 @ shopmaster 172.20.0.2 6379\n+switch-master shopmaster 172.20.0.2 6379 172.20.0.3 6379",
+          "title": "Sentinel log (abridged)"
+        },
+        {
+          "type": "markdown",
+          "text": "Read it as a story. `+sdown` is **subjectively down**: this Sentinel can no longer reach the primary. `+odown` is **objectively** **down**: enough Sentinels (the quorum) agree. One Sentinel is elected leader, picks the best replica (by priority, replication offset and run id), promotes it, and `+switch-master` announces the new address. (The log keeps the old terms `slave` and `master` for these event names.)"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec s-sentinel2 redis-cli -p 26379 SENTINEL get-master-addr-by-name shopmaster\n1) \"172.20.0.3\"\n2) \"6379\"\n$ docker exec s-replica1 redis-cli INFO replication | head -n 3\n# Replication\nrole:master\nconnected_slaves:1",
+          "title": "The answer has changed"
+        },
+        {
+          "type": "markdown",
+          "text": "#### Step 3: the old primary comes back"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker start s-primary\ns-primary\n$ sleep 10\n$ docker exec s-primary redis-cli INFO replication | head -n 4\n# Replication\nrole:slave\nmaster_host:172.20.0.3\nmaster_port:6379",
+          "title": "It rejoins as a replica, without any manual command"
+        },
+        {
+          "type": "markdown",
+          "text": "Sentinel noticed the old primary return and reconfigured it as a replica of the new one. That is the difference from the manual lab, where you had to do it yourself."
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Sentinel returns addresses, and addresses inside Docker are private. `get-master-addr-by-name` returned `172.20.0.3`, an address on the Compose network. An application running on your host machine cannot reach it, so a Sentinel-aware client on the host would discover a primary it cannot connect to. Run the application in the same Docker network, or configure the nodes to announce reachable addresses (`replica-announce-ip`, `replica-announce-port`). This trips up almost everyone who tries Sentinel with containers."
+        },
+        {
+          "type": "markdown",
+          "text": "**What to observe.** Quorum versus majority; the sequence `sdown` then `odown` then election then promotion; clients discover the primary through Sentinel; the returned address must be reachable by the client; failover time is dominated by `down-after-milliseconds`.\n\n**Cleanup.**"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose down -v",
+          "title": "Terminal"
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "What does the quorum in a Sentinel setup control, and why run three Sentinels? The quorum is how many Sentinels must agree that the primary is down before a failover can start. Actually performing the failover also needs authorization from a **majority** of all Sentinels, so you want an odd number, at least three, on independent machines or zones. With two Sentinels a single failure can leave no majority and no failover; with one Sentinel, Sentinel itself is the single point of failure."
+        },
+        {
+          "type": "markdown",
+          "text": "### LAB 2.8 · Lab: A six-node Redis Cluster\n\n**Goal.** Build a cluster of three primaries and three replicas, see how keys map to hash slots, trigger and obey a `MOVED` redirect, learn why multi-key commands need hash tags, and kill a primary. About 40 minutes. Make a folder `lab-cluster`. The theory (slots, gossip, failure detection) belongs to the cluster chapters in the scaling Part; here you just need to know that Redis Cluster splits the keyspace into **16384 hash slots** and each primary owns a range of them.\n\nCluster nodes announce their own IP addresses to each other and to clients, so we give each container a fixed address on a private network instead of relying on port mappings."
+        },
+        {
+          "type": "code",
+          "language": "yaml",
+          "code": "x-node: &node\n  image: redis:8\n  command:\n    - redis-server\n    - --cluster-enabled\n    - \"yes\"\n    - --cluster-config-file\n    - /data/nodes.conf\n    - --cluster-node-timeout\n    - \"5000\"\n    - --appendonly\n    - \"yes\"\n\nservices:\n  node1:\n    <<: *node\n    container_name: c-node1\n    networks:\n      shopnet: { ipv4_address: 172.30.0.11 }\n  node2:\n    <<: *node\n    container_name: c-node2\n    networks:\n      shopnet: { ipv4_address: 172.30.0.12 }\n  node3:\n    <<: *node\n    container_name: c-node3\n    networks:\n      shopnet: { ipv4_address: 172.30.0.13 }\n  node4:\n    <<: *node\n    container_name: c-node4\n    networks:\n      shopnet: { ipv4_address: 172.30.0.14 }\n  node5:\n    <<: *node\n    container_name: c-node5\n    networks:\n      shopnet: { ipv4_address: 172.30.0.15 }\n  node6:\n    <<: *node\n    container_name: c-node6\n    networks:\n      shopnet: { ipv4_address: 172.30.0.16 }\n\nnetworks:\n  shopnet:\n    ipam:\n      config:\n        - subnet: 172.30.0.0/24",
+          "title": "lab-cluster/docker-compose.yml"
+        },
+        {
+          "type": "markdown",
+          "text": "`--cluster-enabled yes` switches the node into cluster mode; `--cluster-config-file` is where the node stores the cluster state it learns (never edit it by hand); `--cluster-node-timeout 5000` means a node unreachable for 5 seconds starts being suspected (the default is 15 seconds; we shorten it so the lab does not take long). Right after `docker` `compose up -d` the six nodes are running but know nothing about each other.\n\n#### Step 1: create the cluster"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose up -d\n$ docker exec -it c-node1 redis-cli --cluster create \\\n    172.30.0.11:6379 172.30.0.12:6379 172.30.0.13:6379 \\\n    172.30.0.14:6379 172.30.0.15:6379 172.30.0.16:6379 \\\n    --cluster-replicas 1\n>>> Performing hash slots allocation on 6 nodes...\nMaster[0] -> Slots 0 - 5460\nMaster[1] -> Slots 5461 - 10922\nMaster[2] -> Slots 10923 - 16383\nAdding replica 172.30.0.15:6379 to 172.30.0.11:6379\nAdding replica 172.30.0.16:6379 to 172.30.0.12:6379\nAdding replica 172.30.0.14:6379 to 172.30.0.13:6379\nM: 017211931d591398de0d0c9d89a81360c56c9c5c 172.30.0.11:6379\n   slots:[0-5460] (5461 slots) master\nM: 198c8a72c9f80089f11ec584a646cbe84d9a483f 172.30.0.12:6379\n   slots:[5461-10922] (5462 slots) master\nM: 6bb3ea7c89f86b5fe8a37fe9af2d23a5dbc63034 172.30.0.13:6379\n   slots:[10923-16383] (5461 slots) master\nS: ffba65467706a689ef64009dfe60766436f85821 172.30.0.14:6379\n   replicates 6bb3ea7c89f86b5fe8a37fe9af2d23a5dbc63034\nS: de0cf6ef0c01fb5a99e92f5a50a14515aa0ee82e 172.30.0.15:6379\n   replicates 017211931d591398de0d0c9d89a81360c56c9c5c\nS: 944007d7c09ed4d79b55ca26c5a4bc500afc482f 172.30.0.16:6379\n   replicates 198c8a72c9f80089f11ec584a646cbe84d9a483f\nCan I set the above configuration? (type 'yes' to accept): yes\n>>> Nodes configuration updated\n>>> Assign a different config epoch to each node\n>>> Sending CLUSTER MEET messages to join the cluster\nWaiting for the cluster to join\n.\n>>> Performing Cluster Check (using node 172.30.0.11:6379)\n[OK] All nodes agree about slots configuration.\n>>> Check for open slots...\n>>> Check slots coverage...\n[OK] All 16384 slots covered.",
+          "title": "Form the cluster"
+        },
+        {
+          "type": "markdown",
+          "text": "This listing is abridged, and the exact wording differs slightly between versions. Read it: `--cluster-replicas 1` asked for one replica per primary, so with six nodes you get three primaries (`M:`) and three replicas (`S:`). The 16384 slots were divided into three ranges. Node IDs are random 40-hex-digit names that will differ on your machine. The closing `[OK]` `All 16384 slots covered` is the line that matters: if any slot has no owner, the cluster refuses to serve it."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec c-node1 redis-cli CLUSTER INFO | head -n 7\ncluster_state:ok\ncluster_slots_assigned:16384\ncluster_slots_ok:16384\ncluster_slots_pfail:0\ncluster_slots_fail:0\ncluster_known_nodes:6\ncluster_size:3\n$ docker exec c-node1 redis-cli CLUSTER NODES\nffba6546... 172.30.0.14:6379@16379 slave 6bb3ea7c... 0 1760086500000 3 connected\n198c8a72... 172.30.0.12:6379@16379 master - 0 1760086500500 2 connected 5461-10922\n944007d7... 172.30.0.16:6379@16379 slave 198c8a72... 0 1760086499500 2 connected\n017211931... 172.30.0.11:6379@16379 myself,master - 0 0 1 connected 0-5460\nde0cf6ef... 172.30.0.15:6379@16379 slave 017211931... 0 1760086500500 1 connected\n6bb3ea7c... 172.30.0.13:6379@16379 master - 0 1760086499000 3 connected 10923-16383",
+          "title": "Inspect the cluster"
+        },
+        {
+          "type": "markdown",
+          "text": "(The node IDs are shortened here for width.) In each `CLUSTER NODES` line you see the address `ip:port@busport`, the role, the master it replicates, a connection state, and for primaries the slots owned. The second port, `16379`, is the **cluster bus** (data port plus 10000) over which nodes gossip; it must be reachable between nodes, which in real firewalls is an often-forgotten rule.\n\n#### Step 2: which slot is my key in?\n\nThe slot is `CRC16(key) mod 16384`. You can ask any node:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec c-node1 redis-cli CLUSTER KEYSLOT product:1001\n(integer) 181\n$ docker exec c-node1 redis-cli CLUSTER KEYSLOT stock:sku-1001\n(integer) 6106\n$ docker exec c-node1 redis-cli CLUSTER KEYSLOT cart:u-17\n(integer) 14402",
+          "title": "Slots of ShopStream keys"
+        },
+        {
+          "type": "markdown",
+          "text": "Slot 181 lives on the first primary (0 to 5460), 6106 on the second, 14402 on the third. So these three keys land on three different machines.\n\n#### Step 3: get redirected\n\nConnect to node 1 **without** cluster mode and write a key that belongs elsewhere:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec -it c-node1 redis-cli\n127.0.0.1:6379> SET stock:sku-1001 50\n(error) MOVED 6106 172.30.0.12:6379\n127.0.0.1:6379> SET product:1001:name \"Steel Mug\"\nOK\n127.0.0.1:6379> EXIT",
+          "title": "A plain client meets MOVED"
+        },
+        {
+          "type": "markdown",
+          "text": "`MOVED 6106 172.30.0.12:6379` means: \"slot 6106 is not mine; ask 172.30.0.12\". The server never forwards the request for you. A cluster-aware client keeps a map of slots to nodes, learns it at startup, sends each command straight to the right node, and updates the map when it receives `MOVED`. `redis-cli -c` does the following for you:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec -it c-node1 redis-cli -c\n127.0.0.1:6379> SET stock:sku-1001 50\n-> Redirected to slot [6106] located at 172.30.0.12:6379\nOK\n172.30.0.12:6379> GET stock:sku-1001\n\"50\"\n172.30.0.12:6379> GET cart:u-17\n-> Redirected to slot [14402] located at 172.30.0.13:6379\n(nil)\n172.30.0.13:6379> EXIT",
+          "title": "Cluster mode follows redirects"
+        },
+        {
+          "type": "markdown",
+          "text": "Notice the prompt changing to show which node you are talking to. Spring Data Redis and Lettuce do the same thing programmatically with a topology refresh; the Java chapters show how to configure it.\n\n#### Step 4: multi-key commands and hash tags\n\nA command touching several keys works only if all the keys are in the same slot. Otherwise:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec -it c-node1 redis-cli -c\n127.0.0.1:6379> MSET cart:u-17 x stock:sku-1001 49\n(error) CROSSSLOT Keys in request don't hash to the same slot",
+          "title": "CROSSSLOT"
+        },
+        {
+          "type": "markdown",
+          "text": "A **hash tag** fixes this: if a key contains `{...}`, only the text between the first `{` and the next `}` is hashed. Put the entity id in braces and everything about that entity lands in one slot:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "127.0.0.1:6379> CLUSTER KEYSLOT {cart:u-17}:items\n(integer) 14402\n127.0.0.1:6379> CLUSTER KEYSLOT {cart:u-17}:meta\n(integer) 14402\n127.0.0.1:6379> MSET {cart:u-17}:items 3 {cart:u-17}:meta \"updated\"\n-> Redirected to slot [14402] located at 172.30.0.13:6379\nOK\n172.30.0.13:6379> EXIT",
+          "title": "Hash tags force co-location"
+        },
+        {
+          "type": "markdown",
+          "text": "Both keys hash exactly like the string `cart:u-17` (same slot 14402 as the plain key above), so a `MULTI/EXEC` transaction or a Lua script over them is allowed. The price is that all of one customer's data lives on one node, so one very hot tag is a hot shard. Choose tags to group things that are used together, not \"everything of a tenant\".\n\n#### Step 5: kill a primary\n\nWrite some data, then stop the node that owns slots 0 to 5460 and watch the cluster heal."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker stop c-node1\nc-node1\n$ sleep 10\n$ docker exec c-node2 redis-cli CLUSTER NODES | grep -E \"172.30.0.1[15]\"\nde0cf6ef... 172.30.0.15:6379@16379 master - 0 1760086620000 7 connected 0-5460\n017211931... 172.30.0.11:6379@16379 master,fail - 1760086608000 1760086606000 1 disconnected\n$ docker exec c-node2 redis-cli CLUSTER INFO | head -n 1\ncluster_state:ok",
+          "title": "Failover"
+        },
+        {
+          "type": "markdown",
+          "text": "The replica on `172.30.0.15` noticed (through the other primaries voting) that its primary had been unreachable for longer than the node timeout and was promoted; it now owns slots 0 to 5460 and the cluster state is `ok` again. The old primary is shown as `master,fail`. Bring it back:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker start c-node1\nc-node1\n$ sleep 5\n$ docker exec c-node2 redis-cli CLUSTER NODES | grep 172.30.0.11\n017211931... 172.30.0.11:6379@16379 slave de0cf6ef... 0 1760086640000 7 connected\n$ docker exec c-node1 redis-cli --cluster check 172.30.0.11:6379 | tail -n 3\n[OK] All nodes agree about slots configuration.\n>>> Check for open slots...\n>>> Check slots coverage...",
+          "title": "The old primary returns as a replica"
+        },
+        {
+          "type": "markdown",
+          "text": "It rejoined by itself, learned from gossip that it had lost its slots, and became a replica of its former replica. No operator command was needed.\n\n**Try it.** Stop **both** a primary and its replica (`c-node2` and `c-node6`) and run `CLUSTER INFO` on another node: with the default `cluster-require-full-coverage yes` the state becomes `fail` and the whole cluster stops answering queries, because slots 5461 to 10922 have no owner. That default is a deliberate consistency choice, and the cluster chapters explain when to relax it.\n\n**What to observe.** Three ranges of slots; `MOVED` and `-c`; `CROSSSLOT` and hash tags; the bus port; automatic promotion; the old primary returning as a replica.\n\n**Cleanup.**"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker compose down -v",
+          "title": "Terminal"
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Reach the cluster from inside the network, or announce reachable addresses. The nodes tell clients to connect to `172.30.0.x`, an address that exists only inside the Docker network. From your laptop `redis-cli -c -p ...` against a published port will be redirected to unreachable IPs and hang. Run clients as containers on `shopnet`, as in this lab, or configure `cluster-announce-ip` and port mappings consciously. The same issue appears whenever a cluster sits behind NAT or a load balancer."
+        },
+        {
+          "type": "markdown",
+          "text": "### LAB 2.9 · Lab: Benchmarking and the pipelining effect\n\n**Goal.** Measure throughput and latency with `redis-benchmark`, then see what pipelining, payload size, client count and fsync policy do to them. About 25 minutes.\n\nThe numbers below are **illustrative** (a laptop-class machine, Redis and the benchmark on the same host through the loopback interface). Yours will differ a lot; what you should compare are the ratios. Benchmarks that run on the same machine as the server are good for relative comparisons and bad as capacity figures."
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name bench -p 6390:6379 redis:8\n$ docker exec bench redis-benchmark -q -n 100000 -c 50 -t set,get\nSET: 118343.20 requests per second, p50=0.239 msec\nGET: 136612.02 requests per second, p50=0.207 msec",
+          "title": "Start a clean server to measure"
+        },
+        {
+          "type": "markdown",
+          "text": "`-n` is the total number of requests, `-c` the number of parallel client connections (default 50), `-t` selects which tests to run, and `-q` prints one summary line per test. `p50` is the median latency. Redis commands are small; the cost per request is dominated by the network round trip, not by Redis. Now batch 16 commands per round trip with `-P 16`:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec bench redis-benchmark -q -n 200000 -c 50 -t set,get -P 16\nSET: 574712.69 requests per second, p50=0.863 msec\nGET: 1190476.25 requests per second, p50=0.495 msec",
+          "title": "Pipelining"
+        },
+        {
+          "type": "markdown",
+          "text": "Throughput rose four to nine times. Latency per **batch** went up (each reply now waits for 16 commands), but the cost per command fell, because the client no longer pays a network round trip for each one and the server does fewer system calls. This is the effect the pipelining chapter explains with numbers, and the reason the Java clients let you batch commands.\n\n#### Vary one thing at a time"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec bench redis-benchmark -q -n 100000 -t set -d 4096\nSET: 98039.22 requests per second, p50=0.263 msec\n$ docker exec bench redis-benchmark -q -n 100000 -t set -r 1000000\nSET: 117647.06 requests per second, p50=0.247 msec\n$ docker exec bench redis-benchmark -q -n 100000 LPUSH queue:test __rand_int__\nLPUSH: 124223.60 requests per second, p50=0.231 msec\n$ docker exec bench redis-cli DBSIZE\n(integer) 95388",
+          "title": "Payload size, random keys and a custom command"
+        },
+        {
+          "type": "markdown",
+          "text": "`-d 4096` uses 4 KB values instead of the default 3 bytes (larger payloads cost more bandwidth and copying). `-r` `1000000` makes each request use a random key among a million; without `-r` every request hits the same key, which flatters caching in the CPU. The last benchmark runs any command you give it and replaces `__rand_int__` with a random number. Look at `DBSIZE` afterwards: the benchmark **wrote tens of thousands of keys** into your server (100000 requests spread over a million possible keys). Never run `redis-benchmark` against a server whose data you care about.\n\n#### The full latency picture\n\nWithout `-q` you get the whole report:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker exec bench redis-benchmark -n 100000 -t get -c 50\n====== GET ======\n  100000 requests completed in 0.78 seconds\n  50 parallel clients\n  3 bytes payload\n  keep alive: 1\n  multi-thread: no\n\nLatency by percentile distribution:\n0.000% <= 0.087 milliseconds (cumulative count 1)\n50.000% <= 0.207 milliseconds (cumulative count 51004)\n99.219% <= 0.431 milliseconds (cumulative count 99250)\n100.000% <= 2.847 milliseconds (cumulative count 100000)\n\nSummary:\n  throughput summary: 128205.13 requests per second\n  latency summary (msec):\n          avg       min       p50       p95       p99       max\n        0.208     0.040     0.207     0.287     0.399     2.847",
+          "title": "Full report (abridged)"
+        },
+        {
+          "type": "markdown",
+          "text": "Averages hide the tail. For SLAs people watch p95, p99 and the maximum, because a user who hits the slow 1 percent notices. The occasional multi-millisecond maximum is typical of a shared machine.\n\n#### What durability costs\n\nStart a second server that fsyncs the AOF on every write and compare:"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker run -d --name bench-always -p 6391:6379 redis:8 \\\n    redis-server --appendonly yes --appendfsync always\n$ docker run -d --name bench-sec -p 6392:6379 redis:8 \\\n    redis-server --appendonly yes --appendfsync everysec\n$ docker exec bench-always redis-benchmark -q -n 20000 -t set\nSET: 9876.54 requests per second, p50=4.911 msec\n$ docker exec bench-sec redis-benchmark -q -n 100000 -t set\nSET: 105263.16 requests per second, p50=0.263 msec",
+          "title": "appendfsync always versus everysec"
+        },
+        {
+          "type": "markdown",
+          "text": "The ratio is the point (illustrative figures): with `always`, every write waits for the disk, so throughput is limited by your storage's `fsync` latency; `everysec` runs near memory speed and accepts up to about a second of loss. Run it on a cloud disk and on a laptop SSD and you will see very different `always` numbers, which is why persistence settings should be benchmarked on production-like hardware. Pipelining softens the cost of `always` considerably, because many commands share one `fsync` (try `-P 16`).\n\n#### Reading benchmarks honestly\n\n- The load generator is a program too. With a fast server you can saturate the **benchmark's** CPU first; use `--threads` `4` (available in current versions) or run it on a separate machine.\n- Default tests use tiny values and one key shape. Your workload has bigger values, mixed commands and Lua scripts. Benchmark your own mix, with your client library, from where your application runs.\n- Containers, virtual networks and noisy neighbours change latency. Compare like with like and repeat runs.\n- `redis-benchmark` shows peak behaviour, not the effect of persistence rewrites, replication or eviction; run it while those are active if they matter.\n- For richer workloads the Redis project maintains `memtier_benchmark`, which supports ratios of reads to writes and key distributions.\n\n**What to observe.** Pipelining multiplies throughput; payload size and key randomness change results; the tail latency tells more than the average; `fsync` policy dominates write speed.\n\n**Cleanup.**"
+        },
+        {
+          "type": "code",
+          "language": "bash",
+          "code": "$ docker rm -f bench bench-always bench-sec",
+          "title": "Terminal"
+        },
+        {
+          "type": "callout",
+          "variant": "realworld",
+          "title": "Real world",
+          "text": "Benchmark numbers you publish internally should always state: hardware, Redis version and config, client count, pipeline depth, payload size, key space, and whether the client ran on the same machine. Without those, nobody can reproduce or compare them, and a number like \"Redis does a million operations per second\" travels without its context and misleads the next team."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- The labs give you muscle memory: `SET`/`INCR`/`EXPIRE`, lists and sets, hashes and sorted sets, streams with groups, persistence modes, replication, Sentinel and Cluster.\n- Persistence is a trade between speed and the data-loss window: RDB loses since the last snapshot, AOF `everysec` about a second, AOF `always` almost nothing at a throughput cost.\n- Asynchronous replication does not guarantee that acknowledged writes survive a failover; `WAIT` and `min-replicas-to-write` narrow the risk.\n- Sentinel automates failover for one dataset; Cluster shards the keyspace into 16384 slots and needs a cluster-aware client, hash tags for multi-key operations, and reachable node addresses.\n- Benchmark relative changes (pipelining, payload, fsync) on realistic hardware, and never against data you care about."
+        }
+      ]
+    }
+  ]
+}
