@@ -1,196 +1,580 @@
 {
-  "source": {
-    "document": "Written for this site (not from your PDFs)"
-  },
-  "sections": [
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-5-1",
+   "type": "concept",
+   "title": "Rules, useState and useRef",
+   "subtopicId": "5-1",
+   "blocks": [
     {
-      "id": "intro",
-      "type": "introduction",
-      "title": "What hooks are",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "note",
-          "title": "Not from your PDFs",
-          "text": "Your PDFs do not cover this topic, so this page was written for the site. Your 12-week plan lists React, hooks, rendering, performance, state management and TypeScript. Check it against the official documentation, or give me a PDF to replace it."
-        },
-        "Hooks are functions that let a component keep state and run side effects. React identifies each hook by **its call order**, so there are two rules: call them only at the top level of a component or custom hook, and never inside conditions or loops."
-      ]
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Frontend libraries change quickly: check the official documentation before relying on a detail."
     },
     {
-      "id": "hooks",
-      "type": "concept",
-      "title": "The hooks you need",
-      "blocks": [
-        {
-          "type": "table",
-          "headers": [
-            "Hook",
-            "Purpose",
-            "Causes a re-render?"
-          ],
-          "rows": [
-            [
-              "`useState`",
-              "A value that survives renders",
-              "Yes, when set to a different value"
-            ],
-            [
-              "`useEffect`",
-              "Sync with something outside React: network, timers, subscriptions",
-              "Only if it sets state"
-            ],
-            [
-              "`useRef`",
-              "A mutable box, or a reference to a DOM node",
-              "No"
-            ],
-            [
-              "`useMemo`",
-              "Cache a calculated value between renders",
-              "No"
-            ],
-            [
-              "`useCallback`",
-              "Cache a function between renders",
-              "No"
-            ],
-            [
-              "`useContext`",
-              "Read a value from a provider above",
-              "Yes, when the value changes"
-            ],
-            [
-              "`useReducer`",
-              "State with several related transitions",
-              "Yes, on dispatch"
-            ]
-          ]
-        }
-      ]
+     "type": "markdown",
+     "text": "### The rules of hooks\n\nReact tracks hooks by **call order**, in a list for each component. So:\n\n1. Call hooks only at the top level, never inside conditions, loops or nested functions.\n2. Call them only from components or custom hooks."
     },
     {
-      "id": "effect",
-      "type": "concept",
-      "title": "useEffect properly",
-      "blocks": [
-        {
-          "type": "diagram",
-          "format": "mermaid",
-          "title": "Effect lifecycle",
-          "code": "flowchart TD\n  A[Component renders] --> B[React updates the DOM]\n  B --> C[Browser paints]\n  C --> D{Did a dependency change?}\n  D -->|first render or yes| E[Run cleanup of the previous effect]\n  E --> F[Run the effect]\n  D -->|no| G[Skip]\n  H[Component removed] --> I[Run cleanup]",
-          "caption": "Effects run after paint. Cleanup runs before the next run and on removal."
-        },
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "function UserProfile({ id }: { id: number }) {\n  const [user, setUser] = useState<User | null>(null);\n\n  useEffect(() => {\n    const controller = new AbortController();\n    fetch(`/api/users/${id}`, { signal: controller.signal })\n      .then((res) => res.json())\n      .then(setUser)\n      .catch((e) => { if (e.name !== 'AbortError') console.error(e); });\n    return () => controller.abort();\n  }, [id]);\n\n  return user ? <h1>{user.name}</h1> : <p>Loading</p>;\n}",
-          "title": "Fetching with cleanup",
-          "walkthrough": [
-            {
-              "lines": "5-6",
-              "title": "Cancellable request",
-              "text": "The controller lets the cleanup cancel this request."
-            },
-            {
-              "lines": "10",
-              "title": "Cleanup",
-              "text": "If `id` changes quickly, the old request is cancelled, so a slow old response cannot overwrite the new one. This bug is called a race condition."
-            },
-            {
-              "lines": "11",
-              "title": "Dependencies",
-              "text": "The effect reruns when `id` changes. List everything from the component that the effect uses."
-            }
-          ]
-        },
-        {
-          "type": "callout",
-          "variant": "warning",
-          "title": "You might not need an effect",
-          "text": "Do not use an effect to compute a value from props or state: calculate it during render. `const fullName = first + ' ' + last` needs no state and no effect. Effects are for synchronising with things outside React."
-        },
-        {
-          "type": "callout",
-          "variant": "note",
-          "title": "Strict Mode",
-          "text": "In development, `StrictMode` runs each effect, its cleanup and the effect again on mount, to expose missing cleanups. Two requests in development are expected, not a bug."
-        }
-      ]
+     "type": "code",
+     "language": "tsx",
+     "code": "function Profile({ id }: { id: string }) {\n  if (!id) return null;           // an early return before a hook breaks the rule\n  const [name, setName] = useState('');   // called on some renders, not others\n}",
+     "title": "Why order matters"
     },
     {
-      "id": "closure",
-      "type": "concept",
-      "title": "The stale closure",
-      "blocks": [
-        "Each render has its own props and state values. A function created during a render closes over that render's values forever.",
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "function Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount(count + 1);        // bug: count is always 0 here, so it sticks at 1\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  // fix: the updater form always receives the latest value\n  // setCount((c) => c + 1);\n\n  return <p>{count}</p>;\n}"
-        }
-      ]
+     "type": "markdown",
+     "text": "If the order changes between renders, React gives each hook the wrong slot. The ESLint plugin `react-hooks` catches this, so keep it enabled.\n\n### useState details"
     },
     {
-      "id": "custom",
-      "type": "code",
-      "title": "Custom hooks",
-      "blocks": [
-        "A custom hook is a function starting with `use` that calls other hooks. It shares logic, not state: each component that calls it gets its own copy.",
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "function useFetch<T>(url: string) {\n  const [state, setState] = useState<Result<T>>({ status: 'loading' });\n\n  useEffect(() => {\n    const controller = new AbortController();\n    setState({ status: 'loading' });\n    fetch(url, { signal: controller.signal })\n      .then((res) => {\n        if (!res.ok) throw new Error(`HTTP ${res.status}`);\n        return res.json();\n      })\n      .then((data) => setState({ status: 'ok', data }))\n      .catch((e) => {\n        if (e.name !== 'AbortError') setState({ status: 'error', message: e.message });\n      });\n    return () => controller.abort();\n  }, [url]);\n\n  return state;\n}",
-          "title": "useFetch.ts"
-        }
-      ]
+     "type": "code",
+     "language": "tsx",
+     "code": "const [draft, setDraft] = useState(() => localStorage.getItem('draft') ?? '');",
+     "title": "Lazy initial state"
     },
     {
-      "id": "notes",
-      "type": "notes",
-      "title": "Important notes",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "interview",
-          "title": "Interview angle",
-          "text": "**Why can't hooks be called conditionally?** React stores hook state in a list per component and matches it by call position. A conditional call shifts the positions, so hooks read each other's state."
-        },
-        {
-          "type": "callout",
-          "variant": "keypoints",
-          "title": "Key points",
-          "text": "- Call hooks at the top level only.\n- Effects synchronise with the outside world; do not use them to derive values.\n- Always return a cleanup for subscriptions, timers and requests.\n- List every dependency the effect uses.\n- Use the updater form `setX((x) => ...)` when the new value depends on the old one."
-        }
-      ]
+     "type": "markdown",
+     "text": "Passing a function means that the costly read runs once only. A value expression would run on every render, and its result would then be ignored.\n\n| Choose | When |\n|---|---|\n| One object in state | Fields that change together |\n| Several `useState`s | Unrelated values |\n| `useReducer` | Many transitions, or next state depends on several fields |\n\n### useRef\n\nA ref is a box whose `.current` survives renders, and changing it doesn't cause a render."
     },
     {
-      "id": "practice",
-      "type": "practice",
-      "title": "Practice questions",
-      "blocks": [
-        {
-          "type": "questions",
-          "items": [
-            {
-              "question": "Why does a request fire twice in development?",
-              "answer": "StrictMode mounts, cleans up and remounts in development to reveal missing cleanups. It does not happen in production."
-            },
-            {
-              "question": "What is the difference between `useRef` and `useState`?",
-              "answer": "Changing a ref does not re-render and takes effect immediately. Setting state schedules a re-render."
-            },
-            {
-              "question": "What is a stale closure, and how do you fix one?",
-              "answer": "A function keeps the values from the render that created it. Fix it by listing the dependency or using the updater form of the setter."
-            },
-            {
-              "question": "How does a custom hook differ from a shared service in Spring?",
-              "answer": "A Spring singleton shares one instance and its state. A custom hook shares only the logic: each component gets separate state."
-            }
-          ]
-        }
-      ]
+     "type": "code",
+     "language": "tsx",
+     "code": "function Search() {\n  // 1. Reach a DOM node\n  const inputRef = useRef<HTMLInputElement>(null);\n  useEffect(() => { inputRef.current?.focus(); }, []);\n\n  // 2. Keep a value that doesn't affect the display\n  const timer = useRef<number | undefined>(undefined);\n  function onType() {\n    clearTimeout(timer.current);\n    timer.current = window.setTimeout(runSearch, 300);\n  }\n\n  return <input ref={inputRef} onChange={onType} />;\n}",
+     "title": "Two main uses"
+    },
+    {
+     "type": "markdown",
+     "text": "| | `useState` | `useRef` |\n|---|---|---|\n| Causes a render when changed | Yes | No |\n| Value during render | A snapshot | Latest, but don't read it in render |\n| Use for | What's shown | Timers, DOM nodes, previous values |\n\nDon't read or write `ref.current` during rendering, except for lazy initialisation, because it makes rendering impure."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Hooks rely on call order\n- Lazy initial state for costly work\n- A ref survives renders silently\n- Use state for anything displayed"
     }
-  ]
+   ]
+  },
+  {
+   "id": "ch-5-2",
+   "type": "concept",
+   "title": "useEffect done properly",
+   "subtopicId": "5-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "`useEffect` synchronises a component with something **outside React**: the network, timers, subscriptions and the DOM. It's the most misused hook.\n\n### How it runs"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant R as React\n  participant E as Effect\n  R->>R: render and commit to the DOM\n  R->>E: run effect (first time)\n  R->>R: dependencies change: render and commit\n  R->>E: run cleanup of the previous effect\n  R->>E: run the new effect\n  R->>R: component unmounts\n  R->>E: run the last cleanup",
+     "title": "The life of an effect"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => {\n  const socket = connect(roomId);\n  socket.on('message', addMessage);\n  return () => socket.disconnect();     // cleanup\n}, [roomId]);                           // runs again when roomId changes",
+     "title": "A subscription with cleanup"
+    },
+    {
+     "type": "markdown",
+     "text": "| Dependencies | Runs |\n|---|---|\n| `[a, b]` | After mount, and when a or b changes |\n| `[]` | After mount only |\n| Missing | After every render |\n\n### You might not need an effect\n\nMost bugs come from effects that shouldn't exist.\n\n| Instead of an effect for | Do this |\n|---|---|\n| Calculating derived data | Compute during render |\n| Costly calculation | `useMemo` |\n| Reacting to a click | Put it in the event handler |\n| Resetting state when a prop changes | A `key` |\n| Fetching data | A data library such as TanStack Query |\n| Notifying a parent | Call its function in the handler |"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "// Wrong: an extra render, and states out of step for a moment\nconst [fullName, setFullName] = useState('');\nuseEffect(() => {\n  setFullName(`${first} ${last}`);\n}, [first, last]);\n\n// Right\nconst fullName = `${first} ${last}`;",
+     "title": "An effect that shouldn't exist"
+    },
+    {
+     "type": "markdown",
+     "text": "The test: **why does this code run?** Because the component appeared or data changed: an effect may fit. Because a user clicked: use the handler.\n\n### Fetching with an effect, correctly\n\nIt's useful to see the problems, even if you'll generally use a library."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useOrder(id: string) {\n  const [state, setState] = useState<RemoteData<Order>>({ status: 'loading' });\n\n  useEffect(() => {\n    const controller = new AbortController();\n    setState({ status: 'loading' });\n\n    fetch(`/api/orders/${id}`, { signal: controller.signal })\n      .then((res) => {\n        if (!res.ok) throw new Error(`HTTP ${res.status}`);\n        return res.json();\n      })\n      .then((data) => setState({ status: 'success', data }))\n      .catch((e) => {\n        if (e.name !== 'AbortError') setState({ status: 'error', message: e.message });\n      });\n\n    return () => controller.abort();    // id changed, or unmounted: cancel the old request\n  }, [id]);\n\n  return state;\n}",
+     "title": "Handling races and cancellation"
+    },
+    {
+     "type": "markdown",
+     "text": "Without the abort, if `id` changes from 1 to 2 and request 1 responds last, the page shows the wrong order. This code still has no caching, retries or sharing between components, which is why libraries exist.\n\n### Dependencies are not a choice\n\nInclude every reactive value that the effect uses. Don't silence the lint rule. If a dependency causes too many runs, fix the cause:\n\n| Problem | Fix |\n|---|---|\n| An object made in render changes each time | Move it inside the effect, or use primitive values |\n| A function prop changes each render | `useCallback` in the parent, or move it inside |\n| State only used for its previous value | Use the updater form |\n\n### The stale closure"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Timer() {\n  const [count, setCount] = useState(0);\n\n  useEffect(() => {\n    const id = setInterval(() => {\n      setCount(count + 1);          // always sees count = 0, from the first render\n    }, 1000);\n    return () => clearInterval(id);\n  }, []);\n\n  return <p>{count}</p>;\n}",
+     "title": "A timer stuck at 1"
+    },
+    {
+     "type": "markdown",
+     "text": "The effect's closure captured the first render's `count`. It stays at 1. Fix it with `setCount((c) => c + 1)`, which needs no captured value.\n\n### Double runs in development\n\nStrict Mode runs effects, cleans them up, and runs them again on mount, in development only. This proves that your cleanup works. If this breaks something, your effect has a bug, such as a missing cleanup."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"What is the stale closure problem?\"** A function captures variables from the render that created it. If an effect with empty dependencies uses state, it sees the initial value forever. Fix it with an updater, correct dependencies, or a ref for the latest value.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Effects synchronise with outside systems\n- Events belong in handlers\n- Always clean up\n- List all dependencies honestly"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-3",
+   "type": "concept",
+   "title": "useMemo, useCallback and useReducer",
+   "subtopicId": "5-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### useMemo and useCallback\n\n`useMemo` caches a calculated value, and `useCallback` caches a function, both until dependencies change."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Report({ rows, filter }: Props) {\n  // 1. A truly expensive calculation\n  const visible = useMemo(() => expensiveFilter(rows, filter), [rows, filter]);\n\n  // 2. Keeping a reference stable for a memoised child\n  const onSelect = useCallback((id: string) => setSelected(id), []);\n\n  return <BigTable rows={visible} onSelect={onSelect} />;   // BigTable uses memo()\n}",
+     "title": "Two genuine reasons to use them"
+    },
+    {
+     "type": "markdown",
+     "text": "They aren't free, and don't speed up everything. Without `memo()` on the child, a stable callback changes nothing. Part 9 covers when they're worthwhile. The **React Compiler** adds this memoisation automatically at build time, so such hand-written code is becoming less necessary in projects that use it.\n\n### useReducer\n\nWhen state changes in many related ways, put all the transitions in one place, as a pure function."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "type CartItem = { id: string; price: number; qty: number };\ntype Action =\n  | { type: 'add'; item: CartItem }\n  | { type: 'remove'; id: string }\n  | { type: 'setQty'; id: string; qty: number }\n  | { type: 'clear' };\n\nfunction cartReducer(items: CartItem[], action: Action): CartItem[] {\n  switch (action.type) {\n    case 'add': {\n      const found = items.find((i) => i.id === action.item.id);\n      return found\n        ? items.map((i) => (i.id === found.id ? { ...i, qty: i.qty + 1 } : i))\n        : [...items, action.item];\n    }\n    case 'remove':\n      return items.filter((i) => i.id !== action.id);\n    case 'setQty':\n      return items.map((i) => (i.id === action.id ? { ...i, qty: action.qty } : i));\n    case 'clear':\n      return [];\n  }\n}\n\nfunction Cart() {\n  const [items, dispatch] = useReducer(cartReducer, []);\n  return <button onClick={() => dispatch({ type: 'clear' })}>Empty ({items.length})</button>;\n}",
+     "title": "A shopping cart"
+    },
+    {
+     "type": "markdown",
+     "text": "A reducer is plain code, so you can unit test it without React. It works like a small state machine.\n\n### useContext\n\nContext passes a value to everything below, without prop drilling."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const AuthContext = createContext<User | null>(null);\n\nfunction App() {\n  const [user, setUser] = useState<User | null>(null);\n  return (\n    <AuthContext.Provider value={user}>\n      <Layout />\n    </AuthContext.Provider>\n  );\n}\n\nfunction Avatar() {\n  const user = useContext(AuthContext);\n  return user ? <img src={user.photo} alt={user.name} /> : null;\n}",
+     "title": "Authentication through context"
+    },
+    {
+     "type": "markdown",
+     "text": "Every consumer renders again when the value changes. Part 6 covers when that's a problem.\n\n### Newer hooks\n\n| Hook | Use |\n|---|---|\n| `useId` | Stable unique IDs for labels and ARIA |\n| `useTransition` | Mark an update as non-urgent, to keep typing smooth |\n| `useDeferredValue` | Let a slow part lag behind input |\n| `useLayoutEffect` | Measure the DOM before the browser paints |\n| `useSyncExternalStore` | Subscribe to an outside store safely |\n| `useActionState`, `useOptimistic`, `use` | React 19 form and data patterns |"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- useMemo and useCallback are for real costs\n- A reducer gathers transitions in one testable place\n- Context avoids prop drilling, but re-renders consumers\n- The compiler reduces hand memoisation"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-4",
+   "type": "concept",
+   "title": "Writing custom hooks",
+   "subtopicId": "5-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A custom hook is a function starting with `use` that calls other hooks. It shares **logic**, not state: each call has its own state.\n\n### Debounce"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useDebounce<T>(value: T, delayMs: number): T {\n  const [debounced, setDebounced] = useState(value);\n\n  useEffect(() => {\n    const id = setTimeout(() => setDebounced(value), delayMs);\n    return () => clearTimeout(id);       // cancel if the value changes first\n  }, [value, delayMs]);\n\n  return debounced;\n}\n\nfunction ProductSearch() {\n  const [query, setQuery] = useState('');\n  const search = useDebounce(query, 300);\n  const results = useProducts(search);   // fetches only when typing pauses\n  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;\n}",
+     "title": "useDebounce"
+    },
+    {
+     "type": "markdown",
+     "text": "### localStorage"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useLocalStorage<T>(key: string, initial: T) {\n  const [value, setValue] = useState<T>(() => {\n    try {\n      const saved = localStorage.getItem(key);\n      return saved === null ? initial : (JSON.parse(saved) as T);\n    } catch {\n      return initial;                    // private mode, or corrupted JSON\n    }\n  });\n\n  useEffect(() => {\n    try {\n      localStorage.setItem(key, JSON.stringify(value));\n    } catch {\n      // storage full or blocked: keep working without it\n    }\n  }, [key, value]);\n\n  return [value, setValue] as const;\n}",
+     "title": "useLocalStorage"
+    },
+    {
+     "type": "markdown",
+     "text": "### Online status, safely"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function subscribe(callback: () => void) {\n  window.addEventListener('online', callback);\n  window.addEventListener('offline', callback);\n  return () => {\n    window.removeEventListener('online', callback);\n    window.removeEventListener('offline', callback);\n  };\n}\n\nfunction useOnline() {\n  return useSyncExternalStore(subscribe, () => navigator.onLine);\n}",
+     "title": "useSyncExternalStore for outside values"
+    },
+    {
+     "type": "markdown",
+     "text": "### Good custom hooks\n\n| Do | Avoid |\n|---|---|\n| Name by purpose: `useOrders` | Lifecycle wrappers like `useMount` |\n| Return what callers need | Hiding effects that surprise callers |\n| Keep one concern | One hook that does everything |\n| Test it alone | Sharing state by accident |\n\nTest hooks with `renderHook` from Testing Library, as Part 10 shows."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Do two components using the same custom hook share state?\"** No. Each call gets its own state, because a hook is just a function. To share state, lift it up, use context, or use a store.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Custom hooks share logic, not state\n- Clean up timers and listeners\n- Handle storage errors\n- Name them by purpose"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-5",
+   "type": "concept",
+   "title": "The useEffect clinic",
+   "subtopicId": "5-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Each of these bugs appears in real code. Try to diagnose each before reading the fix.\n\n### Case 1: the infinite loop"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const [user, setUser] = useState(null);\nuseEffect(() => {\n  fetchUser().then(setUser);\n});                                // no dependency array: runs after every render",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "Each fetch sets state, which renders, which runs the effect again. **Fix:** add `[]`, or better, use a query library.\n\n### Case 2: an object dependency"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Results({ term }: { term: string }) {\n  const [items, setItems] = useState([]);\n  const options = { term, limit: 20 };         // a new object every render\n\n  useEffect(() => {\n    search(options).then(setItems);\n  }, [options]);                               // always \"changed\", so this loops\n}",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "**Fix:** create the object inside the effect, and depend on the primitive."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => {\n  search({ term, limit: 20 }).then(setItems);\n}, [term]);",
+     "title": "Fixed"
+    },
+    {
+     "type": "markdown",
+     "text": "### Case 3: events disguised as effects"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const [submitted, setSubmitted] = useState(false);\n\nuseEffect(() => {\n  if (submitted) {\n    post('/api/orders', order);\n    showToast('Order placed');\n  }\n}, [submitted]);\n\n<button onClick={() => setSubmitted(true)}>Place order</button>",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "It's complicated, it can repeat on remount, and it can't easily tell which click caused it. **Fix:** do it in the handler."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "async function placeOrder() {\n  await post('/api/orders', order);\n  showToast('Order placed');\n}\n<button onClick={placeOrder}>Place order</button>",
+     "title": "Fixed"
+    },
+    {
+     "type": "markdown",
+     "text": "### Case 4: copying props to state"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Editor({ user }: { user: User }) {\n  const [name, setName] = useState(user.name);   // only reads the initial value\n  // choosing another user still shows the old name\n}",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "**Fix:** `<Editor key={user.id} user={user} />`, which gives a fresh instance per user. Avoid syncing with an effect, which causes an extra render, and briefly shows the wrong data.\n\n### Case 5: chains of effects"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => { setCity(null); }, [country]);\nuseEffect(() => { setArea(null); }, [city]);\nuseEffect(() => { setPincode(''); }, [area]);",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "Each step renders again, in a cascade. **Fix:** update everything in the one handler that changes `country`, or use a reducer."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function onCountry(next: string) {\n  setCountry(next);\n  setCity(null);\n  setArea(null);\n  setPincode('');\n}",
+     "title": "Fixed"
+    },
+    {
+     "type": "markdown",
+     "text": "### Case 6: async function as the effect"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(async () => {          // returns a promise; React expects a cleanup function or nothing\n  const data = await load();\n  setData(data);\n}, []);",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "**Fix:** define the async function inside."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => {\n  let active = true;\n  (async () => {\n    const data = await load();\n    if (active) setData(data);\n  })();\n  return () => { active = false; };\n}, []);",
+     "title": "Fixed"
+    },
+    {
+     "type": "markdown",
+     "text": "### Case 7: missing cleanup"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => {\n  window.addEventListener('resize', onResize);\n  const id = setInterval(tick, 1000);\n}, []);                          // the listener and timer outlive the component",
+     "title": "Bug"
+    },
+    {
+     "type": "markdown",
+     "text": "**Fix:** return a cleanup that removes the listener and clears the timer. Strict Mode's double mount shows up this bug in development, as you'd get two listeners.\n\n### Case 8: latest value without re-subscribing\n\nA callback prop changes each render, but you don't want to reconnect a socket each time."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useChat(room: string, onMessage: (m: string) => void) {\n  const latest = useRef(onMessage);\n  useEffect(() => { latest.current = onMessage; });\n\n  useEffect(() => {\n    const socket = connect(room);\n    socket.on('message', (m: string) => latest.current(m));\n    return () => socket.close();\n  }, [room]);                     // reconnects only when the room changes\n}",
+     "title": "Keep the latest callback in a ref"
+    },
+    {
+     "type": "markdown",
+     "text": "### A decision guide"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A{Caused by a user action?} -->|yes| B[Event handler]\n  A -->|no| C{Calculated from props or state?}\n  C -->|yes| D[Compute during render]\n  C -->|no| E{Fetching data?}\n  E -->|yes| F[Data library]\n  E -->|no| G{Reset state on a prop change?}\n  G -->|yes| H[key]\n  G -->|no| I[Effect, with cleanup]",
+     "title": "Do I need an effect?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Objects made in render change every time\n- User actions belong in handlers\n- Reset with a key\n- An effect can't be async directly"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-6",
+   "type": "concept",
+   "title": "React 19: use, Suspense and optimistic UI",
+   "subtopicId": "5-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### useOptimistic\n\nShow the expected result immediately during an action, falling back automatically when it ends."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Comments({ comments, send }: { comments: Comment[]; send: (text: string) => Promise<void> }) {\n  const [optimistic, addOptimistic] = useOptimistic(\n    comments,\n    (current, text: string) => [...current, { id: 'temp', text, pending: true }],\n  );\n\n  async function action(data: FormData) {\n    const text = String(data.get('text'));\n    addOptimistic(text);\n    await send(text);          // when this ends, the view returns to the real comments prop\n  }\n\n  return (\n    <>\n      <ul>\n        {optimistic.map((c) => (\n          <li key={c.id} style={{ opacity: c.pending ? 0.5 : 1 }}>{c.text}</li>\n        ))}\n      </ul>\n      <form action={action}>\n        <input name=\"text\" aria-label=\"Comment\" />\n        <button>Post</button>\n      </form>\n    </>\n  );\n}",
+     "title": "A comment list"
+    },
+    {
+     "type": "markdown",
+     "text": "### useFormStatus\n\nLets a child know that its parent form is submitting, without passing props."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function SubmitButton() {\n  const { pending } = useFormStatus();\n  return <button disabled={pending}>{pending ? 'Saving…' : 'Save'}</button>;\n}",
+     "title": "A submit button anywhere in a form"
+    },
+    {
+     "type": "markdown",
+     "text": "It must be in a component **inside** the form, not in the one that renders the form.\n\n### use\n\n`use` reads a promise or context during render, and unlike other hooks, it can be called in conditions."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function OrderTotal({ orderPromise }: { orderPromise: Promise<Order> }) {\n  const order = use(orderPromise);        // suspends until resolved\n  return <p>{order.total}</p>;\n}\n\n<Suspense fallback={<p>Loading…</p>}>\n  <OrderTotal orderPromise={promise} />\n</Suspense>",
+     "title": "Reading a promise with Suspense"
+    },
+    {
+     "type": "markdown",
+     "text": "The promise must be stable across renders. Creating it during render gives a new one each time, which suspends forever, so create it outside, cache it, or use a framework or library.\n\n### Suspense for data with TanStack Query"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Orders() {\n  const { data } = useSuspenseQuery({ queryKey: ['orders'], queryFn: getOrders });\n  return <OrderTable orders={data} />;     // no loading check needed here\n}\n\n<ErrorBoundary fallback={<ErrorBox />}>\n  <Suspense fallback={<Skeleton />}>\n    <Orders />\n  </Suspense>\n</ErrorBoundary>",
+     "title": "useSuspenseQuery lets the component assume data exists"
+    },
+    {
+     "type": "markdown",
+     "text": "Loading and errors move out to the parents, which can place one skeleton across several components."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[ErrorBoundary: on failure] --> B[Suspense: while pending]\n  B --> C[Orders]\n  B --> D[Summary]",
+     "title": "Suspense and error boundaries around data"
+    },
+    {
+     "type": "markdown",
+     "text": "### Transitions"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const [isPending, startTransition] = useTransition();\n\nfunction goTo(next: number) {\n  startTransition(() => setPage(next));   // no fallback flash for already shown content\n}",
+     "title": "Keep the old screen while the next loads"
+    },
+    {
+     "type": "markdown",
+     "text": "### The React Compiler\n\nThe compiler analyses your components at build time, and adds memoisation, so hand-written `useMemo`, `useCallback` and `memo` are needed less. It needs code that follows the rules of React, so the `react-hooks` ESLint rules matter even more. Existing memoisation doesn't harm, and you can adopt it gradually. It doesn't fix slow calculations in general, oversized bundles or slow APIs.\n\n### Older code you'll still meet\n\n| Older | Modern |\n|---|---|\n| `forwardRef` | `ref` as a prop |\n| `<Context.Provider>` | `<Context>` directly, in React 19 |\n| Class lifecycles | Hooks |\n| Manual `isSubmitting` state | `useActionState`, `useFormStatus` |"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- useOptimistic reverts when the action ends\n- useFormStatus must be inside the form\n- use needs a stable promise\n- The compiler needs code that follows the rules"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Rules, useState and useRef"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why can't a hook go inside an if?",
+       "answer": "React matches hooks by order, so a skipped call shifts every later hook to the wrong slot."
+      },
+      {
+       "question": "Would you store a timer ID in useState or useRef?",
+       "answer": "useRef, as it isn't shown, and changing it shouldn't cause a render."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### useEffect done properly"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A form resets when a prop changes, using an effect. What's cleaner?",
+       "answer": "Give the form a `key` based on that prop, so React recreates it."
+      },
+      {
+       "question": "Why might an effect run twice in development?",
+       "answer": "Strict Mode mounts, cleans up and remounts, to test the cleanup. It doesn't in production."
+      },
+      {
+       "question": "What goes wrong without aborting a fetch when the id changes?",
+       "answer": "An older response can arrive last and overwrite newer data."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### useMemo, useCallback and useReducer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Does useCallback make a component faster by itself?",
+       "answer": "No. It only helps if a memoised child, or a dependency list, relies on the function's identity."
+      },
+      {
+       "question": "When would you pick useReducer over useState?",
+       "answer": "When there are many related transitions, or the next state depends on several values. It's also easy to test."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Writing custom hooks"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Two components call useDebounce. Do they share the debounced value?",
+       "answer": "No. Each call has its own state."
+      },
+      {
+       "question": "Why wrap localStorage in try and catch?",
+       "answer": "It can throw in private modes, when full, or on corrupted JSON. The app should keep working."
+      },
+      {
+       "question": "Why debounce search input?",
+       "answer": "To avoid a request per keystroke, and call the API only when typing pauses."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### The useEffect clinic"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does an object created in render make an effect run every time?",
+       "answer": "It's a new reference each render, so the dependency comparison always sees a change."
+      },
+      {
+       "question": "Why can't you pass an async function directly to useEffect?",
+       "answer": "It returns a promise, whereas React expects a cleanup function or nothing."
+      },
+      {
+       "question": "How do you use the latest callback without reconnecting?",
+       "answer": "Store it in a ref updated each render, and call the ref from a stable effect."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### React 19: use, Suspense and optimistic UI"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why must a promise passed to use be stable?",
+       "answer": "A new promise each render suspends again, causing an endless loop of loading."
+      },
+      {
+       "question": "Why doesn't useFormStatus work in the component that renders the form?",
+       "answer": "It reads the status of a parent form, so it must be in a child of that form."
+      },
+      {
+       "question": "Does the React Compiler make all apps fast?",
+       "answer": "No. It reduces needless re-rendering, but not slow APIs, big bundles or expensive work."
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }

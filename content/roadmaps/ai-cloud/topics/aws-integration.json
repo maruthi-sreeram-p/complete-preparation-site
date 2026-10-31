@@ -1,0 +1,572 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-4-1",
+   "type": "concept",
+   "title": "SQS: queues",
+   "subtopicId": "4-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A queue lets one service hand work to another without both being available at once. It absorbs spikes, and failed work can retry. SQS is the simplest such service on AWS.\n\n### How a message moves"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant P as Producer\n  participant Q as SQS\n  participant C as Consumer\n  participant D as Dead-letter queue\n  P->>Q: SendMessage\n  C->>Q: ReceiveMessage\n  Q-->>C: message (hidden for the visibility timeout)\n  alt success\n    C->>Q: DeleteMessage\n  else crash or timeout\n    Q-->>C: message becomes visible and is received again\n  end\n  Q->>D: moved after maxReceiveCount attempts",
+     "title": "The SQS lifecycle"
+    },
+    {
+     "type": "markdown",
+     "text": "A consumer does not \"take\" a message. It borrows it for the **visibility timeout** and must delete it when done. If the consumer dies, the message simply returns. This gives at-least-once delivery, which is why **consumers must be idempotent**.\n\n### Standard or FIFO\n\n| | Standard | FIFO |\n|---|---|---|\n| Delivery | At least once, rare duplicates | Exactly-once processing within a window |\n| Order | Best effort | Strict, per message group |\n| Throughput | Nearly unlimited | Lower, higher with high-throughput mode |\n| Use | Most background work | Order per customer or account |\n\nA **message group ID** in FIFO keeps order per group while other groups continue in parallel. A single group ID for everything turns your queue into a single-file line.\n\n### Settings that cause incidents\n\n- **Visibility timeout:** set it above your worst-case processing time, usually about six times the Lambda timeout when using Lambda. Too short means duplicate processing while the first attempt still runs.\n- **Long polling:** set `WaitTimeSeconds` to 20. It reduces empty responses and costs.\n- **Dead-letter queue:** after a set number of attempts, a message moves here instead of blocking the queue forever. Alarm when it is not empty, and have a redrive plan.\n- **Size:** messages are limited, classically to 256 KB. For larger payloads, store the object in S3 and send a reference.\n\n### Idempotent consumers"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Transactional\npublic void handle(PaymentMessage m) {\n    if (processed.insertIfAbsent(m.eventId())) {   // unique key on event_id\n        orders.markPaid(m.orderId());\n    }\n    // a duplicate does nothing, and the message is deleted after commit\n}",
+     "title": "Record the message before doing the work, in one transaction"
+    },
+    {
+     "type": "markdown",
+     "text": "### Reliable publishing\n\nSaving to the database, then sending to SQS, has a gap: a crash between the two loses the message. The **outbox pattern** writes the message into an outbox table in the same transaction as the business change. A separate publisher then sends it. Your Kafka guide covers this in depth, and it is the same idea on any broker.\n\n### Spring Cloud AWS"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Component\nclass InvoiceListener {\n\n    private final InvoiceService invoices;\n\n    InvoiceListener(InvoiceService invoices) { this.invoices = invoices; }\n\n    @SqsListener(\"invoice-events\")\n    void onMessage(InvoiceEvent event) {\n        invoices.generate(event);   // the message is deleted when this returns normally\n    }\n}",
+     "title": "A listener with Spring Cloud AWS"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"A message was processed twice. Why, and what do you do?\"** SQS is at-least-once, and the visibility timeout may have expired during slow processing. So I make the consumer idempotent with a unique event ID, and also raise the timeout.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A received message is hidden, not removed\n- Consumers must be idempotent\n- Always attach a dead-letter queue, and alarm on it\n- Use an outbox for reliable publishing"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-2",
+   "type": "concept",
+   "title": "SNS, EventBridge, Kinesis and MSK",
+   "subtopicId": "4-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Choosing messaging services is a favourite design question. The differences are about how many consumers there are, and whether messages can be replayed.\n\n### SNS: fan-out\n\nSNS pushes one message to all subscribers. It keeps no history. The most common pattern pairs it with SQS, so that each consumer has its own durable queue."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  O[Orders service] --> T[SNS topic: order-placed]\n  T --> A[SQS: email]\n  T --> B[SQS: inventory]\n  T --> C[SQS: analytics]\n  A --> E[Email worker]\n  B --> I[Inventory worker]\n  C --> L[Analytics Lambda]",
+     "title": "Fan-out: SNS to many SQS queues"
+    },
+    {
+     "type": "markdown",
+     "text": "If the inventory service is down for an hour, its queue holds the messages, and nothing else is affected. Subscribers can use filter policies to receive only the messages they care about.\n\n### EventBridge: routing with rules\n\nEventBridge is an event bus. Rules match on the event's content and route it to targets. It also receives events from AWS services and SaaS products, and has a scheduler. It suits loosely connected systems, while SNS suits simple, high-volume fan-out.\n\n### Kinesis and MSK: replayable logs\n\nA stream keeps messages for a retention period, and each consumer tracks its own position. New consumers can read history, and a consumer can rewind after a bug. MSK is managed Apache Kafka, so all of your Kafka guide applies. Kinesis is AWS's own stream, with less to operate, but with AWS-specific APIs.\n\n### Decision table\n\n| Need | Choose |\n|---|---|\n| Work queue with retries | SQS |\n| One event, several independent consumers | SNS + SQS |\n| Content-based routing, SaaS or AWS events | EventBridge |\n| Ordered, replayable stream, many readers | MSK or Kinesis |\n| Strict order within a key, small scale | SQS FIFO |\n| Multi-step workflow with retries and state | Step Functions |\n\n### Step Functions\n\nStep Functions runs a state machine that coordinates steps, handling retries, timeouts and branching in configuration. An order workflow with several services may use it as a saga orchestrator, with compensating steps when one fails. Debugging is easier, because each execution has a visual history."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Kafka or SQS?\"** SQS for simple background jobs with low operational load. Kafka when several consumers need the same events, when I need replay or stream processing, or when per-key ordering at high throughput matters.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- SNS pushes and forgets\n- SNS plus SQS gives durable fan-out\n- Streams allow replay\n- Pick by consumers and replay needs"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-3",
+   "type": "concept",
+   "title": "Load balancers, API Gateway and CloudFront",
+   "subtopicId": "4-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "All traffic has to enter somewhere. These three services are often used together, and interviewers expect you to separate their jobs.\n\n| Service | Job | Layer |\n|---|---|---|\n| Application Load Balancer | Spread HTTP traffic across tasks | 7 |\n| Network Load Balancer | Very high TCP or UDP throughput, static IPs | 4 |\n| API Gateway | API features: auth, throttling, keys, Lambda integration | 7 |\n| CloudFront | CDN: cache close to users, TLS, WAF | 7 |\n| Route 53 | DNS, health-based failover | DNS |\n\n### Application Load Balancer\n\nAn ALB has **listeners** (port 443), **rules** (path or host) and **target groups** (your tasks, with health checks). It terminates TLS using a certificate from ACM. Sticky sessions exist, but a stateless app should not need them.\n\n### Timeouts must line up\n\nTimeouts should shrink as you go inward. Otherwise the outer layer gives up while the inner one keeps working on a request nobody wants."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "CloudFront origin timeout     60 s\nALB idle timeout              55 s\nSpring Boot request handling  25 s\nDownstream HTTP client         5 s\nDatabase query                 3 s",
+     "title": "Example: decreasing timeouts"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A common cause: the app closes an idle keep-alive connection while the ALB is reusing it. Keep the server's keep-alive timeout longer than the ALB's idle timeout. In Spring Boot with Tomcat, set `server.tomcat.keep-alive-timeout` accordingly.",
+     "title": "Intermittent 502 errors"
+    },
+    {
+     "type": "markdown",
+     "text": "### API Gateway\n\nAPI Gateway adds request validation, authorisers (JWT or Lambda), usage plans, API keys and throttling. It works well in front of Lambda. In front of a single Spring Boot service it may add little, as Spring and the ALB already handle much of this. It has a hard timeout and a payload limit, so long jobs must be asynchronous.\n\n### CloudFront\n\nCloudFront caches responses at edge locations. Typical uses: serving the React build from a private S3 bucket through Origin Access Control, and sending `/api/*` to the ALB without caching. Set long cache times on hashed assets, such as `main.8f2a.js`, and short ones on `index.html`, so that a deployment appears quickly."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  U[Browser] --> CF[CloudFront]\n  CF -->|/*| S3[(Private S3: React build)]\n  CF -->|/api/*| ALB[ALB]\n  ALB --> T[ECS tasks]",
+     "title": "A React app and API behind one domain"
+    },
+    {
+     "type": "markdown",
+     "text": "A single domain also avoids CORS configuration entirely.\n\n### WAF and rate limits\n\nAWS WAF attaches to CloudFront or the ALB, and blocks common attacks, known bad IPs and floods by rate. It complements validation in your code but doesn't replace it."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How do you serve React and Spring Boot on AWS?\"** Build React into S3, serve it through CloudFront, and route `/api/*` to an ALB in front of ECS tasks. It is one domain, so no CORS, with hashed assets cached long and `index.html` cached briefly.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- ALB for traffic, API Gateway for API features, CloudFront for caching at the edge\n- Timeouts shrink as you go inward\n- Keep buckets private behind CloudFront\n- Cache hashed assets for a long time"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-4",
+   "type": "concept",
+   "title": "Building an event-driven flow from Spring Boot",
+   "subtopicId": "4-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter builds a realistic flow: placing an order publishes an event, and independent workers react, without losing a message."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  API[Orders API] --> DB[(Orders + outbox table)]\n  R[Outbox relay] --> DB\n  R --> T[SNS: order-events]\n  T --> A[SQS: email]\n  T --> B[SQS: inventory]\n  A --> E[Email worker]\n  B --> I[Inventory worker]\n  A -.-> AD[Email dead-letter queue]\n  B -.-> BD[Inventory dead-letter queue]",
+     "title": "The whole flow"
+    },
+    {
+     "type": "markdown",
+     "text": "### Step 1: write the business change and event together"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Transactional\npublic Order place(PlaceOrder cmd) {\n    Order order = orders.save(Order.from(cmd));\n    outbox.save(new OutboxEvent(UUID.randomUUID(), \"OrderPlaced\", order.getId().toString(),\n        json.write(new OrderPlaced(order.getId(), order.getTotal()))));\n    return order;\n}",
+     "title": "One transaction: the order and its event"
+    },
+    {
+     "type": "markdown",
+     "text": "### Step 2: relay the outbox"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Scheduled(fixedDelay = 1000)\n@SchedulerLock(name = \"outboxRelay\", lockAtMostFor = \"30s\")\n@Transactional\npublic void relay() {\n    for (OutboxEvent e : outbox.findTop100ByPublishedAtIsNullOrderByCreatedAt()) {\n        sns.publish(b -> b.topicArn(topicArn)\n            .message(e.getPayload())\n            .messageAttributes(Map.of(\"type\", MessageAttributeValue.builder()\n                .dataType(\"String\").stringValue(e.getType()).build(),\n                \"eventId\", MessageAttributeValue.builder()\n                .dataType(\"String\").stringValue(e.getId().toString()).build())));\n        e.markPublished();\n    }\n}",
+     "title": "A simple relay; one instance at a time works through a batch"
+    },
+    {
+     "type": "markdown",
+     "text": "A crash after publishing but before commit will send the event again. That's the at-least-once guarantee, so consumers must handle duplicates. Debezium can replace this relay by reading the database's change log, as your Kafka guide describes.\n\n### Step 3: consume idempotently"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@SqsListener(\"inventory-queue\")\n@Transactional\npublic void onOrderPlaced(OrderPlaced event, @Header(\"eventId\") String eventId) {\n    if (!processed.markIfNew(eventId)) {\n        return;                  // already handled: acknowledge and move on\n    }\n    inventory.reserve(event.orderId());\n}",
+     "title": "An inventory worker"
+    },
+    {
+     "type": "markdown",
+     "text": "`markIfNew` inserts into a table with a unique key on the event ID, inside the same transaction as the reservation. If the insert hits a duplicate, the handler knows it's a repeat. (Header names depend on how you set message attributes, and with raw message delivery on the SNS subscription, attributes become SQS attributes. Check this with your Spring Cloud AWS version.)\n\n### Step 4: failure handling\n\n| Failure | Handling |\n|---|---|\n| Worker crash | Message reappears after visibility timeout |\n| Temporary downstream error | Throw; retried with delay |\n| Bad data | Goes to dead-letter queue after N attempts |\n| Consumer down for hours | Messages wait, up to retention (up to 14 days) |\n| Dead-letter messages | Alarm, inspect, fix, redrive |\n\n**Retry storms:** set a visibility timeout that grows, or use a delay, so that a failing dependency isn't hammered. A circuit breaker in the worker can pause consumption while a dependency is down.\n\n### Step 5: observe it\n\nWatch `ApproximateAgeOfOldestMessage`, the best sign of falling behind. Number of messages alone can mislead. Propagate a trace ID through message attributes, so that a single order can be followed across all services.\n\n### Ordering\n\nStandard queues don't preserve order, so handle events arriving out of sequence. A simple tactic: store a version or timestamp on the entity, and ignore events older than what you have. Using FIFO queues everywhere costs throughput, and only helps per group.\n\n### Schema evolution\n\nEvents outlive deployments. Add optional fields rather than renaming them. Include a type and version, keep consumers tolerant of unknown fields, and remember that a dead-letter redrive can replay old-format events days later."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How do you guarantee an event is published when an order is saved?\"** The transactional outbox: both are written in one database transaction, then a relay publishes. Delivery is at-least-once, so consumers deduplicate on an event ID.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Outbox for reliable publishing\n- Dedupe with a unique key in the consumer's transaction\n- Watch the age of the oldest message\n- Events must evolve compatibly"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-5",
+   "type": "concept",
+   "title": "Authentication on AWS: Cognito and Spring Security",
+   "subtopicId": "4-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Service identity or user identity\n\nTwo different problems often get confused. **IAM** answers what AWS resources your service may use. **User authentication** answers which human is calling your API. IAM isn't for your app's end users.\n\n### Cognito in brief\n\nA Cognito **user pool** is a managed user directory, with sign-up, login, MFA and social sign-in, which issues JWTs through OpenID Connect. Your Spring Boot service only validates tokens. An alternative is any OIDC provider such as Auth0, Okta or Keycloak, and the Spring code stays the same."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as React app\n  participant C as Cognito\n  participant A as Spring Boot API\n  B->>C: redirect to login (authorization code + PKCE)\n  C-->>B: authorization code\n  B->>C: exchange code for tokens\n  C-->>B: access token (JWT), refresh token\n  B->>A: API call with Authorization: Bearer token\n  A->>A: verify signature, issuer, expiry, audience\n  A-->>B: response",
+     "title": "Login with an OIDC provider"
+    },
+    {
+     "type": "markdown",
+     "text": "### Validating tokens in Spring Boot"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "spring.security.oauth2.resourceserver.jwt.issuer-uri=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_EXAMPLE",
+     "title": "Point Spring at the issuer"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Configuration\n@EnableMethodSecurity\nclass SecurityConfig {\n\n    @Bean\n    SecurityFilterChain api(HttpSecurity http) throws Exception {\n        return http\n            .csrf(csrf -> csrf.disable())     // stateless bearer tokens; no cookies\n            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n            .authorizeHttpRequests(a -> a\n                .requestMatchers(\"/actuator/health/**\").permitAll()\n                .anyRequest().authenticated())\n            .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))\n            .build();\n    }\n}",
+     "title": "A resource server"
+    },
+    {
+     "type": "markdown",
+     "text": "Spring fetches the issuer's public keys, and checks each token's signature, issuer and expiry, with no call to Cognito on each request. Your Spring Security guide explains this chain in depth.\n\nCognito puts groups in the `cognito:groups` claim, and Spring doesn't map that to authorities by default, so add a `JwtAuthenticationConverter`."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A valid token only proves who somebody is. `GET /orders/42` must still check that order 42 belongs to this user. Missing this check (broken object-level authorisation) is among the most common API flaws.",
+     "title": "Authorisation is still your job"
+    },
+    {
+     "type": "markdown",
+     "text": "### Where to keep tokens in a React app\n\n| Location | XSS risk | CSRF risk | Note |\n|---|---|---|---|\n| localStorage | High | None | Simple, but script can steal it |\n| Memory | Lower | None | Lost on refresh; use silent renewal |\n| HttpOnly cookie | Low | Needs protection | Use with a backend-for-frontend |\n\nMany teams now prefer a **backend-for-frontend**, in which the server holds tokens and the browser holds only a session cookie.\n\n### Service-to-service calls\n\nInside AWS, options include IAM (signing requests with SigV4, as API Gateway and VPC Lattice support), OAuth client credentials, and mutual TLS. Being inside a private network isn't sufficient by itself: a compromised service could otherwise call anything."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How do you secure a Spring Boot API on AWS?\"** TLS at the edge, JWT validation against an OIDC provider, authorisation checks for each object, WAF and rate limits at the edge, security groups inside, least-privilege task roles, and secrets in Secrets Manager.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- IAM is for services, not your app's users\n- The API validates tokens locally\n- A valid token is not authorisation\n- Network location isn't identity"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-6",
+   "type": "concept",
+   "title": "API design at the edge: rate limits, CORS and protection",
+   "subtopicId": "4-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Rate limiting layers\n\n| Layer | Tool | Protects from |\n|---|---|---|\n| Edge | WAF rate rules | Floods per IP |\n| API | API Gateway usage plans | Over-use per client |\n| App | Bucket4j with Redis | Per-user, per-feature limits |\n| Database | Pool and query limits | Overload behind everything |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Bucket bucket = buckets.computeIfAbsent(userId, id -> Bucket.builder()\n    .addLimit(limit -> limit.capacity(20).refillGreedy(20, Duration.ofMinutes(1)))\n    .build());\n\nif (!bucket.tryConsume(1)) {\n    throw new TooManyRequestsException();   // respond 429 with Retry-After\n}",
+     "title": "Per-user limit with Bucket4j, in brief"
+    },
+    {
+     "type": "markdown",
+     "text": "This in-memory version allows 20 per minute **per instance**. For a true global limit, keep the bucket's state in Redis, using Bucket4j's Redis integration.\n\n### CORS\n\nA browser blocks reading responses from another origin unless the server allows it. CORS is not a server security feature, as tools such as curl ignore it entirely. If CloudFront serves both the app and the API on one domain, you avoid it. Otherwise, configure specific origins, not `*`, especially with credentials. Preflight `OPTIONS` requests must reach your app or be answered at the edge, and with CloudFront, the `Origin` header needs forwarding.\n\n### Handling load gracefully\n\n- **Timeouts** bound the work per request.\n- **Bulkheads** stop one slow dependency from using up all threads. Resilience4j offers these, along with circuit breakers.\n- **Load shedding** returns 503 early when overloaded, rather than failing everything slowly.\n- **Backpressure** moves writes to a queue, responding `202 Accepted` with a way to check status."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant U as Client\n  participant A as API\n  participant Q as SQS\n  participant W as Worker\n  U->>A: POST /reports\n  A->>Q: enqueue\n  A-->>U: 202 Accepted, status URL\n  W->>Q: process in its own time\n  U->>A: GET /reports/42\n  A-->>U: running, or done with a link",
+     "title": "Accepting more than you can process right now"
+    },
+    {
+     "type": "markdown",
+     "text": "### Idempotent APIs\n\nNetworks fail after a server has done the work, so clients retry. For payments or orders, accept an `Idempotency-Key` header. Store the key with its result, and return the stored result for repeats. A unique constraint settles the race between simultaneous retries.\n\n### API Gateway limits to remember\n\nHard timeout, payload size limits and per-account throttles all shape design. Large files should bypass it, using pre-signed S3 URLs. Long work should return 202. Don't discover these limits in production."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Limit at several layers\n- CORS protects browser users, not your server\n- Return 202 for long work\n- Accept idempotency keys for writes"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-7",
+   "type": "concept",
+   "title": "Testing AWS code locally",
+   "subtopicId": "4-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Tests that need a real AWS account are slow, and they cost money. Tests that mock everything miss real behaviour. Containers give a useful middle ground.\n\n| Test type | Tool | Catches |\n|---|---|---|\n| Unit | Mock your own interface | Your logic |\n| Integration | LocalStack, Testcontainers | Wrong API calls, serialisation |\n| Contract or smoke | A real AWS test account | IAM, real limits, real behaviour |\n\n### LocalStack with Testcontainers"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@SpringBootTest\n@Testcontainers\nclass InvoiceFlowTest {\n\n    @Container\n    static LocalStackContainer localstack = new LocalStackContainer(\n            DockerImageName.parse(\"localstack/localstack:3.8\"))\n        .withServices(LocalStackContainer.Service.S3, LocalStackContainer.Service.SQS);\n\n    @DynamicPropertySource\n    static void aws(DynamicPropertyRegistry r) {\n        r.add(\"spring.cloud.aws.endpoint\", () -> localstack.getEndpoint().toString());\n        r.add(\"spring.cloud.aws.region.static\", localstack::getRegion);\n        r.add(\"spring.cloud.aws.credentials.access-key\", localstack::getAccessKey);\n        r.add(\"spring.cloud.aws.credentials.secret-key\", localstack::getSecretKey);\n    }\n\n    @Autowired SqsTemplate sqs;\n    @Autowired S3Client s3;\n\n    @Test\n    void messageProducesInvoiceInS3() {\n        s3.createBucket(b -> b.bucket(\"invoices\"));\n        sqs.send(\"invoice-events\", new InvoiceEvent(42L));\n\n        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->\n            assertThat(s3.listObjectsV2(b -> b.bucket(\"invoices\")).contents()).hasSize(1));\n    }\n}",
+     "title": "An SQS and S3 integration test"
+    },
+    {
+     "type": "markdown",
+     "text": "Note the use of Awaitility: the listener runs asynchronously, so a sleep would be flaky. The queue must also exist before listeners start, so create it in an init script or a configuration bean.\n\nCheck LocalStack's current licensing and image terms, since features and availability vary, and use a pinned image version.\n\n### What local tests can't tell you\n\nLocalStack doesn't fully enforce IAM by default, and its behaviour can differ from AWS in edge cases, such as limits. Keep a small set of smoke tests running against a real account after deployment: does the role actually have access? does the queue trigger the worker?\n\n### Testing failure paths\n\nMost cloud bugs are in failure handling, and few people test that. Worth testing:\n\n| Failure | Test |\n|---|---|\n| Duplicate message | Deliver twice; assert one effect |\n| Poison message | Assert that it ends up in the DLQ |\n| Throttling | Inject errors using WireMock |\n| Database failover | Restart the container in a Testcontainers test; check the pool recovers |\n| Slow dependency | Toxiproxy adds latency; assert timeouts work |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Test\nvoid duplicateMessageHasOneEffect() {\n    InvoiceEvent event = new InvoiceEvent(42L, \"evt-1\");\n    listener.onMessage(event);\n    listener.onMessage(event);\n    assertThat(invoices.countByOrder(42L)).isEqualTo(1);\n}",
+     "title": "Asserting idempotency"
+    },
+    {
+     "type": "markdown",
+     "text": "### Chaos in production-like environments\n\nAWS Fault Injection Service can stop tasks or add latency on purpose. The aim is to learn before a real failure does: does the service recover, do alarms fire, and does the on-call person know what to do? Start in staging, with a clear hypothesis and a stop condition."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Test against containers, then smoke test in AWS\n- Use Awaitility rather than sleep\n- Test failure handling explicitly\n- LocalStack doesn't prove your IAM works"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-8",
+   "type": "concept",
+   "title": "Streaming on AWS: MSK, Kinesis and EventBridge",
+   "subtopicId": "4-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### MSK from Spring Boot\n\nYour Kafka guide applies almost entirely. What changes is connection and authentication."
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "spring.kafka.bootstrap-servers=${MSK_BROKERS}\nspring.kafka.properties.security.protocol=SASL_SSL\nspring.kafka.properties.sasl.mechanism=AWS_MSK_IAM\nspring.kafka.properties.sasl.jaas.config=software.amazon.msk.auth.iam.IAMLoginModule required;\nspring.kafka.properties.sasl.client.callback.handler.class=software.amazon.msk.auth.iam.IAMClientCallbackHandler",
+     "title": "Kafka client with IAM authentication"
+    },
+    {
+     "type": "markdown",
+     "text": "This needs the `aws-msk-iam-auth` library, and a task role allowing actions such as `kafka-cluster:Connect` and read or write on the topic. No passwords are involved.\n\n### Kinesis compared with Kafka\n\n| | Kinesis Data Streams | Kafka (MSK) |\n|---|---|---|\n| Unit of parallelism | Shard | Partition |\n| Throughput per unit | Fixed per shard (about 1 MB/s in) | Depends on brokers |\n| Retention | Default 24 hours, can extend | Configurable, long |\n| Operations | Very little | More: brokers, storage, upgrades |\n| Ecosystem | AWS integrations | Connect, Streams, wide community |\n| Portability | AWS only | Standard Kafka |\n\n**Firehose** delivers stream data to S3 or other destinations in batches, with no consumer code, which suits log and analytics pipelines.\n\n### EventBridge from Java"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "eventBridge.putEvents(r -> r.entries(PutEventsRequestEntry.builder()\n    .eventBusName(\"orders\")\n    .source(\"com.acme.orders\")\n    .detailType(\"OrderPlaced\")\n    .detail(json.write(new OrderPlaced(9001L, new BigDecimal(\"499.00\"))))\n    .build()));",
+     "title": "Publishing a domain event"
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"source\": [\"com.acme.orders\"],\n  \"detail-type\": [\"OrderPlaced\"],\n  \"detail\": { \"total\": [{ \"numeric\": [\">\", 10000] }] }\n}",
+     "title": "A rule that matches large orders"
+    },
+    {
+     "type": "markdown",
+     "text": "`PutEvents` can partly fail, and returns a count of failed entries, so check `failedEntryCount`. EventBridge has **Archive and Replay**, which can resend past events to a bus for recovery.\n\n### Designing events\n\n| Style | Contains | Trade-off |\n|---|---|---|\n| Thin event | IDs only | Consumers must call back, creating coupling and load |\n| Fat event | The data consumers need | Larger, and exposes more of your data |\n\nMost systems use a middle ground: enough for common consumers, and an ID for the rest. Name events in the past tense, such as `OrderPlaced`, since they state facts. Publish a schema, and treat it as a public API.\n\n### Choosing partition keys\n\nFor Kafka and Kinesis, the key decides both ordering and load balance. Use `orderId` when events for an order must stay in order. Avoid a low-cardinality key, such as country, as one big value creates a hot shard, while the others sit idle.\n\n### Sending email with SES"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "ses.sendEmail(r -> r\n    .fromEmailAddress(\"no-reply@example.com\")\n    .destination(d -> d.toAddresses(user.email()))\n    .content(c -> c.simple(s -> s\n        .subject(t -> t.data(\"Your order is confirmed\"))\n        .body(b -> b.text(t -> t.data(bodyText))))));",
+     "title": "Sending through SES"
+    },
+    {
+     "type": "markdown",
+     "text": "New accounts begin in a sandbox, where only verified addresses can receive mail. Set up SPF, DKIM and DMARC for deliverability, and watch bounces and complaints, as high rates can suspend your account. Send from a worker, so that an email problem doesn't fail the order."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- MSK uses IAM auth through a library\n- Kinesis costs less effort, Kafka gives more\n- Check for partial failures in PutEvents\n- Events are a public API"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### SQS: queues"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Orders for one customer must stay in sequence, but different customers can run in parallel. How?",
+       "answer": "Use a FIFO queue with the customer ID as the message group ID."
+      },
+      {
+       "question": "What happens if the visibility timeout is shorter than processing time?",
+       "answer": "The message reappears while still being processed, and another consumer works on it too, which causes duplicates."
+      },
+      {
+       "question": "A poison message fails every time. What protects the queue?",
+       "answer": "A redrive policy moves it to a dead-letter queue after maxReceiveCount tries, so other messages continue. An alarm tells people to look."
+      },
+      {
+       "question": "Why save to an outbox rather than sending to SQS within the transaction?",
+       "answer": "SQS is not part of the database transaction, so one can succeed while the other fails. The outbox makes the write atomic, and a publisher delivers it at least once."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### SNS, EventBridge, Kinesis and MSK"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why put SQS between SNS and a consumer?",
+       "answer": "The queue holds messages if the consumer is slow or down, and it controls the processing rate and retries."
+      },
+      {
+       "question": "A new analytics team wants the last week of events. Which design supports it?",
+       "answer": "A stream with retention, such as Kafka or Kinesis. With SNS and SQS, past messages are gone, unless they are archived."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Load balancers, API Gateway and CloudFront"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "After deployment, users still see the old React app. Why?",
+       "answer": "`index.html` is cached by CloudFront or the browser. Give it a short cache time, and invalidate it on deployment. Hashed assets can then be cached for a long time."
+      },
+      {
+       "question": "Do you need API Gateway in front of Spring Boot on ECS?",
+       "answer": "Often not: an ALB plus Spring Security covers routing and auth. Add it for usage plans, API keys, or when many backends share one front door."
+      },
+      {
+       "question": "Why should inner timeouts be shorter than outer ones?",
+       "answer": "So that the inner call fails first and can be handled. Otherwise, the outer layer returns an error while the work continues uselessly and holds resources."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Building an event-driven flow from Spring Boot"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "The relay crashes after publishing, but before marking the event. What happens?",
+       "answer": "It publishes again after restart, so consumers see a duplicate, and their idempotency check handles it."
+      },
+      {
+       "question": "Why watch the age of the oldest message rather than the queue's length?",
+       "answer": "Age shows how far behind you are in time. A long queue with fast workers may be fine."
+      },
+      {
+       "question": "An \"OrderCancelled\" event arrives before \"OrderPlaced\". How can you cope?",
+       "answer": "Store versions or timestamps, ignore stale events, and keep enough state to apply them in any order, or use FIFO per order."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Authentication on AWS: Cognito and Spring Security"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why doesn't token validation need a call to Cognito for each request?",
+       "answer": "JWTs are signed. Spring validates them using cached public keys, and checks claims locally."
+      },
+      {
+       "question": "A logged-in user changes the ID in a URL and sees another's order. What is the bug?",
+       "answer": "Broken object-level authorisation: the API authenticates but does not check ownership."
+      },
+      {
+       "question": "Why isn't IAM used for the shop's customers?",
+       "answer": "IAM controls access to AWS resources. Customers need sign-up, login and profiles, which a user directory such as Cognito provides."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### API design at the edge: rate limits, CORS and protection"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why doesn't CORS protect your API from attackers?",
+       "answer": "It's enforced by browsers only. Scripts and other tools ignore it. Use authentication and authorisation."
+      },
+      {
+       "question": "A client times out on a payment and retries. How do you avoid charging twice?",
+       "answer": "Accept an idempotency key, with a unique constraint, and return the stored result on repeats."
+      },
+      {
+       "question": "Why might per-instance rate limits be wrong?",
+       "answer": "With ten instances, the true limit is ten times higher, and it changes with scaling. Keep shared state in Redis."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Testing AWS code locally"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Your tests pass on LocalStack, but production gets Access Denied. Why?",
+       "answer": "LocalStack doesn't fully enforce IAM. Add smoke tests in a real account."
+      },
+      {
+       "question": "Why is Thread.sleep a poor way to wait for an async result?",
+       "answer": "Too short is flaky, and too long is slow. Awaitility polls until the condition holds or a timeout passes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Streaming on AWS: MSK, Kinesis and EventBridge"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Your event carries only an order ID, and five consumers call back the orders API. What's the downside?",
+       "answer": "Coupling and extra load on that API. Include commonly needed data in the event."
+      },
+      {
+       "question": "Why isn't country a good partition key?",
+       "answer": "Few values and uneven sizes create hot partitions."
+      },
+      {
+       "question": "Your app's emails only reach some addresses in a new AWS account. Why?",
+       "answer": "SES starts in a sandbox, which delivers only to verified addresses, until you request production access."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

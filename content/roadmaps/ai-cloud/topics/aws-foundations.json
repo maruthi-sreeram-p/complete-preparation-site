@@ -1,0 +1,663 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-1-1",
+   "type": "concept",
+   "title": "The cloud model and how AWS is organised",
+   "subtopicId": "1-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Before cloud platforms, a company bought servers, waited weeks for delivery, and paid for them whether they were busy or idle. A cloud provider turns that into an API call: you ask for capacity, use it, and pay for what you used. Three properties explain almost every design decision you will make on AWS.\n\n- **Elasticity.** Capacity can grow and shrink with demand, so you do not have to size for the busiest day of the year.\n- **Managed services.** AWS can run the database, the queue or the load balancer. You trade some control and some money for far less operational work.\n- **Pay as you go.** Cost becomes an engineering concern. A forgotten test environment is a real bill, and a good design can be measured in rupees.\n\n### Service models\n\n| Model | You manage | AWS manages | Example |\n|---|---|---|---|\n| IaaS | OS, runtime, app, patches | Hardware, virtualisation | EC2 |\n| Container platform | Image, app, scaling rules | Servers (with Fargate), orchestration | ECS on Fargate |\n| PaaS-like | App code and settings | Almost everything else | Elastic Beanstalk |\n| FaaS | Function code | Servers, scaling, runtime patches | Lambda |\n| Managed data | Schema, queries, size | Patching, backups, failover | RDS, DynamoDB |\n\nThe further down this table you go, the less you operate and the less you control. The right choice is usually the highest-level service that meets your needs. A junior mistake is to run PostgreSQL on an EC2 instance \"to save money\", and then spend weeks on backups and failover that RDS gives you for a modest premium.\n\n### Regions and Availability Zones\n\nA **Region** is a geographic area such as `ap-south-1` (Mumbai). Each Region holds several **Availability Zones** (AZs): separate data centre groups with independent power and networking, connected by fast private links. An **edge location** is a smaller site that CloudFront uses to serve content close to users."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  subgraph R[Region: ap-south-1]\n    A[AZ a: app and primary database]\n    B[AZ b: app and standby database]\n    C[AZ c: app]\n  end\n  U[Users] --> E[Edge location: CloudFront]\n  E --> R",
+     "title": "A Region and its Availability Zones"
+    },
+    {
+     "type": "markdown",
+     "text": "The consequences matter more than the definitions:\n\n- A single AZ can fail. Anything important runs in at least two.\n- Data does not leave a Region unless you move it, which matters for laws such as data-localisation rules.\n- Prices and available services differ by Region. New services often arrive in US Regions first.\n- Traffic across AZs usually costs a small amount per GB, so chatty services can create a real bill."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Decide by four things, in this order: legal requirements, distance to users, service availability, then price.",
+     "title": "Choosing a Region"
+    },
+    {
+     "type": "markdown",
+     "text": "### The shared responsibility model\n\nAWS secures the cloud itself: buildings, hardware, the hypervisor. You secure what you put in it: IAM permissions, open network ports, encryption settings, patches on your EC2 instances and your own code. Most real cloud breaches are on the customer's side of this line, typically a public S3 bucket or a leaked access key."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Is my app secure because it runs on AWS?\"** No. AWS secures the infrastructure, and you are responsible for configuration and code. The more managed the service, the more of the patching moves to AWS, but access control always stays with you.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "markdown",
+     "text": "### Accounts\n\nAn AWS **account** is a boundary for billing and for permissions. Companies use several: one each for development, staging and production, grouped under AWS Organizations. If a developer's mistake in the dev account cannot touch production, that is the account boundary doing its job. As a learner, one account is fine, but follow the rules in the next chapter on day one."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Pick the highest-level service that fits\n- Run important workloads across two or more AZs\n- AWS secures the cloud, you secure what is in it\n- Separate accounts limit the damage from mistakes"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-2",
+   "type": "concept",
+   "title": "Setting up an account safely",
+   "subtopicId": "1-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Most expensive beginner mistakes happen in the first hour. Do these steps before creating anything else.\n\n1. **Protect the root user.** The email you signed up with can do anything, including closing the account. Enable MFA, then stop using it for daily work.\n2. **Create a daily user.** Use IAM Identity Center (or, for a personal learning account, an IAM user) with MFA.\n3. **Set a budget alarm.** In AWS Budgets, create a monthly budget with an email alert at a small amount.\n4. **Never put access keys in code.** Keys committed to GitHub are found by bots within minutes.\n5. **Use one Region** while learning, so nothing is left running somewhere you forget to look."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "NAT gateways (charged per hour and per GB), RDS instances left running, Elastic IPs not attached to anything, load balancers from old experiments, and data transfer out to the internet. Delete what you are not using, and check the Billing page weekly.",
+     "title": "Common surprise bills"
+    },
+    {
+     "type": "markdown",
+     "text": "### The CLI\n\nEverything in the console is an API call, and the CLI lets you repeat it exactly."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "aws configure sso                      # sign in through IAM Identity Center\naws sts get-caller-identity            # who am I? Run this when anything is confusing\naws s3 ls                              # list buckets\naws ec2 describe-instances --region ap-south-1 \\\n  --query 'Reservations[].Instances[].[InstanceId,State.Name]' --output table",
+     "title": "First commands"
+    },
+    {
+     "type": "markdown",
+     "text": "`sts get-caller-identity` solves a surprising share of permission problems, as people are often not the identity they think they are."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- MFA on root, then leave root alone\n- Budget alarm first\n- No long-lived keys in code\n- Learn the CLI: it shows that everything is an API"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-3",
+   "type": "concept",
+   "title": "IAM in depth",
+   "subtopicId": "1-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Every call to AWS answers one question: **who** is asking, and **may** they do this? IAM answers it. Understanding IAM is the most valuable AWS skill, because every other service depends on it.\n\n### Identities\n\n- **User:** a long-lived identity for a person or old-style program. Prefer not to use these for applications.\n- **Group:** a set of users sharing policies.\n- **Role:** an identity with no password or permanent keys. Whoever is allowed to assume it gets **temporary credentials**. Applications, Lambda functions and ECS tasks use roles.\n\n### Policies\n\nA policy is JSON that states what is allowed or denied."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"s3:GetObject\", \"s3:PutObject\"],\n      \"Resource\": \"arn:aws:s3:::acme-invoices/*\"\n    },\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\"sqs:SendMessage\"],\n      \"Resource\": \"arn:aws:sqs:ap-south-1:123456789012:invoice-events\"\n    }\n  ]\n}",
+     "title": "A least-privilege policy for an invoice service"
+    },
+    {
+     "type": "markdown",
+     "text": "Read a statement as: **Effect** on **Action** against **Resource**, optionally with a **Condition**. An ARN (Amazon Resource Name) identifies a resource uniquely. Note `/*` above: object permissions apply to objects inside the bucket, while `s3:ListBucket` would need the bucket ARN itself without `/*`. That single detail causes many \"Access Denied\" puzzles.\n\n### How AWS decides"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Request] --> B{Any explicit Deny?}\n  B -->|yes| X[Denied]\n  B -->|no| C{Any Allow applies?}\n  C -->|no| X\n  C -->|yes| D{Do boundaries, SCPs and session policies allow it too?}\n  D -->|no| X\n  D -->|yes| Y[Allowed]",
+     "title": "Policy evaluation, simplified"
+    },
+    {
+     "type": "markdown",
+     "text": "Three rules cover most cases: everything is denied by default, an Allow opens it, and an explicit Deny always wins.\n\n### Identity policies and resource policies\n\nAn **identity policy** is attached to a user or role and says what it can do. A **resource policy** is attached to a resource, such as an S3 bucket or SQS queue, and says who can use it. Within one account, either can grant access. Across accounts, **both** sides must allow it.\n\n### Roles for applications\n\nA role has two parts: a **trust policy** (who may assume it) and **permission policies** (what it can do once assumed)."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Principal\": { \"Service\": \"ecs-tasks.amazonaws.com\" },\n    \"Action\": \"sts:AssumeRole\"\n  }]\n}",
+     "title": "Trust policy: ECS tasks may assume this role"
+    },
+    {
+     "type": "markdown",
+     "text": "The AWS SDK finds the credentials by itself, through its default provider chain. Your code contains nothing secret, and credentials rotate automatically:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "S3Client s3 = S3Client.builder().region(Region.AP_SOUTH_1).build();\n\ns3.putObject(\n    PutObjectRequest.builder().bucket(\"acme-invoices\").key(\"2026/inv-42.pdf\").build(),\n    RequestBody.fromBytes(pdfBytes));",
+     "title": "No keys anywhere: the SDK picks up the task role"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "The **task execution role** lets the ECS agent pull your image and fetch secrets at start-up. The **task role** is what your running code uses. Giving your app's S3 permissions to the execution role is a classic mistake that ends in Access Denied at run time.",
+     "title": "ECS has two roles"
+    },
+    {
+     "type": "markdown",
+     "text": "### Least privilege in practice\n\nStart narrow and add what is needed. Avoid `\"Action\": \"*\"` and `\"Resource\": \"*\"` in application roles. Use CloudTrail and IAM Access Analyzer to see what a role actually uses, then trim the rest. When you get Access Denied, read the error: it usually names the action and resource, and CloudTrail records the failed call."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How does your service get AWS credentials?\"** Through an IAM role attached to the compute (task role, instance profile or Lambda execution role). The SDK fetches short-lived credentials automatically. No keys in code, environment variables or images.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Roles and temporary credentials for applications\n- Deny by default, explicit Deny wins\n- Cross-account access needs both sides to allow\n- Read Access Denied errors, as they name what is missing"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-4",
+   "type": "concept",
+   "title": "VPC networking",
+   "subtopicId": "1-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **VPC** (Virtual Private Cloud) is your own private network in a Region. You choose its address range, split it into subnets and control what can talk to what. As a backend developer, you must be able to read a VPC diagram and debug \"connection timed out\".\n\n### Subnets\n\nA subnet is a slice of the VPC's address range, inside a single AZ. A subnet's type depends entirely on its **route table**:\n\n| Subnet | Route to the internet | Typical contents |\n|---|---|---|\n| Public | Through an internet gateway | Load balancers, NAT gateways |\n| Private | Outbound only, through a NAT gateway | Application tasks |\n| Isolated | None | Databases |"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  I[Internet] --> IGW[Internet gateway]\n  IGW --> ALB[Load balancer in public subnets]\n  ALB --> A1[App in private subnet, AZ a]\n  ALB --> A2[App in private subnet, AZ b]\n  A1 --> DB[(RDS in isolated subnets)]\n  A2 --> DB\n  A1 --> N[NAT gateway]\n  N --> IGW",
+     "title": "A standard three-tier VPC in two AZs"
+    },
+    {
+     "type": "markdown",
+     "text": "### CIDR quickly\n\n`10.0.0.0/16` means the first 16 bits are fixed, which gives 65,536 addresses. `/24` gives 256. AWS reserves five addresses in each subnet, so a `/24` has 251 usable ones. Avoid overlapping ranges between VPCs that may need connecting later, as peering requires them to differ.\n\n### Security groups and network ACLs\n\n| | Security group | Network ACL |\n|---|---|---|\n| Attached to | A network interface (a resource) | A subnet |\n| Rules | Allow only | Allow and deny |\n| State | Stateful: replies are allowed automatically | Stateless: replies need their own rule |\n| Everyday use | Your main tool | Rarely changed |\n\nThe strongest habit is to reference other security groups rather than IP addresses:"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "resource \"aws_security_group_rule\" \"db_from_app\" {\n  type                     = \"ingress\"\n  from_port                = 5432\n  to_port                  = 5432\n  protocol                 = \"tcp\"\n  security_group_id        = aws_security_group.db.id\n  source_security_group_id = aws_security_group.app.id\n}",
+     "title": "The database accepts traffic only from the app's security group"
+    },
+    {
+     "type": "markdown",
+     "text": "When tasks scale up and get new IPs, this rule keeps working, and nothing else can reach the database.\n\n### NAT gateways and VPC endpoints\n\nA private task calling an external API goes through a NAT gateway. NAT is billed per hour and per GB, which often surprises people whose application reads a lot from S3 through it. A **gateway VPC endpoint** for S3 or DynamoDB sends that traffic privately at no extra data charge, and **interface endpoints** do the same for many other services at a small cost.\n\n### Debugging a timeout\n\nA timeout usually means that packets are dropped, rather than refused. \"Connection refused\" means you reached the host but nothing is listening.\n\n1. Is the target's security group allowing this source and port?\n2. Does the source's subnet have a route to the target?\n3. Do network ACLs block it? (Rare, but check if someone has changed them.)\n4. For external calls: does the private subnet route through a NAT gateway?\n5. Does the DNS name resolve to the address you expect?\n\nVPC Reachability Analyzer can check a path between two resources without sending traffic."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Your service cannot reach RDS. How do you debug it?\"** Separate timeout from refused from auth failure. A timeout points to security groups or routes, so I check that the database's group allows the app's group on the port. Refused means wrong port or a stopped service. An auth error means that the network is already fine.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A route table makes a subnet public or private\n- Security groups are stateful, ACLs are stateless\n- Reference security groups, not IPs\n- Use endpoints to avoid NAT costs for S3 and DynamoDB"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-5",
+   "type": "concept",
+   "title": "Encryption, KMS and secrets",
+   "subtopicId": "1-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Encryption on AWS is mostly about one question: who can use the key? Turning encryption on is often a single setting. Designing who can decrypt what is the real work.\n\n### At rest and in transit\n\n**In transit** means TLS: between users and CloudFront, CloudFront and the load balancer, and your app and the database. **At rest** means data on disks and in S3 is stored encrypted, and most AWS storage services encrypt it by default or with one setting. Interviewers often ask for both, as each protects against a different attacker.\n\n### KMS and envelope encryption\n\nKMS (Key Management Service) holds keys that never leave it in plain form. Encrypting a large file through KMS directly would be slow and limited in size, so services use **envelope encryption**:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant A as Service or app\n  participant K as KMS\n  participant S as Storage\n  A->>K: GenerateDataKey (KMS key id)\n  K-->>A: plaintext data key and encrypted data key\n  A->>A: encrypt the object with the plaintext key, then discard it\n  A->>S: store ciphertext with the encrypted data key\n  Note over A,S: To read: send the encrypted key to KMS, which checks permission and returns the plaintext key",
+     "title": "Envelope encryption"
+    },
+    {
+     "type": "markdown",
+     "text": "This has two benefits. Bulk encryption happens locally, so it is fast. And access is centrally controlled: without `kms:Decrypt` on the key, the stored data is useless, even to someone who can read the bucket. Every KMS call also appears in CloudTrail, which gives you an audit trail of who decrypted what.\n\n### Key types\n\n| Type | Who controls it | Use |\n|---|---|---|\n| AWS owned | AWS, invisible to you | Default encryption, no extra thought |\n| AWS managed | AWS, visible in your account | Simple per-service encryption |\n| Customer managed | You: policy, rotation, deletion | Compliance, cross-account, tight control |\n\nA customer managed key has a monthly fee, plus charges per API call. A high-traffic app calling KMS for each object can hit rate limits and bills, which is why S3 offers **Bucket Keys** to reduce those calls."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "If a KMS key is deleted, everything encrypted under it is lost for good. AWS forces a waiting period of 7 to 30 days for this reason. Alarm on any scheduled key deletion.",
+     "title": "Deleting a key deletes the data"
+    },
+    {
+     "type": "markdown",
+     "text": "### Secrets Manager or Parameter Store\n\n| | Secrets Manager | Parameter Store |\n|---|---|---|\n| Built for | Passwords, API keys | Configuration, and some secrets |\n| Rotation | Built in, with Lambda | Do it yourself |\n| Cost | Per secret, per month | Standard parameters are free |\n| Cross-account | Yes | More limited |\n\nBoth let you avoid putting values in images, Git or plain environment files.\n\n### Reading secrets from Spring Boot\n\nThere are two common approaches. ECS can inject the secret into an environment variable at start-up, through the `secrets` section of a task definition. Alternatively, Spring Cloud AWS can load them as properties when the app starts:"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "spring.config.import=aws-secretsmanager:/prod/orders/db\nspring.datasource.username=${username}\nspring.datasource.password=${password}",
+     "title": "application.properties with Spring Cloud AWS"
+    },
+    {
+     "type": "markdown",
+     "text": "Remember what happens at rotation. A value injected at start-up stays old until tasks restart, while existing database connections keep working until they close. Rotation strategies therefore keep two valid users for a time, so that nothing breaks while tasks are replaced.\n\n### Common secrets mistakes\n\n- Printing configuration at start-up, or logging a request with an `Authorization` header.\n- Baking a `.env` file into a Docker image: anybody who can pull the image can read every layer.\n- Passing secrets as build arguments, which stay in image history.\n- Putting real values into Terraform variables: state files keep them in plain text, so protect state like a secret."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How do you store a database password on AWS?\"** In Secrets Manager, encrypted with KMS. The task's execution role may read only that secret, and it is injected at start-up. Rotation uses two users, so that it doesn't break running tasks. It never goes in Git, images or logs.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Encrypt in transit and at rest\n- Envelope encryption gives speed and central control\n- A key's policy decides who can read the data\n- Plan how the app survives rotation"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-6",
+   "type": "concept",
+   "title": "DNS, TLS and domains",
+   "subtopicId": "1-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Most developers meet DNS and TLS when something breaks during a launch. Your Computer Networks guide covers the theory, while this chapter covers how AWS uses them.\n\n### Route 53\n\nRoute 53 is AWS's DNS service. A **hosted zone** holds the records for a domain.\n\n| Record | Points to | Example |\n|---|---|---|\n| A / AAAA | IPv4 / IPv6 address | `api.example.com` to an IP |\n| CNAME | Another name (not at the zone root) | `www` to `example.com` |\n| Alias | An AWS resource, also at the root | `example.com` to CloudFront |\n| MX | Mail servers | Email for the domain |\n| TXT | Text, used for verification | Domain ownership proof |\n\n**Alias** is AWS-specific: it follows a load balancer's changing IPs, works at the zone root, and queries to AWS targets are free. Prefer it over CNAME for AWS resources.\n\n### Routing policies\n\n| Policy | Does | Use |\n|---|---|---|\n| Simple | One answer | Most records |\n| Weighted | Split by percentage | Gradual migration |\n| Latency | Nearest Region by latency | Multi-Region apps |\n| Failover | Primary, then secondary if unhealthy | Disaster recovery |\n| Geolocation | By user's location | Legal or language needs |\n\n### TTL and migrations\n\nDNS answers are cached for the record's TTL. To move a service with little disruption:\n\n1. Lower the TTL, say to 60 seconds, a day or more before the change.\n2. Wait for the old TTL to expire.\n3. Change the record.\n4. Keep the old system running for a while, because some clients ignore TTLs.\n5. Raise the TTL again."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Java can cache DNS answers, and with a security manager it could cache them forever. Modern defaults cache successful lookups for about 30 seconds, but check `networkaddress.cache.ttl` if your app keeps calling an old IP after a failover.",
+     "title": "JVM DNS caching"
+    },
+    {
+     "type": "markdown",
+     "text": "### TLS with ACM\n\nAWS Certificate Manager issues free public certificates for ALBs and CloudFront, and renews them automatically when validated through DNS. Remember these details:\n\n- CloudFront requires its certificate to be in `us-east-1`, regardless of where your app runs.\n- An ALB's certificate must be in the ALB's Region.\n- ACM public certificates can't be exported for use on your own servers.\n\nTLS usually ends at the ALB. Traffic from ALB to tasks stays inside your VPC. Regulated workloads may also encrypt that hop.\n\n### A full request"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant D as DNS\n  participant C as CloudFront\n  participant A as ALB\n  participant T as ECS task\n  B->>D: resolve shop.example.com\n  D-->>B: CloudFront address\n  B->>C: TLS handshake and HTTPS request\n  C->>C: cache hit? return it\n  C->>A: on a miss or /api: forward over HTTPS\n  A->>T: forward to a healthy task\n  T-->>A: response\n  A-->>C: response\n  C-->>B: response",
+     "title": "What happens when a user opens your site"
+    },
+    {
+     "type": "markdown",
+     "text": "Being able to narrate this flow, including what can fail at each hop, is a strong interview answer."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Use Alias records for AWS targets\n- Lower TTL before a migration\n- CloudFront certificates live in us-east-1\n- Know each hop of a request"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-7",
+   "type": "concept",
+   "title": "Connecting networks",
+   "subtopicId": "1-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A single VPC is rarely the whole story. Services in other accounts, offices and SaaS products must connect without going over the public internet.\n\n| Option | Connects | Traits |\n|---|---|---|\n| VPC peering | Two VPCs | Simple, not transitive, no overlapping ranges |\n| Transit Gateway | Many VPCs and on-premises | Hub and spoke; costs per attachment and GB |\n| PrivateLink | One service to many consumers | One-way, works with overlapping ranges |\n| Site-to-Site VPN | Office or data centre to VPC | Encrypted over internet, quick to set up |\n| Direct Connect | Data centre to AWS | Private line, steady performance, slow to set up |\n\n### Peering is not transitive\n\nIf A peers with B, and B peers with C, A still cannot reach C. With many VPCs, the number of peerings grows rapidly, which is the reason Transit Gateway exists."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  T[Transit Gateway]\n  A[VPC: orders] --- T\n  B[VPC: payments] --- T\n  C[VPC: shared tools] --- T\n  D[Corporate network via VPN] --- T",
+     "title": "Hub and spoke with a Transit Gateway"
+    },
+    {
+     "type": "markdown",
+     "text": "### PrivateLink\n\nPrivateLink exposes **one service** behind a Network Load Balancer, so consumers see a private endpoint in their own VPC. Nothing else is reachable, and address overlaps don't matter. It's the same technology behind interface VPC endpoints, and it is how SaaS vendors offer private connectivity.\n\n### Bastion or Session Manager?\n\nEngineers sometimes need to reach private resources. A bastion host needs a public address, an open SSH port and key management. **Session Manager** provides shell access through IAM, with no inbound ports and full audit logs, so prefer it. It can also forward a port to reach a private database from a laptop, for debugging."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "aws ssm start-session --target i-0abc123 \\\n  --document-name AWS-StartPortForwardingSessionToRemoteHost \\\n  --parameters '{\"host\":[\"orders.abc.ap-south-1.rds.amazonaws.com\"],\"portNumber\":[\"5432\"],\"localPortNumber\":[\"5432\"]}'",
+     "title": "Reach a private RDS from your laptop through an instance"
+    },
+    {
+     "type": "markdown",
+     "text": "### Choosing address ranges\n\nPlan CIDR blocks across the whole company early. Overlapping ranges block peering and Transit Gateway routing, and re-addressing later is painful. Leave room: a `/16` for each VPC, and `/20` or `/24` subnets, is a common starting point."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Service A in one account needs to call service B in another, privately.\"** PrivateLink if A only needs that one service, since it exposes nothing else. Peering or Transit Gateway if whole networks must talk. Then add IAM or mTLS for authentication, as network reachability is not permission.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Peering is not transitive\n- PrivateLink exposes one service\n- Prefer Session Manager over bastions\n- Plan address ranges early"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-8",
+   "type": "concept",
+   "title": "Advanced IAM: conditions, boundaries and cross-account access",
+   "subtopicId": "1-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The basics of IAM get an application running. These features come up as soon as a company has many teams and accounts.\n\n### Conditions\n\nA condition limits when a statement applies."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"Effect\": \"Allow\",\n  \"Action\": \"s3:GetObject\",\n  \"Resource\": \"arn:aws:s3:::acme-reports/*\",\n  \"Condition\": {\n    \"StringEquals\": { \"aws:SourceVpce\": \"vpce-0abc123\" },\n    \"Bool\": { \"aws:SecureTransport\": \"true\" }\n  }\n}",
+     "title": "Allow S3 access only from one VPC endpoint, and only over TLS"
+    },
+    {
+     "type": "markdown",
+     "text": "| Useful condition key | Purpose |\n|---|---|\n| `aws:SecureTransport` | Require TLS |\n| `aws:SourceVpce`, `aws:SourceVpc` | Limit to your network |\n| `aws:PrincipalTag/team` | Attribute-based access |\n| `aws:RequestedRegion` | Keep work in approved Regions |\n| `aws:MultiFactorAuthPresent` | Require MFA for sensitive actions |\n\n### The layers of permission\n\nA request must pass every layer that applies. Each layer can only reduce what's possible."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Organization SCP: what the account may ever do] --> D{Allowed by all?}\n  B[Permission boundary: the most this role may ever do] --> D\n  C[Identity policy: what this role is granted] --> D\n  D -->|yes| E[Allowed, unless a resource policy or explicit Deny says otherwise]\n  D -->|no| F[Denied]",
+     "title": "Effective permissions are the overlap"
+    },
+    {
+     "type": "markdown",
+     "text": "| Layer | Set by | Typical use |\n|---|---|---|\n| Service control policy (SCP) | Organization admins | \"Nobody in dev may leave these Regions\" |\n| Permission boundary | Platform team | Developers may create roles, but never more powerful than this |\n| Identity policy | Team | The actual grant |\n| Session policy | Whoever assumes a role | Narrow a session further |\n\n**Neither SCPs nor boundaries grant anything.** They only cap. A common puzzle: a role has `s3:*`, and Access Denied still appears, because an SCP blocks it. CloudTrail and the error message usually mention which type of policy denied the call.\n\n### Cross-account access\n\nTo let account A's service use a resource in account B:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant S as Service in account A\n  participant T as STS\n  participant R as Role in account B\n  participant D as S3 in account B\n  S->>T: AssumeRole on B's role\n  T->>R: Does the trust policy allow account A's role?\n  T-->>S: Temporary credentials\n  S->>D: Read with those credentials",
+     "title": "Assuming a role in another account"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "StsClient sts = StsClient.create();\n\nStsAssumeRoleCredentialsProvider provider = StsAssumeRoleCredentialsProvider.builder()\n    .stsClient(sts)\n    .refreshRequest(r -> r\n        .roleArn(\"arn:aws:iam::222222222222:role/report-reader\")\n        .roleSessionName(\"orders-service\"))\n    .build();\n\nS3Client s3 = S3Client.builder().credentialsProvider(provider).build();",
+     "title": "Assuming a role with automatic refresh"
+    },
+    {
+     "type": "markdown",
+     "text": "Both sides must agree: the role's trust policy names account A's role, and A's role has permission to call `sts:AssumeRole` on it.\n\n### The confused deputy\n\nWhen a third-party SaaS assumes a role in your account, a different customer of that SaaS might trick it into using **your** role, if they know its ARN. An **external ID** in the trust policy fixes this: the SaaS passes a value unique to you, and a condition requires it.\n\n### Attribute-based access control\n\nRather than writing a policy per team, tag people and resources, and compare the tags: \"allow if the principal's `team` tag equals the resource's `team` tag\". New teams then need no new policies. It's powerful, though harder to audit, as who can do what depends on tags, and on who may change those tags.\n\n### Debugging permissions\n\n1. Run `aws sts get-caller-identity`: are you who you think you are?\n2. Read the error: it names the action, the resource and often the policy type.\n3. Check CloudTrail for the failed call.\n4. Use the IAM Policy Simulator for a what-if test.\n5. Remember KMS: encrypted resources need key permissions as well."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"A role has AdministratorAccess, and still gets Access Denied. How?\"** An SCP or permission boundary may cap it, an explicit Deny may apply, a resource policy may block it, or a KMS key may refuse it. I would read the error, then check CloudTrail.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Boundaries and SCPs cap, they never grant\n- Cross-account access needs trust on one side and permission on the other\n- Use an external ID for third parties\n- Use conditions to require TLS or a network"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-9",
+   "type": "concept",
+   "title": "Planning a VPC: a worked example, and flow logs",
+   "subtopicId": "1-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Requirements\n\nA company runs production in `ap-south-1`, using three AZs. Fargate tasks use one IP each, and scale up to about 400. Databases need a few addresses. There will be more VPCs later, which must not overlap.\n\n### Sizing subnets\n\n| CIDR | Addresses | Usable (AWS reserves 5) |\n|---|---|---|\n| /28 | 16 | 11 |\n| /26 | 64 | 59 |\n| /24 | 256 | 251 |\n| /22 | 1,024 | 1,019 |\n| /20 | 4,096 | 4,091 |\n| /16 | 65,536 | Whole VPC |\n\nEach `/n` has 2^(32−n) addresses. Tasks are spread across three AZs, so a surge could put 200 or so in one zone if another AZ fails. A `/22` per AZ leaves plenty of space for that, for rolling deployments (which briefly double the count), and for future growth."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Public    10.20.0.0/24     10.20.1.0/24     10.20.2.0/24    ALB, NAT (251 usable each)\nApp       10.20.16.0/22    10.20.20.0/22    10.20.24.0/22   Tasks (1,019 usable each)\nData      10.20.32.0/24    10.20.33.0/24    10.20.34.0/24   RDS, ElastiCache\nSpare     10.20.64.0/18 and beyond                          Future use",
+     "title": "A plan for one VPC: 10.20.0.0/16"
+    },
+    {
+     "type": "markdown",
+     "text": "Company-wide, give each environment and Region its own block, such as `10.20.0.0/16` for production in Mumbai and `10.30.0.0/16` for staging. Keep a written register, because overlaps can't be undone cheaply."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A subnet that's too small fails in confusing ways: tasks stay stuck in provisioning and report no available addresses. This happens most with EKS, where every pod takes an IP.",
+     "title": "Running out of IPs"
+    },
+    {
+     "type": "markdown",
+     "text": "### NAT design\n\n| Option | Availability | Cost |\n|---|---|---|\n| One NAT gateway | Loses outbound in that AZ's failure; cross-AZ traffic charges | Lowest |\n| One per AZ | Survives an AZ failure | Highest |\n| VPC endpoints + few NATs | Reduces traffic through NAT | Balanced |\n\nProduction usually uses one per AZ, and development uses one.\n\n### VPC Flow Logs\n\nFlow logs record accepted and rejected traffic. They show metadata, never payloads."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "version account interface   srcaddr     dstaddr     srcport dstport proto packets bytes start end action status\n2       1234    eni-0abc    10.20.16.5  10.20.32.7  49152   5432    6     5       300   ...   ... REJECT OK",
+     "title": "A flow log line (simplified)"
+    },
+    {
+     "type": "markdown",
+     "text": "`REJECT` here means that a security group or network ACL dropped traffic from an app task to the database's port. If the action says `ACCEPT` but the connection still fails, the problem is further along, such as the service, its port or a reply path."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "fields @timestamp, srcAddr, dstAddr, dstPort, action\n| filter dstPort = 5432 and action = \"REJECT\"\n| stats count() by srcAddr\n| sort count desc",
+     "title": "Finding rejected traffic to a database with Logs Insights"
+    },
+    {
+     "type": "markdown",
+     "text": "Stateless network ACLs produce a telling pattern: an accepted request with a rejected reply, because replies use ephemeral ports (usually 1024 to 65535).\n\n### Common traps\n\n- The ALB must span at least two public subnets, and its security group must allow outbound traffic to the app.\n- Lambda in a VPC needs a NAT or endpoints to reach the internet, although it's in a subnet.\n- A public IP alone isn't enough: the subnet needs a route to an internet gateway.\n- Interface endpoints need private DNS enabled for the default service names to resolve to them."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Each /n has 2^(32−n) addresses, minus 5\n- Size for failover and deployments, not just average\n- Keep a CIDR register\n- Flow logs show REJECT, not payloads"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### The cloud model and how AWS is organised"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a Region and an Availability Zone?",
+       "answer": "A Region is a geographic area containing several AZs. An AZ is an isolated group of data centres in that Region. You spread across AZs for availability, and across Regions only for disaster recovery or nearby users."
+      },
+      {
+       "question": "Why not always run your own database on EC2?",
+       "answer": "You would own patching, backups, failover and monitoring. RDS provides these for a premium that is usually far cheaper than the engineering time. Choose EC2 only for a specific need RDS cannot meet, such as an unsupported extension."
+      },
+      {
+       "question": "Who is responsible for patching the OS on an EC2 instance, and on RDS?",
+       "answer": "You patch EC2. AWS patches the OS under RDS, though you choose the maintenance window."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Setting up an account safely"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "You committed an AWS access key to a public repository, then deleted the commit. Are you safe?",
+       "answer": "No. It remains in history and bots may already have it. Deactivate and delete the key immediately, review CloudTrail for its use, check for new users or resources, then fix the cause by moving to roles and secret scanning."
+      },
+      {
+       "question": "Why is the root user not used for daily work?",
+       "answer": "It cannot be restricted by normal IAM policies and can close the account, so a leak is catastrophic. Daily work uses limited identities, which keeps mistakes and leaks small."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### IAM in depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a user and a role?",
+       "answer": "A user has long-lived credentials and belongs to one person or program. A role has no permanent credentials: a trusted principal assumes it and receives temporary ones, which limits the damage from a leak."
+      },
+      {
+       "question": "An app can read objects from a bucket but listing fails with Access Denied. Why?",
+       "answer": "`s3:GetObject` applies to `bucket/*`, but `s3:ListBucket` applies to the bucket ARN without `/*`. The policy needs a separate statement for the bucket itself."
+      },
+      {
+       "question": "A policy allows s3:* and another attached policy denies s3:DeleteObject. Can the role delete?",
+       "answer": "No. An explicit Deny always wins."
+      },
+      {
+       "question": "What is a trust policy?",
+       "answer": "It is the part of a role that says who may assume it, such as a service or another account. Permission policies then say what the role can do."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### VPC networking"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What makes a subnet public?",
+       "answer": "Its route table has a route to an internet gateway. The word is not a setting of its own."
+      },
+      {
+       "question": "Why are security groups called stateful?",
+       "answer": "If an inbound request is allowed, the reply is automatically allowed, without any outbound rule. Network ACLs need rules in both directions."
+      },
+      {
+       "question": "A task in a private subnet reads gigabytes from S3 and the bill is high. What do you change?",
+       "answer": "Add an S3 gateway VPC endpoint, so the traffic avoids NAT gateway per-GB charges."
+      },
+      {
+       "question": "What does connection timed out suggest, compared with connection refused?",
+       "answer": "A timeout suggests that packets are being dropped, usually by a security group or a missing route. Refused means you reached the host, but nothing is listening on that port."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Encryption, KMS and secrets"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does envelope encryption exist?",
+       "answer": "KMS is slow and limited for bulk data, so a data key encrypts the object locally, and KMS only protects that data key. Access stays controlled by KMS permissions."
+      },
+      {
+       "question": "A user can read an S3 object's bytes but gets Access Denied. The bucket uses a customer managed key. What is missing?",
+       "answer": "`kms:Decrypt` permission on that key. Both S3 and KMS must allow the action."
+      },
+      {
+       "question": "Why is a secret in a Docker build argument unsafe?",
+       "answer": "It can remain visible in image history, and anybody able to pull the image can read it."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### DNS, TLS and domains"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why use an Alias record rather than a CNAME for a load balancer at the domain root?",
+       "answer": "A CNAME cannot exist at the zone root. Alias can, and it follows the load balancer's changing addresses."
+      },
+      {
+       "question": "A CloudFront setup cannot find your ACM certificate. What is the likely cause?",
+       "answer": "The certificate is in the wrong Region. CloudFront needs it in us-east-1."
+      },
+      {
+       "question": "You changed a DNS record, but some users still reach the old server. Why?",
+       "answer": "Resolvers and clients cache until the TTL ends, and some ignore it. Lower the TTL beforehand, and keep the old system up during the change."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Connecting networks"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "VPCs A and B have overlapping CIDRs. How can A call a service in B?",
+       "answer": "PrivateLink, which does not route between the networks. Peering would not work."
+      },
+      {
+       "question": "Why replace a bastion host with Session Manager?",
+       "answer": "There is no open inbound port or SSH key to manage, access goes through IAM, and sessions are logged."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Advanced IAM: conditions, boundaries and cross-account access"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What's the difference between a permission boundary and an identity policy?",
+       "answer": "An identity policy grants permissions. A boundary sets the maximum, and grants nothing by itself. Effective access is the overlap."
+      },
+      {
+       "question": "What does an external ID protect against?",
+       "answer": "The confused deputy problem, where another customer of a third party tricks it into using your role."
+      },
+      {
+       "question": "You added s3:GetObject, but the call fails on an encrypted bucket. Why?",
+       "answer": "The role probably also needs `kms:Decrypt` on the bucket's key."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Planning a VPC: a worked example, and flow logs"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How many usable addresses does a /26 subnet have?",
+       "answer": "2^6 = 64, minus 5 reserved by AWS, so 59."
+      },
+      {
+       "question": "Why size a subnet for more than the normal task count?",
+       "answer": "Rolling deployments briefly double tasks, and an AZ failure moves load to others."
+      },
+      {
+       "question": "Flow logs show ACCEPT for the request, and REJECT for the reply. What's the likely cause?",
+       "answer": "A stateless network ACL blocking the ephemeral return ports. Security groups would allow the reply automatically."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

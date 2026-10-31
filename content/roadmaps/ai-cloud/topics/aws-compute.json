@@ -1,0 +1,599 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-2-1",
+   "type": "concept",
+   "title": "EC2: virtual machines",
+   "subtopicId": "2-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "An EC2 instance is a virtual server. Even if you mainly use containers, EC2 explains what runs underneath, and many companies still run services directly on it.\n\n### Choosing an instance\n\nThe name tells you the family: in `m7g.large`, `m` is general purpose, `7` the generation, `g` the Graviton (ARM) processor, and `large` the size.\n\n| Family | Optimised for | Typical use |\n|---|---|---|\n| t | Burstable CPU | Low-traffic apps, development |\n| m | Balance | Most Java services |\n| c | CPU | Compute-heavy work, high-throughput APIs |\n| r | Memory | Caches, large heaps |\n| g, p | GPU | ML, graphics |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`t` instances earn CPU credits while idle and spend them when busy. If credits run out, a service can suddenly crawl (unless unlimited mode is on, which costs more). Load tests on a `t3` often give misleading results for that reason.",
+     "title": "Burstable instances"
+    },
+    {
+     "type": "markdown",
+     "text": "### Pricing models\n\n| Option | Commitment | Good for |\n|---|---|---|\n| On-Demand | None | Unpredictable or short workloads |\n| Savings Plans or Reserved | 1 or 3 years | Steady baseline, large discount |\n| Spot | None, but can be reclaimed with 2 minutes' notice | Batch jobs, stateless workers, CI |\n\nA common design uses Savings Plans for the baseline, On-Demand for peaks and Spot for interruptible workers.\n\n### Storage on EC2\n\n**EBS** volumes are network disks that survive instance stops. **Instance store** disks are physically attached and very fast, but their data is lost when the instance stops. **EFS** is a shared file system many instances can mount at once. For most applications, the root EBS volume holds the OS only, and durable data goes to S3 or a database.\n\n### Auto Scaling groups\n\nAn Auto Scaling group keeps a number of instances running, replaces unhealthy ones and adjusts capacity. It starts instances from a **launch template** (image, instance type, role, security groups). A good instance is disposable: it holds no state that matters, so losing one is routine."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Stateless services\"** A service is stateless if any instance can handle any request. Sessions, uploads and caches live outside it: in Redis, S3 or the database. This is what makes autoscaling and rolling deployments safe.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Instance family fits the workload\n- Avoid burstable instances for steady load\n- Use Spot only for interruptible work\n- Treat instances as disposable"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-2",
+   "type": "concept",
+   "title": "Containers on AWS: ECS and Fargate",
+   "subtopicId": "2-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Your Git, Docker and CI/CD guide covers building images. This chapter covers running them. ECS (Elastic Container Service) is AWS's own orchestrator, and it is simpler than Kubernetes.\n\n### The vocabulary"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  ECR[ECR: image registry] --> TD[Task definition: image, CPU, memory, ports, roles]\n  TD --> S[Service: keep N tasks running]\n  S --> T1[Task]\n  S --> T2[Task]\n  ALB[Load balancer target group] --> T1\n  ALB --> T2\n  C[Cluster] --- S",
+     "title": "How ECS pieces fit together"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Task definition:** a versioned recipe for a task. Think of it as a Kubernetes pod spec.\n- **Task:** one running copy.\n- **Service:** keeps a chosen number of tasks healthy and registers them with the load balancer.\n- **Cluster:** a logical grouping of services.\n- **Fargate:** run tasks with no servers to manage. The alternative, the EC2 launch type, runs them on instances that you manage.\n\n### A Spring Boot task definition"
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"family\": \"orders-service\",\n  \"cpu\": \"1024\",\n  \"memory\": \"2048\",\n  \"networkMode\": \"awsvpc\",\n  \"requiresCompatibilities\": [\"FARGATE\"],\n  \"executionRoleArn\": \"arn:aws:iam::123456789012:role/orders-exec\",\n  \"taskRoleArn\": \"arn:aws:iam::123456789012:role/orders-task\",\n  \"containerDefinitions\": [{\n    \"name\": \"app\",\n    \"image\": \"123456789012.dkr.ecr.ap-south-1.amazonaws.com/orders:1.4.2\",\n    \"portMappings\": [{ \"containerPort\": 8080 }],\n    \"environment\": [{ \"name\": \"SPRING_PROFILES_ACTIVE\", \"value\": \"prod\" }],\n    \"secrets\": [{ \"name\": \"DB_PASSWORD\", \"valueFrom\": \"arn:aws:secretsmanager:ap-south-1:123456789012:secret:orders-db\" }],\n    \"logConfiguration\": {\n      \"logDriver\": \"awslogs\",\n      \"options\": {\n        \"awslogs-group\": \"/ecs/orders\",\n        \"awslogs-region\": \"ap-south-1\",\n        \"awslogs-stream-prefix\": \"app\"\n      }\n    }\n  }]\n}",
+     "title": "Key parts of a task definition"
+    },
+    {
+     "type": "markdown",
+     "text": "Points that matter in production:\n\n- `1024` CPU units equal one vCPU. Java thread pools and GC adapt to what the JVM sees.\n- Use immutable image tags, such as a version or commit SHA, not `latest`, so a rollback means something.\n- `secrets` injects values at start-up. The execution role needs permission to read them.\n\n### JVM settings for containers\n\nModern JVMs respect container limits. Control heap as a percentage rather than a fixed size, and remember that the limit covers the whole process, including metaspace, thread stacks and direct buffers."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "JAVA_TOOL_OPTIONS=\"-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError\"",
+     "title": "Sensible start"
+    },
+    {
+     "type": "markdown",
+     "text": "`ExitOnOutOfMemoryError` lets the orchestrator replace a broken task, rather than leaving it half alive.\n\n### Health checks and graceful shutdown\n\nThe load balancer calls a path such as `/actuator/health/readiness`. During deployment, ECS starts new tasks, waits for them to be healthy, then drains old ones. On stop, the container gets SIGTERM, then SIGKILL after a timeout. Configure Spring Boot to finish in-flight requests:"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "server.shutdown=graceful\nspring.lifecycle.timeout-per-shutdown-phase=25s\nmanagement.endpoint.health.probes.enabled=true",
+     "title": "application-prod.properties"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A Spring Boot app can take 20 to 60 seconds to start. Without a health check grace period, ECS may kill tasks before they are ready, which looks like an endless restart loop. Set `healthCheckGracePeriodSeconds`.",
+     "title": "Slow starts"
+    },
+    {
+     "type": "markdown",
+     "text": "### Autoscaling\n\nTarget tracking is the usual starting point: keep average CPU near a value, or track requests per target from the load balancer. CPU is a poor signal for an app that mostly waits on a database, so choose a metric that reflects the real limit.\n\n### ECS or EKS?\n\n| | ECS | EKS |\n|---|---|---|\n| Learning curve | Low | High |\n| Operational load | Low | Higher: upgrades, add-ons |\n| Portability | AWS only | Kubernetes works across clouds |\n| Ecosystem | AWS integrations | Helm, operators, huge community |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"ECS or EKS?\"** ECS with Fargate if a small team just wants containers running. EKS if the company already has Kubernetes skills, needs its ecosystem or wants portability, because it carries more operational cost.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Task definition is the recipe, service keeps it running\n- Execution role and task role are different\n- Use immutable image tags\n- Graceful shutdown and a grace period prevent deployment errors"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-3",
+   "type": "concept",
+   "title": "Lambda in depth",
+   "subtopicId": "2-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Lambda runs your function in response to an event. You upload code, and AWS handles servers and scaling. It is common for event processing: S3 uploads, queue messages, scheduled jobs and small APIs.\n\n### The execution lifecycle"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant E as Event\n  participant L as Lambda service\n  participant C as Your code\n  E->>L: first invocation\n  L->>C: create environment, start JVM, run init (cold start)\n  C-->>L: handler result\n  E->>L: next invocation\n  L->>C: reuse environment (warm)\n  C-->>L: handler result",
+     "title": "A cold start and warm invocations"
+    },
+    {
+     "type": "markdown",
+     "text": "Each execution environment handles **one request at a time**. Static fields and clients created during init are reused across invocations, so create clients once. A burst of 100 concurrent events means up to 100 environments, each with its own JVM.\n\n### Java and cold starts\n\nThe JVM makes cold starts slower than in Node or Python, and Spring adds more. Options, from simple to involved:\n\n1. Keep the jar small, with few dependencies, and avoid heavy frameworks for simple functions.\n2. Give it more memory: memory also scales CPU, so a larger setting may cost about the same while running faster.\n3. Use **SnapStart**, which snapshots an initialised environment and restores it. Check its current runtime and Region support. Anything unique at init, such as random seeds or open connections, needs care after restore.\n4. Provisioned concurrency keeps environments warm, at a cost.\n5. Native images through GraalVM give fast starts, at the price of a more complex build.\n\n### Limits that shape your design\n\n| Limit | Value | Consequence |\n|---|---|---|\n| Timeout | 15 minutes | Long jobs belong on ECS or Step Functions |\n| API Gateway timeout | Much shorter (historically 29 s by default) | Long work must be asynchronous |\n| Concurrency | Per-account limit | One function can starve others; use reserved concurrency |\n| Temporary storage | `/tmp`, configurable | Not durable |\n\n### Connecting to a database\n\nEvery environment opens its own connections, so a spike can exhaust PostgreSQL. **RDS Proxy** pools them centrally. Use a pool size of 1 per function instance, and cap the function with reserved concurrency.\n\n### An SQS consumer with partial failures"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public class InvoiceHandler implements RequestHandler<SQSEvent, SQSBatchResponse> {\n\n    private static final S3Client S3 = S3Client.create();   // created once per environment\n\n    @Override\n    public SQSBatchResponse handleRequest(SQSEvent event, Context context) {\n        List<SQSBatchResponse.BatchItemFailure> failures = new ArrayList<>();\n        for (SQSEvent.SQSMessage message : event.getRecords()) {\n            try {\n                process(message);          // must be idempotent\n            } catch (Exception e) {\n                context.getLogger().log(\"failed \" + message.getMessageId() + \": \" + e);\n                failures.add(new SQSBatchResponse.BatchItemFailure(message.getMessageId()));\n            }\n        }\n        return new SQSBatchResponse(failures);\n    }\n}",
+     "title": "Report only the failed messages"
+    },
+    {
+     "type": "markdown",
+     "text": "This needs `ReportBatchItemFailures` turned on for the event source mapping. Without it, one bad message makes the whole batch return to the queue, and already-processed messages run again.\n\n### Lambda or containers?\n\n| Choose Lambda when | Choose ECS when |\n|---|---|\n| Traffic is spiky or low | Traffic is steady |\n| Work is short and event-driven | Requests are long-lived, or use WebSockets |\n| You want scale to zero | You need connection pools and warm caches |\n| Each function is small | You have an existing Spring Boot service |\n\nCost flips at scale: a constantly busy Lambda usually costs more than an equivalent container."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Why is my Lambda slow only sometimes?\"** Probably cold starts: a new environment starting the JVM and initialising code. I would check the Init Duration in the logs, then reduce init work, raise memory, or use SnapStart or provisioned concurrency.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- One request per environment at a time\n- Initialise clients once, outside the handler\n- Protect databases from concurrency\n- Always report partial batch failures, and make handlers idempotent"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-4",
+   "type": "concept",
+   "title": "Hands-on: deploying Spring Boot to ECS Fargate",
+   "subtopicId": "2-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter joins the previous ones into one deployment. Do it once by hand in a learning account. It will teach you more than any amount of reading. Delete everything when you finish.\n\n### Step 1: a container that behaves"
+    },
+    {
+     "type": "code",
+     "language": "dockerfile",
+     "code": "FROM eclipse-temurin:21-jre\nWORKDIR /app\nRUN addgroup --system app && adduser --system --ingroup app app\nCOPY target/extracted/dependencies/ ./\nCOPY target/extracted/spring-boot-loader/ ./\nCOPY target/extracted/snapshot-dependencies/ ./\nCOPY target/extracted/application/ ./\nUSER app\nENV JAVA_TOOL_OPTIONS=\"-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError\"\nEXPOSE 8080\nENTRYPOINT [\"java\", \"org.springframework.boot.loader.launch.JarLauncher\"]",
+     "title": "A layered Spring Boot image"
+    },
+    {
+     "type": "markdown",
+     "text": "Layered images mean a code change only rebuilds the top layer, and non-root users limit what a compromised process can do. Your Docker guide covers these steps in depth. Check the exact layout against the `layertools` output for your Spring Boot version.\n\n### Step 2: push the image"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "aws ecr create-repository --repository-name orders --region ap-south-1\nACCOUNT=$(aws sts get-caller-identity --query Account --output text)\nREGISTRY=$ACCOUNT.dkr.ecr.ap-south-1.amazonaws.com\naws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin $REGISTRY\ndocker build -t $REGISTRY/orders:1.0.0 .\ndocker push $REGISTRY/orders:1.0.0",
+     "title": "Create a repository and push"
+    },
+    {
+     "type": "markdown",
+     "text": "Build for the architecture you'll run: on an ARM laptop, use `--platform linux/amd64` unless you're deploying on ARM. \"exec format error\" in task logs means there's a mismatch.\n\n### Step 3: the network\n\nCreate a VPC with two public and two private subnets, across two AZs, and a NAT gateway so that tasks can reach ECR and the internet. To save money in a learning account, you can run tasks in public subnets with public IPs, but know that this isn't the production shape.\n\nCreate three security groups:\n\n| Group | Inbound | From |\n|---|---|---|\n| `alb` | 443 (or 80) | Internet |\n| `app` | 8080 | `alb` group |\n| `db` | 5432 | `app` group |\n\n### Step 4: database and secret\n\nCreate a small PostgreSQL RDS instance in private subnets, using the `db` group, and let RDS manage the master password in Secrets Manager. Run your schema through Flyway at application start for this exercise. Larger teams run migrations as a separate pipeline step, to control timing and permissions.\n\n### Step 5: roles\n\nCreate two roles:\n\n- **Execution role:** the managed `AmazonECSTaskExecutionRolePolicy`, plus `secretsmanager:GetSecretValue` on your secret.\n- **Task role:** only what the app needs at run time, such as S3 access to one bucket.\n\n### Step 6: load balancer and service\n\nCreate an ALB in public subnets, and a target group of type **ip** on port 8080 with health check `/actuator/health/readiness`. Then create the cluster, task definition and service."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "aws ecs create-service --cluster main --service-name orders \\\n  --task-definition orders:1 --desired-count 2 --launch-type FARGATE \\\n  --health-check-grace-period-seconds 90 \\\n  --deployment-configuration \"deploymentCircuitBreaker={enable=true,rollback=true}\" \\\n  --network-configuration \"awsvpcConfiguration={subnets=[subnet-a,subnet-b],securityGroups=[sg-app]}\" \\\n  --load-balancers \"targetGroupArn=$TG_ARN,containerName=app,containerPort=8080\"",
+     "title": "Create the service"
+    },
+    {
+     "type": "markdown",
+     "text": "### Step 7: debug what goes wrong\n\nSomething will. This table covers most first attempts.\n\n| Symptom | Likely cause | Check |\n|---|---|---|\n| `CannotPullContainerError` | No route to ECR, or wrong execution role | NAT or VPC endpoints; role permissions |\n| `ResourceInitializationError` on secrets | Execution role can't read the secret | IAM, and any KMS key |\n| Task exits immediately | App crash at start | CloudWatch logs; `aws ecs describe-tasks` stopped reason |\n| Target stays unhealthy | Wrong path or port, or security group | `app` allows `alb` on 8080; test the health path |\n| Tasks restart during start-up | Grace period too short | Raise it |\n| 502 from ALB | App closes connections or crashes | Keep-alive settings, logs |\n| 504 from ALB | App too slow | Slow queries, timeouts |\n| App can't reach RDS | Security group or wrong subnet | `db` allows `app` on 5432 |\n\n### Step 8: deploy a new version\n\nChange a line, push a new tag, register a new task definition revision and update the service. Watch it in the console: new tasks start and become healthy, the old ones drain and stop. Then push a broken version on purpose, and see the circuit breaker roll it back.\n\n### Step 9: clean up\n\nDelete the service, ALB, NAT gateway, RDS instance and any Elastic IPs. These cost money even when idle. Better still, redo it in Terraform, as Part 5 shows, so `terraform destroy` handles it."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "\"I deployed a Spring Boot service on ECS Fargate behind an ALB with RDS and Secrets Manager, and watched a failing deployment roll back automatically.\" This is honest project experience, and it gives you stories for every follow-up.",
+     "title": "What to say afterwards"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Do one deployment by hand\n- Separate execution and task roles\n- Learn to read a task's stopped reason\n- Delete what costs money"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-5",
+   "type": "concept",
+   "title": "EKS and Kubernetes on AWS",
+   "subtopicId": "2-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Your Git, Docker and CI/CD guide teaches Kubernetes objects: pods, deployments, services and probes. This chapter covers what AWS changes.\n\n### What EKS manages, and what you still manage\n\nEKS runs the control plane. You remain responsible for worker capacity, add-ons, upgrades and everything running on the cluster.\n\n| Layer | Who |\n|---|---|\n| API server, etcd, control plane | AWS |\n| Worker nodes | You, helped by managed node groups, Karpenter or Fargate |\n| Cluster version upgrades | You trigger and test them, roughly every few months to a year |\n| CNI, CoreDNS, kube-proxy | Add-ons that you keep updated |\n| Ingress, autoscaling, secrets integrations | You install them |\n| Your workloads and their security | You |\n\n### How AWS plugs in"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  ALB[ALB] --> I[AWS Load Balancer Controller creates it from an Ingress]\n  I --> P[Pods]\n  P --> R[Pod Identity: IAM role per service account]\n  R --> S3[(S3)]\n  N[Karpenter] --> W[EC2 worker nodes]\n  W --> P",
+     "title": "AWS integrations with EKS"
+    },
+    {
+     "type": "markdown",
+     "text": "- **VPC CNI:** each pod receives a real VPC IP. Subnets can run out of addresses in big clusters, so size them with care.\n- **AWS Load Balancer Controller:** turns an Ingress into an ALB, and a Service into an NLB.\n- **Pod Identity or IRSA:** gives each service account its own IAM role, instead of sharing the node's role. This keeps least privilege per workload.\n- **Karpenter or Cluster Autoscaler:** adds nodes when pods can't be scheduled.\n- **EBS and EFS CSI drivers:** provide persistent volumes."
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: orders\n  annotations:\n    alb.ingress.kubernetes.io/scheme: internet-facing\n    alb.ingress.kubernetes.io/target-type: ip\n    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness\nspec:\n  ingressClassName: alb\n  rules:\n    - http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: orders\n                port:\n                  number: 8080",
+     "title": "An Ingress that creates an ALB"
+    },
+    {
+     "type": "markdown",
+     "text": "### Two kinds of scaling\n\n**Pod scaling** (Horizontal Pod Autoscaler) adds replicas. **Node scaling** (Karpenter) adds machines when pods have nowhere to run. Accurate resource **requests** make both work. If requests are too low, nodes are overpacked, and pods get killed under memory pressure. If too high, you waste money.\n\n### Upgrades\n\nKubernetes versions leave standard support quickly, and extended support costs more. Check deprecated APIs, upgrade the control plane, then add-ons and nodes, and test in a lower environment first. A cluster that nobody upgrades eventually becomes a big, risky project.\n\n### ECS, EKS or something simpler?\n\n| Situation | Choose |\n|---|---|\n| Small team, a few services | ECS Fargate or App Runner |\n| Company already runs Kubernetes | EKS |\n| Need operators, service mesh, Helm charts | EKS |\n| Mostly batch and events | Lambda and Step Functions |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Why do pods get OOMKilled though the Java heap looks fine?\"** The container limit covers the whole process: heap, metaspace, thread stacks and direct buffers. I would compare native memory use against the limit, and adjust `MaxRAMPercentage` or raise the limit.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- EKS manages only the control plane\n- Give each service account its own IAM role\n- Accurate requests make scaling work\n- Plan for regular upgrades"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-6",
+   "type": "concept",
+   "title": "Step Functions, batch and scheduled work",
+   "subtopicId": "2-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Not everything is a web request. Backend systems run reports, imports and long processes, and each has a suitable home on AWS.\n\n### Choosing a home\n\n| Work | Duration | Service |\n|---|---|---|\n| Small event handling | Seconds | Lambda |\n| Scheduled small job | Under 15 minutes | EventBridge Scheduler + Lambda |\n| Scheduled large job | Minutes to hours | EventBridge Scheduler + ECS task |\n| Many parallel jobs with queues | Hours | AWS Batch |\n| Multi-step process with retries | Up to a year | Step Functions |\n| Spring Batch job | Any length | ECS task with a job repository |\n\n### Avoid @Scheduled on many instances\n\nA `@Scheduled` method runs on **every** task, so two tasks mean duplicate reports. Either run it outside the service, using EventBridge Scheduler, or use a lock such as ShedLock:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Scheduled(cron = \"0 0 2 * * *\")\n@SchedulerLock(name = \"nightlyReport\", lockAtMostFor = \"1h\", lockAtLeastFor = \"5m\")\npublic void nightlyReport() {\n    reports.generate();\n}",
+     "title": "One instance runs it, thanks to a database lock"
+    },
+    {
+     "type": "markdown",
+     "text": "### Step Functions\n\nA state machine coordinates steps defined in JSON, with retries and error handling outside your code."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"StartAt\": \"ChargeCard\",\n  \"States\": {\n    \"ChargeCard\": {\n      \"Type\": \"Task\",\n      \"Resource\": \"arn:aws:states:::lambda:invoke\",\n      \"Parameters\": { \"FunctionName\": \"charge-card\", \"Payload.$\": \"$\" },\n      \"Retry\": [{\n        \"ErrorEquals\": [\"TransientError\"],\n        \"IntervalSeconds\": 2,\n        \"MaxAttempts\": 3,\n        \"BackoffRate\": 2\n      }],\n      \"Catch\": [{ \"ErrorEquals\": [\"States.ALL\"], \"Next\": \"ReleaseStock\" }],\n      \"Next\": \"ShipOrder\"\n    },\n    \"ReleaseStock\": { \"Type\": \"Task\", \"Resource\": \"arn:aws:states:::lambda:invoke\", \"Parameters\": { \"FunctionName\": \"release-stock\", \"Payload.$\": \"$\" }, \"End\": true },\n    \"ShipOrder\": { \"Type\": \"Task\", \"Resource\": \"arn:aws:states:::lambda:invoke\", \"Parameters\": { \"FunctionName\": \"ship-order\", \"Payload.$\": \"$\" }, \"End\": true }\n  }\n}",
+     "title": "A payment step with retry and compensation"
+    },
+    {
+     "type": "markdown",
+     "text": "**Standard** workflows suit long, auditable processes, with exactly-once workflow execution. **Express** workflows suit high-volume, short ones, and asynchronous Express runs are at-least-once, so their steps must be idempotent. Step Functions can also wait for a callback, such as a human approval, with no compute running during the wait.\n\n### Saga orchestration\n\nWithout a shared transaction across services, a failed step requires compensation. Step Functions fits as the orchestrator of a saga: charge the card, reserve stock, and on failure refund and release. Compensations must be idempotent and may themselves fail, so route them to alerts."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Create order] --> B[Reserve stock]\n  B -->|ok| C[Charge card]\n  B -->|fail| X[Cancel order]\n  C -->|ok| D[Ship]\n  C -->|fail| E[Release stock]\n  E --> X\n  D --> F[Done]",
+     "title": "An order saga"
+    },
+    {
+     "type": "markdown",
+     "text": "### Spring Batch on AWS\n\nYour Spring knowledge transfers. Run the job as an ECS task started by EventBridge Scheduler, with the job repository in RDS. If it fails, restart: Spring Batch resumes from the last committed chunk. Use Spot capacity for cost, because restart support makes interruption tolerable."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"A @Scheduled job runs twice in production.\"** Each instance runs it. I would move the trigger outside the service with EventBridge Scheduler, or add a distributed lock like ShedLock, and make the job idempotent in case it still runs twice.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- @Scheduled runs on every instance\n- Long or large jobs belong on ECS or Batch\n- Step Functions handles retries and state\n- Compensations must be idempotent"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-7",
+   "type": "concept",
+   "title": "Capacity planning with real numbers",
+   "subtopicId": "2-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Interviewers ask \"how many servers would you need?\" to see whether you can reason, not whether you get an exact number.\n\n### Little's law\n\n**In-flight requests = arrival rate × time per request.** It's simple, and it works for tasks, thread pools, database connections and queues.\n\n### A worked example\n\nAn API peaks at 300 requests per second, and takes 200 ms on average (150 ms of it waiting on the database, 50 ms using CPU).\n\n| Question | Working | Answer |\n|---|---|---|\n| Requests in flight | 300 × 0.2 s | 60 |\n| CPU needed | 300 × 0.05 s of CPU | 15 vCPUs at 100% |\n| At a 60% CPU target | 15 ÷ 0.6 | 25 vCPUs |\n| Tasks of 2 vCPU | 25 ÷ 2 | 13 tasks |\n| Threads per task | 60 in flight ÷ 13 | About 5 busy on average |\n| Database connections in use | 300 × 0.15 s | 45 |\n| Connection pool per task | 45 ÷ 13, plus headroom | About 5 or 6 |\n| Total pool | 13 × 6 | 78 connections |\n\nNow you can check the design: does the database allow 78 connections, plus spare for deployments? During a rolling deployment, you may briefly have twice the tasks, so 156 potential connections. Does the database handle 45 busy queries at once? This is often the real limit, and it's why scaling tasks may not help."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[ALB: scales] --> B[Tasks: scale out]\n  B --> C[Connection pool: fixed per task]\n  C --> D[(Database: hard limit)]\n  D --> E[The bottleneck moves here first]",
+     "title": "What actually limits throughput"
+    },
+    {
+     "type": "markdown",
+     "text": "### Reserve headroom\n\nRun at about 50 to 70% of capacity at peak, so that losing an AZ doesn't overload what's left. With three AZs, losing one removes a third of your tasks, and the rest must absorb 150% of their normal load until new ones start. At a 60% CPU target, that becomes 90%, which is survivable. At 80%, it's not.\n\n### Autoscaling: what to scale on\n\n| Metric | Good when | Weak when |\n|---|---|---|\n| CPU | CPU-bound work | App mostly waits on I/O |\n| Requests per target | Steady cost per request | Mixed fast and slow requests |\n| Queue age or backlog per task | Workers | Rarely wrong for workers |\n| Custom in-flight count | Fine control | More to build |\n\nRemember that scaling takes time. A Spring Boot task may need a minute or more from launch to serving traffic, so a very sudden spike can't be solved by reactive autoscaling. For known peaks, use **scheduled scaling**: raise the minimum before the sale begins.\n\n### Load test before you believe it\n\nYour estimates are only hypotheses. Run a load test with k6 or Gatling, against a production-sized environment, with realistic data. Raise the load until something breaks, and note what broke first. Fix that, and repeat. Your backend extras chapter shows a k6 script.\n\n### Worker capacity\n\nFor a queue: workers needed = messages per second × seconds per message. At 50 messages a second, taking 2 seconds each, you need 100 concurrent workers. Spring Cloud AWS's `@SqsListener` lets you set concurrency per task, and 10 tasks of 10 would meet it. Check whether whatever is downstream can take that load too."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How many servers for 1,000 requests per second?\"** It depends on time per request and its CPU share. I'd apply Little's law: at 100 ms, there are 100 in flight. If 20 ms is CPU, that's 20 vCPUs, about 34 at a 60% target. Then I'd check the connection budget against the database, and verify with a load test.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- In-flight equals rate times duration\n- The database usually limits you first\n- Leave headroom for AZ failure\n- Scale before known peaks"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-8",
+   "type": "concept",
+   "title": "Java on Lambda in depth",
+   "subtopicId": "2-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Handler styles\n\n| Style | Cold start | Use |\n|---|---|---|\n| Plain handler, SDK only | Fastest for Java | Small event functions |\n| Spring Cloud Function | Slower | Reuse Spring beans |\n| Spring Boot behind an adapter | Slowest | Moving an existing API |\n| GraalVM native image | Very fast | Worth the build complexity at scale |\n\n### Reduce init time\n\n- Use the AWS SDK's `UrlConnectionHttpClient` or AWS CRT client, which load faster than Apache's for many cases, and exclude unused clients.\n- Avoid classpath scanning and heavy reflection.\n- Set `JAVA_TOOL_OPTIONS=-XX:+TieredCompilation -XX:TieredStopAtLevel=1` to favour quick start-up for short functions. Test it, as long-running work may become slower.\n- Create clients in static fields or constructors.\n\n### SnapStart hooks\n\nSnapStart takes a snapshot after init, and restores it for new environments. Anything that's unique or time-sensitive at init becomes a problem, as all restored copies share it.\n\n| Problem | Example | Fix |\n|---|---|---|\n| Stale connections | Database connection opened at init | Reconnect after restore |\n| Shared randomness | Seeded generator in a static | Use `SecureRandom` properly; regenerate after restore |\n| Stale values | Secrets or time cached at init | Reload after restore |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public class Handler implements RequestHandler<Input, Output>, Resource {\n\n    private static HikariDataSource pool;\n\n    public Handler() {\n        Core.getGlobalContext().register(this);\n        pool = createPool();\n    }\n\n    @Override\n    public void beforeCheckpoint(Context<? extends Resource> context) {\n        pool.close();                 // do not snapshot open connections\n    }\n\n    @Override\n    public void afterRestore(Context<? extends Resource> context) {\n        pool = createPool();          // fresh connections per environment\n    }\n\n    @Override\n    public Output handleRequest(Input in, com.amazonaws.services.lambda.runtime.Context ctx) {\n        return process(in, pool);\n    }\n}",
+     "title": "Runtime hooks with CRaC"
+    },
+    {
+     "type": "markdown",
+     "text": "### Spring Cloud Function"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@SpringBootApplication\npublic class App {\n\n    public static void main(String[] args) {\n        SpringApplication.run(App.class, args);\n    }\n\n    @Bean\n    Function<OrderEvent, Receipt> processOrder(OrderService orders) {\n        return orders::process;\n    }\n}",
+     "title": "Your function as a bean"
+    },
+    {
+     "type": "markdown",
+     "text": "The adapter handler `org.springframework.cloud.function.adapter.aws.FunctionInvoker` calls your bean. Your business code remains testable without AWS, and can also run elsewhere.\n\n### Powertools for AWS Lambda\n\nPowertools provides structured logging, metrics, tracing, idempotency and batch processing utilities. Its idempotency module is valuable: it stores a hash of each event in DynamoDB, returning the saved result for repeats, which saves you from writing it.\n\n### Observability and errors\n\nA retry policy depends on how a function is invoked:\n\n| Invocation | On error |\n|---|---|\n| Synchronous (API Gateway) | Caller sees the error; no automatic retry |\n| Asynchronous (S3, SNS, EventBridge) | Retries twice by default; then a failure destination or DLQ |\n| Queue or stream (SQS, Kinesis) | The event source retries; a stream can block its shard |\n\nThat last case is important: on Kinesis or DynamoDB Streams, one bad record can hold up a whole shard until it expires. Set `BisectBatchOnFunctionError`, a maximum retry count and a failure destination.\n\n### Deploying\n\nUse **versions** (immutable snapshots) and **aliases** (named pointers). Moving an alias gradually lets you shift 10% of traffic to a new version, watch alarms, and then finish or roll back.\n\n### Cost compare\n\nLambda pays per GB-second and per request. A function using 1 GB for 200 ms, called 10 million times a month, needs 2 million GB-seconds. Compare the monthly result with a small always-on Fargate task, using current prices. At low or spiky traffic, Lambda usually wins. At steady high traffic, containers do."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Plain handlers start fastest\n- Restore hooks fix SnapStart's shared-state problems\n- Retry behaviour depends on invocation type\n- Use aliases for gradual rollout"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-9",
+   "type": "concept",
+   "title": "Simpler options: App Runner, Beanstalk and Lightsail",
+   "subtopicId": "2-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Not every project needs ECS and a hand-built VPC. Knowing when simple is enough is a mark of good judgement, and these services suit your personal projects well.\n\n| Service | What you give it | Good for | Watch out for |\n|---|---|---|---|\n| App Runner | Image or repository | One web service, automatic TLS and scaling | Less network control; check it's available in your Region and suits your needs |\n| Elastic Beanstalk | Jar or image | Classic web apps, older systems | Feels dated; hidden EC2 details |\n| Lightsail | Nothing but a choice of plan | Cheap fixed-price small server | Limited scale; not for big systems |\n| ECS Fargate | Task definition | Most production services | More setup |\n| EC2 + Docker Compose | Everything | Cheapest learning setup, single machine | You own all operations |\n\n### The cheapest honest deployment for a portfolio\n\nYour portfolio doesn't need Multi-AZ. A small project can be cheap and still show real skills."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  U[Users] --> CF[CloudFront]\n  CF --> S[(S3: React)]\n  CF --> E[One small EC2 or Lightsail: Docker Compose]\n  E --> A[Spring Boot]\n  E --> P[(PostgreSQL in a container)]\n  P --> B[(Nightly dump to S3)]",
+     "title": "A budget portfolio deployment"
+    },
+    {
+     "type": "markdown",
+     "text": "Be open about the trade-offs in interviews: \"This is a single machine, to keep costs low. In production, I'd move to ECS and RDS across two AZs, and here's why.\" This shows more judgement than an over-built system that you switched off after a day.\n\n### When to move up\n\n| Signal | Move to |\n|---|---|\n| Downtime during deploys matters | Rolling deployments on ECS |\n| Data loss would hurt | RDS with backups |\n| One machine is at capacity | Multiple tasks behind an ALB |\n| Several services and teams | ECS or EKS with IaC |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Free-tier rules change, so read the current terms for your account. Set a budget alarm anyway, as a NAT gateway or a forgotten database is outside most free allowances.",
+     "title": "Free-tier caution"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Pick the simplest thing that meets the need\n- A portfolio can run cheaply\n- Explain your trade-offs\n- Know the signals to move up"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### EC2: virtual machines"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why might a load test on a t3 instance mislead you?",
+       "answer": "It can run on accumulated CPU credits, then slow sharply or cost more once they run out. Test on the family you plan to use in production."
+      },
+      {
+       "question": "When is Spot a good choice?",
+       "answer": "When work can be interrupted and resumed: batch jobs, CI runners, and stateless queue workers. A database is a poor fit."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Containers on AWS: ECS and Fargate"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Tasks keep restarting during deployment, although the app works locally. What do you check?",
+       "answer": "Whether the app starts within the health check grace period, whether the health path and port match, whether the security group lets the load balancer in, and the task's stopped reason and logs."
+      },
+      {
+       "question": "Why use -XX:MaxRAMPercentage rather than a fixed -Xmx?",
+       "answer": "It adapts to the container's memory limit, so changing the task size does not need a new setting. Leave room for non-heap memory."
+      },
+      {
+       "question": "How does a rolling deployment avoid dropped requests?",
+       "answer": "New tasks become healthy first, then the load balancer drains old tasks, which finish in-flight work on SIGTERM thanks to graceful shutdown."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Lambda in depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why create the S3 client as a static field?",
+       "answer": "Init runs once per environment, so warm invocations reuse the client and its connections instead of paying for them each time."
+      },
+      {
+       "question": "Doubling a function's memory halved its duration. What happened to cost?",
+       "answer": "Roughly the same, as billing is memory times duration, and users get a faster response. Memory also increases CPU."
+      },
+      {
+       "question": "2,000 Lambda instances connect to one RDS database. What goes wrong and how do you fix it?",
+       "answer": "The database runs out of connections. Use RDS Proxy, a small pool per instance, and reserved concurrency to cap the function."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hands-on: deploying Spring Boot to ECS Fargate"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a Fargate task in a private subnet need a NAT gateway or endpoints?",
+       "answer": "To pull its image from ECR and reach AWS APIs, since a private subnet has no direct internet route."
+      },
+      {
+       "question": "Where do you look first when a task keeps stopping?",
+       "answer": "The stopped reason from `describe-tasks`, then the CloudWatch logs for that task."
+      },
+      {
+       "question": "What does exec format error mean in task logs?",
+       "answer": "The image was built for a different CPU architecture than the one it's running on."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### EKS and Kubernetes on AWS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is sharing the node's IAM role across pods a problem?",
+       "answer": "Every pod gets all the permissions of the node. Pod Identity or IRSA gives each workload only what it needs."
+      },
+      {
+       "question": "New pods stay Pending. Which autoscaler should react?",
+       "answer": "The node autoscaler, such as Karpenter, because pods have nowhere to run. HPA only changes the desired number of pods."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Step Functions, batch and scheduled work"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not run a 2-hour report in Lambda?",
+       "answer": "Lambda stops at 15 minutes. Use an ECS task, or split the work."
+      },
+      {
+       "question": "When would you choose Express rather than Standard Step Functions?",
+       "answer": "For high-volume, short workflows where at-least-once execution is fine and the steps are idempotent."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Capacity planning with real numbers"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "200 requests per second at 500 ms each. How many are in flight?",
+       "answer": "200 × 0.5 = 100."
+      },
+      {
+       "question": "Why not autoscale CPU for a service that mostly waits on the database?",
+       "answer": "CPU stays low while requests pile up. Scale on request count or latency, and check the database."
+      },
+      {
+       "question": "40 messages a second take 3 seconds each. How many concurrent workers are needed?",
+       "answer": "40 × 3 = 120."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Java on Lambda in depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why close database connections before a SnapStart checkpoint?",
+       "answer": "Connections can't survive a snapshot and restore, and many environments would share the same state. Reopen them after restore."
+      },
+      {
+       "question": "A bad record on a Kinesis stream stops processing for hours. Why, and how do you fix it?",
+       "answer": "Stream processing retries in order, so the shard is blocked. Use bisect on error, limit retries, and send failures to a destination."
+      },
+      {
+       "question": "1 GB of memory for 200 ms, 10 million times. How many GB-seconds is that?",
+       "answer": "1 × 0.2 × 10,000,000 = 2,000,000."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Simpler options: App Runner, Beanstalk and Lightsail"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Is a single EC2 with Docker Compose acceptable for a project?",
+       "answer": "Yes, for a portfolio, if you explain the trade-offs: no high availability, and a manual backup and upgrade plan."
+      },
+      {
+       "question": "What would first make you move from one server to ECS and RDS?",
+       "answer": "When downtime or data loss matters, or one machine reaches its limit."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

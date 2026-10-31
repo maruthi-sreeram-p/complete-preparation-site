@@ -1,0 +1,620 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-3-1",
+   "type": "concept",
+   "title": "S3: object storage",
+   "subtopicId": "3-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "S3 stores objects in buckets. It is not a file system: an object is written whole, and folders are only a naming convention (`2026/inv-42.pdf` is one key). In exchange, you get very high durability and almost unlimited scale.\n\n### Consistency and limits\n\nS3 offers strong read-after-write consistency: once a PUT succeeds, the next GET returns it. An object can be up to 5 TB, and uploads above about 100 MB should use multipart upload, which retries parts independently.\n\n### Storage classes\n\n| Class | Use | Trade-off |\n|---|---|---|\n| Standard | Frequently read data | Highest storage price |\n| Intelligent-Tiering | Unknown patterns | Small monitoring fee |\n| Standard-IA | Rarely read, needed fast | Retrieval fee, minimum duration |\n| Glacier classes | Archives | Slower retrieval, lower storage cost |\n\nLifecycle rules move or delete objects automatically: for example, move invoices to Glacier after a year and delete temporary uploads after a week.\n\n### Security\n\nS3's \"Block Public Access\" should stay on unless a bucket truly serves public files, and even then CloudFront in front of a private bucket is better. Encrypt at rest (on by default) and use bucket policies for cross-account access. Most public S3 leaks come from misconfiguration, not from any flaw in S3.\n\n### Pre-signed URLs\n\nNever route large uploads through your API. Have the API authorise the user, then return a short-lived signed URL, so that the browser talks to S3 directly."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "S3Presigner presigner = S3Presigner.create();\n\nPutObjectRequest put = PutObjectRequest.builder()\n    .bucket(\"acme-uploads\")\n    .key(\"users/\" + userId + \"/\" + UUID.randomUUID() + \".pdf\")\n    .contentType(\"application/pdf\")\n    .build();\n\nPresignedPutObjectRequest signed = presigner.presignPutObject(r -> r\n    .signatureDuration(Duration.ofMinutes(10))\n    .putObjectRequest(put));\n\nreturn signed.url().toString();",
+     "title": "Issue a 10-minute upload URL"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant A as API\n  participant S as S3\n  participant Q as SQS\n  B->>A: I want to upload (authenticated)\n  A-->>B: pre-signed URL\n  B->>S: PUT file\n  S->>Q: object created event\n  Q->>A: process the file",
+     "title": "Direct upload"
+    },
+    {
+     "type": "markdown",
+     "text": "This keeps your servers free of large bodies and scales with S3. Validate the object after upload, as a pre-signed URL trusts whoever holds it."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- S3 is object storage, not a file system\n- Upload directly with pre-signed URLs\n- Lifecycle rules save money\n- Keep Block Public Access on"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-2",
+   "type": "concept",
+   "title": "RDS and Aurora",
+   "subtopicId": "3-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "RDS runs relational engines for you: patching, backups and failover. Aurora is AWS's own engine, compatible with MySQL or PostgreSQL, with storage shared across AZs. Your Databases guide covers SQL itself; this chapter covers running it on AWS.\n\n### Multi-AZ and read replicas\n\nThese two are often confused in interviews.\n\n| | Multi-AZ standby | Read replica |\n|---|---|---|\n| Purpose | Availability | Read scaling |\n| Replication | Synchronous | Asynchronous |\n| Readable? | Not in the classic setup | Yes |\n| On failure | Automatic failover, typically within a minute or two | Must be promoted |\n| Risk | Slightly slower writes | Replication lag: stale reads |"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[App writes] --> P[(Primary, AZ a)]\n  P -->|synchronous| S[(Standby, AZ b)]\n  P -->|asynchronous| R[(Read replica)]\n  B[App reports and reads] --> R",
+     "title": "Combining both"
+    },
+    {
+     "type": "markdown",
+     "text": "After failover, the database endpoint's DNS points to the new primary, so existing connections break. Your connection pool must recover from this: HikariCP will retire dead connections, but keep sensible `maxLifetime` and connection timeouts, and retry idempotent operations.\n\n### Connection limits\n\nTasks × pool size must stay under the database's `max_connections`. Twenty tasks with a pool of 20 is 400 connections, which may exceed a small instance's limit. If you scale out during a slowdown, you can make things worse by piling on connections. RDS Proxy can help, especially with Lambda.\n\n### Backups and restore\n\nAutomated backups give point-in-time recovery within the retention window. A restore always creates a **new** instance, so plan how the app switches over. An untested backup is only a hope: run a restore on a schedule.\n\n### Migrations during deployment\n\nDuring a rolling deployment, old and new code run together, so the schema must work with both.\n\n1. Add the new column as nullable and deploy code that writes both columns.\n2. Backfill existing rows in small batches.\n3. Move reads to the new column.\n4. Remove the old column in a later release.\n\nThis is the **expand and contract** pattern. Flyway or Liquibase apply the steps from code."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Adding an index on a big table without `CONCURRENTLY` in PostgreSQL blocks writes. A deployment can cause an outage by running a harmless-looking migration.",
+     "title": "Locking migrations"
+    },
+    {
+     "type": "markdown",
+     "text": "### Storing the password\n\nStore credentials in Secrets Manager, which can rotate them automatically. Your task reads them at start-up, through the `secrets` section of the task definition. Rotation needs care: a running app holding the old password must reconnect successfully. Parameter Store is a cheaper option for ordinary configuration."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Your read replica shows old data.\"** That is replication lag, because replication is asynchronous. Read from the primary where freshness matters, such as just after a write, and use replicas for reports and pages that can tolerate some delay. Monitor `ReplicaLag`.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Multi-AZ is for availability, replicas for reads\n- Failover drops connections, so the pool must recover\n- Watch tasks times pool size\n- Expand and contract keeps deployments safe"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-3",
+   "type": "concept",
+   "title": "DynamoDB",
+   "subtopicId": "3-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "DynamoDB is a managed key-value and document database with consistent single-digit-millisecond performance at nearly any scale, provided that you design for your access patterns. It rewards a mindset opposite to relational design.\n\n### Keys\n\n- **Partition key:** hashed to decide where an item lives.\n- **Sort key (optional):** orders items within a partition, allowing range queries.\n\nThe only efficient reads are `GetItem` by full key and `Query` within one partition. A `Scan` reads the whole table and costs accordingly.\n\n### Design from access patterns\n\nIn SQL you model entities and add queries later. In DynamoDB you **list queries first**. Suppose we need: get an order; list a customer's orders by date; list items in an order.\n\n| PK | SK | Attributes |\n|---|---|---|\n| CUSTOMER#42 | ORDER#2026-10-31#9001 | total, status |\n| ORDER#9001 | META | customerId, total |\n| ORDER#9001 | ITEM#1 | sku, qty |\n| ORDER#9001 | ITEM#2 | sku, qty |\n\nListing a customer's latest orders is now a single query, with no joins, at any scale. Storing different entity types in one table like this is **single-table design**. It is powerful, but it can be hard to change later."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "QueryRequest request = QueryRequest.builder()\n    .tableName(\"shop\")\n    .keyConditionExpression(\"PK = :pk AND begins_with(SK, :prefix)\")\n    .expressionAttributeValues(Map.of(\n        \":pk\", AttributeValue.fromS(\"CUSTOMER#42\"),\n        \":prefix\", AttributeValue.fromS(\"ORDER#\")))\n    .scanIndexForward(false)   // newest first\n    .limit(20)\n    .build();\n\nList<Map<String, AttributeValue>> orders = dynamo.query(request).items();",
+     "title": "Query a customer's orders with the SDK"
+    },
+    {
+     "type": "markdown",
+     "text": "### Secondary indexes\n\nA **global secondary index** gives another key shape, such as finding orders by status. It is updated asynchronously and has a cost, since every write also updates it. A **local secondary index** shares the partition key and must be defined at table creation.\n\n### Hot partitions and capacity\n\nIf one key receives most traffic, say a viral product, that partition is throttled, even if the table has spare capacity. Choose high-cardinality keys, and spread out known hot keys, by adding a suffix such as `PRODUCT#7#3` and reading across suffixes.\n\nOn-demand mode charges per request and suits unknown traffic. Provisioned mode with autoscaling is cheaper for steady load.\n\n### Consistency and transactions\n\nReads are eventually consistent by default and can be strongly consistent for double the read cost. Conditional writes prevent lost updates. `TransactWriteItems` updates several items atomically, within limits."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "dynamo.updateItem(UpdateItemRequest.builder()\n    .tableName(\"shop\")\n    .key(Map.of(\"PK\", AttributeValue.fromS(\"PRODUCT#7\"), \"SK\", AttributeValue.fromS(\"META\")))\n    .updateExpression(\"SET stock = stock - :one\")\n    .conditionExpression(\"stock >= :one\")\n    .expressionAttributeValues(Map.of(\":one\", AttributeValue.fromN(\"1\")))\n    .build());   // throws ConditionalCheckFailedException if stock is gone",
+     "title": "Prevent overselling with a condition"
+    },
+    {
+     "type": "markdown",
+     "text": "### When not to use it\n\nPrefer PostgreSQL when queries are varied or unknown, when you need ad hoc reporting or complex joins, or when the team knows SQL and the scale does not demand otherwise. Many systems never need DynamoDB's scale."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"DynamoDB or PostgreSQL?\"** PostgreSQL by default. DynamoDB when access patterns are known and key-based, and the load is high or spiky. The deciding question is whether I can list my queries in advance.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- List access patterns before you design\n- Query within a partition, avoid Scan\n- Beware of hot partitions\n- Conditional writes prevent lost updates"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-4",
+   "type": "concept",
+   "title": "ElastiCache and caching on AWS",
+   "subtopicId": "3-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "ElastiCache runs Redis-compatible caches (and Memcached), with replication and failover. Your Redis guide explains the data structures and patterns in depth. Here we focus on running them on AWS.\n\n### Topologies\n\n| Setup | Gives | Use |\n|---|---|---|\n| Single node | Nothing extra | Development only |\n| Primary with replicas, Multi-AZ | Failover, read scale | Most apps |\n| Cluster mode | Sharding across nodes | Data or writes beyond one node |\n\n### Where the cache sits"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  U[User] --> CF[CloudFront: static files, some API responses]\n  CF --> A[App: small in-process cache]\n  A --> R[(ElastiCache)]\n  R --> D[(RDS)]",
+     "title": "Layers of caching"
+    },
+    {
+     "type": "markdown",
+     "text": "### Designing for failure\n\nA cache must be optional for correctness. If ElastiCache fails over or disappears, the app should fall back to the database, with limits so that the database is not flattened by the sudden load. Use short client timeouts, as a hung cache call that waits for seconds is worse than a cache miss. Add a circuit breaker so that a dead cache is skipped quickly.\n\n### Practical details\n\n- Keep it in private subnets, and allow only the app's security group.\n- Use TLS and AUTH or IAM authentication.\n- Watch evictions, memory usage, cache hit rate and replication lag.\n- Set TTLs on everything, with some random jitter so that keys do not all expire together.\n- Choose `allkeys-lru` when it is purely a cache."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "When a popular key expires, many requests may hit the database at once. Use a short lock so that one request rebuilds the entry, or refresh early in the background.",
+     "title": "Stampedes"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Multi-AZ replication for production\n- The app must survive without the cache\n- Short timeouts and circuit breakers\n- TTL with jitter"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-5",
+   "type": "concept",
+   "title": "S3 in practice from Java",
+   "subtopicId": "3-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Choosing how to transfer\n\n| Situation | Approach |\n|---|---|\n| Small object from the server | `S3Client.putObject` |\n| Large file from the server | `S3TransferManager`: multipart and parallel parts |\n| User upload | Pre-signed URL or pre-signed POST |\n| Reading a big file | Stream it; never load it all into memory |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@GetMapping(\"/files/{key}\")\nResponseEntity<StreamingResponseBody> download(@PathVariable String key) {\n    checkPermission(key);\n    ResponseInputStream<GetObjectResponse> object =\n        s3.getObject(b -> b.bucket(\"acme-files\").key(key));\n    StreamingResponseBody body = out -> {\n        try (object) { object.transferTo(out); }\n    };\n    return ResponseEntity.ok()\n        .contentLength(object.response().contentLength())\n        .contentType(MediaType.parseMediaType(object.response().contentType()))\n        .body(body);\n}",
+     "title": "Streaming a download through your API"
+    },
+    {
+     "type": "markdown",
+     "text": "Streaming through your service holds a thread and a connection for each download, so prefer a pre-signed URL when you can. Use this path only when you must transform the content or control access byte by byte.\n\n### Versioning and protection\n\n**Versioning** keeps earlier versions when objects are overwritten or deleted. A delete only adds a marker, so accidental deletion is recoverable. It costs storage for each version, so pair it with a lifecycle rule that expires old versions. **Object Lock** adds retention that nobody can shorten, which helps against ransomware and with compliance.\n\n### Events\n\nS3 can notify SQS, SNS, Lambda or EventBridge when objects change."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  B[Browser] -->|pre-signed PUT| S[(S3: uploads)]\n  S -->|object created| Q[SQS]\n  Q --> W[Worker]\n  W --> T[(S3: thumbnails)]\n  W --> D[(Database: mark ready)]\n  Q --> L[Dead-letter queue]",
+     "title": "A thumbnail pipeline"
+    },
+    {
+     "type": "markdown",
+     "text": "Notifications are delivered at least once, and may arrive out of order, so make handlers idempotent. Never write back to the same prefix that triggers the function, or you create an infinite loop with a large bill.\n\n### Key design and performance\n\nS3 scales request rates per prefix, and it automatically adapts. Very high request rates suit distributed prefixes. A sensible key might be `tenant/42/2026/10/uuid.pdf`. Listing is slow on huge prefixes, so keep your own database index of what exists instead of calling `ListObjects` in request paths.\n\n### Static hosting and CORS\n\nServe the React build through CloudFront, as Part 4 describes. If browsers upload directly to S3 with pre-signed URLs, the bucket needs a CORS rule allowing your site's origin and `PUT`. \"CORS error\" on direct upload nearly always means that this rule is missing.\n\n### Data lake basics\n\nCheap storage makes S3 the base of analytics. Athena queries files in S3 with SQL, and it charges per data scanned, so columnar Parquet and partitioned keys such as `dt=2026-10-31/` reduce cost sharply. Glue catalogues the data. As a backend developer, it's enough to know that you can export events to S3 and query them later, without loading production databases."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Stream, never buffer whole files\n- Versioning protects from accidents\n- Events are at-least-once\n- Do not trigger a function from the prefix it writes to"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-6",
+   "type": "concept",
+   "title": "Operating RDS and Aurora",
+   "subtopicId": "3-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Sizing and storage\n\nChoose an instance class by working set: ideally, frequently used data and indexes fit in memory. Use **gp3** storage by default, and provisioned IOPS for sustained heavy I/O. Turn on storage autoscaling, because running out of disk is one of the quickest ways to take a database down.\n\n### What to watch\n\n| Metric | Means | Action |\n|---|---|---|\n| CPUUtilization | Query load | Fix slow queries before upsizing |\n| FreeableMemory | Cache pressure | More memory, fewer connections |\n| DatabaseConnections | Near the limit? | Pool sizes, proxy |\n| ReadLatency, WriteLatency | Disk health | IOPS, query plans |\n| FreeStorageSpace | Disk left | Alarm early |\n| ReplicaLag | Stale reads | Slower writes or larger replica |\n| DiskQueueDepth | I/O backlog | IOPS, indexes |\n\n**Performance Insights** (or its successor features) shows which queries consume database load, grouped by wait type. This is usually the fastest route to the real problem. Enable slow query logging too.\n\n### Parameter groups\n\nEngine settings live in parameter groups, such as `max_connections`, `log_min_duration_statement` and `work_mem`. Some settings need a reboot. Change them in a lower environment first.\n\n### Connection pool sizing\n\nA common mistake is making the pool bigger when the app is slow. With 20 tasks and a pool of 50, the database faces 1,000 connections, which increases contention and makes everything slower. A starting formula from HikariCP's guidance: `connections = (cores × 2) + effective spindles`, adjusted by load testing."
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "spring.datasource.hikari.maximum-pool-size=10\nspring.datasource.hikari.connection-timeout=3000\nspring.datasource.hikari.max-lifetime=600000\nspring.datasource.hikari.validation-timeout=2000",
+     "title": "HikariCP settings for RDS failover"
+    },
+    {
+     "type": "markdown",
+     "text": "Set JDBC socket timeouts as well, so a dead connection during failover doesn't hang a thread. For PostgreSQL, `socketTimeout` and `connectTimeout` in the URL do this.\n\n### Aurora\n\n| | RDS PostgreSQL | Aurora PostgreSQL |\n|---|---|---|\n| Storage | EBS volumes | Distributed, across 3 AZs, grows automatically |\n| Read replicas | Several, with their own storage | Up to 15, sharing storage, low lag |\n| Failover | Typically a minute or two | Often faster |\n| Cost | Lower for small workloads | Higher baseline; I/O charges or I/O-optimised mode |\n| Serverless | No | Serverless v2 scales capacity |\n\nAurora has a **reader endpoint** that spreads connections across replicas. It balances connections, not queries, so a long-lived pool can stay unevenly distributed.\n\n### Read/write splitting"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public class RoutingDataSource extends AbstractRoutingDataSource {\n    @Override\n    protected Object determineCurrentLookupKey() {\n        return TransactionSynchronizationManager.isCurrentTransactionReadOnly() ? \"reader\" : \"writer\";\n    }\n}",
+     "title": "Route read-only transactions to a replica"
+    },
+    {
+     "type": "markdown",
+     "text": "Wrap this in `LazyConnectionDataSourceProxy`, so that the connection is chosen after the transaction's read-only flag has been set. Remember replica lag: after a user saves a form, reading it from a replica may show old data, so read your own writes from the primary.\n\n### Zero-downtime major upgrades\n\nBlue/green deployments in RDS create a synchronised copy on the new version, and switch over within about a minute. Test on a restored snapshot first, and check the application against the new version. Never run major upgrades without having tested rollback options."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"The database CPU is at 95%. What do you do?\"** Don't upsize first. I check Performance Insights for the top queries, then look for missing indexes, N+1 patterns and connection storms. Mitigate with caching or by moving reads to replicas, and upsize only if the workload truly needs it.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Alarm on free storage\n- Find top queries before upsizing\n- A bigger pool can make things worse\n- Reader endpoints balance connections, not queries"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-7",
+   "type": "concept",
+   "title": "DynamoDB from Java, streams and modelling practice",
+   "subtopicId": "3-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### The Enhanced Client\n\nThe Enhanced Client maps Java classes to items."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@DynamoDbBean\npublic class Order {\n    private String pk;\n    private String sk;\n    private String status;\n    private Long version;\n\n    @DynamoDbPartitionKey @DynamoDbAttribute(\"PK\")\n    public String getPk() { return pk; }\n    public void setPk(String pk) { this.pk = pk; }\n\n    @DynamoDbSortKey @DynamoDbAttribute(\"SK\")\n    public String getSk() { return sk; }\n    public void setSk(String sk) { this.sk = sk; }\n\n    public String getStatus() { return status; }\n    public void setStatus(String status) { this.status = status; }\n\n    @DynamoDbVersionAttribute\n    public Long getVersion() { return version; }\n    public void setVersion(Long version) { this.version = version; }\n}",
+     "title": "A mapped entity"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "DynamoDbTable<Order> table = enhanced.table(\"shop\", TableSchema.fromBean(Order.class));\n\nOrder order = table.getItem(Key.builder().partitionValue(\"ORDER#9001\").sortValue(\"META\").build());\n\nList<Order> latest = table.query(r -> r\n        .queryConditional(QueryConditional.sortBeginsWith(\n            Key.builder().partitionValue(\"CUSTOMER#42\").sortValue(\"ORDER#\").build()))\n        .scanIndexForward(false)\n        .limit(20))\n    .items().stream().limit(20).toList();",
+     "title": "Read and query"
+    },
+    {
+     "type": "markdown",
+     "text": "`@DynamoDbVersionAttribute` gives optimistic locking: an update fails if somebody else changed the item since it was read.\n\n### A modelling exercise\n\nFor a ticketing system, list the access patterns first:\n\n| Access pattern | Key used |\n|---|---|\n| Get a ticket | PK=`TICKET#id`, SK=`META` |\n| Comments on a ticket | PK=`TICKET#id`, SK begins with `COMMENT#` |\n| A user's tickets, newest first | PK=`USER#id`, SK=`TICKET#date#id` |\n| Open tickets by team | GSI1: PK=`TEAM#id#OPEN`, SK=date |\n\nNotice how \"open tickets by team\" uses a **sparse index**: only open tickets have the GSI attributes, so closed ones cost nothing there, and the index stays small. On closing, remove those attributes.\n\n### Pagination\n\nDynamoDB returns up to 1 MB per request, along with `LastEvaluatedKey`. There are no offsets. So API pagination uses an opaque cursor containing this key. This forces designs like \"next page\", and not \"jump to page 7\". Filter expressions apply after reading, so a page may come back short, or even empty, while more data still exists.\n\n### Streams and TTL\n\n**DynamoDB Streams** gives you a time-ordered log of item changes, for 24 hours. A Lambda can keep a search index up to date, publish events or update aggregates. **TTL** deletes items after a timestamp, for free, which suits sessions and temporary tokens. TTL deletion is not immediate, so filter expired items in reads if exactness matters."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[App] --> D[(DynamoDB)]\n  D -->|stream| L[Lambda]\n  L --> O[OpenSearch index]\n  L --> E[EventBridge events]",
+     "title": "Change data capture from DynamoDB"
+    },
+    {
+     "type": "markdown",
+     "text": "### Limits and costs\n\n- An item is limited to 400 KB, so store large content in S3 with a pointer.\n- A partition handles limited throughput per second.\n- Each GSI copies data, and it's charged for writes.\n- Strongly consistent reads cost twice as much, and aren't available on GSIs.\n- Transactions cost about double.\n\n### Moving away from a relational mindset\n\nAvoid these common errors: one table per entity with client-side joins, scans in production, normalising everything, and low-cardinality partition keys such as `status`. If you find yourself needing many ad hoc queries, DynamoDB may be the wrong choice, and that's a fine conclusion."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Enhanced Client maps classes to items\n- Sparse indexes keep queries cheap\n- Pagination uses a cursor, not an offset\n- Streams enable change capture"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-8",
+   "type": "concept",
+   "title": "Spring caching with ElastiCache",
+   "subtopicId": "3-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### A cache-aside service"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Service\nclass ProductService {\n\n    private final ProductRepository products;\n\n    ProductService(ProductRepository products) { this.products = products; }\n\n    @Cacheable(cacheNames = \"products\", key = \"#id\")\n    public ProductView find(long id) {\n        return ProductView.of(products.findById(id).orElseThrow());\n    }\n\n    @CacheEvict(cacheNames = \"products\", key = \"#id\")\n    @Transactional\n    public void updatePrice(long id, BigDecimal price) {\n        products.findById(id).orElseThrow().setPrice(price);\n    }\n}",
+     "title": "Spring's cache annotations"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "spring.cache.type=redis\nspring.data.redis.host=${REDIS_HOST}\nspring.data.redis.ssl.enabled=true\nspring.data.redis.timeout=200ms\nspring.cache.redis.time-to-live=10m",
+     "title": "Redis configuration"
+    },
+    {
+     "type": "markdown",
+     "text": "### A subtle race\n\n`@CacheEvict` here may run around the commit. Consider this interleaving:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant W as Writer\n  participant C as Cache\n  participant D as Database\n  participant R as Reader\n  W->>C: evict key\n  R->>C: miss\n  R->>D: read old value\n  W->>D: commit new value\n  R->>C: store old value\n  Note over C: The stale value lives until its TTL",
+     "title": "A stale cache entry"
+    },
+    {
+     "type": "markdown",
+     "text": "No simple design removes every such race. Practical answers: evict **after** commit with `@TransactionalEventListener`, keep TTLs short so that errors heal themselves, and use versioned keys for critical data. Only cache data that can tolerate brief staleness. Never make decisions on money or stock from a cache.\n\n### What belongs in the cache\n\n| Good candidates | Poor candidates |\n|---|---|\n| Product pages read far more than written | Account balances |\n| Results of expensive queries | Data that changes on every read |\n| Sessions, tokens, rate limit counters | Very large objects |\n| Feature flags | Anything you can't rebuild |\n\n### Measuring value\n\nHit rate alone can mislead: 95% on rarely used keys may save little. Estimate saved database load: `requests × hit rate × query cost`. Also check that the cache is really faster, as a network hop with serialisation may cost more than a simple indexed query.\n\n### Serialisation\n\nThe default JDK serialisation is slow, large and breaks on class changes. Use JSON or a compact format, and include a version in the key prefix, such as `products:v2:42`, so that a deployment with a changed structure doesn't read incompatible old values.\n\n### Two levels\n\nA small in-process cache, using Caffeine, in front of Redis removes network hops for the hottest keys, and it protects Redis from a viral item. The cost is possible inconsistency between instances, so give it a very short TTL, measured in seconds.\n\n### Hot keys\n\nOne key can overload a single Redis shard. Options: an in-process cache, read replicas, or splitting the value across several keys. Finding them is half the job: use your client's metrics, or sample with `redis-cli --hotkeys` in a safe window."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "ElastiCache replication is asynchronous, so failover can lose recent writes. If you need durability, use a database, or a service designed for it such as MemoryDB, after reading its guarantees.",
+     "title": "Redis as a primary database"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Evict after commit\n- Short TTLs heal mistakes\n- Version keys for safe deployments\n- Don't decide on money from a cache"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-9",
+   "type": "concept",
+   "title": "DynamoDB capacity and cost maths",
+   "subtopicId": "3-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Capacity units\n\n| Unit | Gives you |\n|---|---|\n| 1 RCU | 1 strongly consistent read per second, up to 4 KB; or 2 eventually consistent |\n| 1 WCU | 1 write per second, up to 1 KB |\n\nSizes round **up**. Transactions use twice the units.\n\n### A worked example\n\nAn app does 500 reads per second of 6 KB items, using eventual consistency, and 100 writes per second of 1.5 KB items, with one GSI that also takes every write.\n\n| Step | Working | Result |\n|---|---|---|\n| Read size | 6 KB rounds up to 8 KB, which is 2 units of 4 KB | 2 strong RCU each |\n| Eventual reads | 2 ÷ 2 | 1 RCU each |\n| Total reads | 500 × 1 | 500 RCU |\n| Write size | 1.5 KB rounds up to 2 KB | 2 WCU each |\n| Table writes | 100 × 2 | 200 WCU |\n| GSI writes | Same again, if all attributes are projected | 200 WCU |\n| Total writes | 200 + 200 | 400 WCU |\n\nIf the GSI projects only key attributes, each entry may fit in 1 KB, for 100 WCU. **Projection choice directly changes your bill.**\n\n### What's a hot partition, in numbers?\n\nA single partition supports up to about 3,000 RCU and 1,000 WCU per second. A product getting 2,000 writes a second to one key will be throttled, however large the table is. Spreading writes across 4 suffixes gives each 500 writes per second, which fits."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "int shard = ThreadLocalRandom.current().nextInt(4);\nString pk = \"VOTES#\" + pollId + \"#\" + shard;\n// to read the total, query all 4 keys and add them",
+     "title": "Write sharding a hot counter"
+    },
+    {
+     "type": "markdown",
+     "text": "### On-demand or provisioned?\n\n| Traffic | Choose |\n|---|---|\n| New app, unknown traffic | On-demand |\n| Very spiky | On-demand |\n| Steady and predictable | Provisioned with autoscaling |\n| Very steady, long term | Provisioned with reserved capacity |\n\nProvisioned autoscaling reacts within minutes, so a sudden spike can throttle before capacity arrives.\n\n### Reducing cost\n\n- Keep items small. Move large fields to S3, and shorten long attribute names, because names count towards size.\n- Project only what each GSI query needs.\n- Use eventual consistency unless you must read your own write.\n- Use TTL rather than paying for deletes.\n- Avoid scans. Scan a 100 GB table, and you pay for every byte read.\n\n### Handling throttling\n\nThe SDK retries with backoff by default. Sustained throttling surfaces as `ProvisionedThroughputExceededException`. Watch the `ThrottledRequests` metric. CloudWatch Contributor Insights identifies the most-used keys.\n\n### Batches\n\n`BatchWriteItem` sends up to 25 items, and `BatchGetItem` up to 100. A batch isn't a transaction, and may partly fail, so handle `UnprocessedItems` by retrying with backoff."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Sizes round up\n- GSIs cost write capacity too\n- One partition has its own limit\n- Handle UnprocessedItems"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-10",
+   "type": "concept",
+   "title": "Migrating data and analytics on AWS",
+   "subtopicId": "3-10",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Moving a database to RDS\n\n| Approach | Downtime | Effort |\n|---|---|---|\n| Dump and restore | Long, for large data | Low |\n| Native replication | Short cutover | Medium |\n| AWS DMS | Short cutover | Medium, with its own limits |\n\nA safe sequence:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Copy existing data] --> B[Replicate ongoing changes]\n  B --> C[Compare row counts and samples]\n  C --> D[Point a read-only feature at the new DB]\n  D --> E[Short write freeze]\n  E --> F[Switch the app]\n  F --> G[Keep the old DB for rollback, for a time]",
+     "title": "A low-downtime migration"
+    },
+    {
+     "type": "markdown",
+     "text": "Practise on a copy, and time every step. Prepare a rollback before you begin: once the new database accepts writes, going back requires reverse replication.\n\n### Moving large files\n\nFor terabytes over the internet, use `aws s3 sync` or DataSync, and check with checksums. For very large volumes over slow links, physical Snowball devices are still used.\n\n### Keep analytics away from production\n\nA heavy report on the production database hurts live traffic. Options, from simple to serious:\n\n| Option | Suits |\n|---|---|\n| Read replica | Small reporting needs |\n| Export to S3 + Athena | Occasional queries, low cost |\n| Change capture to S3, using DMS or Debezium | Fresher analytics data |\n| Redshift | Large, regular analytical workloads |\n| OpenSearch | Full-text search and log analytics |\n\n### Athena, in practice"
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "CREATE EXTERNAL TABLE orders (\n  order_id string,\n  total decimal(10,2),\n  customer string\n)\nPARTITIONED BY (dt string)\nSTORED AS PARQUET\nLOCATION 's3://acme-lake/orders/';\n\nSELECT dt, SUM(total)\nFROM orders\nWHERE dt BETWEEN '2026-10-01' AND '2026-10-31'\nGROUP BY dt;",
+     "title": "Partition pruning makes queries cheap"
+    },
+    {
+     "type": "markdown",
+     "text": "Athena charges per data scanned. A worked comparison: querying one day of a year's 3 TB of CSV files without partitions scans all 3 TB. With daily partitions, it scans about 8 GB (3 TB ÷ 365). In Parquet, which reads only the needed columns and compresses well, it could be 1 or 2 GB. So that one query costs over a thousand times less.\n\n### Search with OpenSearch\n\nIf users need typo tolerance, relevance ranking and filters across text, a database `LIKE '%term%'` won't scale. OpenSearch is the managed option. Keep your database as the source of truth, and feed the index asynchronously through events, accepting that the index can lag. It's also usable for vector search."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Practise migrations, and time each step\n- Prepare the rollback first\n- Keep analytics off production\n- Columnar files and partitions cut Athena costs"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### S3: object storage"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not store user uploads on the server's disk?",
+       "answer": "Tasks are disposable, and other instances cannot see the file. S3 is durable and shared."
+      },
+      {
+       "question": "How do you serve private files to authorised users?",
+       "answer": "Check permission in the API, then issue a short-lived pre-signed GET URL or a signed CloudFront URL."
+      },
+      {
+       "question": "What is the risk of a pre-signed PUT with no later checks?",
+       "answer": "The holder can upload anything until it expires. Set a short expiry, restrict the key, then validate type and size after upload."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### RDS and Aurora"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Will Multi-AZ help with a slow read-heavy application?",
+       "answer": "Generally no, because the standby is not used for reads in the classic setup. Add read replicas or caching, and fix slow queries."
+      },
+      {
+       "question": "Why must schema changes stay backward compatible during a rolling deployment?",
+       "answer": "Old and new versions run at once. If new schema breaks old code, then requests fail during the rollout, and rollback becomes unsafe."
+      },
+      {
+       "question": "How do you restore a database to yesterday at 3 p.m.?",
+       "answer": "Use point-in-time recovery, which creates a new instance. Verify the data, then point the application at it or copy back the lost rows."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### DynamoDB"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A team runs Scan with a filter on a large table in a request path. What is wrong?",
+       "answer": "Scan reads the whole table and is charged for it before filtering. Add a GSI, or redesign the key, so that it becomes a Query."
+      },
+      {
+       "question": "Why can one popular item be throttled while the table has spare capacity?",
+       "answer": "Capacity is limited per partition. A single hot key can exceed its partition's limit. Use write sharding, caching, or a better key."
+      },
+      {
+       "question": "How do you avoid two buyers taking the last item?",
+       "answer": "Use a conditional update that requires stock of at least 1. Only one succeeds, and the other gets a failed condition."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### ElastiCache and caching on AWS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Redis fails over and the app becomes very slow. Why?",
+       "answer": "Calls may be waiting on long timeouts, and all traffic has moved to the database. Use short timeouts, circuit breaking and load shedding, and limit database concurrency."
+      },
+      {
+       "question": "Why add jitter to TTLs?",
+       "answer": "If many keys expire together, they all miss together, and that overloads the database. Jitter spreads out the expiry."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### S3 in practice from Java"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A Lambda triggered by S3 writes a thumbnail into the same bucket, and the bill explodes. Why?",
+       "answer": "Each thumbnail triggers another invocation, in a loop. Use a separate bucket or prefix, and filter the trigger."
+      },
+      {
+       "question": "Why keep your own table of uploaded files rather than listing S3?",
+       "answer": "Listing is slow and paginated. A table supports fast queries, ownership and metadata."
+      },
+      {
+       "question": "How can you recover an object someone deleted by mistake?",
+       "answer": "With versioning on, remove the delete marker, or restore a prior version. Without it, only a separate backup can help."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Operating RDS and Aurora"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Everything is slow, so a teammate raises the pool from 20 to 100. What may happen?",
+       "answer": "The database has more concurrent work and contention, so it gets slower for everybody. Fix slow queries, and size the pool against the database's capacity."
+      },
+      {
+       "question": "A user saves a profile and then sees old data. Why might that happen?",
+       "answer": "The read went to a lagging replica. Read your own recent writes from the primary."
+      },
+      {
+       "question": "Why does a long-lived pool sometimes overload one Aurora reader?",
+       "answer": "The reader endpoint balances at connection time, and the pool keeps those connections. Limit connection lifetime so they rebalance."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### DynamoDB from Java, streams and modelling practice"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A filtered query returns an empty page, but LastEvaluatedKey is present. What does it mean?",
+       "answer": "Filters apply after reading, so this page matched nothing but more data exists. Continue with the key."
+      },
+      {
+       "question": "Why is status a poor partition key?",
+       "answer": "It has few values, so traffic concentrates on a few partitions. Add a higher-cardinality key."
+      },
+      {
+       "question": "How do you remove expired sessions cheaply?",
+       "answer": "Use DynamoDB TTL, and filter by expiry in reads, as deletion can be delayed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Spring caching with ElastiCache"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why might deleting a cache key before the database commit leave stale data?",
+       "answer": "A reader can reload the old value between the eviction and the commit. It then stays until its TTL."
+      },
+      {
+       "question": "How do you prevent a deployment from breaking on cached objects of an older structure?",
+       "answer": "Use a version in the key prefix and a stable format such as JSON, so that the new version reads fresh entries."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### DynamoDB capacity and cost maths"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How many RCUs do 1,000 strongly consistent reads of 3 KB items per second need?",
+       "answer": "3 KB rounds up to 4 KB, so 1 RCU each: 1,000 RCU."
+      },
+      {
+       "question": "How many WCUs do 50 writes per second of 2.4 KB items need?",
+       "answer": "2.4 rounds up to 3, so 3 WCU each: 150 WCU, plus any indexes."
+      },
+      {
+       "question": "A BatchWriteItem returned successfully, but some items are missing. Why?",
+       "answer": "It may return UnprocessedItems without failing. Check and retry them."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Migrating data and analytics on AWS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not run monthly reports directly on the primary database?",
+       "answer": "Large scans compete with live traffic. Use a replica, or export to S3 for Athena."
+      },
+      {
+       "question": "Why does Parquet reduce Athena costs?",
+       "answer": "It's columnar and compressed, so queries read only the needed columns, and charges follow data scanned."
+      },
+      {
+       "question": "What makes a rollback difficult once a new database accepts writes?",
+       "answer": "The old one no longer has those writes, so you need reverse replication or a planned reconciliation."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

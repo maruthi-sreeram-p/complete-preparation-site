@@ -20,7 +20,9 @@ from pathlib import Path
 
 import pypdf
 
-ROADMAP_ID = "interview-prep"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from guide_source import DOCUMENT, build_sections, load_parts  # noqa: E402
+
 PLAN_FILE = "Day_By_Day_Plan.xlsx"
 
 # plan name -> (slug, pdf file)
@@ -36,9 +38,7 @@ GUIDES = {
     "Kafka": ("kafka", "Kafka_Complete_Guide.pdf"),
     "Git, Docker and CI/CD": ("git-docker-cicd", "Git_Docker_CICD_Guide.pdf"),
     "DSA Patterns": ("dsa-patterns", "DSA_Patterns.pdf"),
-    "Aptitude": ("aptitude", "Aptitude_Mastery_Guide.pdf"),
 }
-GUIDE_DIRS = {"Aptitude": "../01-Aptitude"}  # guides kept outside the main folder
 GUIDE_RE = "|".join(sorted((re.escape(g) for g in GUIDES), key=len, reverse=True))
 MARKER = re.compile(
     rf"(?:(?P<guide>{GUIDE_RE})\s+)?Part\s+(?P<p1>\d+)(?:\s+(?:and|to)\s+(?P<p2>\d+))?(?:\s*\([^)]*\))?\s*:?"
@@ -203,7 +203,7 @@ def main():
     days = {int(r[0]): {"week": int(r[3]), "theme": r[4], "study": r[5], "dsa": r[9], "output": r[12],
                         "minutes": int(float(r[13])) if r[13] else None} for r in rows}
 
-    outlines = {g: load_outline(folder / GUIDE_DIRS.get(g, ".") / pdf) for g, (_, pdf) in GUIDES.items()}
+    outlines = {g: load_outline(folder / pdf) for g, (_, pdf) in GUIDES.items()}
 
     # (guide, part) -> {"chapters": {num: chapter}, "days": set, "first": (day, order)}
     topics, mentions, order_counter = {}, [], 0
@@ -305,57 +305,68 @@ def main():
             "source": source,
         }
 
-    categories, result, placed = [], [], set()
-    for i, stage in enumerate(path["stages"]):
-        categories.append({"id": stage["id"], "title": stage["title"], "description": stage.get("description", ""),
-                           "color": STAGE_COLORS[i % len(STAGE_COLORS)]})
-        for item in stage["items"]:
-            if "guide" in item:
-                for part in item["parts"]:
-                    if part not in outlines[item["guide"]][0]:
-                        report.append(f"learning_path.json: {item['guide']} has no Part {part}")
-                        continue
-                    placed.add((item["guide"], part))
-                    result.append(part_topic(item["guide"], part, stage["id"]))
-            elif "plan" in item:
-                day = item["plan"]
-                tid, title = plan_only[day]
-                result.append({"id": tid, "title": title, "category": stage["id"], "summary": days[day]["output"],
-                               "estimatedMinutes": days[day]["minutes"],
-                               "source": {"document": PLAN_FILE, "planDays": str(day)}})
-            else:
-                topic = item["topic"]
-                result.append({"id": topic["id"], "title": topic["title"], "category": stage["id"],
-                               "summary": topic.get("summary", stage.get("description", "")),
-                               "source": {"document": "Written for this site (not from your PDFs)"}})
+    # guides written for the site: their chapters come from the sources
+    written = {part["id"]: build_sections(part, n, None)[1]
+               for n, part in enumerate(load_parts(Path(__file__).resolve().parent / "frontend"), 1)}
+
+    placed = set()
+    for tree in path["trees"]:
+        categories, result = [], []
+        for i, stage in enumerate(tree["stages"]):
+            categories.append({"id": stage["id"], "title": stage["title"], "description": stage.get("description", ""),
+                               "color": STAGE_COLORS[i % len(STAGE_COLORS)]})
+            for item in stage["items"]:
+                if "guide" in item:
+                    for part in item["parts"]:
+                        if part not in outlines[item["guide"]][0]:
+                            report.append(f"learning_path.json: {item['guide']} has no Part {part}")
+                            continue
+                        placed.add((item["guide"], part))
+                        result.append(part_topic(item["guide"], part, stage["id"]))
+                elif "plan" in item:
+                    day = item["plan"]
+                    tid, title = plan_only[day]
+                    result.append({"id": tid, "title": title, "category": stage["id"], "summary": days[day]["output"],
+                                   "estimatedMinutes": days[day]["minutes"],
+                                   "source": {"document": PLAN_FILE, "planDays": str(day)}})
+                else:
+                    topic = item["topic"]
+                    entry = {"id": topic["id"], "title": topic["title"], "category": stage["id"],
+                             "summary": topic.get("summary", stage.get("description", "")),
+                             "source": {"document": DOCUMENT}}
+                    if topic["id"] in written:
+                        entry["subtopics"] = written[topic["id"]]
+                        entry["summary"] = f"{len(entry['subtopics'])} chapters"
+                    result.append(entry)
+        # A tree like NeetCode's: within each stage the steps fan out in rows of 1, 3, 5, 1, 3, 5 ...
+        # Reading the rows top to bottom and left to right gives the learning order.
+        rows = []
+        for stage in categories:
+            members = [t for t in result if t["category"] == stage["id"]]
+            i = 0
+            while i < len(members):
+                size = ROW_SIZES[sum(1 for _ in stage_rows(rows, stage["id"])) % len(ROW_SIZES)]
+                rows.append(members[i:i + size])
+                i += size
+        for upper, lower in zip(rows, rows[1:]):
+            for j, topic in enumerate(lower):
+                topic["requires"] = nearest_parents(upper, len(lower), j)
+
+        out = {"title": tree["title"], "shortTitle": tree["shortTitle"], "order": tree["order"],
+               "description": tree["description"], "layout": "tree",
+               "categories": categories, "topics": result}
+        target = Path(__file__).resolve().parent.parent / "content" / "roadmaps" / tree["id"] / "roadmap.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+        n_sub = sum(len(t.get("subtopics", [])) for t in result)
+        report.insert(0, f"{tree['id']}: {len(result)} topics, {n_sub} subtopics, {len(categories)} categories")
 
     for guide, (parts, _) in outlines.items():
         for part in parts:
             if (guide, part) not in placed:
                 report.append(f"MISSING: {guide} Part {part} is not in learning_path.json")
 
-    # A tree like NeetCode's: within each stage the steps fan out in rows of 1, 3, 5, 1, 3, 5 ...
-    # Reading the rows top to bottom and left to right gives the learning order.
-    rows = []
-    for stage in categories:
-        members = [t for t in result if t["category"] == stage["id"]]
-        i = 0
-        while i < len(members):
-            size = ROW_SIZES[sum(1 for _ in stage_rows(rows, stage["id"])) % len(ROW_SIZES)]
-            rows.append(members[i:i + size])
-            i += size
-    for upper, lower in zip(rows, rows[1:]):
-        for j, topic in enumerate(lower):
-            topic["requires"] = nearest_parents(upper, len(lower), j)
-
-    out = {"title": path["title"], "description": path["description"], "layout": "tree",
-           "categories": categories, "topics": result}
-    target = Path(__file__).resolve().parent.parent / "content" / "roadmaps" / ROADMAP_ID / "roadmap.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-    n_sub = sum(len(t.get("subtopics", [])) for t in result)
-    report.insert(0, f"{len(result)} topics, {n_sub} subtopics, {len(categories)} categories -> {target}")
     text = "\n".join(report)
     if report_path:
         Path(report_path).write_text(text, encoding="utf-8")

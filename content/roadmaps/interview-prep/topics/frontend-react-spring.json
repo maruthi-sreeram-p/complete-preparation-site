@@ -1,177 +1,587 @@
 {
-  "source": {
-    "document": "Written for this site (not from your PDFs)"
-  },
-  "sections": [
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-8-1",
+   "type": "concept",
+   "title": "Connecting the two halves",
+   "subtopicId": "8-1",
+   "blocks": [
     {
-      "id": "intro",
-      "type": "introduction",
-      "title": "Connecting the two halves",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "note",
-          "title": "Not from your PDFs",
-          "text": "Your PDFs do not cover this topic, so this page was written for the site. Your 12-week plan lists React, hooks, rendering, performance, state management and TypeScript. Check it against the official documentation, or give me a PDF to replace it."
-        },
-        "This page ties React to the Spring Boot API from your guides: routing, calling the API, CORS, JWT handling and forms.",
-        {
-          "type": "diagram",
-          "format": "mermaid",
-          "title": "A full-stack request",
-          "code": "sequenceDiagram\n  participant B as Browser (React)\n  participant S as Spring Boot API\n  participant D as Database\n  B->>S: POST /api/auth/login (email, password)\n  S->>D: find user, check password hash\n  S-->>B: access token, refresh token in HttpOnly cookie\n  B->>S: GET /api/books with Authorization Bearer token\n  S->>S: security filter chain validates the token\n  S->>D: query\n  S-->>B: 200 with JSON\n  B->>B: setState, React re-renders"
-        }
-      ]
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Frontend libraries change quickly: check the official documentation before relying on a detail."
     },
     {
-      "id": "routing",
-      "type": "concept",
-      "title": "Client-side routing",
-      "blocks": [
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "function App() {\n  return (\n    <Routes>\n      <Route path=\"/login\" element={<Login />} />\n      <Route element={<RequireAuth />}>\n        <Route path=\"/books\" element={<Books />} />\n        <Route path=\"/books/:id\" element={<BookDetail />} />\n      </Route>\n    </Routes>\n  );\n}\n\nfunction BookDetail() {\n  const { id } = useParams();\n  // ...\n}",
-          "title": "React Router"
-        },
-        {
-          "type": "callout",
-          "variant": "warning",
-          "title": "Gotcha",
-          "text": "Hiding a route in React is not security: anyone can call your API directly. Authorisation must be enforced in Spring. Also, when Spring serves the built app, unknown paths like `/books/7` must return `index.html`, or a page refresh gives a 404."
-        }
-      ]
+     "type": "markdown",
+     "text": "### Development setup\n\nReact runs on Vite's dev server, and Spring Boot on another port. Different ports mean different origins, so the browser would apply CORS rules. A **proxy** avoids this in development."
     },
     {
-      "id": "api",
-      "type": "code",
-      "title": "An API client",
-      "blocks": [
-        "Put HTTP in one place, so the token, error handling and base URL are not repeated in every component.",
-        {
-          "type": "code",
-          "language": "typescript",
-          "code": "const BASE = import.meta.env.VITE_API_URL ?? '';\n\nexport async function api<T>(path: string, options: RequestInit = {}): Promise<T> {\n  const res = await fetch(`${BASE}${path}`, {\n    ...options,\n    headers: {\n      'Content-Type': 'application/json',\n      ...(token ? { Authorization: `Bearer ${token}` } : {}),\n      ...options.headers,\n    },\n  });\n  if (res.status === 401) { onUnauthorized(); throw new Error('Unauthorized'); }\n  if (!res.ok) {\n    const problem = await res.json().catch(() => null);   // Spring ProblemDetail, if any\n    throw new Error(problem?.detail ?? `HTTP ${res.status}`);\n  }\n  return res.status === 204 ? (undefined as T) : res.json();\n}",
-          "title": "api.ts"
-        }
-      ]
+     "type": "code",
+     "language": "ts",
+     "code": "export default defineConfig({\n  plugins: [react()],\n  server: {\n    proxy: {\n      '/api': { target: 'http://localhost:8080', changeOrigin: true },\n    },\n  },\n});",
+     "title": "vite.config.ts: forward /api to Spring Boot"
     },
     {
-      "id": "cors",
-      "type": "concept",
-      "title": "CORS, and why you often avoid it",
-      "blocks": [
-        "The browser blocks JavaScript from reading responses from a different origin unless the server allows it. CORS is enforced by the browser: `curl` and Postman ignore it.",
-        {
-          "type": "code",
-          "language": "java",
-          "code": "@Bean\nCorsConfigurationSource corsConfigurationSource() {\n    CorsConfiguration config = new CorsConfiguration();\n    config.setAllowedOrigins(List.of(\"https://app.example.com\"));   // never \"*\" with credentials\n    config.setAllowedMethods(List.of(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\"));\n    config.setAllowedHeaders(List.of(\"Authorization\", \"Content-Type\"));\n    config.setAllowCredentials(true);\n    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();\n    source.registerCorsConfiguration(\"/api/**\", config);\n    return source;\n}",
-          "title": "Spring: enable with http.cors(withDefaults())"
-        },
-        "In development, skip CORS with a Vite proxy, so the browser sees a single origin:",
-        {
-          "type": "code",
-          "language": "javascript",
-          "code": "// vite.config.js\nexport default { server: { proxy: { '/api': 'http://localhost:8080' } } };"
-        }
-      ]
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  B[Browser] -->|/ and assets| V[Vite :5173]\n  B -->|/api/orders| V\n  V -->|proxied| S[Spring Boot :8080]",
+     "title": "Same-origin during development"
     },
     {
-      "id": "tokens",
-      "type": "concept",
-      "title": "Where to keep the token",
-      "blocks": [
-        {
-          "type": "table",
-          "headers": [
-            "Storage",
-            "XSS can steal it?",
-            "CSRF risk?",
-            "Notes"
-          ],
-          "rows": [
-            [
-              "`localStorage`",
-              "Yes",
-              "No",
-              "Simple, but any injected script can read it"
-            ],
-            [
-              "Memory (a variable)",
-              "Harder",
-              "No",
-              "Lost on refresh, so pair it with a refresh cookie"
-            ],
-            [
-              "`HttpOnly` cookie",
-              "No",
-              "Yes, needs SameSite or a CSRF token",
-              "JavaScript cannot read it"
-            ]
-          ],
-          "caption": "A common pattern: a short-lived access token in memory, and a refresh token in an HttpOnly cookie."
-        }
-      ]
+     "type": "markdown",
+     "text": "The browser only sees one origin, so no CORS is involved, and your code can use relative URLs such as `/api/orders`.\n\n### CORS\n\nIf the two are on different origins in production, the server must allow it."
     },
     {
-      "id": "forms",
-      "type": "code",
-      "title": "Forms and validation errors",
-      "blocks": [
-        "Show Spring's validation errors next to the fields. Client checks give fast feedback; the server has the final word.",
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "function NewBook() {\n  const [title, setTitle] = useState('');\n  const [errors, setErrors] = useState<Record<string, string>>({});\n\n  async function onSubmit(e: FormEvent) {\n    e.preventDefault();                     // stop the full-page form post\n    const res = await fetch('/api/books', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ title }),\n    });\n    if (res.status === 400) {\n      setErrors((await res.json()).errors ?? {});   // the shape your @ControllerAdvice returns\n      return;\n    }\n    // success: navigate, or invalidate the books query\n  }\n\n  return (\n    <form onSubmit={onSubmit}>\n      <input value={title} onChange={(e) => setTitle(e.target.value)} aria-invalid={!!errors.title} />\n      {errors.title && <p role=\"alert\">{errors.title}</p>}\n      <button>Save</button>\n    </form>\n  );\n}"
-        }
-      ]
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant S as Spring Boot\n  B->>S: OPTIONS /api/orders, Origin: https://shop.example.com\n  S-->>B: Access-Control-Allow-Origin: https://shop.example.com\n  B->>S: POST /api/orders\n  S-->>B: 201, with the allow-origin header",
+     "title": "A preflight request"
     },
     {
-      "id": "notes",
-      "type": "notes",
-      "title": "Important notes",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "interview",
-          "title": "Interview angle",
-          "text": "**Your React app gets a CORS error from Spring. Walk through it.** The browser sends a preflight `OPTIONS` for non-simple requests, and the response must allow the origin, method and headers. With Spring Security, enable `http.cors(...)` so the preflight is handled before authentication; otherwise it gets a 401. In development, a Vite proxy avoids the issue."
-        },
-        {
-          "type": "callout",
-          "variant": "keypoints",
-          "title": "Key points",
-          "text": "- Security lives in Spring; hiding UI is only cosmetic.\n- Keep HTTP in one API client.\n- CORS is enforced by the browser.\n- Choose token storage knowing the XSS and CSRF trade-offs.\n- Serve `index.html` for unknown paths so client routes survive a refresh."
-        }
-      ]
+     "type": "code",
+     "language": "java",
+     "code": "@Bean\nCorsConfigurationSource corsConfigurationSource() {\n    CorsConfiguration config = new CorsConfiguration();\n    config.setAllowedOrigins(List.of(\"https://shop.example.com\"));\n    config.setAllowedMethods(List.of(\"GET\", \"POST\", \"PUT\", \"PATCH\", \"DELETE\"));\n    config.setAllowedHeaders(List.of(\"Authorization\", \"Content-Type\"));\n    config.setAllowCredentials(true);\n    UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();\n    source.registerCorsConfiguration(\"/api/**\", config);\n    return source;\n}\n\n@Bean\nSecurityFilterChain api(HttpSecurity http) throws Exception {\n    return http.cors(Customizer.withDefaults())   /* ...the rest of your rules... */ .build();\n}",
+     "title": "CORS through Spring Security"
     },
     {
-      "id": "practice",
-      "type": "practice",
-      "title": "Practice questions",
-      "blocks": [
-        {
-          "type": "questions",
-          "items": [
-            {
-              "question": "Why does a request work in Postman but fail with CORS in the browser?",
-              "answer": "CORS is enforced by browsers only. Postman does not apply the same-origin policy."
-            },
-            {
-              "question": "Why does `/books/7` give a 404 on refresh in production?",
-              "answer": "The server looks for that path and finds nothing. It must fall back to `index.html` so the client router can handle it."
-            },
-            {
-              "question": "Is a `RequireAuth` route enough to protect admin data?",
-              "answer": "No. It only hides the screen. The API must check authorisation on every request."
-            },
-            {
-              "question": "What is the XSS risk of `localStorage` for tokens?",
-              "answer": "Any script running on your page, including an injected one, can read and send the token."
-            }
-          ]
-        }
-      ]
+     "type": "markdown",
+     "text": "Common causes of CORS errors:\n\n| Symptom | Cause |\n|---|---|\n| Works in Postman, fails in the browser | CORS is only enforced by browsers |\n| Preflight fails with 401 | Spring Security blocks OPTIONS: enable `.cors()` in the chain |\n| `*` with credentials fails | Wildcards can't be used with credentials |\n| Header missing only on errors | The error response bypasses your CORS configuration |\n| A 500 shown as a CORS error | The real error is hidden: check the server's logs |\n\n### A small API client\n\nDon't scatter `fetch` everywhere. One module handles the base URL, JSON, tokens and errors."
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "export class ApiError extends Error {\n  constructor(public status: number, public problem: unknown, message: string) {\n    super(message);\n  }\n}\n\nasync function request<T>(path: string, options: RequestInit = {}): Promise<T> {\n  const res = await fetch(`/api${path}`, {\n    ...options,\n    headers: { 'Content-Type': 'application/json', ...options.headers },\n    credentials: 'include',\n  });\n\n  if (res.status === 401) {\n    window.location.assign('/login');\n    throw new ApiError(401, null, 'Please sign in');\n  }\n  if (!res.ok) {\n    const problem = await res.json().catch(() => null);\n    throw new ApiError(res.status, problem, problem?.detail ?? `Request failed (${res.status})`);\n  }\n  return res.status === 204 ? (undefined as T) : res.json();\n}\n\nexport const api = {\n  get: <T>(path: string, init?: RequestInit) => request<T>(path, init),\n  post: <T>(path: string, body?: unknown) =>\n    request<T>(path, { method: 'POST', body: JSON.stringify(body) }),\n};",
+     "title": "lib/api.ts"
+    },
+    {
+     "type": "markdown",
+     "text": "Axios is a popular alternative, with interceptors and automatic JSON, though `fetch` is enough for many apps."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Use a proxy in development\n- CORS is enforced by browsers\n- Centralise API calls\n- Check the server logs behind a CORS error"
     }
-  ]
+   ]
+  },
+  {
+   "id": "ch-8-2",
+   "type": "concept",
+   "title": "Authentication",
+   "subtopicId": "8-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Options\n\n| Approach | How | XSS risk | CSRF risk | Fits |\n|---|---|---|---|---|\n| Server session with HttpOnly cookie | Spring Session; cookie sent automatically | Low | Needs protection | Your own frontend and API, same site |\n| JWT in memory, refresh in HttpOnly cookie | Short-lived access token | Lower | For the refresh endpoint | SPA with a separate API |\n| JWT in localStorage | Simple | **High** | None | Avoid for sensitive apps |\n| Backend for frontend (BFF) | Server holds tokens; browser has a cookie | Low | Needs protection | OAuth with strong security |\n\nDon't assume that JWTs are required: a session cookie is simple and strong when your frontend and API share a site.\n\n### Access and refresh tokens"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant R as React\n  participant A as Spring Boot\n  R->>A: POST /login\n  A-->>R: Access token in JSON, refresh token in an HttpOnly cookie\n  R->>A: GET /orders with Bearer token\n  A-->>R: 200\n  Note over R,A: 15 minutes later\n  R->>A: GET /orders\n  A-->>R: 401\n  R->>A: POST /refresh (cookie sent automatically)\n  A-->>R: New access token\n  R->>A: Retry GET /orders\n  A-->>R: 200",
+     "title": "Refreshing a short-lived access token"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "let refreshing: Promise<string> | null = null;\n\nasync function refreshToken(): Promise<string> {\n  refreshing ??= fetch('/api/auth/refresh', { method: 'POST', credentials: 'include' })\n    .then((res) => {\n      if (!res.ok) throw new Error('Session expired');\n      return res.json();\n    })\n    .then((body) => body.accessToken)\n    .finally(() => { refreshing = null; });\n  return refreshing;\n}",
+     "title": "A shared refresh, so that parallel 401s don't all refresh"
+    },
+    {
+     "type": "markdown",
+     "text": "Ten requests may fail at once, and without this shared promise, ten refreshes run. With refresh token rotation, this can log the user out. Keep this in mind.\n\n### Keeping the user in React"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useCurrentUser() {\n  return useQuery({\n    queryKey: ['me'],\n    queryFn: () => api.get<User>('/me'),\n    retry: false,\n    staleTime: 5 * 60_000,\n  });\n}",
+     "title": "An auth hook on TanStack Query"
+    },
+    {
+     "type": "markdown",
+     "text": "Treat `/me` as the source of truth. On logout, call the server, and clear the query cache, so that the next user doesn't see cached data on a shared computer.\n\n### Roles in the UI\n\nHide buttons a user can't use, for a better experience. But every API call must still check. **Hiding isn't protecting.**"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "{user.permissions.includes('ORDER_REFUND') && <RefundButton order={order} />}",
+     "title": "Show actions by permission"
+    },
+    {
+     "type": "markdown",
+     "text": "### Login with Google, using OAuth\n\nFor an SPA, use the **Authorization Code flow with PKCE**, or let Spring Boot act as the OAuth client as a backend for frontend, which keeps tokens away from the browser. Avoid the old implicit flow."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Where do you store a JWT in the browser?\"** Ideally not in localStorage, as XSS can read it. I'd hold a short-lived access token in memory, and a refresh token in an HttpOnly, Secure, SameSite cookie, or use a session cookie if the API and app share a site.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A session cookie is often enough\n- Avoid localStorage for tokens\n- Refresh once, and share the promise\n- The API must always check"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-3",
+   "type": "concept",
+   "title": "Handling API results in the UI",
+   "subtopicId": "8-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Pagination with Spring Data"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@GetMapping(\"/orders\")\nPage<OrderView> orders(@RequestParam(defaultValue = \"0\") int page,\n                       @RequestParam(defaultValue = \"20\") int size,\n                       @AuthenticationPrincipal User user) {\n    Pageable pageable = PageRequest.of(page, Math.min(size, 100), Sort.by(\"createdAt\").descending());\n    return orders.findByOwner(user.id(), pageable).map(OrderView::of);\n}",
+     "title": "A paged endpoint"
+    },
+    {
+     "type": "markdown",
+     "text": "Spring's `Page` JSON has `content`, `totalElements` and `totalPages`. Recent Spring versions warn that serialising `PageImpl` directly isn't a stable format, so consider `PagedModel`, or your own response record. Note the cap on `size`: never trust a client's page size."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function OrdersPage() {\n  const [params, setParams] = useSearchParams();\n  const page = Number(params.get('page') ?? 0);\n  const { data, isPlaceholderData } = useQuery({\n    queryKey: ['orders', page],\n    queryFn: () => api.get<Page<Order>>(`/orders?page=${page}`),\n    placeholderData: keepPreviousData,\n  });\n\n  return (\n    <>\n      <OrderTable orders={data?.content ?? []} dim={isPlaceholderData} />\n      <button disabled={page === 0} onClick={() => setParams({ page: String(page - 1) })}>Previous</button>\n      <button disabled={!data || page + 1 >= data.totalPages} onClick={() => setParams({ page: String(page + 1) })}>Next</button>\n    </>\n  );\n}",
+     "title": "Pagination in React"
+    },
+    {
+     "type": "markdown",
+     "text": "### Every async screen has several states\n\n| State | Show |\n|---|---|\n| Loading first time | Skeleton, in the page's shape |\n| Refreshing | Keep content; a small indicator |\n| Empty | A helpful message, and the next action |\n| Error | What happened, and a retry |\n| Partial | Show what loaded |\n| Success | The data |\n\nForgetting the empty and error states is the most common sign of an inexperienced frontend.\n\n### Errors\n\nSpring Boot supports RFC 9457 **Problem Details**, a standard error format."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"type\": \"https://example.com/errors/insufficient-stock\",\n  \"title\": \"Insufficient stock\",\n  \"status\": 409,\n  \"detail\": \"Only 2 items are left.\",\n  \"instance\": \"/api/orders\"\n}",
+     "title": "A problem response"
+    },
+    {
+     "type": "markdown",
+     "text": "| Status | UI behaviour |\n|---|---|\n| 400, 422 | Show on the form's fields |\n| 401 | Refresh, or go to login |\n| 403 | \"You don't have access\" |\n| 404 | A not-found page |\n| 409 | Explain the conflict; offer a reload |\n| 429 | Wait and retry; tell the user |\n| 500, 503 | A generic message with a retry and a request ID for support |\n\nDon't show raw server messages or stack traces to users. Do report unexpected errors to a tool such as Sentry.\n\n### Real-time updates\n\n| Technique | Direction | Use |\n|---|---|---|\n| Polling (`refetchInterval`) | Client asks | Simple status checks |\n| Server-sent events | Server to client | Notifications, progress, AI streaming |\n| WebSockets (STOMP in Spring) | Both ways | Chat, collaboration |\n\nStart with polling, as it's simple, and works through every proxy. Reach for WebSockets only when you truly need both directions and low latency. WebSockets also need sticky routing, or a broker, when you scale out.\n\n### Timezones and formats\n\nSend UTC from the server (`Instant`), and format in the browser for the user."
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' })\n  .format(new Date(order.createdAt));\n\nnew Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR' }).format(125000.5);\n// ₹1,25,000.50",
+     "title": "Formatting for an Indian user"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Cap the page size on the server\n- Design all states: loading, empty and error\n- Use Problem Details\n- Start with polling"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-4",
+   "type": "concept",
+   "title": "Building and deploying",
+   "subtopicId": "8-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### The production build"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "npm run build     # creates dist/, with hashed file names\nnpm run preview   # check it locally",
+     "title": "Build"
+    },
+    {
+     "type": "markdown",
+     "text": "Hashed names such as `index-8f2a1c.js` let you cache files forever, and each new build gets new names. Only `index.html` must not be cached for long.\n\n### Two ways to deploy\n\n| | Serve from Spring Boot | Separate static hosting |\n|---|---|---|\n| How | Copy `dist` to `resources/static` | S3 + CloudFront, or similar |\n| Origin | Same: no CORS | Same if routed behind one domain |\n| Deploy | One artefact | Frontend and backend independently |\n| Fit | Small apps, portfolio | Production apps |"
+    },
+    {
+     "type": "code",
+     "language": "xml",
+     "code": "<plugin>\n  <groupId>com.github.eirslett</groupId>\n  <artifactId>frontend-maven-plugin</artifactId>\n  <version>1.15.1</version>\n  <configuration>\n    <workingDirectory>frontend</workingDirectory>\n    <nodeVersion>v22.14.0</nodeVersion>\n  </configuration>\n  <executions>\n    <execution><id>install</id><goals><goal>install-node-and-npm</goal></goals></execution>\n    <execution><id>ci</id><goals><goal>npm</goal></goals><configuration><arguments>ci</arguments></configuration></execution>\n    <execution><id>build</id><goals><goal>npm</goal></goals><configuration><arguments>run build</arguments></configuration></execution>\n  </executions>\n</plugin>",
+     "title": "Building React inside the Maven build (frontend-maven-plugin)"
+    },
+    {
+     "type": "markdown",
+     "text": "### Configuration\n\nVite embeds `import.meta.env.VITE_*` values **at build time**, in public JavaScript. Never put secrets there: everything in a frontend bundle is public. Anything secret stays on the server. If you need one build across environments, load `/config.json` at start-up.\n\n### Rolling out\n\nA user may keep an old tab open across a deployment, and then a lazy-loaded chunk it wants may no longer exist. Keep old assets for a while after deploying, and catch chunk-load failures with a prompt to refresh. Old frontend code also keeps calling your API, so keep API changes backward compatible.\n\n### CI"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "- run: npm ci\n- run: npm run lint\n- run: npx tsc --noEmit\n- run: npm test -- --run\n- run: npm run build",
+     "title": "A frontend job"
+    },
+    {
+     "type": "markdown",
+     "text": "`npm ci` installs exactly what the lock file says, unlike `npm install`."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "API keys in a React bundle can be read by anyone. Call third-party services through your backend, as Spring Boot can hold the secret.",
+     "title": "Everything shipped is public"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Hashed assets can be cached for a long time\n- Short cache for index.html\n- Secrets never go in the bundle\n- Old tabs keep calling your API"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-5",
+   "type": "concept",
+   "title": "A complete CRUD feature, end to end",
+   "subtopicId": "8-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter builds a \"notes\" feature on both sides, showing how each decision connects.\n\n### The Spring Boot API"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public record NoteDto(Long id, String title, String body, long version, Instant updatedAt) {\n    static NoteDto of(Note n) {\n        return new NoteDto(n.getId(), n.getTitle(), n.getBody(), n.getVersion(), n.getUpdatedAt());\n    }\n}\n\npublic record SaveNote(@NotBlank @Size(max = 120) String title,\n                       @Size(max = 5000) String body,\n                       Long version) {}\n\n@RestController\n@RequestMapping(\"/api/notes\")\nclass NoteController {\n\n    private final NoteService notes;\n\n    NoteController(NoteService notes) { this.notes = notes; }\n\n    @GetMapping\n    PagedModel<NoteDto> list(@AuthenticationPrincipal Jwt jwt,\n                             @RequestParam(defaultValue = \"\") String q,\n                             @PageableDefault(size = 20, sort = \"updatedAt\", direction = DESC) Pageable page) {\n        return new PagedModel<>(notes.list(jwt.getSubject(), q, page));\n    }\n\n    @PostMapping\n    ResponseEntity<NoteDto> create(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody SaveNote body) {\n        NoteDto saved = notes.create(jwt.getSubject(), body);\n        return ResponseEntity.created(URI.create(\"/api/notes/\" + saved.id())).body(saved);\n    }\n\n    @PutMapping(\"/{id}\")\n    NoteDto update(@AuthenticationPrincipal Jwt jwt, @PathVariable long id, @Valid @RequestBody SaveNote body) {\n        return notes.update(jwt.getSubject(), id, body);       // checks owner and version\n    }\n\n    @DeleteMapping(\"/{id}\")\n    ResponseEntity<Void> delete(@AuthenticationPrincipal Jwt jwt, @PathVariable long id) {\n        notes.delete(jwt.getSubject(), id);\n        return ResponseEntity.noContent().build();\n    }\n}",
+     "title": "Records, validation, and ownership checks"
+    },
+    {
+     "type": "markdown",
+     "text": "`PagedModel` gives a stable JSON shape with `content` and a nested `page` object. A version conflict from `@Version` throws `ObjectOptimisticLockingFailureException`, which you can map to a 409 in your `@RestControllerAdvice`.\n\n### Frontend: the data layer"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "export interface Note { id: number; title: string; body: string; version: number; updatedAt: string; }\nexport interface NotePage {\n  content: Note[];\n  page: { size: number; number: number; totalElements: number; totalPages: number };\n}\nexport type SaveNote = { title: string; body: string; version?: number };\n\nexport const noteKeys = {\n  all: ['notes'] as const,\n  list: (q: string, page: number) => ['notes', 'list', { q, page }] as const,\n  detail: (id: number) => ['notes', 'detail', id] as const,\n};\n\nexport const notesApi = {\n  list: (q: string, page: number, signal?: AbortSignal) =>\n    api.get<NotePage>(`/notes?q=${encodeURIComponent(q)}&page=${page}`, { signal }),\n  get: (id: number) => api.get<Note>(`/notes/${id}`),\n  create: (body: SaveNote) => api.post<Note>('/notes', body),\n  update: (id: number, body: SaveNote) => api.put<Note>(`/notes/${id}`, body),\n  remove: (id: number) => api.del<void>(`/notes/${id}`),\n};",
+     "title": "features/notes/notes.api.ts"
+    },
+    {
+     "type": "markdown",
+     "text": "### Frontend: hooks"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "export function useNotes(q: string, page: number) {\n  return useQuery({\n    queryKey: noteKeys.list(q, page),\n    queryFn: ({ signal }) => notesApi.list(q, page, signal),\n    placeholderData: keepPreviousData,\n  });\n}\n\nexport function useSaveNote() {\n  const client = useQueryClient();\n  return useMutation({\n    mutationFn: ({ id, ...body }: SaveNote & { id?: number }) =>\n      id ? notesApi.update(id, body) : notesApi.create(body),\n    onSuccess: (note) => {\n      client.setQueryData(noteKeys.detail(note.id), note);\n      client.invalidateQueries({ queryKey: ['notes', 'list'] });\n    },\n  });\n}\n\nexport function useDeleteNote() {\n  const client = useQueryClient();\n  return useMutation({\n    mutationFn: notesApi.remove,\n    onSuccess: () => client.invalidateQueries({ queryKey: ['notes', 'list'] }),\n  });\n}",
+     "title": "features/notes/useNotes.ts"
+    },
+    {
+     "type": "markdown",
+     "text": "### Frontend: the list screen"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "export function NotesPage() {\n  const [params, setParams] = useSearchParams();\n  const q = params.get('q') ?? '';\n  const page = Math.max(0, Number(params.get('page')) || 0);\n  const [draft, setDraft] = useState(q);\n  const search = useDebounce(draft, 300);\n\n  useEffect(() => {\n    if (search !== q) setParams(search ? { q: search } : {}, { replace: true });\n  }, [search]);        // keep the URL in step once typing pauses\n\n  const { data, isPending, isError, refetch, isPlaceholderData } = useNotes(q, page);\n  const remove = useDeleteNote();\n\n  return (\n    <main>\n      <h1>Notes</h1>\n      <Link to=\"new\">New note</Link>\n      <label htmlFor=\"q\">Search</label>\n      <input id=\"q\" value={draft} onChange={(e) => setDraft(e.target.value)} />\n\n      {isPending && <p>Loading…</p>}\n      {isError && <p role=\"alert\">Couldn't load notes. <button onClick={() => refetch()}>Try again</button></p>}\n      {data?.content.length === 0 && <p>{q ? 'No notes match your search.' : 'No notes yet. Create your first one.'}</p>}\n\n      <ul style={{ opacity: isPlaceholderData ? 0.6 : 1 }}>\n        {data?.content.map((n) => (\n          <li key={n.id}>\n            <Link to={String(n.id)}>{n.title}</Link>\n            <button\n              aria-label={`Delete ${n.title}`}\n              onClick={() => { if (confirm(`Delete \"${n.title}\"?`)) remove.mutate(n.id); }}\n            >\n              Delete\n            </button>\n          </li>\n        ))}\n      </ul>\n\n      {data && data.page.totalPages > 1 && (\n        <nav aria-label=\"Pagination\">\n          <button disabled={page === 0} onClick={() => setParams({ q, page: String(page - 1) })}>Previous</button>\n          <span>Page {page + 1} of {data.page.totalPages}</span>\n          <button disabled={page + 1 >= data.page.totalPages} onClick={() => setParams({ q, page: String(page + 1) })}>Next</button>\n        </nav>\n      )}\n    </main>\n  );\n}",
+     "title": "features/notes/NotesPage.tsx"
+    },
+    {
+     "type": "markdown",
+     "text": "### Handling the conflict"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const save = useSaveNote();\n\nasync function onSubmit(values: FormValues) {\n  try {\n    await save.mutateAsync({ id: note?.id, version: note?.version, ...values });\n    navigate('/notes');\n  } catch (e) {\n    if (e instanceof ApiError && e.status === 409) {\n      setError('root', { message: 'Someone else changed this note. Reload to see their version.' });\n    } else if (e instanceof ApiError && e.status === 400) {\n      applyFieldErrors(e.problem, setError);\n    } else {\n      setError('root', { message: 'Could not save. Please try again.' });\n    }\n  }\n}",
+     "title": "Showing a version conflict"
+    },
+    {
+     "type": "markdown",
+     "text": "### Checklist: what makes this production-minded\n\n| Concern | Where it's handled |\n|---|---|\n| Ownership | The service, using the token's subject |\n| Validation | Bean Validation on the server; Zod for quick feedback |\n| Lost updates | `@Version`, and a 409 in the UI |\n| Stale results | Query keys, plus abort signals |\n| Shareable state | Search and page in the URL |\n| All the states | Loading, error, empty, no matches, placeholder |\n| Accessible delete | A label naming each row |"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Build features in layers: API, data, screen\n- Keep search and page in the URL\n- Map 409 and 400 to useful messages\n- The server checks ownership"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-6",
+   "type": "concept",
+   "title": "Live updates and file uploads",
+   "subtopicId": "8-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Server-sent events from Spring Boot"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@RestController\nclass OrderEvents {\n\n    private final Map<String, List<SseEmitter>> clients = new ConcurrentHashMap<>();\n\n    @GetMapping(value = \"/api/orders/events\", produces = MediaType.TEXT_EVENT_STREAM_VALUE)\n    SseEmitter subscribe(@AuthenticationPrincipal Jwt jwt) {\n        SseEmitter emitter = new SseEmitter(0L);                      // no timeout\n        String user = jwt.getSubject();\n        clients.computeIfAbsent(user, k -> new CopyOnWriteArrayList<>()).add(emitter);\n        Runnable remove = () -> clients.getOrDefault(user, List.of()).remove(emitter);\n        emitter.onCompletion(remove);\n        emitter.onTimeout(remove);\n        emitter.onError(e -> remove.run());\n        return emitter;\n    }\n\n    void publish(String user, OrderUpdate update) {\n        for (SseEmitter emitter : clients.getOrDefault(user, List.of())) {\n            try {\n                emitter.send(SseEmitter.event().name(\"order\").data(update));\n            } catch (IOException e) {\n                emitter.complete();\n            }\n        }\n    }\n}",
+     "title": "Pushing order status updates"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useOrderEvents() {\n  const client = useQueryClient();\n  useEffect(() => {\n    const source = new EventSource('/api/orders/events', { withCredentials: true });\n    source.addEventListener('order', () => {\n      client.invalidateQueries({ queryKey: ['orders'] });\n    });\n    return () => source.close();\n  }, [client]);\n}",
+     "title": "Connecting events to the query cache"
+    },
+    {
+     "type": "markdown",
+     "text": "`EventSource` reconnects by itself, but it can't set an `Authorization` header, so it works best with cookie authentication. With bearer tokens, read the stream with `fetch`, as the AI part's chat hook does.\n\nAn in-memory emitter map works for one instance only. With several, publish through Redis Pub/Sub or Kafka, so that the instance holding each connection receives the event."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Order service] --> K[Kafka or Redis Pub/Sub]\n  K --> I1[API instance 1]\n  K --> I2[API instance 2]\n  I1 -->|SSE| B1[Browser]\n  I2 -->|SSE| B2[Browser]",
+     "title": "Live updates across several instances"
+    },
+    {
+     "type": "markdown",
+     "text": "### File uploads through the API"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@PostMapping(\"/api/avatars\")\nResponseEntity<Void> upload(@AuthenticationPrincipal Jwt jwt, @RequestParam(\"file\") MultipartFile file) throws IOException {\n    if (file.getSize() > 2_000_000) {\n        throw new ResponseStatusException(HttpStatus.PAYLOAD_TOO_LARGE);\n    }\n    if (!List.of(\"image/png\", \"image/jpeg\").contains(file.getContentType())) {\n        throw new ResponseStatusException(HttpStatus.UNSUPPORTED_MEDIA_TYPE);\n    }\n    avatars.store(jwt.getSubject(), file.getInputStream());     // check real content too: this header can lie\n    return ResponseEntity.noContent().build();\n}",
+     "title": "Spring multipart upload"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function AvatarUpload() {\n  const [preview, setPreview] = useState<string | null>(null);\n\n  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);\n\n  function onPick(e: React.ChangeEvent<HTMLInputElement>) {\n    const file = e.target.files?.[0];\n    if (!file) return;\n    if (file.size > 2_000_000) {\n      alert('Please choose an image under 2 MB');\n      return;\n    }\n    setPreview(URL.createObjectURL(file));\n  }\n\n  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {\n    e.preventDefault();\n    const body = new FormData(e.currentTarget);\n    await fetch('/api/avatars', { method: 'POST', body, credentials: 'include' });  // no Content-Type!\n  }\n\n  return (\n    <form onSubmit={onSubmit}>\n      <label htmlFor=\"file\">Choose a photo</label>\n      <input id=\"file\" name=\"file\" type=\"file\" accept=\"image/png,image/jpeg\" onChange={onPick} />\n      {preview && <img src={preview} alt=\"Preview\" width={96} height={96} />}\n      <button>Upload</button>\n    </form>\n  );\n}",
+     "title": "An upload form with a preview"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "The browser adds `multipart/form-data` with the required boundary. Setting it yourself removes the boundary, and Spring then fails to parse the upload. A shared API client that always sets JSON causes this bug.",
+     "title": "Don't set Content-Type for FormData"
+    },
+    {
+     "type": "markdown",
+     "text": "`URL.createObjectURL` holds memory until revoked, hence the cleanup. For large files, use pre-signed URLs, as your AWS part explains."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- EventSource reconnects, but can't set headers\n- Scale SSE with a broker\n- Let the browser set multipart headers\n- Check file content on the server"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-7",
+   "type": "concept",
+   "title": "Docker, Nginx and production serving",
+   "subtopicId": "8-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### A frontend image"
+    },
+    {
+     "type": "code",
+     "language": "dockerfile",
+     "code": "FROM node:22-alpine AS build\nWORKDIR /app\nCOPY package.json package-lock.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n\nFROM nginx:1.27-alpine\nCOPY nginx.conf /etc/nginx/conf.d/default.conf\nCOPY dist /usr/share/nginx/html",
+     "title": "Build with Node, serve with Nginx"
+    },
+    {
+     "type": "markdown",
+     "text": "The final image holds only Nginx and static files, with no Node and no source code. This is the multi-stage build from your Docker guide."
+    },
+    {
+     "type": "code",
+     "language": "nginx",
+     "code": "server {\n  listen 80;\n  root /usr/share/nginx/html;\n\n  # React Router: serve index.html for app paths\n  location / {\n    try_files $uri /index.html;\n    add_header Cache-Control \"no-cache\";\n  }\n\n  # Hashed assets can be cached for a long time\n  location /assets/ {\n    add_header Cache-Control \"public, max-age=31536000, immutable\";\n  }\n\n  # One domain, so no CORS\n  location /api/ {\n    proxy_pass http://backend:8080;\n    proxy_set_header Host $host;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_buffering off;              # lets server-sent events stream\n    proxy_read_timeout 3600s;\n  }\n\n  gzip on;\n  gzip_types text/css application/javascript application/json image/svg+xml;\n}",
+     "title": "nginx.conf"
+    },
+    {
+     "type": "markdown",
+     "text": "Spring Boot needs `server.forward-headers-strategy=native` to trust these forwarded headers, for correct redirects and links.\n\n### Running it all locally"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "services:\n  db:\n    image: postgres:16\n    environment:\n      POSTGRES_PASSWORD: dev\n      POSTGRES_DB: shop\n    volumes: [dbdata:/var/lib/postgresql/data]\n  backend:\n    build: ./backend\n    environment:\n      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/shop\n      SPRING_DATASOURCE_USERNAME: postgres\n      SPRING_DATASOURCE_PASSWORD: dev\n    depends_on: [db]\n  frontend:\n    build: ./frontend\n    ports: [\"8081:80\"]\n    depends_on: [backend]\nvolumes:\n  dbdata:",
+     "title": "docker-compose.yml"
+    },
+    {
+     "type": "markdown",
+     "text": "### Security headers"
+    },
+    {
+     "type": "code",
+     "language": "nginx",
+     "code": "add_header X-Content-Type-Options \"nosniff\";\nadd_header Referrer-Policy \"strict-origin-when-cross-origin\";\nadd_header X-Frame-Options \"DENY\";\nadd_header Content-Security-Policy \"default-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'\";",
+     "title": "Useful response headers"
+    },
+    {
+     "type": "markdown",
+     "text": "A Content Security Policy is the strongest defence against XSS damage, as it limits which scripts can run. Begin in report-only mode, as a strict policy can break inline scripts and third-party tools. Note that `add_header` in a `location` block replaces those from the parent level, so repeat them or use an include.\n\n### Tracking errors and usage\n\n| Tool type | Gives you |\n|---|---|\n| Error tracking, such as Sentry | Stack traces per release |\n| Real user monitoring | Web Vitals from real devices |\n| Product analytics | What people actually use |\n| Session replay | Reproduces bugs; handle privacy with care |\n\nRespect privacy: get consent where needed, don't record passwords or personal details, and be honest about what you collect."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Multi-stage build, with only static files in the image\n- try_files handles client routes\n- Turn off buffering for streams\n- CSP limits XSS damage"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Connecting the two halves"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does an API work in Postman but not in React?",
+       "answer": "CORS is only enforced by browsers. The server must allow the page's origin."
+      },
+      {
+       "question": "Why can a preflight fail with 401?",
+       "answer": "The security filter blocks OPTIONS, as it has no credentials. Enable CORS in the security chain."
+      },
+      {
+       "question": "Why have one API module?",
+       "answer": "Base URL, headers, errors and token handling live in one place."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Authentication"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why do many parallel 401s need special handling?",
+       "answer": "Otherwise each triggers a refresh. Share one refresh promise, and retry afterwards."
+      },
+      {
+       "question": "On logout, why clear the React Query cache?",
+       "answer": "Otherwise, the next user on that device could see the previous user's data."
+      },
+      {
+       "question": "Is hiding the Refund button enough?",
+       "answer": "No. Someone can call the API directly, so the server must check permission."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Handling API results in the UI"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What states must an order list handle besides success?",
+       "answer": "First load, background refresh, empty, and error, ideally with a retry."
+      },
+      {
+       "question": "Why should the server cap page size?",
+       "answer": "A client could ask for millions of rows, and overload the database."
+      },
+      {
+       "question": "When would you pick server-sent events over WebSockets?",
+       "answer": "When only the server needs to push, such as progress or streaming. It's simpler, and uses plain HTTP."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Building and deploying"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Can you hide an API key using a VITE_ environment variable?",
+       "answer": "No. It's built into public JavaScript. Keep the key on the server."
+      },
+      {
+       "question": "Users get a chunk load error after a deployment. Why?",
+       "answer": "An old tab requested a file that was removed. Keep old assets for a while, and prompt a refresh."
+      },
+      {
+       "question": "What's the difference between npm ci and npm install?",
+       "answer": "`npm ci` installs exactly from the lock file, and fails if it disagrees with package.json. Use it in CI."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### A complete CRUD feature, end to end"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does the delete button's label include the note's title?",
+       "answer": "\"Delete\" alone is ambiguous for a screen reader in a list. The title identifies the row."
+      },
+      {
+       "question": "What protects two tabs from overwriting each other?",
+       "answer": "A version sent with each update. `@Version` rejects stale writes, and the UI shows the 409."
+      },
+      {
+       "question": "Why keep a separate draft state from the q in the URL?",
+       "answer": "The input must update on every key, whereas the URL and fetch only change when typing pauses."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Live updates and file uploads"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "An upload fails with \"no multipart boundary\". Why?",
+       "answer": "Content-Type was set by hand. Let the browser set it for FormData."
+      },
+      {
+       "question": "SSE works locally, but only some users get updates in production. Why?",
+       "answer": "Connections are on different instances, and the emitter map is per instance. Publish through a broker."
+      },
+      {
+       "question": "Why revoke an object URL?",
+       "answer": "It keeps the file in memory until released or the page closes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Docker, Nginx and production serving"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why doesn't the final image contain Node?",
+       "answer": "The build stage produced static files, and Nginx serves them, so the image is smaller and safer."
+      },
+      {
+       "question": "What does try_files $uri /index.html do?",
+       "answer": "It serves a real file if one exists, or index.html, so that React Router handles the path."
+      },
+      {
+       "question": "Why serve the API through the same Nginx?",
+       "answer": "Same origin means no CORS, and only one public address."
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }

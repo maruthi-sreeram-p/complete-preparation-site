@@ -17,7 +17,7 @@ const WAYS = [
 export default function HomePage() {
   const { state } = useProgressStore()
   const roadmaps = listRoadmaps()
-  const roadmap = roadmaps.find((r) => r.id === state.activeRoadmapId) ?? roadmaps[0]
+  const roadmap = roadmaps[0]  // the main tree; the others have their own cards below
 
   if (!roadmap) {
     return (
@@ -30,10 +30,10 @@ export default function HomePage() {
       </div>
     )
   }
-  return <Home roadmap={roadmap} progress={state.roadmaps[roadmap.id]} />
+  return <Home roadmap={roadmap} progress={state.roadmaps[roadmap.id]} trees={roadmaps} allProgress={state.roadmaps} />
 }
 
-function Home({ roadmap, progress }) {
+function Home({ roadmap, progress, trees, allProgress }) {
   const stats = useMemo(() => computeStats(roadmap, progress), [roadmap, progress])
   const target = useMemo(() => pickContinueTarget(roadmap, progress), [roadmap, progress])
   const guides = useMemo(
@@ -79,11 +79,11 @@ function Home({ roadmap, progress }) {
         </h1>
         <TrailFlourish />
         <p className="mt-6 font-display text-[clamp(1.25rem,2.6vw,2.25rem)] font-medium tracking-tight">
-          From working developer to your next offer.
+          Start as a fresher. Learn like an experienced developer.
         </p>
         <p className="mt-3 max-w-2xl text-muted">
-          One path for a Java full stack developer with 3 to 4 years of experience: JVM and Spring depth, system design,
-          AWS, React, AI engineering and the interview itself.
+          Three trees: the full Java stack in depth, AI and cloud skills, and aptitude practice with thousands of
+          questions.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -118,10 +118,23 @@ function Home({ roadmap, progress }) {
         </dl>
       </section>
 
+      {/* ---- the trees ---- */}
+      <section className="px-4 pt-16 lg:px-6">
+        <div className="text-center">
+          <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">Three trees</h2>
+          <p className="mt-3 text-muted">Separate maps with separate progress. Work on them side by side.</p>
+        </div>
+        <div className="mt-8 grid gap-4 md:grid-cols-3">
+          {trees.map((tree) => (
+            <TreeCard key={tree.id} tree={tree} progress={allProgress[tree.id]} />
+          ))}
+        </div>
+      </section>
+
       {/* ---- the trail ---- */}
       <section className="px-4 py-16 lg:px-6">
         <div className="text-center">
-          <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">The trail</h2>
+          <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">The main trail</h2>
           <p className="mt-3 text-muted">{stops.length} stages, in order. Click any stop to jump in.</p>
         </div>
         <WindingTrail roadmapId={roadmap.id} stops={stops} current={currentStop} />
@@ -141,6 +154,25 @@ function Home({ roadmap, progress }) {
         ))}
       </section>
     </div>
+  )
+}
+
+function TreeCard({ tree, progress }) {
+  const stats = computeStats(tree, progress)
+  return (
+    <Link
+      to={paths.roadmap(tree.id)}
+      className="group flex flex-col rounded-2xl border border-line-strong bg-panel p-6 transition-colors hover:border-accent"
+    >
+      <h3 className="font-display text-2xl font-bold tracking-tight group-hover:text-accent">{tree.shortTitle}</h3>
+      <p className="mt-2 flex-1 text-sm text-muted">{tree.description}</p>
+      <div className="mt-4 flex items-center justify-between text-sm text-faint tabular-nums">
+        <span>
+          {stats.total} steps · {stats.percent}% done
+        </span>
+        <ArrowRight size={16} />
+      </div>
+    </Link>
   )
 }
 

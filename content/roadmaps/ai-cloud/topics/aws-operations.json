@@ -1,0 +1,690 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-5-1",
+   "type": "concept",
+   "title": "Observability with CloudWatch",
+   "subtopicId": "5-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Once a service runs on AWS, you cannot log into a laptop and look around. You need three signals, as your Spring Boot guide describes: logs, metrics and traces.\n\n### Logs\n\nContainer output goes to CloudWatch Logs. Write JSON, with fields you can query, and include a request or trace ID."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "fields @timestamp, path, durationMs\n| filter status >= 200\n| stats pct(durationMs, 95) as p95, count() as calls by path\n| sort p95 desc\n| limit 20",
+     "title": "A Logs Insights query: the slowest endpoints"
+    },
+    {
+     "type": "markdown",
+     "text": "Set a retention period on every log group. The default keeps logs forever, and that bill grows quietly.\n\n### Metrics and alarms\n\nAlarm on what users feel, rather than on every cause.\n\n| Alarm on | Why |\n|---|---|\n| ALB 5xx rate | Users see errors |\n| ALB p95 or p99 latency | Users see slowness |\n| Queue age of oldest message | Work is falling behind |\n| Dead-letter queue not empty | Failures need attention |\n| RDS free storage, connections, CPU | A common way to fall over |\n\nSpring Boot exposes metrics through Micrometer, and these can go to CloudWatch or Prometheus.\n\n### Tracing\n\nA trace follows one request across services, and shows where the time went. Use OpenTelemetry with a backend such as X-Ray. Spring Boot's observability support creates spans for HTTP calls and database queries."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "A 100 ms average can hide a p99 of 5 seconds. Look at percentiles, especially for your slowest and most important endpoints.",
+     "title": "Average latency hides pain"
+    },
+    {
+     "type": "markdown",
+     "text": "### CloudTrail\n\nCloudTrail records API calls on your account: who did what and when. This answers \"who deleted that?\" and is essential in security investigations. Keep it on, in all Regions."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Structured logs with trace IDs\n- Alarm on user-facing symptoms\n- Set log retention\n- CloudTrail records who did what"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-2",
+   "type": "concept",
+   "title": "Infrastructure as code and delivery",
+   "subtopicId": "5-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Clicking in the console cannot be reviewed or repeated, and nobody remembers how production was built. Infrastructure as code (IaC) fixes this. Terraform is the most common tool. AWS CDK and CloudFormation are the AWS options.\n\n### Terraform basics"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "resource \"aws_ecs_service\" \"orders\" {\n  name            = \"orders\"\n  cluster         = aws_ecs_cluster.main.id\n  task_definition = aws_ecs_task_definition.orders.arn\n  desired_count   = 2\n  launch_type     = \"FARGATE\"\n\n  network_configuration {\n    subnets         = module.vpc.private_subnets\n    security_groups = [aws_security_group.app.id]\n  }\n\n  load_balancer {\n    target_group_arn = aws_lb_target_group.orders.arn\n    container_name   = \"app\"\n    container_port   = 8080\n  }\n\n  health_check_grace_period_seconds = 90\n}",
+     "title": "An ECS service, in brief"
+    },
+    {
+     "type": "markdown",
+     "text": "The workflow: `terraform plan` shows what will change, a human reviews it, and `terraform apply` does it. Terraform keeps **state**, its record of what exists. Store it remotely, such as in S3, with locking, and never commit it, because it can contain secrets."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A small edit can show \"destroy and recreate\" for a database. The plan is where you catch that. Add `prevent_destroy` to critical resources.",
+     "title": "Read the plan"
+    },
+    {
+     "type": "markdown",
+     "text": "### A deployment pipeline"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  G[Push to main] --> T[Build and test]\n  T --> I[Build image and push to ECR]\n  I --> D[Deploy to staging]\n  D --> S[Smoke tests]\n  S --> A{Approve?}\n  A -->|yes| P[Deploy to production]\n  P --> H[Watch alarms]\n  H -->|bad| R[Roll back]",
+     "title": "From push to production"
+    },
+    {
+     "type": "markdown",
+     "text": "GitHub Actions can obtain short-lived AWS credentials through OIDC, so no AWS keys are stored in GitHub:"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "permissions:\n  id-token: write\n  contents: read\nsteps:\n  - uses: aws-actions/configure-aws-credentials@v4\n    with:\n      role-to-assume: arn:aws:iam::123456789012:role/github-deploy\n      aws-region: ap-south-1\n  - run: |\n      aws ecr get-login-password | docker login --username AWS --password-stdin $REGISTRY\n      docker build -t $REGISTRY/orders:$GITHUB_SHA .\n      docker push $REGISTRY/orders:$GITHUB_SHA",
+     "title": "The important part of a GitHub Actions workflow"
+    },
+    {
+     "type": "markdown",
+     "text": "### Deployment strategies\n\n| Strategy | How | Trade-off |\n|---|---|---|\n| Rolling | Replace tasks gradually | Simple; both versions serve at once |\n| Blue-green | Start a full new set, then switch | Fast rollback; costs double for a while |\n| Canary | Send a small share first | Catches problems early; needs good metrics |\n\nECS's deployment circuit breaker can stop and roll back a failing rollout automatically. Whichever you use, rollback must be practised, and schema changes must allow it."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How do you deploy with no downtime?\"** Backward-compatible schema changes, health checks, a rolling or blue-green deployment, connection draining and graceful shutdown, with alarms and an automatic rollback.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Everything in code and reviewed\n- Remote Terraform state with locking\n- OIDC rather than stored keys\n- Practise rollback"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-3",
+   "type": "concept",
+   "title": "Reliability, cost and disaster recovery",
+   "subtopicId": "5-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### How to think about availability\n\n99.9% allows about 8.8 hours of downtime per year; 99.99% allows about 53 minutes. Each extra nine costs far more, so ask what the business truly needs. Availability of a chain multiplies: three services at 99.9% each give about 99.7% in total, which is why reducing synchronous dependencies helps.\n\n### Disaster recovery\n\nTwo numbers define a plan. **RTO** is how long you can be down, and **RPO** is how much recent data you can lose.\n\n| Strategy | Idea | RTO and RPO | Cost |\n|---|---|---|---|\n| Backup and restore | Rebuild from backups in another Region | Hours | Lowest |\n| Pilot light | Data replicated, compute off | Tens of minutes | Low |\n| Warm standby | Small live copy, scale up on failure | Minutes | Medium |\n| Multi-site active | Both Regions take traffic | Near zero | Highest |\n\nMost systems need multi-AZ, plus cross-Region backups. Active-active across Regions introduces hard data consistency problems, so don't choose it casually.\n\n### Failure patterns in code\n\nCloud failures are normal, so code must expect them. Use timeouts on every call, retries with exponential backoff and jitter for transient errors, circuit breakers for failing dependencies, and bulkheads so that one slow dependency cannot take every thread. The AWS SDK has retries built in, so check you are not multiplying them with your own: three retries at three layers is 27 calls.\n\n### Cost control\n\n1. **See it.** Tag resources by team and service, and use Cost Explorer.\n2. **Remove waste.** Idle environments, unattached disks, old snapshots and unused load balancers.\n3. **Rightsize.** Most instances are larger than they need to be. Look at actual usage.\n4. **Commit.** Savings Plans for the steady baseline.\n5. **Design.** S3 lifecycle rules, VPC endpoints instead of NAT, caching, Graviton instances, and shutting down dev at night."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Your AWS bill doubled. What do you do?\"** Open Cost Explorer, grouped by service and tag, and find what changed. Common causes are data transfer, NAT traffic, log volume or a forgotten environment. Fix that, then set budgets and alerts so that it is caught sooner.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Agree RTO and RPO with the business\n- Multi-AZ first, multi-Region only when justified\n- Timeouts, backoff, jitter\n- Tag everything to see costs"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-4",
+   "type": "concept",
+   "title": "Reference architecture and scenarios",
+   "subtopicId": "5-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Here is a design you should be able to draw and defend from memory."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  U[Users] --> R53[Route 53]\n  R53 --> CF[CloudFront and WAF]\n  CF --> S3[(S3: React build)]\n  CF --> ALB[ALB in public subnets]\n  ALB --> ECS[ECS Fargate tasks, private subnets, 2+ AZs]\n  ECS --> RDS[(RDS PostgreSQL Multi-AZ, isolated subnets)]\n  ECS --> REDIS[(ElastiCache)]\n  ECS --> SQS[SQS]\n  SQS --> W[Worker tasks]\n  W --> DLQ[Dead-letter queue]\n  ECS --> FILES[(S3: uploads)]\n  ECS -. role .-> SM[Secrets Manager]\n  ECS -. logs and metrics .-> CW[CloudWatch]",
+     "title": "A production Spring Boot and React system"
+    },
+    {
+     "type": "markdown",
+     "text": "Walk through it as an interviewer would:\n\n- **Why ECS and not Lambda?** Steady traffic and an existing Spring Boot app.\n- **What if an AZ fails?** Tasks exist in others, the ALB routes around the failed one, and RDS fails over within a minute or two.\n- **What if the database slows?** Timeouts protect threads, the cache absorbs reads, and slow work has already moved to SQS.\n- **What about spikes?** CloudFront, autoscaling, and queues absorb them. The database is the limit, so check connection counts.\n- **What did you leave out?** Multi-Region, because the business can accept some recovery time at a much lower cost.\n\n### Scenario questions\n\n| Scenario | Good answer covers |\n|---|---|\n| Reduce image processing load on the API | Pre-signed upload, S3 event, SQS, workers |\n| Add a scheduled nightly report | EventBridge Scheduler, ECS task or Lambda, store output in S3 |\n| A secret leaked | Revoke and rotate, audit CloudTrail, find the cause, add scanning |\n| API slows during a sale | Find the bottleneck with traces, cache, queue writes, autoscale, protect the database |\n| Isolate tenants' data | Row-level security, or separate schemas or accounts, plus IAM conditions |\n| Send email without blocking the request | Publish to SNS or SQS, and have a worker call SES |\n\n### Certifications and other clouds\n\nFor a Java developer, the **Developer Associate** is the natural fit, and **Solutions Architect Associate** is broader and widely recognised. Third-party sources report DVA-C03 replacing DVA-C02 around December 2026, so check the AWS site before booking. A real deployed project gives you far better interview stories than a certificate alone, though some employers filter resumes on certificates.\n\nThe ideas transfer between clouds, so learn one properly.\n\n| AWS | Azure | Google Cloud |\n|---|---|---|\n| ECS, EKS | Container Apps, AKS | Cloud Run, GKE |\n| Lambda | Functions | Cloud Run functions |\n| S3 | Blob Storage | Cloud Storage |\n| RDS | Azure Database | Cloud SQL |\n| SQS, SNS | Service Bus | Pub/Sub |\n| IAM | Entra ID, RBAC | IAM |\n\n### A learning project\n\n1. Deploy a Spring Boot app on ECS Fargate behind an ALB, using Terraform.\n2. Add RDS with Secrets Manager, and CloudWatch alarms.\n3. Build a pipeline with GitHub Actions and OIDC.\n4. Add S3 pre-signed uploads and an SQS worker.\n5. Delete everything afterwards, using `terraform destroy`, so that the bill stops."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Only list services you have actually used, and describe them as project work. \"Deployed my project on ECS Fargate using Terraform\" is strong and honest.",
+     "title": "As a fresher"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Be able to draw this architecture\n- Know its failure modes\n- Mention cost and what you left out\n- A project beats a certificate alone"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-5",
+   "type": "concept",
+   "title": "Hands-on: the whole stack in Terraform",
+   "subtopicId": "5-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter turns the earlier manual deployment into code. Keep it small: one repository, one environment, then copy to others through variables.\n\n### Project layout"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "infra/\n  backend.tf      remote state in S3\n  main.tf         VPC, ALB, ECS, RDS\n  iam.tf          roles\n  variables.tf\n  outputs.tf\n  envs/\n    dev.tfvars\n    prod.tfvars",
+     "title": "A simple layout"
+    },
+    {
+     "type": "markdown",
+     "text": "### Remote state"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "terraform {\n  required_version = \">= 1.6\"\n  required_providers {\n    aws = { source = \"hashicorp/aws\", version = \"~> 5.0\" }\n  }\n  backend \"s3\" {\n    bucket       = \"acme-terraform-state\"\n    key          = \"orders/terraform.tfstate\"\n    region       = \"ap-south-1\"\n    encrypt      = true\n    use_lockfile = true\n  }\n}",
+     "title": "backend.tf"
+    },
+    {
+     "type": "markdown",
+     "text": "Locking stops two people from applying at once. The state bucket needs versioning, so that you can recover from a corrupted state. Older setups used a DynamoDB table for locks, which you will still see often.\n\n### The network with a module"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "module \"vpc\" {\n  source  = \"terraform-aws-modules/vpc/aws\"\n  version = \"~> 5.0\"\n\n  name            = \"${var.env}-orders\"\n  cidr            = \"10.0.0.0/16\"\n  azs             = [\"ap-south-1a\", \"ap-south-1b\"]\n  public_subnets  = [\"10.0.0.0/24\", \"10.0.1.0/24\"]\n  private_subnets = [\"10.0.10.0/24\", \"10.0.11.0/24\"]\n  database_subnets = [\"10.0.20.0/24\", \"10.0.21.0/24\"]\n\n  enable_nat_gateway = true\n  single_nat_gateway = var.env != \"prod\"   # cheaper outside production\n}",
+     "title": "main.tf: VPC through a community module"
+    },
+    {
+     "type": "markdown",
+     "text": "### Roles, narrowly"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "data \"aws_iam_policy_document\" \"task_assume\" {\n  statement {\n    actions = [\"sts:AssumeRole\"]\n    principals {\n      type        = \"Service\"\n      identifiers = [\"ecs-tasks.amazonaws.com\"]\n    }\n  }\n}\n\nresource \"aws_iam_role\" \"task\" {\n  name               = \"${var.env}-orders-task\"\n  assume_role_policy = data.aws_iam_policy_document.task_assume.json\n}\n\ndata \"aws_iam_policy_document\" \"task\" {\n  statement {\n    actions   = [\"s3:GetObject\", \"s3:PutObject\"]\n    resources = [\"${aws_s3_bucket.files.arn}/*\"]\n  }\n}\n\nresource \"aws_iam_role_policy\" \"task\" {\n  role   = aws_iam_role.task.id\n  policy = data.aws_iam_policy_document.task.json\n}",
+     "title": "iam.tf: a task role limited to one bucket"
+    },
+    {
+     "type": "markdown",
+     "text": "### Database, protected"
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "resource \"aws_db_instance\" \"orders\" {\n  identifier                  = \"${var.env}-orders\"\n  engine                      = \"postgres\"\n  instance_class              = var.db_class\n  allocated_storage           = 20\n  max_allocated_storage       = 200\n  db_name                     = \"orders\"\n  username                    = \"orders_admin\"\n  manage_master_user_password = true\n  multi_az                    = var.env == \"prod\"\n  db_subnet_group_name        = module.vpc.database_subnet_group_name\n  vpc_security_group_ids      = [aws_security_group.db.id]\n  backup_retention_period     = 7\n  deletion_protection         = var.env == \"prod\"\n  skip_final_snapshot         = var.env != \"prod\"\n  storage_encrypted           = true\n}",
+     "title": "RDS with a managed password"
+    },
+    {
+     "type": "markdown",
+     "text": "### Workflow in a team"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Branch] --> B[terraform fmt and validate]\n  B --> C[Plan posted to the pull request]\n  C --> D[Review]\n  D --> E[Merge]\n  E --> F[Apply]\n  F --> G[Drift check on a schedule]",
+     "title": "Infrastructure change through a pull request"
+    },
+    {
+     "type": "markdown",
+     "text": "| Practice | Why |\n|---|---|\n| Pin provider and module versions | No surprise changes |\n| Separate state per environment | Limits the blast radius |\n| No secrets in `.tfvars` | State and Git would both hold them |\n| `lifecycle { prevent_destroy = true }` on key data | Catches accidents |\n| Scan with Checkov or tfsec | Finds open ports, public buckets |\n| Detect drift | Someone clicked in the console |\n\n### Application deploys versus infrastructure\n\nA frequent question: should Terraform manage image tags? If so, every release needs a Terraform run. Many teams let Terraform create the service and ignore `task_definition` changes, while the app pipeline registers new revisions and updates the service."
+    },
+    {
+     "type": "code",
+     "language": "hcl",
+     "code": "resource \"aws_ecs_service\" \"orders\" {\n  # ...\n  lifecycle { ignore_changes = [task_definition, desired_count] }\n}",
+     "title": "Let the pipeline own releases"
+    },
+    {
+     "type": "markdown",
+     "text": "`desired_count` is ignored as well, so that autoscaling's changes aren't reverted.\n\n### Terraform or CDK?\n\nTerraform works across clouds and has a large community. CDK lets you write infrastructure in Java or TypeScript, and it generates CloudFormation. For a Java team that's only on AWS, CDK can feel natural, but Terraform appears in more job postings."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Remote state with locking\n- Separate environments\n- Review plans in pull requests\n- Let app pipelines own releases"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-6",
+   "type": "concept",
+   "title": "Security review checklist",
+   "subtopicId": "5-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Use this as a checklist for your project, and as an outline for interview answers.\n\n### Identity\n\n- [ ] MFA on root and all people.\n- [ ] No long-lived keys, or only with a reason and rotation.\n- [ ] Separate accounts for production and development.\n- [ ] Roles with least privilege, with no `*` on sensitive actions.\n- [ ] Separate deployment roles from runtime roles.\n\n### Network\n\n- [ ] Databases and caches have no route from the internet.\n- [ ] Security groups refer to groups, not `0.0.0.0/0`.\n- [ ] No SSH open to the world. Use Session Manager.\n- [ ] VPC endpoints for S3 and other high-volume services.\n\n### Data\n\n- [ ] Encryption at rest and TLS in transit.\n- [ ] S3 Block Public Access on at the account level.\n- [ ] Backups tested by restoring them, with cross-Region copies for critical data.\n- [ ] Personal data identified, with retention limits.\n\n### Application\n\n- [ ] Authorisation checks on each object.\n- [ ] Input validation and parameterised queries.\n- [ ] Dependencies and images scanned in CI.\n- [ ] Secrets absent from code, images and logs.\n\n### Detection\n\n| Service | Tells you |\n|---|---|\n| CloudTrail | Who did what through the API |\n| GuardDuty | Suspicious activity, such as credential misuse or crypto mining |\n| Security Hub | Findings gathered against best practices |\n| Config | Resources that break your rules, and their history |\n| IAM Access Analyzer | Resources shared outside your account, and unused permissions |\n| Inspector | Vulnerabilities in images and instances |\n\n### Incident: leaked access key"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Key found in public] --> B[Deactivate it now]\n  B --> C[Check CloudTrail for use of that key]\n  C --> D[Remove anything the attacker created]\n  D --> E[Rotate anything they could read]\n  E --> F[Find how it leaked]\n  F --> G[Add secret scanning, move to roles]",
+     "title": "Responding to a leaked key"
+    },
+    {
+     "type": "markdown",
+     "text": "The order matters: stop the bleeding first, and then investigate. Attackers often create new users or keys, so deactivating one key might not end it. Look for unfamiliar instances in unused Regions, as crypto mining is a common abuse.\n\n### Common real-world breach paths\n\n| Path | Prevention |\n|---|---|\n| Public S3 bucket | Account-level Block Public Access |\n| Key in a public repository | Secret scanning, roles |\n| SSRF reaching instance metadata | IMDSv2 required, input validation |\n| Over-permissioned role after an app bug | Least privilege limits the damage |\n| Unpatched public service | Scanning, fewer public endpoints |\n\n**SSRF** deserves a note. If an app fetches user-supplied URLs, an attacker may point it at the instance metadata service, and steal the role's credentials. IMDSv2 requires a session token that makes this far harder. Validate URLs too, with an allow-list."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How would you review a system's cloud security?\"** Start with identity and blast radius, then network exposure, data protection, application authorisation, and detection and response. Give a concrete finding for each area, and rank them by risk.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Least privilege limits the damage from every other failure\n- Turn on CloudTrail and GuardDuty\n- Stop the bleeding, then investigate\n- Require IMDSv2"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-7",
+   "type": "concept",
+   "title": "Worked design: a video learning platform",
+   "subtopicId": "5-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Design questions reward a method more than memorised answers. Here's one worked in full.\n\n### Requirements\n\nUsers upload videos, the system transcodes them, and learners stream them. Assume 1 million monthly users, 50,000 daily, 500 uploads a day averaging 1 GB. Most viewers are in India.\n\n### Rough numbers\n\n- Uploads: 500 GB per day, about 15 TB per month.\n- Transcoding into several qualities might multiply storage about 2 or 3 times.\n- Streaming: suppose 50,000 users watch 30 minutes at 2 Mbps: about 450 MB per user, or about 22 TB per day. This is the dominant cost, and CDN egress decides the design.\n\nRough estimates like this show where to focus. Here it's delivery, not the API.\n\n### Architecture"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  U[Uploader] -->|pre-signed multipart| S1[(S3: raw)]\n  S1 -->|event| Q[SQS]\n  Q --> T[Transcode workers on Spot, or MediaConvert]\n  T --> S2[(S3: HLS segments)]\n  T --> M[(RDS: video metadata)]\n  L[Learner] --> CF[CloudFront with signed cookies]\n  CF --> S2\n  L --> API[Spring Boot on ECS]\n  API --> M\n  API --> R[(ElastiCache: progress and sessions)]",
+     "title": "Video platform on AWS"
+    },
+    {
+     "type": "markdown",
+     "text": "### Decisions and why\n\n| Decision | Why | Rejected alternative |\n|---|---|---|\n| Multipart direct upload | Files are large; resumable | Through the API |\n| Queue + workers | Slow, retryable, bursty | Synchronous processing |\n| Spot workers | Interruptible, cheap | On-Demand only |\n| HLS adaptive streaming | Adapts to network quality | One MP4 file |\n| CloudFront signed cookies | Paid content, cheap to serve | Pre-signed URL for each segment |\n| Lifecycle to cheaper storage | Raw files rarely reread | All in Standard |\n\n### Failure review\n\n| Failure | Result | Mitigation |\n|---|---|---|\n| Worker dies | Message returns | Idempotent, restart per segment |\n| Bad video file | Repeated failure | Dead-letter queue, notify the uploader |\n| API down | No new sessions | Existing streams continue from CDN |\n| RDS failover | Short write errors | Retries, read from cache |\n| Popular video | CDN absorbs | Cache at the edge, shield origin |\n\n### Cost levers\n\nCDN egress dominates, so negotiate pricing and tune bitrates. Delete old raw uploads, use Spot, and move old content to Infrequent Access.\n\n### How to present it\n\n1. Clarify requirements and scale.\n2. Estimate, to find the dominant concern.\n3. Draw the simple flow.\n4. Deep-dive into the hardest part.\n5. Walk through failures.\n6. Mention cost, and what you've left out."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Take 35 minutes, and draw on paper. Try: a URL shortener, a food delivery tracker, a ticket booking system, and an AI document assistant.",
+     "title": "Practise out loud"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Estimate to find the dominant concern\n- Give the rejected alternative\n- Walk through failures\n- Mention cost"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-8",
+   "type": "concept",
+   "title": "Hands-on observability with Spring Boot",
+   "subtopicId": "5-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Metrics with Micrometer"
+    },
+    {
+     "type": "code",
+     "language": "xml",
+     "code": "<dependency>\n  <groupId>org.springframework.boot</groupId>\n  <artifactId>spring-boot-starter-actuator</artifactId>\n</dependency>\n<dependency>\n  <groupId>io.micrometer</groupId>\n  <artifactId>micrometer-registry-cloudwatch2</artifactId>\n</dependency>",
+     "title": "Dependencies"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "management.cloudwatch.metrics.export.namespace=orders-service\nmanagement.cloudwatch.metrics.export.step=1m\nmanagement.metrics.tags.env=${ENV}",
+     "title": "Export to CloudWatch"
+    },
+    {
+     "type": "markdown",
+     "text": "Business metrics are often the most useful, because they show what's actually happening to customers."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Service\nclass CheckoutService {\n\n    private final Counter placed;\n    private final Timer paymentTimer;\n\n    CheckoutService(MeterRegistry registry) {\n        this.placed = Counter.builder(\"orders.placed\").register(registry);\n        this.paymentTimer = Timer.builder(\"payment.duration\")\n            .publishPercentiles(0.95, 0.99)\n            .register(registry);\n    }\n\n    Order checkout(Cart cart) {\n        Payment payment = paymentTimer.record(() -> gateway.charge(cart));\n        placed.increment();\n        return orders.save(cart, payment);\n    }\n}",
+     "title": "Custom counters and timers"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Never use user IDs, order IDs or raw URLs as metric tags. Every unique combination creates a new time series, and CloudWatch charges for each. Use bounded values, such as `status=success`.",
+     "title": "Cardinality"
+    },
+    {
+     "type": "markdown",
+     "text": "### Tracing"
+    },
+    {
+     "type": "code",
+     "language": "xml",
+     "code": "<dependency>\n  <groupId>io.micrometer</groupId>\n  <artifactId>micrometer-tracing-bridge-otel</artifactId>\n</dependency>\n<dependency>\n  <groupId>io.opentelemetry</groupId>\n  <artifactId>opentelemetry-exporter-otlp</artifactId>\n</dependency>",
+     "title": "Tracing with OpenTelemetry"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "management.tracing.sampling.probability=0.1\nmanagement.otlp.tracing.endpoint=http://localhost:4318/v1/traces",
+     "title": "Send to a collector"
+    },
+    {
+     "type": "markdown",
+     "text": "A common shape is an OpenTelemetry collector running alongside the app, which then forwards to X-Ray or another backend. Sampling 10% keeps costs reasonable, though many teams try to keep every trace that has an error.\n\n### Logs that join up"
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\"timestamp\":\"2026-10-31T10:15:30Z\",\"level\":\"ERROR\",\"service\":\"orders\",\"traceId\":\"8f3a...\",\"spanId\":\"2b1c...\",\"orderId\":9001,\"msg\":\"payment declined\",\"durationMs\":842}",
+     "title": "A structured log line"
+    },
+    {
+     "type": "markdown",
+     "text": "Spring Boot supports structured logging through `logging.structured.format.console=ecs` in recent versions, and puts trace IDs into the MDC when tracing is on. Now an alarm leads to a trace, which leads to the exact logs. That's the workflow you're after.\n\n### A dashboard that helps\n\nUse the same four panels for each service, known as the \"golden signals\":\n\n| Signal | Measure | Tells you |\n|---|---|---|\n| Latency | p50, p95, p99 per endpoint | How slow it feels |\n| Traffic | Requests per second | Load, and whether traffic disappeared |\n| Errors | 5xx rate, business failures | How often it's broken |\n| Saturation | CPU, memory, pool usage, queue age | How close to the limit |\n\n### Alarms that don't wear people out\n\n**Alert on symptoms**, with a runbook link. Require a condition for several minutes, rather than a single spike. If an alert fires and nobody needs to act, fix or delete it, because noisy alerts train people to ignore all of them.\n\nAn **SLO** makes this precise: \"99.9% of requests under 500 ms over 30 days\" gives an error budget of 0.1%. Alert when the budget is burning quickly, rather than on every blip. When the budget is used up, reliability work takes priority over features.\n\n### Writing a runbook"
+    },
+    {
+     "type": "code",
+     "language": "markdown",
+     "code": "## Alert: orders API 5xx above 2%\n1. Check the dashboard: is it one endpoint or all? Did a deployment just happen?\n2. Recent deployment? Roll back: `aws ecs update-service ... --task-definition orders:PREVIOUS`\n3. Database saturated? Check Performance Insights; look for a new slow query.\n4. Payment provider down? Check its status page; the circuit breaker should be open.\n5. Tell #incidents what you've found, then keep updating it.",
+     "title": "A runbook entry"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Use business metrics too\n- Never tag metrics with unbounded values\n- Link alarm to trace to logs\n- Alert on symptoms, with a runbook"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-9",
+   "type": "concept",
+   "title": "Release engineering: blue-green and canary on ECS",
+   "subtopicId": "5-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Rolling, the default\n\nECS replaces tasks gradually, using `minimumHealthyPercent` and `maximumPercent`. With 4 tasks, a 100% minimum and a 200% maximum, it starts 4 new tasks before stopping old ones. Rollback means another full rollout, unless the circuit breaker triggers.\n\n### Blue-green with two target groups"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  L[ALB listener: production] -->|100%| B[Blue target group: v1]\n  T[ALB listener: test port] -->|tests| G[Green target group: v2]\n  G -.->|after tests pass, traffic shifts| L",
+     "title": "Blue-green on an ALB"
+    },
+    {
+     "type": "markdown",
+     "text": "Tools such as CodeDeploy, or ECS's own blue/green deployment option in recent versions, handle this for you: start the green tasks, run tests against a test listener, shift traffic at once or in steps, and keep blue alive for a bake period, so that rollback is immediate.\n\n| Shift | Means |\n|---|---|\n| All at once | Simple, full risk at the moment of switching |\n| Linear | 10% more every few minutes |\n| Canary | 10% for 15 minutes, then the rest |\n\nTie the shift to alarms, so that a rise in errors rolls back automatically.\n\n### Feature flags\n\nDeployment and release need not be the same thing. A flag lets you deploy code that's switched off, and enable it for 1% of users, or just for staff. Rollback becomes flipping a flag. AWS AppConfig or a dedicated service can manage flags. Delete flags once they're done, because old ones add branches nobody tests.\n\n### Database changes during a canary\n\nA canary means two versions run for a long time, so schema compatibility matters even more. Follow expand and contract without exception. Never drop a column until no running version reads it, and until rollback to that version is off the table.\n\n### What makes rollback impossible\n\n| Change | Why rollback fails | Mitigation |\n|---|---|---|\n| Destructive schema change | Old code needs what's gone | Expand and contract |\n| New event format | Old consumers can't read it | Add fields compatibly |\n| New cache format | Old code reads bad values | Versioned keys |\n| Sent emails, charged cards | Can't be undone | Flags, careful canary |\n\n### A production checklist\n\n- [ ] Tests, image scan and SBOM in CI.\n- [ ] Immutable image tags, promoted through environments, not rebuilt.\n- [ ] Health checks and graceful shutdown.\n- [ ] Automatic rollback on alarms.\n- [ ] Migrations backward compatible.\n- [ ] Someone watching the rollout, or alarms that act for them."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Build one image, and move the same image from staging to production. Rebuilding may pull different dependencies, so production would run something you've never tested.",
+     "title": "Promote, don't rebuild"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Blue-green gives immediate rollback\n- Tie traffic shifts to alarms\n- Flags separate deploy from release\n- Some changes can't be rolled back"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-10",
+   "type": "concept",
+   "title": "More worked designs on AWS",
+   "subtopicId": "5-10",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Design 1: URL shortener\n\n**Scale:** 100 million new links a month, and 100 reads per write. That's about 40 writes a second and 4,000 reads a second. At 500 bytes per record, it's 50 GB a month, or 3 TB over 5 years. Seven base-62 characters allow about 3.5 trillion codes."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  U[Browser] --> CF[CloudFront]\n  CF --> A[ALB + ECS, or API Gateway + Lambda]\n  A --> C[(ElastiCache)]\n  A --> D[(DynamoDB: code to URL)]\n  A -.->|click event| Q[Kinesis or SQS]\n  Q --> S[(S3 + Athena: analytics)]",
+     "title": "URL shortener"
+    },
+    {
+     "type": "markdown",
+     "text": "| Decision | Why |\n|---|---|\n| DynamoDB | Single-key reads and writes, huge scale, TTL for expiry |\n| Random code + conditional write | No central counter; retry on collision |\n| CloudFront caching with a short TTL | Absorbs the hottest links |\n| 302 not 301 | Browsers won't cache forever, so clicks can be counted |\n| Clicks through a queue | Redirect stays fast if analytics slows |\n\n### Design 2: ticket booking\n\n**The hard part:** two people must never get the same seat, and a seat is held while the buyer pays."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant U as User\n  participant A as API\n  participant D as Database\n  participant P as Payment\n  U->>A: Select seat 12\n  A->>D: UPDATE seat SET held_by=U, hold_until=now+10min WHERE id=12 AND (held_by IS NULL OR hold_until < now)\n  D-->>A: 1 row (or 0: already taken)\n  U->>P: Pay\n  P->>A: Webhook: paid\n  A->>D: Mark sold, if still held by U",
+     "title": "Holding a seat"
+    },
+    {
+     "type": "markdown",
+     "text": "| Concern | Approach |\n|---|---|\n| Double booking | Conditional update, in one row, in the database |\n| Expired holds | The time check in the update needs no cleanup job |\n| Sale spike | Virtual waiting room: tokens admit users at a steady rate |\n| Payment webhook repeats | Idempotency key |\n| Payment after hold expired | Refund automatically |\n| Browsing seats | Cache the seat map for a second or two; the write path stays correct |\n\nA cached seat map can show a seat as free when it's gone. That's fine, because the conditional update is the truth, and the user just sees \"that seat was just taken\".\n\n### Design 3: notification system\n\nRequirements: email, SMS and push; user preferences; retries; no duplicates or spam."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  S[Services] --> E[SNS or EventBridge]\n  E --> N[Notification service]\n  N --> P[(Preferences and templates)]\n  N --> Q1[SQS: email]\n  N --> Q2[SQS: SMS]\n  N --> Q3[SQS: push]\n  Q1 --> W1[Worker + SES]\n  Q2 --> W2[Worker + SMS provider]\n  Q3 --> W3[Worker + push service]",
+     "title": "Notification pipeline"
+    },
+    {
+     "type": "markdown",
+     "text": "Separate queues mean that a slow SMS provider doesn't delay email. Rate limit per user and per provider. Store each notification's ID, so that duplicates are dropped, and let urgent messages use a separate high-priority queue. Track deliveries and bounces, and honour unsubscribes in the service itself.\n\n### Design 4: AI document assistant on AWS\n\nPart 6 of the AI section covers the application. On AWS: uploads through pre-signed URLs into S3, S3 events to SQS, ingestion workers on ECS writing to RDS with pgvector, chat on ECS with streaming through an ALB, and a provider through Bedrock or an external API. Note that CloudFront, ALB and any proxies need timeouts set for long streaming responses, and buffering turned off where applicable.\n\n### A checklist for any design\n\n1. Requirements, and what's out of scope.\n2. Rough numbers: traffic, storage, and what dominates.\n3. Simple diagram first.\n4. Data model and access patterns.\n5. The hard part, in depth.\n6. Failure at each hop.\n7. Security and multi-tenancy.\n8. Cost, and what you'd do later."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The database's conditional write settles races\n- A cached view can be stale if writes are correct\n- Separate queues isolate slow providers\n- Follow the same checklist each time"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Observability with CloudWatch"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What should wake someone up at night?",
+       "answer": "Symptoms users feel: a high error rate, high latency, or work falling far behind. High CPU alone may not matter."
+      },
+      {
+       "question": "How do you find which downstream call makes an endpoint slow?",
+       "answer": "Use a distributed trace of a slow request. It shows the time per span, such as the database or a remote call."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Infrastructure as code and delivery"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not store AWS keys as GitHub secrets?",
+       "answer": "They are long-lived and can leak. OIDC issues short-lived credentials for one role, tied to the repository."
+      },
+      {
+       "question": "What belongs in a pull request for infrastructure?",
+       "answer": "The code change and the plan output, so that a reviewer can see exactly what will change."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Reliability, cost and disaster recovery"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why add jitter to retries?",
+       "answer": "Without it, many clients retry at the same moment, and a recovering service is overwhelmed again."
+      },
+      {
+       "question": "Three services each have 99.9% availability and call each other in sequence. What is the combined figure?",
+       "answer": "About 0.999 cubed, which is around 99.7%, because any one failure breaks the chain."
+      },
+      {
+       "question": "What is the difference between RTO and RPO?",
+       "answer": "RTO is how long recovery may take. RPO is how much data, measured in time, may be lost."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Reference architecture and scenarios"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Walk through what happens when a user uploads a 2 GB video.",
+       "answer": "The API authorises the user and issues a pre-signed URL (multipart for this size). The browser uploads to S3. An object-created event goes to SQS, a worker processes it, and the status is updated."
+      },
+      {
+       "question": "How would you add a nightly report without a server running all day?",
+       "answer": "Use EventBridge Scheduler to start an ECS task or Lambda. It writes the file to S3, and sends a link."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hands-on: the whole stack in Terraform"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Terraform wants to set desired_count back to 2, though autoscaling has raised it to 8. How do you fix it?",
+       "answer": "Add `desired_count` to `ignore_changes`, so that Terraform leaves the scaled value alone."
+      },
+      {
+       "question": "Someone changed a security group in the console. What happens at the next plan?",
+       "answer": "Terraform detects drift and proposes reverting it. Decide whether to accept it or update the code."
+      },
+      {
+       "question": "Why keep separate state for dev and prod?",
+       "answer": "A mistake or broken state in one can't affect the other, and permissions can differ."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Security review checklist"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does least privilege matter if your code has no known bugs?",
+       "answer": "Unknown bugs and leaks are inevitable. Least privilege limits what an attacker can do after any of them."
+      },
+      {
+       "question": "What is SSRF, and why is it dangerous on AWS?",
+       "answer": "The server is tricked into fetching a URL of the attacker's choice, such as the metadata service, which can expose role credentials. Use IMDSv2 and validate URLs."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Worked design: a video learning platform"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why start a design with rough numbers?",
+       "answer": "They reveal what dominates, here video delivery, so you spend your time on the part that matters."
+      },
+      {
+       "question": "How do you protect paid video segments on a CDN?",
+       "answer": "CloudFront signed cookies or signed URLs, with a private S3 bucket. The API issues them after checking entitlement."
+      },
+      {
+       "question": "What makes transcoding a good fit for Spot?",
+       "answer": "It's asynchronous and restartable, especially if split into segments. An interruption only retries the work."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hands-on observability with Spring Boot"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not tag a metric with the user ID?",
+       "answer": "Each value creates a new time series, which is costly and slow. Put it in logs or traces instead."
+      },
+      {
+       "question": "A 99.9% monthly SLO allows how much downtime?",
+       "answer": "0.1% of about 43,200 minutes, which is around 43 minutes."
+      },
+      {
+       "question": "Why tell someone in your alert what to do?",
+       "answer": "A runbook speeds up the response, especially at night or for someone new."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Release engineering: blue-green and canary on ECS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why keep blue tasks running after shifting traffic?",
+       "answer": "So that rollback is instant if problems appear during the bake period."
+      },
+      {
+       "question": "Why promote the same image rather than rebuilding for production?",
+       "answer": "A rebuild may include different dependencies. Promotion means that production runs what was tested."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### More worked designs on AWS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you stop two users booking one seat?",
+       "answer": "A conditional update in a single statement: only the first update succeeds, and others affect zero rows."
+      },
+      {
+       "question": "Why 302 rather than 301 for a short link?",
+       "answer": "A 301 may be cached forever by browsers, hiding clicks and preventing changes."
+      },
+      {
+       "question": "Why have one queue per notification channel?",
+       "answer": "A slow or failing provider then can't hold up the others."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

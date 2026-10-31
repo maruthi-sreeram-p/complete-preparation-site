@@ -1,0 +1,393 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-11-1",
+   "type": "concept",
+   "title": "Rendering strategies",
+   "subtopicId": "11-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Frontend libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Where HTML gets produced matters for first load speed, search engines and cost.\n\n| Strategy | HTML made | Good for | Trade-off |\n|---|---|---|---|\n| CSR (client-side rendering) | In the browser | Dashboards behind a login | Blank until JS loads; weak for SEO |\n| SSR (server-side rendering) | On each request | Personalised, SEO-relevant pages | Server cost, time to first byte |\n| SSG (static generation) | At build time | Blogs, docs, marketing | Stale until rebuilt |\n| ISR (incremental regeneration) | Rebuilt periodically | Catalogues | Some staleness |\n| RSC (Server Components) | On the server, sending less JS | Data-heavy pages in modern frameworks | New model to learn |"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant S as Server\n  Note over B,S: Client-side rendering\n  B->>S: GET /page\n  S-->>B: Empty HTML and JS link\n  B->>S: GET bundle.js\n  B->>S: GET /api/data\n  S-->>B: Data\n  Note over B: Content appears now\n  Note over B,S: Server-side rendering\n  B->>S: GET /page\n  S-->>B: Full HTML with content\n  Note over B: Content appears now\n  B->>S: GET bundle.js\n  Note over B: Hydration: page becomes interactive",
+     "title": "CSR and SSR, side by side"
+    },
+    {
+     "type": "markdown",
+     "text": "### Hydration\n\nWith SSR, the browser gets real HTML, shows it, and then React attaches event handlers to it. Until then, the page is visible but not interactive. The HTML from the server must match what React creates on the client, or you get a **hydration mismatch**."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Clock() {\n  return <p>{new Date().toLocaleTimeString()}</p>;   // the server's time differs from the browser's\n}\n\nfunction BetterClock() {\n  const [time, setTime] = useState<string | null>(null);\n  useEffect(() => setTime(new Date().toLocaleTimeString()), []);   // runs in the browser only\n  return <p>{time ?? '--:--'}</p>;\n}",
+     "title": "A hydration mismatch"
+    },
+    {
+     "type": "markdown",
+     "text": "Other causes: reading `window` or `localStorage` during render, random values, and invalid HTML such as a `<div>` inside a `<p>`.\n\n### Choosing\n\n| Your app | Reasonable choice |\n|---|---|\n| Admin panel, internal tool | Vite + React (CSR) |\n| Logged-in product, no SEO needs | Vite + React |\n| Public shop or content site | Next.js |\n| Marketing pages + app | Static site or Next.js, with an app |\n| Your portfolio with Spring Boot | Vite + React is simplest |\n\nYour Spring Boot API works with any of these. Vite with React stays simple, and it's what this site uses."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- CSR for apps behind a login\n- SSR and SSG for public content\n- Hydration attaches behaviour\n- Server and client HTML must match"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-2",
+   "type": "concept",
+   "title": "Next.js and Server Components",
+   "subtopicId": "11-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Next.js is the most widely used React framework. It adds file-based routing, server rendering, data fetching and optimisation. Details change between versions, so check its docs.\n\n### App Router structure"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "app/\n  layout.tsx            shared layout\n  page.tsx              /\n  products/\n    page.tsx            /products\n    [id]/\n      page.tsx          /products/42\n      loading.tsx       shown while loading\n      error.tsx         shown on error\n  api/\n    health/route.ts     an API endpoint",
+     "title": "Files define routes"
+    },
+    {
+     "type": "markdown",
+     "text": "### Server and client components\n\nIn the App Router, components run **on the server by default**. They can read data directly, send no JavaScript to the browser, and can't use state or browser APIs."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "// app/products/[id]/page.tsx\nexport default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {\n  const { id } = await params;\n  const res = await fetch(`${process.env.API_URL}/products/${id}`, {\n    next: { revalidate: 60 },              // reuse for 60 seconds\n  });\n  if (res.status === 404) notFound();\n  const product: Product = await res.json();\n\n  return (\n    <article>\n      <h1>{product.name}</h1>\n      <AddToCart productId={product.id} />\n    </article>\n  );\n}",
+     "title": "A server component fetching from Spring Boot"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "'use client';\n\nimport { useState } from 'react';\n\nexport function AddToCart({ productId }: { productId: string }) {\n  const [added, setAdded] = useState(false);\n  return (\n    <button onClick={async () => { await addToCart(productId); setAdded(true); }}>\n      {added ? 'Added' : 'Add to cart'}\n    </button>\n  );\n}",
+     "title": "A client component, for interactivity"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Server: page.tsx: fetches data, no JS sent] --> B[Server: ProductInfo]\n  A --> C[\"Client: AddToCart ('use client')\"]\n  C --> D[Its JS goes to the browser]",
+     "title": "Server and client components"
+    },
+    {
+     "type": "markdown",
+     "text": "| Server component | Client component |\n|---|---|\n| Fetch data, use secrets | Use state and effects |\n| Reduce JavaScript sent | Handle clicks and input |\n| Can't use `useState` | Can't use server-only secrets |\n\nKeep client components small, and at the edges of the tree.\n\n### Server actions"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "// app/contact/actions.ts\n'use server';\n\nexport async function subscribe(formData: FormData) {\n  const session = await getSession();             // always check: it's a public endpoint\n  if (!session) throw new Error('Not signed in');\n  await db.subscribe(session.userId, String(formData.get('email')));\n}",
+     "title": "Calling server code from a form"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A server action looks like a function, but anyone can call it through HTTP. Authenticate and validate inside each one, as you would in a Spring controller.",
+     "title": "Server actions are public endpoints"
+    },
+    {
+     "type": "markdown",
+     "text": "### With a Spring Boot backend\n\nNext.js can act as a frontend server that calls your Spring API."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  B[Browser] --> N[Next.js server]\n  N --> S[Spring Boot API]\n  S --> D[(Database)]",
+     "title": "Next.js in front of Spring Boot"
+    },
+    {
+     "type": "markdown",
+     "text": "That adds a Node server to run, monitor and scale. So ask whether SEO or first-load needs justify it. Forward authentication carefully: a server-rendered request must pass the user's cookie or token to Spring. And be careful not to cache personalised pages, or you may show one user's data to another."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"What are Server Components?\"** Components that render only on the server. They fetch data directly and ship no JavaScript, whereas client components handle interactivity. It's different from SSR, which renders client components to HTML and then hydrates them.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Server by default in the App Router\n- Keep client components small\n- Server actions are public endpoints\n- Beware of caching personalised data"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-3",
+   "type": "concept",
+   "title": "SEO, internationalisation and PWAs",
+   "subtopicId": "11-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### SEO basics\n\n| Item | Why |\n|---|---|\n| Server-rendered or static content | Reliable indexing |\n| A unique `<title>` and meta description per page | What appears in results |\n| Semantic HTML with one clear `h1` | Understanding the page |\n| Real `<a href>` links | Crawlers follow them |\n| Open Graph tags | Link previews on social media |\n| `sitemap.xml`, `robots.txt` | Guiding crawlers |\n| Canonical URLs | Avoiding duplicates |\n| Good Web Vitals | A ranking signal |\n\nReact 19 lets components render `<title>` and `<meta>`, which React moves to the document's head.\n\n### Internationalisation"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "// Breaks in other languages\n<p>You have {count} item{count === 1 ? '' : 's'}</p>\n\n// Use a library such as react-i18next, or FormatJS\n<p>{t('cart.items', { count })}</p>",
+     "title": "Avoid building strings by hand"
+    },
+    {
+     "type": "markdown",
+     "text": "Use `Intl` for dates, numbers and currency. Different languages have different plural rules, and text can expand by a large amount, so don't fix widths. Right-to-left languages need CSS logical properties, such as `margin-inline-start`. Indian apps may need several scripts, so test your fonts.\n\n### Progressive web apps\n\nA PWA can be installed, and work offline through a **service worker** that caches files and responses.\n\n| Benefit | Cost |\n|---|---|\n| Works on poor networks | Cache invalidation is hard |\n| Installable, no app store | Different iOS and Android support |\n| Push notifications | A bad cache can trap users on an old version |\n\nVite has a PWA plugin. Only add this when offline use really matters, such as for field workers.\n\n### Micro-frontends, in brief\n\nLarge companies may split one frontend across several teams, with module federation or iframes. This lets teams deploy independently, at the cost of consistency and complexity. It's the frontend version of microservices, and the same warning applies: don't use it without an organisational reason."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- SEO needs real content and links\n- Don't concatenate translated strings\n- Use a service worker only when offline matters\n- Micro-frontends solve team problems"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-4",
+   "type": "concept",
+   "title": "Data, caching and authentication in Next.js",
+   "subtopicId": "11-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Next.js changes quickly, and its caching defaults have changed between major versions. Treat this chapter as the concepts, and check the docs for your version.\n\n### Rendering choices on a page\n\n| Page behaviour | How it's rendered |\n|---|---|\n| No request-specific data | Static, at build time |\n| `fetch` with `next: { revalidate: 60 }` | Static, refreshed at intervals |\n| Reads cookies or headers | Dynamic, per request |\n| `cache: 'no-store'` | Dynamic, per request |"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "export default async function Home() {\n  const categories = await fetch(`${API}/categories`, { next: { revalidate: 3600 } }).then((r) => r.json());\n  const deals = await fetch(`${API}/deals`, { cache: 'no-store' }).then((r) => r.json());\n  return (\n    <>\n      <Categories items={categories} />\n      <Deals items={deals} />\n      <Suspense fallback={<p>Loading recommendations…</p>}>\n        <Recommendations />      {/* streamed in when it's ready */}\n      </Suspense>\n    </>\n  );\n}",
+     "title": "Three kinds of data on one route"
+    },
+    {
+     "type": "markdown",
+     "text": "### Streaming\n\nThe server can send HTML in pieces. The page shell appears at once, and slower parts arrive when ready, each replacing its `Suspense` fallback."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant N as Next.js\n  participant A as Spring API\n  B->>N: GET /\n  N-->>B: Shell and fast parts, then the fallback\n  N->>A: Slow recommendations request\n  A-->>N: Data\n  N-->>B: The rest of the HTML, streamed",
+     "title": "Streaming a page"
+    },
+    {
+     "type": "markdown",
+     "text": "### On-demand revalidation\n\nWhen data changes, tell Next.js to drop what it has cached, rather than waiting."
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "'use server';\nimport { revalidatePath } from 'next/cache';\n\nexport async function updateProduct(formData: FormData) {\n  const session = await requireAdmin();\n  await callSpringApi(session, formData);\n  revalidatePath('/products');\n}",
+     "title": "Refresh after a change"
+    },
+    {
+     "type": "markdown",
+     "text": "A Spring service can trigger this too, through a protected route handler, whenever products change.\n\n### Authentication with a Spring API"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant N as Next.js server\n  participant S as Spring Boot\n  B->>N: Request, with session cookie\n  N->>N: Read the cookie on the server\n  N->>S: API call with the user's token\n  S-->>N: Data for this user\n  N-->>B: HTML for this user, never cached publicly",
+     "title": "A Next.js app in front of Spring Boot"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "import { cookies } from 'next/headers';\n\nexport default async function Account() {\n  const token = (await cookies()).get('access_token')?.value;\n  if (!token) redirect('/login');\n\n  const res = await fetch(`${process.env.API_URL}/me`, {\n    headers: { Authorization: `Bearer ${token}` },\n    cache: 'no-store',                       // personal data must never be shared\n  });\n  if (res.status === 401) redirect('/login');\n  const me = await res.json();\n  return <h1>Hello, {me.name}</h1>;\n}",
+     "title": "Forwarding identity from a server component"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A mistake here shows one user's data to another. Mark personal requests `no-store`, and check your CDN's rules as well. Read the framework's caching docs carefully before launch.",
+     "title": "Caching personal data"
+    },
+    {
+     "type": "markdown",
+     "text": "### Middleware\n\nMiddleware runs before a request completes, and is useful for redirects, locale detection and quick auth checks. Don't rely on it alone for authorisation, since a past Next.js vulnerability let attackers bypass middleware-based checks. Check permissions in the data layer too, and keep the framework patched.\n\n### Deploying\n\n| Option | Fits |\n|---|---|\n| Vercel | The simplest path; made by the framework's authors |\n| Docker on ECS or similar | Control, with your own infrastructure |\n| Static export | No server features needed |"
+    },
+    {
+     "type": "code",
+     "language": "dockerfile",
+     "code": "FROM node:22-alpine AS build\nWORKDIR /app\nCOPY . .\nRUN npm ci && npm run build\n\nFROM node:22-alpine\nWORKDIR /app\nENV NODE_ENV=production\nCOPY build/.next/standalone ./\nCOPY build/.next/static ./.next/static\nCOPY build/public ./public\nUSER node\nCMD [\"node\", \"server.js\"]",
+     "title": "A standalone Docker image (with output: 'standalone' in next.config)"
+    },
+    {
+     "type": "markdown",
+     "text": "The image above needs `COPY --from=build` paths adjusted to your layout, and multiple instances need a shared cache setup for ISR. Self-hosting means that you now run Node in production: memory, scaling, logging and upgrades are yours.\n\n### Other frameworks\n\n| Framework | Character |\n|---|---|\n| React Router in framework mode | Successor to Remix: loaders and actions on the server |\n| TanStack Start | Type-safe routing and data; newer |\n| Astro | Content sites; ships little JavaScript by default |\n| Vite + React | A client-only app, with no server |\n\nSince your backend is Spring Boot, you already have an API, so ask what a Node server would add. If the answer is only SEO for a few public pages, a small static site beside your SPA may be simpler."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Reading cookies makes a page dynamic\n- Streaming sends the shell first\n- Never cache personal data\n- Authorise in the data layer"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-5",
+   "type": "concept",
+   "title": "Internationalisation and accessibility at scale",
+   "subtopicId": "11-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Setting up translations"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "// en.json: { \"cart\": { \"items_one\": \"{{count}} item\", \"items_other\": \"{{count}} items\" } }\n// hi.json: { \"cart\": { \"items_one\": \"{{count}} आइटम\", \"items_other\": \"{{count}} आइटम\" } }\n\nfunction CartBadge({ count }: { count: number }) {\n  const { t } = useTranslation();\n  return <span>{t('cart.items', { count })}</span>;\n}",
+     "title": "react-i18next"
+    },
+    {
+     "type": "markdown",
+     "text": "| Do | Avoid |\n|---|---|\n| Whole sentences as messages | Joining fragments: word order differs between languages |\n| Named placeholders | Positional guesses |\n| `Intl` for numbers and dates | Hand-written formats |\n| Load only the active language | Shipping all languages to everyone |\n| Set `<html lang=\"hi\">` | Leaving screen readers to guess |\n\nIndian numbering is a good test: `new Intl.NumberFormat('hi-IN')` groups 100000 as 1,00,000, which your code gets free.\n\n### A design system\n\nAs an app grows, consistency comes from shared components, rather than from each page deciding again."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  A[Tokens: colour, spacing, type] --> B[Primitives: Button, Input, Dialog]\n  B --> C[Patterns: DataTable, FormField, EmptyState]\n  C --> D[Feature screens]",
+     "title": "Layers of a design system"
+    },
+    {
+     "type": "markdown",
+     "text": "A `FormField` component that always wires up label, input, hint and error means that every form in the app is accessible by default, and it's cheaper than fixing each one by hand."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function FormField({ label, error, hint, children }: {\n  label: string;\n  error?: string;\n  hint?: string;\n  children: (props: { id: string; 'aria-invalid': boolean; 'aria-describedby'?: string }) => React.ReactNode;\n}) {\n  const id = useId();\n  const describedBy = [hint && `${id}-hint`, error && `${id}-error`].filter(Boolean).join(' ') || undefined;\n  return (\n    <div>\n      <label htmlFor={id}>{label}</label>\n      {children({ id, 'aria-invalid': Boolean(error), 'aria-describedby': describedBy })}\n      {hint && <p id={`${id}-hint`}>{hint}</p>}\n      {error && <p id={`${id}-error`} role=\"alert\">{error}</p>}\n    </div>\n  );\n}",
+     "title": "A form field that gets accessibility right once"
+    },
+    {
+     "type": "markdown",
+     "text": "### Common accessibility fixes, by frequency\n\n| Problem | Fix |\n|---|---|\n| Low contrast text | Use tokens that meet 4.5:1 |\n| Missing form labels | `FormField` |\n| Images with no `alt` | Lint rule `jsx-a11y` |\n| Non-semantic clickable divs | `button` and `a` |\n| Focus lost after a route change | Focus the heading |\n| Toast messages not announced | An `aria-live=\"polite\"` region |\n| Modal focus traps | A tested dialog component |\n| Icon buttons with no name | `aria-label` |\n\nAdd `eslint-plugin-jsx-a11y` and axe tests in CI, then do manual keyboard testing on main flows."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Translate whole sentences\n- Use Intl for numbers and dates\n- Shared components spread good defaults\n- Automate checks, and test by keyboard"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Rendering strategies"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why can't a search engine rely on pure CSR?",
+       "answer": "The first HTML is nearly empty. Some crawlers run JavaScript, but it's slower and less reliable than server-rendered content."
+      },
+      {
+       "question": "What causes a hydration mismatch?",
+       "answer": "Different output between server and client: dates, random values, or browser-only data used during render."
+      },
+      {
+       "question": "Why isn't Next.js needed for an internal dashboard?",
+       "answer": "It has no SEO need, and login gates the content, so the extra server complexity gives little benefit."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Next.js and Server Components"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Can a server component use useState?",
+       "answer": "No. It runs only on the server. Add a client component for interaction."
+      },
+      {
+       "question": "What's the difference between SSR and Server Components?",
+       "answer": "SSR renders to HTML, and the client hydrates with all the JS. Server Components never run in the browser, and send no JS of their own."
+      },
+      {
+       "question": "Why authenticate inside a server action?",
+       "answer": "It's exposed as an HTTP endpoint, so anyone can call it directly."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### SEO, internationalisation and PWAs"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why might `<div onClick>` navigation hurt SEO?",
+       "answer": "Crawlers follow `<a href>` links, and may not find pages reachable only through script."
+      },
+      {
+       "question": "Why not add an s for plurals in code?",
+       "answer": "Languages have different plural rules. Use an i18n library."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Data, caching and authentication in Next.js"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A page that reads cookies stops being static. Why?",
+       "answer": "Its output depends on each request, so it can't be built once for everyone."
+      },
+      {
+       "question": "Why isn't middleware alone enough for authorisation?",
+       "answer": "It's only one layer, and has had bypass flaws. Check permissions where data is read as well."
+      },
+      {
+       "question": "Your backend is Spring Boot. What should a Next.js server add before you adopt it?",
+       "answer": "Real SEO or first-load benefits, enough to justify running and securing a Node server."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Internationalisation and accessibility at scale"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is \"You have \" + n + \" items\" bad for translation?",
+       "answer": "Word order and plural rules differ by language. Use one message with a placeholder."
+      },
+      {
+       "question": "How does a FormField component improve accessibility?",
+       "answer": "It wires labels, hints and errors correctly everywhere, so individual forms can't forget."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

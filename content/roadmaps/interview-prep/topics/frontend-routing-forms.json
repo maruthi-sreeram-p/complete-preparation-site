@@ -1,0 +1,374 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-7-1",
+   "type": "concept",
+   "title": "Client-side routing",
+   "subtopicId": "7-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Frontend libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "In a single-page app, the server sends one HTML file, and JavaScript chooses what to show based on the URL. No full reload happens when moving between pages."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "import { createBrowserRouter, RouterProvider, Outlet, Link } from 'react-router';\n\nconst router = createBrowserRouter([\n  {\n    path: '/',\n    element: <Layout />,\n    errorElement: <ErrorPage />,\n    children: [\n      { index: true, element: <Home /> },\n      { path: 'orders', element: <Orders /> },\n      { path: 'orders/:id', element: <OrderDetails /> },\n      { path: '*', element: <NotFound /> },\n    ],\n  },\n]);\n\nfunction Layout() {\n  return (\n    <>\n      <nav><Link to=\"/orders\">Orders</Link></nav>\n      <main><Outlet /></main>      {/* the matched child appears here */}\n    </>\n  );\n}\n\ncreateRoot(document.getElementById('root')!).render(<RouterProvider router={router} />);",
+     "title": "Routes with React Router"
+    },
+    {
+     "type": "markdown",
+     "text": "### Reading the URL"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function OrderDetails() {\n  const { id } = useParams();                       // from the path /orders/:id\n  const [params] = useSearchParams();               // from ?tab=items\n  const tab = params.get('tab') ?? 'summary';\n  const navigate = useNavigate();                   // go somewhere from code\n\n  async function onDelete() {\n    await remove(id!);\n    navigate('/orders', { replace: true });\n  }\n  return <button onClick={onDelete}>Delete {id} ({tab})</button>;\n}",
+     "title": "Hooks for route data"
+    },
+    {
+     "type": "markdown",
+     "text": "### The 404 on refresh\n\nA very common deployment bug. The user opens `/orders/42`, which works through client routing. But on refresh, the browser asks the **server** for `/orders/42`, and no such file exists."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant B as Browser\n  participant S as Server or CDN\n  B->>S: GET /orders/42\n  S-->>B: 404, as there's no such file\n  Note over B,S: Fix: serve index.html for unknown paths, and let React Router handle it\n  B->>S: GET /orders/42\n  S-->>B: index.html\n  B->>B: Router shows the order page",
+     "title": "Why refresh gives a 404"
+    },
+    {
+     "type": "markdown",
+     "text": "The fix is to send `index.html` for any path that's not a real file. In Spring Boot, forward non-API routes. In CloudFront, map 403 and 404 errors to `/index.html`, though that also hides API 404s if they share the same distribution, so scope this behaviour carefully. Nginx uses `try_files $uri /index.html`."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Controller\nclass SpaController {\n    @GetMapping({\"/orders/**\", \"/account/**\"})\n    String forward() {\n        return \"forward:/index.html\";\n    }\n}",
+     "title": "Serving a React build from Spring Boot"
+    },
+    {
+     "type": "markdown",
+     "text": "### Protecting routes"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function RequireAuth({ children }: { children: React.ReactNode }) {\n  const user = useAuth();\n  const location = useLocation();\n  if (!user) {\n    return <Navigate to=\"/login\" replace state={{ from: location }} />;\n  }\n  return children;\n}\n\n{ path: 'account', element: <RequireAuth><Account /></RequireAuth> }",
+     "title": "A guard component"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Anyone can change JavaScript in their browser. A route guard only improves the experience. Your Spring Boot API must check permissions on every request.",
+     "title": "Guards aren't security"
+    },
+    {
+     "type": "markdown",
+     "text": "### Data routers\n\nRoute **loaders** fetch before showing a page, and **actions** handle form submissions. They reduce loading flicker, and work with TanStack Query as well."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "{\n  path: 'orders/:id',\n  element: <OrderDetails />,\n  loader: ({ params }) => queryClient.ensureQueryData(orderQuery(params.id!)),\n}",
+     "title": "Loaders and error handling"
+    },
+    {
+     "type": "markdown",
+     "text": "### Split per route\n\nLoading each page lazily keeps the first download small: routes are the natural points to split, as Part 9 shows. Also restore scroll position (`<ScrollRestoration />`) and update the page title, so that navigation feels normal."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Client routing needs a server fallback\n- Guards are for experience, not security\n- Put view state in the URL\n- Split code by route"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-2",
+   "type": "concept",
+   "title": "Forms from simple to serious",
+   "subtopicId": "7-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Uncontrolled forms and FormData\n\nFor simple forms, let the browser hold values, and read them on submit."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Contact() {\n  function onSubmit(e: React.FormEvent<HTMLFormElement>) {\n    e.preventDefault();\n    const data = new FormData(e.currentTarget);\n    send(Object.fromEntries(data));\n  }\n  return (\n    <form onSubmit={onSubmit}>\n      <input name=\"email\" type=\"email\" required />\n      <button>Send</button>\n    </form>\n  );\n}",
+     "title": "Simple and fast"
+    },
+    {
+     "type": "markdown",
+     "text": "### Actions in React 19"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Subscribe() {\n  const [state, formAction, isPending] = useActionState(\n    async (_previous: { error?: string } | null, data: FormData) => {\n      const res = await fetch('/api/subscribe', {\n        method: 'POST',\n        body: JSON.stringify({ email: data.get('email') }),\n        headers: { 'Content-Type': 'application/json' },\n      });\n      return res.ok ? { error: undefined } : { error: 'Could not subscribe' };\n    },\n    null,\n  );\n\n  return (\n    <form action={formAction}>\n      <input name=\"email\" type=\"email\" required />\n      <button disabled={isPending}>{isPending ? 'Saving…' : 'Subscribe'}</button>\n      {state?.error && <p role=\"alert\">{state.error}</p>}\n    </form>\n  );\n}",
+     "title": "useActionState tracks pending state and results"
+    },
+    {
+     "type": "markdown",
+     "text": "### React Hook Form with Zod\n\nFor real forms, with many fields, validation and server errors, use a library. It avoids re-rendering on every keystroke, and removes much repetitive code."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const schema = z.object({\n  email: z.email('Enter a valid email'),\n  age: z.coerce.number().min(18, 'You must be at least 18'),\n  password: z.string().min(8, 'Use at least 8 characters'),\n});\ntype FormInput = z.input<typeof schema>;      // what the fields hold: age is still unknown\ntype FormValues = z.output<typeof schema>;    // what you get after validation: age is a number\n\nfunction SignUp() {\n  const {\n    register, handleSubmit, setError,\n    formState: { errors, isSubmitting },\n  } = useForm<FormInput, unknown, FormValues>({ resolver: zodResolver(schema) });\n\n  async function onSubmit(values: FormValues) {\n    const res = await fetch('/api/users', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify(values),\n    });\n    if (res.status === 400) {\n      const problem = await res.json();\n      for (const [field, message] of Object.entries(problem.errors ?? {})) {\n        setError(field as keyof FormInput, { message: String(message) });\n      }\n      return;\n    }\n    if (!res.ok) {\n      setError('root', { message: 'Something went wrong. Please try again.' });\n    }\n  }\n\n  return (\n    <form onSubmit={handleSubmit(onSubmit)} noValidate>\n      <label htmlFor=\"email\">Email</label>\n      <input id=\"email\" {...register('email')} aria-invalid={!!errors.email} />\n      {errors.email && <p role=\"alert\">{errors.email.message}</p>}\n\n      <label htmlFor=\"age\">Age</label>\n      <input id=\"age\" type=\"number\" {...register('age')} />\n      {errors.age && <p role=\"alert\">{errors.age.message}</p>}\n\n      <label htmlFor=\"password\">Password</label>\n      <input id=\"password\" type=\"password\" {...register('password')} />\n      {errors.password && <p role=\"alert\">{errors.password.message}</p>}\n\n      {errors.root && <p role=\"alert\">{errors.root.message}</p>}\n      <button disabled={isSubmitting}>{isSubmitting ? 'Creating…' : 'Create account'}</button>\n    </form>\n  );\n}",
+     "title": "A typed, validated form"
+    },
+    {
+     "type": "markdown",
+     "text": "`z.coerce` changes the type between input and output, which is why this form names both. Using a single `z.infer` type here gives a compile error, so copy this shape when any field is coerced or transformed.\n\n### Matching validation with Spring Boot\n\nValidation runs twice: the client gives fast feedback, while the server is what counts. Map Spring's errors onto fields."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@RestControllerAdvice\nclass ApiErrors {\n\n    @ExceptionHandler(MethodArgumentNotValidException.class)\n    ProblemDetail invalid(MethodArgumentNotValidException e) {\n        ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);\n        problem.setTitle(\"Validation failed\");\n        Map<String, String> errors = new HashMap<>();\n        e.getBindingResult().getFieldErrors()\n            .forEach(f -> errors.put(f.getField(), f.getDefaultMessage()));\n        problem.setProperty(\"errors\", errors);\n        return problem;\n    }\n}",
+     "title": "Field errors in a shape React can use"
+    },
+    {
+     "type": "markdown",
+     "text": "### Form details that matter\n\n| Detail | Why |\n|---|---|\n| Disable submit while pending | Prevents duplicates; the server should still be idempotent |\n| Show errors next to fields | Faster to fix |\n| Keep input after an error | Don't punish people by clearing it |\n| Warn before losing changes | Long forms |\n| Correct input types and autocomplete | Mobile keyboards, password managers |\n| Validate on blur or submit, not on each key | Less noise |\n\n### File uploads"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function upload(file: File, onProgress: (percent: number) => void) {\n  return new Promise<void>((resolve, reject) => {\n    const xhr = new XMLHttpRequest();                 // fetch has no upload progress\n    xhr.open('PUT', presignedUrl);\n    xhr.setRequestHeader('Content-Type', file.type);\n    xhr.upload.onprogress = (e) => onProgress(Math.round((e.loaded / e.total) * 100));\n    xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error(`HTTP ${xhr.status}`)));\n    xhr.onerror = () => reject(new Error('Network error'));\n    xhr.send(file);\n  });\n}",
+     "title": "Upload with progress"
+    },
+    {
+     "type": "markdown",
+     "text": "Your AWS part explains pre-signed URLs. Check size and type in the browser for quick feedback, and again on the server, where it counts."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Use FormData for simple forms\n- Use a form library with a schema for real ones\n- Validate on both sides\n- Map server errors onto fields"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-3",
+   "type": "concept",
+   "title": "Nested layouts, loaders and actions",
+   "subtopicId": "7-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Nested routes share layouts"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const router = createBrowserRouter([\n  {\n    path: '/',\n    element: <AppLayout />,\n    errorElement: <RootError />,\n    children: [\n      { index: true, element: <Home /> },\n      {\n        path: 'account',\n        element: <RequireAuth><AccountLayout /></RequireAuth>,\n        children: [\n          { index: true, element: <Navigate to=\"profile\" replace /> },\n          { path: 'profile', element: <Profile /> },\n          { path: 'orders', element: <AccountOrders /> },\n          { path: 'orders/:id', element: <OrderDetails />, errorElement: <OrderError /> },\n        ],\n      },\n    ],\n  },\n]);\n\nfunction AccountLayout() {\n  return (\n    <div className=\"account\">\n      <nav aria-label=\"Account\">\n        <NavLink to=\"profile\">Profile</NavLink>\n        <NavLink to=\"orders\">Orders</NavLink>\n      </nav>\n      <Outlet />\n    </div>\n  );\n}",
+     "title": "An account area with tabs that keep their layout"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[\"/account/orders/42\"] --> B[AppLayout: Outlet]\n  B --> C[AccountLayout: Outlet]\n  C --> D[OrderDetails]",
+     "title": "How nested routes render"
+    },
+    {
+     "type": "markdown",
+     "text": "`NavLink` knows if it matches the URL, and it sets `aria-current=\"page\"` and an active class. Moving between tabs renders only what changes, so that scroll, layout and state in the parent survive. A nested `errorElement` means that a failure replaces only that part of the screen.\n\n### Loaders and actions\n\nA **loader** runs before a route renders, and an **action** handles a form submission."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const orderRoute = {\n  path: 'orders/:id',\n  loader: async ({ params }: LoaderFunctionArgs) => {\n    const res = await fetch(`/api/orders/${params.id}`);\n    if (res.status === 404) throw new Response('Not found', { status: 404 });\n    if (!res.ok) throw new Response('Failed', { status: res.status });\n    return res.json();\n  },\n  action: async ({ params, request }: ActionFunctionArgs) => {\n    const form = await request.formData();\n    const res = await fetch(`/api/orders/${params.id}/note`, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ note: form.get('note') }),\n    });\n    return res.ok ? { saved: true } : { error: 'Could not save' };\n  },\n  element: <OrderDetails />,\n  errorElement: <OrderError />,\n};\n\nfunction OrderDetails() {\n  const order = useLoaderData() as Order;\n  const result = useActionData() as { saved?: boolean; error?: string } | undefined;\n  const navigation = useNavigation();\n\n  return (\n    <>\n      <h1>Order {order.id}</h1>\n      <Form method=\"post\">\n        <label htmlFor=\"note\">Note</label>\n        <input id=\"note\" name=\"note\" />\n        <button disabled={navigation.state === 'submitting'}>Save</button>\n      </Form>\n      {result?.error && <p role=\"alert\">{result.error}</p>}\n    </>\n  );\n}\n\nfunction OrderError() {\n  const error = useRouteError();\n  return isRouteErrorResponse(error) && error.status === 404\n    ? <p>That order doesn't exist.</p>\n    : <p>Something went wrong.</p>;\n}",
+     "title": "A route with data and a mutation"
+    },
+    {
+     "type": "markdown",
+     "text": "After an action, the router automatically reloads the page's loaders, so that data stays fresh without manual cache work.\n\n| Approach | Good | Watch out |\n|---|---|---|\n| TanStack Query in components | Rich cache; simple to adopt | Loading happens after navigation |\n| Router loaders | No loading flicker; data before render | Basic caching on its own |\n| Both | Loader calls `ensureQueryData` | A little more setup |\n\n### Unsaved changes"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function useUnsavedWarning(dirty: boolean) {\n  const blocker = useBlocker(dirty);\n\n  useEffect(() => {\n    if (!dirty) return;\n    const handler = (e: BeforeUnloadEvent) => e.preventDefault();\n    window.addEventListener('beforeunload', handler);     // closing or reloading the tab\n    return () => window.removeEventListener('beforeunload', handler);\n  }, [dirty]);\n\n  return blocker;     // show a dialog when blocker.state === 'blocked'\n}",
+     "title": "Warn before leaving"
+    },
+    {
+     "type": "markdown",
+     "text": "`useBlocker` needs a data router, and it covers navigation inside your app. `beforeunload` covers leaving the app.\n\n### URL design\n\n| Rule | Good | Avoid |\n|---|---|---|\n| Resource in the path | `/orders/42` | `/orderDetails?id=42` |\n| View state in query | `/orders?status=PAID&page=2` | State in memory only |\n| Nouns | `/orders` | `/getOrders` |\n| Readable | `/products/java-book-42` | `/p?x=42&y=a7` |\n\nValidate values in the URL, as users can type anything: `?page=abc` shouldn't crash the page."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Layouts nest through Outlet\n- Nested errorElement limits damage\n- Actions reload loaders\n- Validate URL values"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-4",
+   "type": "concept",
+   "title": "Hard forms: arrays, dependent fields and editing",
+   "subtopicId": "7-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Dynamic rows with useFieldArray\n\nAn invoice has any number of line items, each validated."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const schema = z.object({\n  customer: z.string().min(1, 'Required'),\n  items: z.array(z.object({\n    name: z.string().min(1, 'Required'),\n    qty: z.coerce.number().int().min(1, 'At least 1'),\n    price: z.coerce.number().min(0, 'Cannot be negative'),\n  })).min(1, 'Add at least one item'),\n});\ntype Input = z.input<typeof schema>;\ntype Output = z.output<typeof schema>;\n\nfunction InvoiceForm({ onSave }: { onSave: (v: Output) => Promise<void> }) {\n  const {\n    register, control, handleSubmit,\n    formState: { errors, isSubmitting },\n  } = useForm<Input, unknown, Output>({\n    resolver: zodResolver(schema),\n    defaultValues: { customer: '', items: [{ name: '', qty: 1, price: 0 }] },\n  });\n  const { fields, append, remove } = useFieldArray({ control, name: 'items' });\n\n  const items = useWatch({ control, name: 'items' });\n  const total = (items ?? []).reduce(\n    (sum, i) => sum + Number(i?.qty ?? 0) * Number(i?.price ?? 0), 0,\n  );\n\n  return (\n    <form onSubmit={handleSubmit(onSave)} noValidate>\n      <label htmlFor=\"customer\">Customer</label>\n      <input id=\"customer\" {...register('customer')} />\n      {errors.customer && <p role=\"alert\">{errors.customer.message}</p>}\n\n      {fields.map((field, i) => (\n        <fieldset key={field.id}>\n          <legend>Item {i + 1}</legend>\n          <label htmlFor={`name-${i}`}>Name</label>\n          <input id={`name-${i}`} {...register(`items.${i}.name`)} />\n          {errors.items?.[i]?.name && <p role=\"alert\">{errors.items[i].name.message}</p>}\n          <label htmlFor={`qty-${i}`}>Quantity</label>\n          <input id={`qty-${i}`} type=\"number\" {...register(`items.${i}.qty`)} />\n          <label htmlFor={`price-${i}`}>Price</label>\n          <input id={`price-${i}`} type=\"number\" {...register(`items.${i}.price`)} />\n          <button type=\"button\" onClick={() => remove(i)}>Remove item {i + 1}</button>\n        </fieldset>\n      ))}\n      <button type=\"button\" onClick={() => append({ name: '', qty: 1, price: 0 })}>Add item</button>\n      <p>Total: ₹{total}</p>\n      <button disabled={isSubmitting}>Save invoice</button>\n    </form>\n  );\n}",
+     "title": "An invoice form"
+    },
+    {
+     "type": "markdown",
+     "text": "Use `field.id` as the key, never the array index, as `useFieldArray` provides it for this reason. Both add and remove buttons have `type=\"button\"`, otherwise they'd submit the form. Note that `total` here is for display only: the server must calculate the real total.\n\n### Cross-field validation"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "const signup = z.object({\n  password: z.string().min(8),\n  confirm: z.string(),\n  start: z.iso.date(),\n  end: z.iso.date(),\n})\n  .refine((v) => v.password === v.confirm, {\n    message: 'Passwords do not match',\n    path: ['confirm'],                  // shows the error on this field\n  })\n  .refine((v) => v.start <= v.end, {\n    message: 'End date must be after start',\n    path: ['end'],\n  });",
+     "title": "Rules that involve several fields"
+    },
+    {
+     "type": "markdown",
+     "text": "### Fields that depend on each other"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const state = watch('state');\nconst { data: cities = [] } = useQuery({\n  queryKey: ['cities', state],\n  queryFn: () => getCities(state),\n  enabled: !!state,\n});\n\n<select {...register('state', { onChange: () => setValue('city', '') })}>...</select>\n<select {...register('city')} disabled={!state}>\n  {cities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}\n</select>",
+     "title": "Reset the city when the state changes"
+    },
+    {
+     "type": "markdown",
+     "text": "### Editing existing data\n\nLoad the data first, then pass it as default values. Remount with a `key`, or call `reset(data)`, when the data arrives."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function EditOrder({ id }: { id: string }) {\n  const { data } = useQuery(orderQuery(id));\n  if (!data) return <Spinner />;\n  return <OrderForm key={data.id} defaultValues={data} />;\n}",
+     "title": "Edit form"
+    },
+    {
+     "type": "markdown",
+     "text": "Consider what happens if two people edit one record. Send a version with the form, and let Spring's `@Version` return a 409, which the UI can explain.\n\n### Non-native inputs\n\nDate pickers and custom selects don't expose a `ref` to a real input, so use `Controller`."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "<Controller\n  control={control}\n  name=\"deliveryDate\"\n  render={({ field, fieldState }) => (\n    <>\n      <DatePicker value={field.value} onChange={field.onChange} onBlur={field.onBlur} />\n      {fieldState.error && <p role=\"alert\">{fieldState.error.message}</p>}\n    </>\n  )}\n/>",
+     "title": "Controller adapts a custom component"
+    },
+    {
+     "type": "markdown",
+     "text": "### Accessible forms\n\n| Practice | Why |\n|---|---|\n| Move focus to the first error on submit | Keyboard and screen reader users find it |\n| `aria-invalid` and `aria-describedby` | Links errors to fields |\n| `fieldset` and `legend` for groups | Gives context to radio groups |\n| Don't rely on placeholders or colour | Both can be missed |\n| Don't disable submit until valid | People can't discover what's wrong |\n\nReact Hook Form focuses the first invalid field by default, using registered refs."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Use field.id as the key\n- Type=\"button\" for non-submit buttons\n- Use path to place cross-field errors\n- Controller adapts custom inputs"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Client-side routing"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A deployed app works until a user refreshes on /orders/42. Why?",
+       "answer": "The server has no such file. Serve index.html for app paths, and let the router handle them."
+      },
+      {
+       "question": "Why isn't a RequireAuth component enough to protect admin data?",
+       "answer": "Client code can be changed by the user. The API must check permissions."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Forms from simple to serious"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does React Hook Form re-render less than controlled inputs?",
+       "answer": "It keeps inputs uncontrolled and reads values through refs, so typing needn't render the form."
+      },
+      {
+       "question": "The server returns a 400 for a duplicate email. How should the UI show it?",
+       "answer": "Map it to the email field's error, and keep the user's other input."
+      },
+      {
+       "question": "Why disable the submit button if the server is idempotent anyway?",
+       "answer": "It gives clear feedback and avoids needless requests. The server's protection remains the real guarantee."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Nested layouts, loaders and actions"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does Outlet do?",
+       "answer": "It marks where the matched child route renders in a parent layout."
+      },
+      {
+       "question": "How do you warn about closing a tab with unsaved work?",
+       "answer": "A `beforeunload` listener, while dirty. Use `useBlocker` for navigation inside the app."
+      },
+      {
+       "question": "A user changes ?page=abc in the URL. What should happen?",
+       "answer": "Parse and validate it, then fall back to page 1, rather than crashing or sending it to the API."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hard forms: arrays, dependent fields and editing"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not use the array index as key in useFieldArray?",
+       "answer": "Removing a row would shift indexes, and inputs would keep the wrong values. `field.id` is stable."
+      },
+      {
+       "question": "How does a cross-field error appear on the right input?",
+       "answer": "The refine's `path` names the field that receives it."
+      },
+      {
+       "question": "Two people edit one order. How can the second be told?",
+       "answer": "Send a version, let Spring's `@Version` return a 409, and offer to reload."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

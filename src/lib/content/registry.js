@@ -24,10 +24,11 @@ const roadmaps = Object.entries(roadmapFiles)
   .map(([path, raw]) => {
     const id = ROADMAP_PATH.exec(path)?.[1]
     if (!id) return null
-    return buildRoadmap(raw, { id, contentIds: new Set(Object.keys(loadersByRoadmap[id] ?? {})) })
+    const roadmap = buildRoadmap(raw, { id, contentIds: new Set(Object.keys(loadersByRoadmap[id] ?? {})) })
+    return { ...roadmap, order: raw.order ?? 99, shortTitle: raw.shortTitle ?? roadmap.title }
   })
   .filter(Boolean)
-  .sort((a, b) => a.title.localeCompare(b.title))
+  .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title))
 
 export const listRoadmaps = () => roadmaps
 

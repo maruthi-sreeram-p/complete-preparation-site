@@ -1,6 +1,7 @@
 import Markdown from './blocks/Markdown.jsx'
 import CodeBlock from './blocks/CodeBlock.jsx'
 import DiagramBlock from './blocks/DiagramBlock.jsx'
+import McqBlock from './blocks/McqBlock.jsx'
 import {
   CalloutBlock,
   FigureBlock,
@@ -23,6 +24,7 @@ const blockComponents = {
   callout: CalloutBlock,
   steps: StepsBlock,
   questions: QuestionsBlock,
+  mcq: McqBlock,
   related: RelatedBlock,
 }
 

@@ -75,6 +75,7 @@ A bare string is a Markdown block.
 | `code` | `language`, `code`, `title?`, `highlight?` ("2-4"), `walkthrough?` `[{ lines, title?, text }]` |
 | `diagram` | `format: "mermaid"`, `code`, `title?`, `caption?`, `components?` `[{ name, description }]` |
 | `table` | `headers`, `rows`, `caption?` (cells accept inline Markdown) |
+| `mcq` | `id` (for saved answers), `items` `[{ t: type, q: markdown, o: options, a: answer index, w: why, svg?, os?: option svgs }]` |
 | `callout` | `variant` (note / tip / warning / important), `title?`, `text` |
 | `steps` | `title?`, `steps` `[{ title?, text }]` |
 | `questions` | `items` `[{ question, hint?, answer, difficulty? }]` |

@@ -41,13 +41,13 @@ export default function Header() {
           {roadmap && roadmaps.length > 1 && (
             <select
               value={roadmap.id}
-              onChange={(e) => navigate(paths.dashboard(e.target.value))}
-              aria-label="Roadmap"
-              className="hidden max-w-40 truncate rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-muted lg:block"
+              onChange={(e) => navigate(paths.roadmap(e.target.value))}
+              aria-label="Tree"
+              className="hidden max-w-44 truncate rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-muted md:block"
             >
               {roadmaps.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.title}
+                  {r.shortTitle}
                 </option>
               ))}
             </select>

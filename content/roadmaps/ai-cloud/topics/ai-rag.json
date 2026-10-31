@@ -1,0 +1,660 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-9-1",
+   "type": "concept",
+   "title": "RAG from the ground up",
+   "subtopicId": "9-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Cloud services and AI libraries change quickly: check the official documentation before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A model does not know your documents, your data changes, and pasting everything into a prompt does not fit. **Retrieval-augmented generation** finds the relevant pieces and places them in the prompt. It is the most common AI feature that you will be asked to build."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  subgraph I[Ingestion, ahead of time]\n    A[Documents] --> B[Clean and split into chunks]\n    B --> C[Embed each chunk]\n    C --> D[(Vector store with metadata)]\n  end\n  subgraph Q[Query, on each request]\n    E[Question] --> F[Embed the question]\n    F --> G[Find similar chunks, filtered by permission]\n    D --> G\n    G --> H[Prompt: rules, chunks, question]\n    H --> L[LLM]\n    L --> M[Answer with citations]\n  end",
+     "title": "The two pipelines of RAG"
+    },
+    {
+     "type": "markdown",
+     "text": "Most bad RAG answers are retrieval problems: if the right text never reaches the model, nothing else can save the answer. So inspect retrieved chunks first when an answer is wrong.\n\n### RAG or not?\n\n| Situation | Better approach |\n|---|---|\n| Answers live in documents that change | RAG |\n| Answers live in database fields | Tools that query the database, not RAG |\n| Fixed format extraction from one document | Send the document directly |\n| The document is small | Put it all in the prompt |"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Retrieve first, then generate\n- Ingestion and query are separate pipelines\n- Most failures are retrieval failures\n- Not every data question needs RAG"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-2",
+   "type": "concept",
+   "title": "Ingestion and chunking",
+   "subtopicId": "9-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Ingestion quality limits everything that follows.\n\n### Extract and clean\n\nPDFs are the hardest source: tables, columns, headers and footers all break naive extraction. (This site's own PDF extraction needed careful handling for exactly these reasons.) Remove repeated boilerplate, keep headings and record where each piece came from.\n\n### Chunking\n\nEmbedding a whole document blurs its meaning, and tiny fragments lose context. Chunking is the trade-off.\n\n| Strategy | Idea | Good for |\n|---|---|---|\n| Fixed size with overlap | N tokens, with some shared between chunks | Quick start, uniform text |\n| Structure-aware | Split on headings and paragraphs | Docs, manuals, wikis |\n| Parent-child | Search small chunks, send the larger parent | Precise search with full context |\n| Semantic | Split where the topic changes | Long unstructured text |\n\nStart with a few hundred tokens, with some overlap, split on structure, and then measure. Put the document title and section heading into each chunk, as a chunk that says only \"It must be renewed yearly\" has lost its meaning.\n\n### Metadata\n\nStore useful fields with each chunk: source, section, date and tenant or access group. You need these for citations, filtering and updates.\n\n### Keeping the index fresh\n\nDocuments change. Track a content hash per document, re-embed only those that changed, and delete old chunks. Otherwise, the assistant confidently quotes a policy from two years ago."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Service\nclass Ingestion {\n\n    private final VectorStore store;\n\n    Ingestion(VectorStore store) { this.store = store; }\n\n    void ingest(Resource pdf, String docId, String tenant) {\n        List<Document> pages = new PagePdfDocumentReader(pdf).get();\n        List<Document> chunks = TokenTextSplitter.builder().build().apply(pages);\n        chunks.forEach(c -> {\n            c.getMetadata().put(\"docId\", docId);\n            c.getMetadata().put(\"tenant\", tenant);\n        });\n        store.delete(\"docId == '\" + docId + \"'\");   // replace older chunks; docId is our own value\n        store.add(chunks);                          // embeds and stores\n    }\n}",
+     "title": "An ingestion service"
+    },
+    {
+     "type": "markdown",
+     "text": "The PDF reader needs the `spring-ai-pdf-document-reader` dependency. Run ingestion asynchronously, as embedding many chunks takes time and can hit rate limits. Check the exact splitter and delete API for your Spring AI version."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Good extraction comes first\n- Chunk by structure, then measure\n- Put headings into chunks\n- Keep metadata, and keep the index fresh"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-3",
+   "type": "concept",
+   "title": "Vector stores and retrieval",
+   "subtopicId": "9-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### pgvector first\n\nIf you already run PostgreSQL, `pgvector` is a sensible first choice over adding a new database. Your vectors sit next to your data, and you keep your backups and transactions."
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "CREATE EXTENSION IF NOT EXISTS vector;\nCREATE EXTENSION IF NOT EXISTS hstore;\nCREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";\n\nCREATE TABLE IF NOT EXISTS vector_store (\n  id uuid DEFAULT uuid_generate_v4() PRIMARY KEY,\n  content text,\n  metadata json,\n  embedding vector(1536)   -- must match your embedding model\n);\n\nCREATE INDEX ON vector_store USING HNSW (embedding vector_cosine_ops);",
+     "title": "What the schema looks like"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  ai:\n    vectorstore:\n      pgvector:\n        index-type: HNSW\n        distance-type: COSINE_DISTANCE\n        dimensions: 1536\n        initialize-schema: true   # schema creation is opt-in",
+     "title": "Spring AI configuration"
+    },
+    {
+     "type": "markdown",
+     "text": "Add `spring-ai-starter-vector-store-pgvector` and inject `VectorStore`. A dedicated vector database may make sense at very large scale, or when you need its specific features. Decide on measured need.\n\n### Basic retrieval"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "List<Document> hits = store.similaritySearch(SearchRequest.builder()\n    .query(question)\n    .topK(5)\n    .similarityThreshold(0.6)\n    .filterExpression(\"tenant == '\" + currentTenant + \"'\")\n    .build());",
+     "title": "Search with a threshold and a permission filter"
+    },
+    {
+     "type": "markdown",
+     "text": "`currentTenant` must come from the authenticated user and never from request input, or a crafted value could change the filter.\n\n### Why plain vector search falls short\n\n| Problem | Fix |\n|---|---|\n| Misses exact codes and names | **Hybrid search:** combine keyword and vector results |\n| Good results are ranked too low | **Reranking:** a second model reorders the top results |\n| Vague or follow-up questions | **Query rewriting:** turn \"what about the other one?\" into a full question |\n| Several questions in one | **Query decomposition:** retrieve for each part |\n\nHybrid search commonly merges results with reciprocal rank fusion, which scores each document by its rank in each list. PostgreSQL can do this with full-text search next to pgvector.\n\n### Using it with ChatClient\n\nThe simple route adds `spring-ai-vector-store-advisor`:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "var rag = QuestionAnswerAdvisor.builder(store)\n    .searchRequest(SearchRequest.builder().similarityThreshold(0.6).topK(5).build())\n    .build();\n\nString answer = chat.prompt()\n    .advisors(rag)\n    .advisors(a -> a.param(QuestionAnswerAdvisor.FILTER_EXPRESSION, \"tenant == '\" + currentTenant + \"'\"))\n    .user(question)\n    .call()\n    .content();",
+     "title": "QuestionAnswerAdvisor"
+    },
+    {
+     "type": "markdown",
+     "text": "For more control, `spring-ai-rag` provides a modular flow:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Advisor rag = RetrievalAugmentationAdvisor.builder()\n    .documentRetriever(VectorStoreDocumentRetriever.builder()\n        .similarityThreshold(0.50)\n        .vectorStore(store)\n        .build())\n    .build();",
+     "title": "RetrievalAugmentationAdvisor"
+    },
+    {
+     "type": "markdown",
+     "text": "By default this tells the model not to answer when retrieval finds nothing, which is often what you want for a grounded assistant."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "\"Do not reveal other tenants' data\" in a prompt is not a control, because a prompt can be overridden. If a chunk is not retrieved, it cannot leak. So filter at retrieval.",
+     "title": "Access control belongs in the query"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Start with pgvector if you use PostgreSQL\n- Hybrid search and reranking improve recall\n- Rewrite follow-up questions\n- Enforce permissions in the query"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-4",
+   "type": "concept",
+   "title": "Measuring RAG quality",
+   "subtopicId": "9-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Without measurement, every change is a guess. Evaluate retrieval and generation separately, so that you know which to fix.\n\n### Build an evaluation set\n\nCollect 30 to 100 real questions, each with the expected facts and the source document. Include ones that should get \"I don't know\", and include adversarial ones.\n\n| Layer | Measure | Meaning |\n|---|---|---|\n| Retrieval | Recall at k | Is the right chunk in the top k? |\n| Retrieval | MRR | How high does it rank? |\n| Generation | Faithfulness | Is the answer supported by the retrieved text? |\n| Generation | Correctness | Does it contain the expected facts? |\n| Generation | Refusal accuracy | Does it decline when it should? |\n| System | Latency, cost per question | Is it usable and affordable? |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Test\nvoid retrievalFindsTheRightDocument() {\n    int found = 0;\n    for (EvalCase c : EvalCases.load()) {\n        List<Document> hits = store.similaritySearch(\n            SearchRequest.builder().query(c.question()).topK(5).build());\n        if (hits.stream().anyMatch(d -> c.docId().equals(d.getMetadata().get(\"docId\")))) {\n            found++;\n        }\n    }\n    assertThat((double) found / EvalCases.size()).isGreaterThan(0.85);\n}",
+     "title": "A simple recall check in a test"
+    },
+    {
+     "type": "markdown",
+     "text": "### Diagnosing failures\n\n| Symptom | Likely cause | Try |\n|---|---|---|\n| Right chunk is not found | Chunking, or vague queries | Better chunks, hybrid search, rewriting |\n| Right chunk is found, ranked low | Ranking | Reranker, higher k |\n| Right chunk is used, wrong answer | Prompt or model | Clearer rules, examples, a stronger model |\n| Invents facts | Weak grounding | \"Answer only from context\", citations, a threshold |\n| Outdated answers | Stale index | Re-ingest on change |\n| Shows others' data | No filter | Filter by permission during retrieval |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Design a chatbot over company documents.\"** Cover ingestion and updates, chunking, embeddings, hybrid retrieval, access control at retrieval, a grounded prompt with citations, streaming, an evaluation set, cost limits, and what happens when nothing relevant is found.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Measure retrieval and generation separately\n- Include questions that should be refused\n- Inspect failures one by one\n- Run evaluations on every important change"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-5",
+   "type": "concept",
+   "title": "Hybrid search in PostgreSQL",
+   "subtopicId": "9-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Vector search finds meaning, and keyword search finds exact terms. Combining them is one of the most reliable upgrades to a RAG system, and PostgreSQL can do both in one database.\n\n### The schema"
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "CREATE TABLE doc_chunk (\n  id        bigserial PRIMARY KEY,\n  doc_id    text NOT NULL,\n  tenant_id text NOT NULL,\n  heading   text,\n  content   text NOT NULL,\n  tsv       tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,\n  embedding vector(1536) NOT NULL\n);\n\nCREATE INDEX doc_chunk_tsv ON doc_chunk USING GIN (tsv);\nCREATE INDEX doc_chunk_vec ON doc_chunk USING HNSW (embedding vector_cosine_ops);\nCREATE INDEX doc_chunk_tenant ON doc_chunk (tenant_id);",
+     "title": "A chunks table with both indexes"
+    },
+    {
+     "type": "markdown",
+     "text": "### Each search alone"
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "SELECT id, content\nFROM doc_chunk\nWHERE tenant_id = :tenant\nORDER BY embedding <=> :query_vector\nLIMIT 20;",
+     "title": "Vector search: nearest meaning (<=> is cosine distance)"
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "SELECT id, content, ts_rank(tsv, q) AS score\nFROM doc_chunk, websearch_to_tsquery('english', :question) q\nWHERE tenant_id = :tenant AND tsv @@ q\nORDER BY score DESC\nLIMIT 20;",
+     "title": "Keyword search: exact words"
+    },
+    {
+     "type": "markdown",
+     "text": "### Merging with reciprocal rank fusion\n\nThe two scores can't be compared directly, as they are on different scales. **Reciprocal rank fusion** (RRF) ignores the scores and uses positions: each document scores 1 / (k + rank) in each list, and k is commonly 60."
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "WITH vec AS (\n  SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> :query_vector) AS rank\n  FROM doc_chunk WHERE tenant_id = :tenant\n  ORDER BY embedding <=> :query_vector LIMIT 20\n),\nkw AS (\n  SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC) AS rank\n  FROM doc_chunk, websearch_to_tsquery('english', :question) q\n  WHERE tenant_id = :tenant AND tsv @@ q\n  ORDER BY ts_rank(tsv, q) DESC LIMIT 20\n)\nSELECT c.id, c.heading, c.content,\n       COALESCE(1.0 / (60 + vec.rank), 0) + COALESCE(1.0 / (60 + kw.rank), 0) AS score\nFROM vec FULL OUTER JOIN kw USING (id)\nJOIN doc_chunk c USING (id)\nORDER BY score DESC\nLIMIT 5;",
+     "title": "Hybrid search with RRF"
+    },
+    {
+     "type": "markdown",
+     "text": "### A worked RRF example\n\n| Chunk | Vector rank | Keyword rank | Score |\n|---|---|---|---|\n| A | 1 | 3 | 1/61 + 1/63 = 0.0323 |\n| B | 2 | none | 1/62 = 0.0161 |\n| C | none | 1 | 1/61 = 0.0164 |\n\nChunk A wins, as both searches found it. C edges out B on rank alone.\n\n### Calling it from Spring"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Repository\nclass HybridRetriever {\n\n    private final JdbcClient jdbc;\n    private final EmbeddingModel embeddings;\n\n    HybridRetriever(JdbcClient jdbc, EmbeddingModel embeddings) {\n        this.jdbc = jdbc;\n        this.embeddings = embeddings;\n    }\n\n    List<Chunk> search(String question, String tenant) {\n        PGvector vector = new PGvector(embeddings.embed(question));\n        return jdbc.sql(HYBRID_SQL)\n            .param(\"query_vector\", vector)\n            .param(\"question\", question)\n            .param(\"tenant\", tenant)\n            .query(Chunk.class)\n            .list();\n    }\n}",
+     "title": "A retriever you own"
+    },
+    {
+     "type": "markdown",
+     "text": "Using the `pgvector` JDBC library needs its type registered on the connection. An alternative is passing the vector as a string and casting with `CAST(:query_vector AS vector)`. Writing your own retriever gives you full control, whereas `VectorStore` is simpler for vector-only search.\n\n### HNSW tuning\n\n| Setting | Effect |\n|---|---|\n| `m` (at build) | Links per node: higher improves recall, uses more memory |\n| `ef_construction` (at build) | Build quality against build time |\n| `hnsw.ef_search` (at query) | Recall against query speed |\n\nFiltering interacts with approximate search. With a strict filter such as a small tenant, HNSW may return fewer results than asked for, since it first finds neighbours and then filters. Check `hnsw.iterative_scan` in recent pgvector versions, or use partitioning per large tenant."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Hybrid search covers meaning and exact terms\n- RRF merges by rank, not score\n- PostgreSQL can do both\n- Watch filtered approximate search"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-6",
+   "type": "concept",
+   "title": "Advanced retrieval",
+   "subtopicId": "9-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Reach for these when your evaluation shows a specific failure, not by default. Each adds latency, cost and complexity.\n\n### Query transformation\n\n| Technique | Solves | Example |\n|---|---|---|\n| Rewrite | Vague wording | \"it's broken\" becomes \"payment page error\" |\n| Compress with history | Follow-up questions | \"and refunds?\" becomes \"what is the refund policy for premium plans?\" |\n| Decompose | Several questions in one | Compare A and B: search for each |\n| Multi-query | Varied wording | Generate 3 versions, and merge |\n| HyDE | Short questions vs long docs | Draft a fake answer, and embed that |\n\nSpring AI's modular RAG has components for several of these:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Advisor rag = RetrievalAugmentationAdvisor.builder()\n    .queryTransformers(RewriteQueryTransformer.builder()\n        .chatClientBuilder(chatClientBuilder.build().mutate())\n        .build())\n    .documentRetriever(VectorStoreDocumentRetriever.builder()\n        .vectorStore(store)\n        .similarityThreshold(0.5)\n        .topK(5)\n        .build())\n    .build();",
+     "title": "Compressing a follow-up question, then retrieving"
+    },
+    {
+     "type": "markdown",
+     "text": "Use a small, cheap model for transformation, because it adds a model call to every request.\n\n### Reranking\n\nEmbeddings are quick but rough. A **cross-encoder reranker** reads the question and a chunk together, and scores relevance more accurately, but it's too slow for the whole database. So retrieve about 30 candidates cheaply, rerank them, and send the top 5. It's often the single biggest improvement in precision."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  Q[Question] --> A[Rewrite]\n  A --> B[Hybrid search: top 30]\n  B --> C[Reranker: top 5]\n  C --> D[Prompt]\n  D --> E[LLM]",
+     "title": "A two-stage retriever"
+    },
+    {
+     "type": "markdown",
+     "text": "### Better chunks\n\n| Technique | Idea |\n|---|---|\n| Contextual chunks | Add a sentence saying where the chunk fits in its document |\n| Parent document | Search small chunks, and send the surrounding section |\n| Table handling | Keep tables whole, or turn rows into sentences |\n| Metadata filters | Limit by date, product or language before searching |\n\n### Citations that can be trusted\n\nNumber each chunk in the prompt, and ask for citations such as `[2]`. Then **check them in code**: parse the numbers, verify that they exist, and link to the sources. Going further, you can verify that the quoted text actually appears."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "<documents>\n[1] (refund-policy.pdf, section 3) Refunds are issued within 7 days...\n[2] (premium-terms.pdf, section 1) Premium plans renew yearly...\n</documents>\n\nAnswer using only these documents. Cite each claim like [1].\nIf they do not contain the answer, say you don't know.",
+     "title": "Prompt format for citations"
+    },
+    {
+     "type": "markdown",
+     "text": "### When nothing relevant is found\n\nDecide this explicitly. Set a score threshold, and if nothing passes, say so and offer a next step, such as contacting support, without calling the model at all. This saves money, and it avoids confident nonsense.\n\n### Graph RAG and agents that search\n\nFor questions spanning connected facts (\"which teams depend on services owned by Asha?\"), a knowledge graph can help. **Agentic RAG** lets a model search repeatedly until it's satisfied. Both are powerful, slower and harder to evaluate, so start simple."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Add techniques only for measured failures\n- Retrieve wide, rerank, send few\n- Verify citations in code\n- Handle \"nothing found\" without the model"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-7",
+   "type": "concept",
+   "title": "A complete RAG service, end to end",
+   "subtopicId": "9-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Here's the shape of a production-minded assistant, joining the previous chapters."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant U as User\n  participant A as API\n  participant R as Retriever\n  participant L as LLM\n  participant D as Database\n  U->>A: question (authenticated)\n  A->>A: check quota and input length\n  A->>L: rewrite with history (small model)\n  A->>R: hybrid search, filtered by tenant\n  R-->>A: chunks and scores\n  alt nothing passes the threshold\n    A-->>U: I don't know, plus how to get help\n  else chunks found\n    A->>L: prompt with numbered chunks (stream)\n    L-->>U: streamed answer\n    A->>A: verify citations, record usage\n    A->>D: save question, chunk ids, answer, tokens, prompt version\n  end",
+     "title": "Request flow"
+    },
+    {
+     "type": "markdown",
+     "text": "### The service"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Service\nclass DocsAssistant {\n\n    private final HybridRetriever retriever;\n    private final ChatClient chat;\n    private final QueryRewriter rewriter;\n    private final Quota quota;\n\n    Flux<String> ask(CurrentUser user, String conversationId, String question) {\n        quota.check(user, question);\n\n        String standalone = rewriter.rewrite(conversationId, question);\n        List<Chunk> chunks = retriever.search(standalone, user.tenantId());\n\n        if (chunks.isEmpty() || chunks.getFirst().score() < MIN_SCORE) {\n            return Flux.just(\"I couldn't find that in the documents. Please contact support.\");\n        }\n\n        return chat.prompt()\n            .user(u -> u.text(PROMPT)\n                .param(\"documents\", format(chunks))\n                .param(\"question\", question))\n            .stream()\n            .content();\n    }\n}",
+     "title": "The main path"
+    },
+    {
+     "type": "markdown",
+     "text": "`MIN_SCORE` depends on your scoring method, so calibrate it from the evaluation set rather than guessing.\n\n### Data model\n\n| Table | Holds |\n|---|---|\n| `document` | Source, title, owner, access group, hash, version |\n| `doc_chunk` | Text, heading, tenant, embedding |\n| `conversation` | User, created at |\n| `message` | Role, content, retrieved chunk IDs, tokens, prompt version |\n| `feedback` | Message, thumbs up or down, comment |\n\nStoring chunk IDs with every answer means you can later explain exactly why an answer was given. This is invaluable when debugging.\n\n### Handling document changes\n\n1. An upload creates a `document` row and an ingestion job, and the user sees \"processing\".\n2. The worker extracts, chunks and embeds, in batches, with backoff on rate limits.\n3. In one transaction, it replaces old chunks with new ones.\n4. Search only uses documents marked as ready.\n5. When a document is deleted, chunks must go too, especially for personal data.\n\n### Permissions\n\nAccess rules are the part that's easiest to get wrong. If permissions change often, keep group IDs in chunk metadata and update them when sharing changes, or check permissions at query time by joining to your access tables. Test this explicitly: write an evaluation case proving that user A can never retrieve user B's content.\n\n### What to measure in production\n\n| Signal | Meaning |\n|---|---|\n| Top retrieval score trend | Falling: content gap, or data drift |\n| \"I don't know\" rate | Too high: thresholds or missing content |\n| Thumbs down | Inspect these each week |\n| Tokens per answer | Cost control |\n| Time to first token | Perceived speed |\n| Questions with no good document | A to-do list for your content team |\n\nThat last signal is often the most valuable: the assistant tells you what your documentation is missing."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"How would you debug a wrong answer?\"** Pull the stored record: rewritten question, retrieved chunks and prompt version. If the right chunk wasn't there, it's a retrieval or ingestion problem. If it was there, it's a prompt or model problem. Then add the case to the evaluation set.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Check quota before anything costs money\n- Store chunk IDs with each answer\n- Test access control explicitly\n- Missing-document signals improve your content"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-8",
+   "type": "concept",
+   "title": "Building the ingestion worker",
+   "subtopicId": "9-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Ingestion looks trivial in tutorials, which load one PDF at start-up. Real ingestion has failures, rate limits and re-runs.\n\n### States"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "stateDiagram-v2\n  [*] --> UPLOADED\n  UPLOADED --> EXTRACTING\n  EXTRACTING --> EMBEDDING\n  EMBEDDING --> READY\n  EXTRACTING --> FAILED\n  EMBEDDING --> FAILED\n  FAILED --> UPLOADED: retry\n  READY --> UPLOADED: new version\n  READY --> DELETED",
+     "title": "A document's life"
+    },
+    {
+     "type": "markdown",
+     "text": "Storing a state means that users see progress, retries are safe, and search can ignore anything that isn't `READY`.\n\n### The worker"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Service\nclass IngestionWorker {\n\n    @SqsListener(\"ingest-queue\")\n    public void onUpload(IngestRequest req) {\n        Document doc = documents.find(req.documentId());\n        String hash = sha256(s3.read(doc.getKey()));\n        if (hash.equals(doc.getIndexedHash())) {\n            documents.markReady(doc.getId());       // nothing changed; a repeat message does nothing\n            return;\n        }\n        documents.setState(doc.getId(), EXTRACTING);\n        List<ChunkText> chunks = chunker.split(extractor.extract(doc));\n\n        documents.setState(doc.getId(), EMBEDDING);\n        List<float[]> vectors = embedInBatches(chunks);\n\n        store.replaceChunks(doc, chunks, vectors, hash);    // one transaction: delete old, insert new, mark READY\n    }\n\n    private List<float[]> embedInBatches(List<ChunkText> chunks) {\n        List<float[]> out = new ArrayList<>();\n        for (List<ChunkText> batch : Lists.partition(chunks, 64)) {\n            out.addAll(retry.executeSupplier(\n                () -> embeddings.embed(batch.stream().map(ChunkText::text).toList())));\n        }\n        return out;\n    }\n}",
+     "title": "An idempotent ingestion job"
+    },
+    {
+     "type": "markdown",
+     "text": "Important choices here:\n\n- **Batch embeddings.** Embedding APIs accept many texts at once, which is faster and often cheaper.\n- **Embed outside the database transaction.** That work can take minutes.\n- **Replace atomically.** Readers never see half a document.\n- **Visibility timeout longer than the longest job,** or split big documents into smaller messages.\n\n### Handling a large re-index\n\nChanging the embedding model means re-embedding everything, and vectors from the old and new models can't be compared."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Add embedding_v2 column or table] --> B[Backfill in the background]\n  B --> C[Evaluate retrieval on v2]\n  C --> D[Switch queries to v2]\n  D --> E[Remove v1]",
+     "title": "Re-indexing without downtime"
+    },
+    {
+     "type": "markdown",
+     "text": "New uploads must write both during the backfill.\n\n### Chunking code that respects structure"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "List<ChunkText> split(ParsedDoc doc) {\n    List<ChunkText> out = new ArrayList<>();\n    for (Section s : doc.sections()) {\n        String prefix = doc.title() + \" > \" + s.heading() + \"\\n\";\n        List<String> pieces = bySize(s.text(), MAX_TOKENS, OVERLAP_TOKENS);\n        for (int i = 0; i < pieces.size(); i++) {\n            out.add(new ChunkText(prefix + pieces.get(i), s.heading(), i));\n        }\n    }\n    return out;\n}",
+     "title": "Split by headings, then by size"
+    },
+    {
+     "type": "markdown",
+     "text": "Adding the title and heading to each chunk costs a few tokens, and often gives one of the largest improvements.\n\n### Extraction quality\n\nLook at your extracted text before anything else. Ask: are tables in order, did columns get mixed up, are headers repeated on each page, did scanned pages come out empty? A quick audit of 20 documents commonly reveals problems no amount of tuning later can fix."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Track document states\n- Make jobs idempotent with a hash\n- Embed in batches, outside transactions\n- Read your extracted text first"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-9",
+   "type": "concept",
+   "title": "Retrieval metrics, worked by hand",
+   "subtopicId": "9-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Numbers mean little until you've computed them yourself.\n\n### Recall at k\n\nDid the correct chunk appear in the top k? Suppose five questions, and these are the ranks at which the right chunk appeared:\n\n| Question | Rank of the right chunk |\n|---|---|\n| Q1 | 1 |\n| Q2 | 3 |\n| Q3 | Not found |\n| Q4 | 2 |\n| Q5 | 1 |\n\n| Metric | Working | Result |\n|---|---|---|\n| Recall at 1 | Q1 and Q5: 2 of 5 | 0.40 |\n| Recall at 3 | Q1, Q2, Q4, Q5: 4 of 5 | 0.80 |\n\n### Mean reciprocal rank (MRR)\n\nScore each question 1/rank, or 0 if it's not found, and average them.\n\n(1 + 1/3 + 0 + 1/2 + 1) ÷ 5 = 2.833 ÷ 5 = **0.567**\n\nMRR rewards ranking the right chunk high. Improving Q2 from rank 3 to rank 1 raises it to 0.70, whereas recall at 3 doesn't change at all.\n\n### Precision at k\n\nOf the top k chunks returned, how many are relevant? If 2 of the top 5 are relevant, precision at 5 is 0.4. Low precision means you're paying for noise, and may mislead the model.\n\n### nDCG\n\nWhen several chunks are relevant, and some are more useful, nDCG scores the ordering with graded relevance. Learn what it's for, and use a library if you need it.\n\n### Generation metrics\n\n| Metric | Question | How to score |\n|---|---|---|\n| Faithfulness | Is each claim backed by the context? | Model grader, or claim-by-claim |\n| Answer relevance | Does it answer the question? | Model grader |\n| Correctness | Does it contain the right facts? | Expected facts |\n| Citation accuracy | Do citations support the claims? | Check quoted text |\n| Refusal accuracy | Does it refuse when it should? | Unanswerable questions |\n\n### Reading the patterns\n\n| Recall | Faithfulness | Correctness | Diagnosis |\n|---|---|---|---|\n| Low | High | Low | The model is honest, but lacks the data: fix retrieval |\n| High | Low | Low | It has the data but invents: fix the prompt |\n| High | High | Low | Grounded but wrong: chunks conflict or are outdated |\n| High | High | High | Good: look at cost and latency |\n\n### An experiment\n\nChange one variable, and keep a table. These numbers are illustrative only:\n\n| Run | Chunking | Search | Recall at 5 | MRR | Cost per question |\n|---|---|---|---|---|---|\n| A | 500 tokens, fixed | Vector | 0.72 | 0.51 | Baseline |\n| B | By heading | Vector | 0.81 | 0.60 | Same |\n| C | By heading | Hybrid | 0.88 | 0.66 | Same |\n| D | By heading | Hybrid + rerank | 0.88 | 0.79 | Higher |\n\nA table like this, with your own measured numbers, is one of the strongest things you can bring to an interview."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Recall asks whether it's found\n- MRR asks how high\n- Read metrics together for a diagnosis\n- Change one variable at a time"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-10",
+   "type": "concept",
+   "title": "Asking questions of databases safely",
+   "subtopicId": "9-10",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "\"Let users ask questions about their data\" is a common request. The tempting design lets the model write SQL. It works in demos, and it's risky in production.\n\n### Option 1: fixed tools (safest)"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Tool(description = \"Total sales for the current user's store between two dates, inclusive\")\nSalesTotal salesBetween(@ToolParam(description = \"Start date, YYYY-MM-DD\") LocalDate from,\n                        @ToolParam(description = \"End date, YYYY-MM-DD\") LocalDate to,\n                        ToolContext ctx) {\n    if (to.isBefore(from) || from.plusYears(2).isBefore(to)) {\n        throw new IllegalArgumentException(\"Date range must be valid and at most 2 years\");\n    }\n    return sales.total(storeId(ctx), from, to);    // parameterised SQL you wrote\n}",
+     "title": "Named questions with validated parameters"
+    },
+    {
+     "type": "markdown",
+     "text": "The model chooses which tool to call and with which values. It never writes SQL. This covers most real questions.\n\n### Option 2: text to SQL, with layers of defence\n\nWhen questions really are unpredictable, for example with an internal analytics tool:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Question] --> B[Model writes SQL from a schema description]\n  B --> C[Parse it: must be a single SELECT]\n  C --> D[Check tables and columns against an allow-list]\n  D --> E[Run as a read-only database role]\n  E --> F[Row-level security, statement timeout, row limit]\n  F --> G[Read replica]\n  G --> H[Show results and the SQL to the user]",
+     "title": "Layers of defence for generated SQL"
+    },
+    {
+     "type": "markdown",
+     "text": "| Layer | Stops |\n|---|---|\n| Parser check | `DROP`, multiple statements |\n| Allow-list | Salary and password tables |\n| Read-only role | All writes, even if the parser misses something |\n| Row-level security | Other tenants' data |\n| Timeout and limit | Huge queries and cross joins |\n| Read replica | Harm to production load |\n| Showing SQL | Lets people check the logic |\n\nThe database role is the real barrier. Treat other layers as helpful, but assume they can be bypassed."
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "CREATE ROLE analytics_reader NOLOGIN;\nGRANT USAGE ON SCHEMA reporting TO analytics_reader;\nGRANT SELECT ON reporting.sales_view TO analytics_reader;\nALTER ROLE analytics_reader SET statement_timeout = '5s';\n\nALTER TABLE reporting.sales ENABLE ROW LEVEL SECURITY;\nCREATE POLICY tenant_only ON reporting.sales\n  USING (tenant_id = current_setting('app.tenant_id'));",
+     "title": "A role that cannot do damage"
+    },
+    {
+     "type": "markdown",
+     "text": "Point it at purpose-built **views** with clear names rather than raw tables. Good names and column comments improve accuracy, and hide messy internals.\n\n### Accuracy is the deeper problem\n\nA query can run perfectly and still be wrong: \"revenue\" might need refunds excluded, or a \"customer\" might mean something specific in your business. Wrong numbers that look right are worse than an error. Mitigations:\n\n- Provide definitions of business terms and example queries.\n- Show the SQL and assumptions.\n- Prefer a semantic layer of defined metrics.\n- Evaluate on real questions with known answers.\n- Keep high-stakes reports in human-built dashboards.\n\n### Spreadsheets and CSVs\n\nGiving a model a big CSV as text is wasteful, and it's bad at sums. Load the data into a table, or let it call a calculation tool, so code does the arithmetic."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Can we let users ask questions in plain English against our database?\"** Start with tools that run fixed, parameterised queries. If that's too limited, allow generated SELECT queries, through a read-only role, on approved views, with row-level security, timeouts and a replica. Show the SQL, and evaluate accuracy on real questions.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Prefer fixed tools\n- The database role is the real barrier\n- Use clear views, not raw tables\n- A wrong number that looks right is the bigger risk"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### RAG from the ground up"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not simply send all documents to the model?",
+       "answer": "They will not fit in the context window, the cost is high, and irrelevant text lowers quality."
+      },
+      {
+       "question": "A user asks for last month's total sales. Is RAG right?",
+       "answer": "No. That is a precise database query. Use a tool that runs a safe, parameterised query."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Ingestion and chunking"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A chunk reads \"It must be renewed every year\" and retrieval fails. Why?",
+       "answer": "The chunk lost its subject. Add the document title and section heading to it."
+      },
+      {
+       "question": "How do you update a document that has changed?",
+       "answer": "Detect the change by hash, delete its old chunks using metadata, and re-embed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Vector stores and retrieval"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Vector search misses ERR-4021. Why, and how do you fix it?",
+       "answer": "Embeddings capture meaning and handle exact identifiers poorly. Add keyword search and merge the results."
+      },
+      {
+       "question": "Why is a prompt instruction not access control?",
+       "answer": "It can be ignored or overridden. A filter at retrieval means the model never sees the data."
+      },
+      {
+       "question": "A user asks \"and what about refunds?\" and retrieval fails. What helps?",
+       "answer": "Query rewriting: use the conversation to turn it into a complete question before searching."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Measuring RAG quality"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Answer quality fell after a chunking change. How do you investigate?",
+       "answer": "Compare evaluation results before and after. Check retrieval recall first, then inspect the failing questions' chunks."
+      },
+      {
+       "question": "Why include unanswerable questions in your evaluation set?",
+       "answer": "To check that the assistant refuses rather than inventing answers."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hybrid search in PostgreSQL"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why not simply add a vector score and a keyword score?",
+       "answer": "They're on different scales, so one would dominate. RRF uses ranks, avoiding the problem."
+      },
+      {
+       "question": "A small tenant's search returns only 1 of 5 results, though more exist. Why?",
+       "answer": "HNSW finds nearest neighbours overall, and then filters. Few pass the filter. Use iterative scan, a larger ef_search, or partitions."
+      },
+      {
+       "question": "Calculate the RRF score for a chunk ranked 2 in one list and 4 in the other, with k = 60.",
+       "answer": "1/62 + 1/64, which is about 0.0161 + 0.0156 = 0.0317."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Advanced retrieval"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why retrieve 30 chunks and rerank, rather than simply use the top 5?",
+       "answer": "Embedding search is rough, so the best chunk may rank low. A reranker is more accurate, but too slow for the whole database."
+      },
+      {
+       "question": "How can you tell whether a citation is real?",
+       "answer": "Parse it in code, and check that the source was in the retrieved set. Optionally, check that the quoted text is there."
+      },
+      {
+       "question": "Why skip the model when retrieval finds nothing?",
+       "answer": "It saves cost, and avoids an invented answer. Return a clear message and a next step."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### A complete RAG service, end to end"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why store retrieved chunk IDs with each answer?",
+       "answer": "To explain and debug any answer later, and to tell retrieval failures from generation failures."
+      },
+      {
+       "question": "How do you avoid users seeing half-updated documents during re-ingestion?",
+       "answer": "Replace chunks in one transaction, or build a new version and switch to it when ready."
+      },
+      {
+       "question": "A user's access to a document is revoked. What must happen in the RAG system?",
+       "answer": "Retrieval must stop returning it right away, either by updating chunk metadata or by checking permissions at query time."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Building the ingestion worker"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "An ingestion message is delivered twice. Why does nothing break here?",
+       "answer": "The content hash matches, so the second run does nothing. Chunk replacement is atomic as well."
+      },
+      {
+       "question": "How do you change embedding model without downtime?",
+       "answer": "Backfill a new column or table in the background, evaluate, switch queries, then remove the old one."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Retrieval metrics, worked by hand"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Ranks are 2, 1, not found, and 4. What's the MRR?",
+       "answer": "(1/2 + 1 + 0 + 1/4) ÷ 4 = 1.75 ÷ 4 = 0.4375."
+      },
+      {
+       "question": "In that same case, what's recall at 3?",
+       "answer": "Two questions (ranks 2 and 1) out of four: 0.5."
+      },
+      {
+       "question": "Recall is high, but faithfulness is low. What do you fix first?",
+       "answer": "The prompt and grounding, since the right text is reaching the model, but it isn't sticking to it."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Asking questions of databases safely"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a parser check not sufficient for generated SQL?",
+       "answer": "Parsers can miss tricks, such as functions with side effects. A read-only role with narrow grants enforces it at the database."
+      },
+      {
+       "question": "A generated query runs, but gives wrong revenue. Why, and how do you reduce this?",
+       "answer": "The model doesn't know your definition, such as excluding refunds. Provide definitions and examples, use defined metrics, and evaluate on known answers."
+      },
+      {
+       "question": "How do you stop a generated query scanning for minutes?",
+       "answer": "A statement timeout on the role, a row limit, and running it on a replica."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

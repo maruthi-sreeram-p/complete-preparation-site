@@ -1,159 +1,361 @@
 {
-  "source": {
-    "document": "Written for this site (not from your PDFs)"
-  },
-  "sections": [
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-9-1",
+   "type": "concept",
+   "title": "How React renders",
+   "subtopicId": "9-1",
+   "blocks": [
     {
-      "id": "intro",
-      "type": "introduction",
-      "title": "How rendering works",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "note",
-          "title": "Not from your PDFs",
-          "text": "Your PDFs do not cover this topic, so this page was written for the site. Your 12-week plan lists React, hooks, rendering, performance, state management and TypeScript. Check it against the official documentation, or give me a PDF to replace it."
-        },
-        "\"Rendering\" means React calling your component function. It does not mean updating the DOM. React then compares the result and touches only what changed, so a render with no changes is usually cheap.",
-        {
-          "type": "diagram",
-          "format": "mermaid",
-          "title": "From state change to screen",
-          "code": "flowchart LR\n  A[setState] --> B[Render phase<br/>call the components, compare trees]\n  B --> C[Commit phase<br/>apply DOM changes]\n  C --> D[Browser paints]\n  D --> E[Effects run]",
-          "caption": "The render phase can be repeated or discarded, so it must have no side effects."
-        },
-        "A component re-renders when **its state changes, its parent re-renders, or a context it uses changes**. Props changing is not the trigger: by default a child re-renders whenever its parent does, even with identical props."
-      ]
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "No guide of yours covers this subject, so this part was written for the site, as of October 2026. Frontend libraries change quickly: check the official documentation before relying on a detail."
     },
     {
-      "id": "tools",
-      "type": "concept",
-      "title": "memo, useMemo and useCallback",
-      "blocks": [
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "const BookRow = memo(function BookRow({ book, onBorrow }: Props) {\n  return <li>{book.title} <button onClick={() => onBorrow(book.id)}>Borrow</button></li>;\n});\n\nfunction Library({ books, filter }: { books: Book[]; filter: string }) {\n  // skip an expensive calculation when its inputs did not change\n  const visible = useMemo(() => books.filter((b) => b.title.includes(filter)), [books, filter]);\n\n  // keep the same function, otherwise memo above sees a new prop on every render\n  const onBorrow = useCallback((id: number) => api.borrow(id), []);\n\n  return <ul>{visible.map((b) => <BookRow key={b.id} book={b} onBorrow={onBorrow} />)}</ul>;\n}",
-          "title": "Together they let a row skip re-rendering",
-          "walkthrough": [
-            {
-              "lines": "1",
-              "title": "memo",
-              "text": "Skips re-rendering when all props are shallowly equal."
-            },
-            {
-              "lines": "8",
-              "title": "useMemo",
-              "text": "Caches a calculated value until its dependencies change."
-            },
-            {
-              "lines": "11",
-              "title": "useCallback",
-              "text": "A new arrow function on each render would defeat `memo`, so the function is kept stable."
-            }
-          ]
-        },
-        {
-          "type": "callout",
-          "variant": "tip",
-          "title": "Measure first",
-          "text": "Use the React DevTools Profiler to find what is slow before adding these. They have a cost and do nothing unless the child is memoised or the calculation is expensive. The React Compiler can add this memoisation automatically in projects that enable it."
-        }
-      ]
+     "type": "markdown",
+     "text": "### Reconciliation\n\nWhen state changes, React calls your components to get a new tree of elements, compares it with the previous one, and applies only the differences to the DOM. A full comparison of two trees would be far too slow, so React uses two shortcuts:\n\n1. **Different type, new subtree.** If `<div>` becomes `<section>`, or `<A>` becomes `<B>`, React destroys everything below, including state.\n2. **Keys identify children** in a list, so that it can match them across renders."
     },
     {
-      "id": "fixes",
-      "type": "example",
-      "title": "Fixes that usually matter more",
-      "blocks": [
-        {
-          "type": "table",
-          "headers": [
-            "Problem",
-            "Fix"
-          ],
-          "rows": [
-            [
-              "Typing in an input re-renders a whole page",
-              "Move the state down into the component that uses it"
-            ],
-            [
-              "A list of thousands of rows",
-              "Virtualise it (TanStack Virtual, react-window): render only visible rows"
-            ],
-            [
-              "A large initial bundle",
-              "Split routes with `lazy` and `Suspense`"
-            ],
-            [
-              "Typing lags behind a heavy filtered list",
-              "`useDeferredValue` or `useTransition` to mark the update as low priority"
-            ],
-            [
-              "Rows lose state or remount",
-              "Use stable keys; do not define components inside components"
-            ]
-          ]
-        },
-        {
-          "type": "code",
-          "language": "tsx",
-          "code": "const Reports = lazy(() => import('./Reports'));     // separate bundle, loaded on demand\n\n<Suspense fallback={<p>Loading</p>}>\n  <Reports />\n</Suspense>\n\n// typing stays responsive; the list catches up when the browser is free\nconst deferred = useDeferredValue(query);\nconst results = useMemo(() => search(items, deferred), [items, deferred]);"
-        }
-      ]
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[setState] --> B[Render phase: call components, pure, can be interrupted]\n  B --> C[Diff against the previous tree]\n  C --> D[Commit phase: apply DOM changes, synchronous]\n  D --> E[Browser paints]\n  E --> F[Effects run]",
+     "title": "What happens on each state change"
     },
     {
-      "id": "notes",
-      "type": "notes",
-      "title": "Important notes",
-      "blocks": [
-        {
-          "type": "callout",
-          "variant": "warning",
-          "title": "Gotcha",
-          "text": "Defining a component inside another component creates a new type on every render, so React unmounts and remounts it and its state is lost. Define components at the top level."
-        },
-        {
-          "type": "callout",
-          "variant": "interview",
-          "title": "Interview angle",
-          "text": "**A page is slow. What do you do?** Reproduce it in a production build, record with the React DevTools Profiler, and find which components render and why. Then move state down first, virtualise long lists, split bundles, and add `memo` only where the profile shows a benefit."
-        },
-        {
-          "type": "callout",
-          "variant": "keypoints",
-          "title": "Key points",
-          "text": "- Render means calling the function, not updating the DOM.\n- A parent re-rendering re-renders its children by default.\n- Moving state down is usually the best fix.\n- `memo` needs stable props, hence `useCallback` and `useMemo`.\n- Measure with the Profiler, in a production build."
-        }
-      ]
+     "type": "markdown",
+     "text": "**Fiber** is React's internal structure, which splits rendering into small units of work. This lets it pause for urgent updates, like typing. That's the basis for concurrent features such as `useTransition`.\n\n### Render is not paint\n\nA component \"rendering\" means React called the function. If the result matches the last one, the DOM isn't touched. So a re-render is usually cheap, and many re-renders are harmless. **Measure before you optimise.**\n\n### When renders are a problem\n\n| Cause | Symptom |\n|---|---|\n| State too high up | Typing in one field renders a whole page |\n| Large lists | Scrolling and typing lag |\n| Costly calculation in render | Every update feels slow |\n| Context with a changing value | Many unrelated parts render |\n| New objects as props to memoised children | `memo` does nothing |\n\n### Move state down\n\nThe simplest fix uses no special tools. If only one child uses the state, keep it in that child."
     },
     {
-      "id": "practice",
-      "type": "practice",
-      "title": "Practice questions",
-      "blocks": [
-        {
-          "type": "questions",
-          "items": [
-            {
-              "question": "Does a child re-render if its props did not change?",
-              "answer": "Yes, when its parent re-renders, unless it is wrapped in `memo`."
-            },
-            {
-              "question": "Why doesn't `memo` help when you pass `onClick={() => ...}`?",
-              "answer": "A new function is created on every render, so the prop always differs. Use `useCallback`."
-            },
-            {
-              "question": "You must show 50,000 rows. What do you do?",
-              "answer": "Virtualise: render only the visible rows and reuse them while scrolling."
-            },
-            {
-              "question": "Why must rendering have no side effects?",
-              "answer": "React may call a component several times or discard a render, so side effects could run repeatedly or for output never shown."
-            }
-          ]
-        }
-      ]
+     "type": "code",
+     "language": "tsx",
+     "code": "// Typing renders the whole page, including the slow chart\nfunction Page() {\n  const [query, setQuery] = useState('');\n  return (\n    <>\n      <input value={query} onChange={(e) => setQuery(e.target.value)} />\n      <SlowChart />\n    </>\n  );\n}\n\n// Typing renders only SearchBox\nfunction SearchBox() {\n  const [query, setQuery] = useState('');\n  return <input value={query} onChange={(e) => setQuery(e.target.value)} />;\n}\nfunction BetterPage() {\n  return (\n    <>\n      <SearchBox />\n      <SlowChart />\n    </>\n  );\n}",
+     "title": "Colocating state"
+    },
+    {
+     "type": "markdown",
+     "text": "Passing `children` helps as well: elements created by a parent's parent don't re-render when an intermediate component's state changes.\n\n### memo, useMemo and useCallback\n\n`memo` skips a render if props are shallowly equal."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const Row = memo(function Row({ order, onSelect }: RowProps) {\n  return <li onClick={() => onSelect(order.id)}>{order.total}</li>;\n});\n\nfunction List({ orders }: { orders: Order[] }) {\n  const [selected, setSelected] = useState<string | null>(null);\n  const onSelect = useCallback((id: string) => setSelected(id), []);  // stable reference\n  return orders.map((o) => <Row key={o.id} order={o} onSelect={onSelect} />);\n}",
+     "title": "Using them together"
+    },
+    {
+     "type": "markdown",
+     "text": "Without `useCallback`, `onSelect` is a new function each render, so `memo` always sees a change.\n\n| Worth it | Not worth it |\n|---|---|\n| Expensive child rendering often with the same props | Simple components |\n| Long lists of rows | Props that change each render anyway |\n| Measured slowness | \"Just in case\" |\n\nMemoising costs memory and adds complexity, and a wrong dependency list causes stale bugs. The **React Compiler** does this automatically where enabled, which reduces the need for manual work."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A render isn't a DOM update\n- Measure before optimising\n- Move state down first\n- memo needs stable props"
     }
-  ]
+   ]
+  },
+  {
+   "id": "ch-9-2",
+   "type": "concept",
+   "title": "Finding what's slow",
+   "subtopicId": "9-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### React DevTools Profiler\n\nRecord an interaction, and see which components rendered, how long each took, and why. Turn on \"Highlight updates when components render\" to see this visually. Profile a production build for true numbers, since development mode is slower.\n\n### Browser Performance panel\n\nThe flame chart shows long tasks on the main thread. Anything over 50 ms can make the page feel sluggish. You can throttle the CPU to simulate a cheap phone. Your users' devices are probably slower than your laptop.\n\n### Core Web Vitals\n\nGoogle's measures of real user experience. The thresholds below are the \"good\" levels at the time of writing.\n\n| Metric | Measures | Good |\n|---|---|---|\n| LCP (Largest Contentful Paint) | Main content appears | Under 2.5 s |\n| INP (Interaction to Next Paint) | Response to clicks and keys | Under 200 ms |\n| CLS (Cumulative Layout Shift) | Content jumping around | Under 0.1 |\n\n| Problem | Common fixes |\n|---|---|\n| Poor LCP | Smaller bundles, optimised images, server rendering, a CDN |\n| Poor INP | Shorter tasks, less rendering, `useTransition`, workers |\n| Poor CLS | Set image dimensions, reserve space, careful font loading |\n\nLighthouse gives a lab score. Real user data, using the `web-vitals` library, tells you what people actually experience.\n\n### Network\n\nThe Network panel shows what loads, how big and in which order. Check bundle contents with `rollup-plugin-visualizer`. You'll often find one big date library or icon set."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Profile before you change anything\n- Long tasks block the page\n- Test with CPU throttling\n- Lab numbers differ from real users"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-3",
+   "type": "concept",
+   "title": "Fixes that usually matter most",
+   "subtopicId": "9-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Code splitting"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const Reports = lazy(() => import('./features/reports/Reports'));\nconst Admin = lazy(() => import('./features/admin/Admin'));\n\n<Suspense fallback={<PageSkeleton />}>\n  <Routes>\n    <Route path=\"reports\" element={<Reports />} />\n    <Route path=\"admin\" element={<Admin />} />\n  </Routes>\n</Suspense>",
+     "title": "Split by route"
+    },
+    {
+     "type": "markdown",
+     "text": "Most users never open admin pages, so why should they download them? This site loads each guide part only when opened, and that's how large content stays fast. Load heavy libraries such as charts and editors the same way.\n\n### Long lists: virtualisation\n\nRendering 50,000 rows means 50,000 sets of DOM nodes. Virtualisation renders only what's visible."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function BigList({ rows }: { rows: Order[] }) {\n  const parentRef = useRef<HTMLDivElement>(null);\n  const virtual = useVirtualizer({\n    count: rows.length,\n    getScrollElement: () => parentRef.current,\n    estimateSize: () => 48,\n  });\n\n  return (\n    <div ref={parentRef} style={{ height: 600, overflow: 'auto' }}>\n      <div style={{ height: virtual.getTotalSize(), position: 'relative' }}>\n        {virtual.getVirtualItems().map((item) => (\n          <div\n            key={item.key}\n            style={{ position: 'absolute', top: 0, transform: `translateY(${item.start}px)`, height: item.size }}\n          >\n            {rows[item.index].id}\n          </div>\n        ))}\n      </div>\n    </div>\n  );\n}",
+     "title": "With TanStack Virtual"
+    },
+    {
+     "type": "markdown",
+     "text": "Consider pagination first, as it's simpler and also limits how much you load. Note that virtualisation can hamper browser find-in-page and accessibility.\n\n### Keeping input responsive"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Search({ products }: { products: Product[] }) {\n  const [query, setQuery] = useState('');\n  const deferred = useDeferredValue(query);\n  const stale = query !== deferred;\n  return (\n    <>\n      <input value={query} onChange={(e) => setQuery(e.target.value)} />\n      <div style={{ opacity: stale ? 0.6 : 1 }}>\n        <ProductList products={products} query={deferred} />   {/* must be memo-wrapped */}\n      </div>\n    </>\n  );\n}",
+     "title": "useDeferredValue lets a slow list lag behind typing"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const [isPending, startTransition] = useTransition();\n\nfunction selectTab(next: string) {\n  startTransition(() => setTab(next));      // urgent updates can interrupt this\n}",
+     "title": "useTransition marks an update as non-urgent"
+    },
+    {
+     "type": "markdown",
+     "text": "| Technique | Good for |\n|---|---|\n| Debounce | Reducing network calls while typing |\n| Throttle | Scroll or resize handlers |\n| `useDeferredValue` | Slow rendering of a value |\n| `useTransition` | Slow state changes you start |\n| Web Worker | Heavy calculation off the main thread |\n\n### Images and assets\n\n- Use modern formats such as WebP or AVIF.\n- Set `width` and `height` to stop layout shifts.\n- `loading=\"lazy\"` for images below the fold.\n- Serve sizes that match the display, with `srcset`.\n- Compress with Brotli or gzip at the CDN.\n- Limit web fonts, and use `font-display: swap`.\n\n### Bundle size\n\nImport what you need: `import debounce from 'lodash/debounce'`, not all of lodash. Prefer small libraries, use `Intl` rather than a heavy date library where possible, and check a package's size before adding it.\n\n### Network and caching\n\nPrefetch likely next pages on hover, use a CDN, and use HTTP caching for API responses that allow it. A cached response beats any rendering optimisation. Also check the backend: a slow API is often the real problem, and that's where your Spring and database skills come in.\n\n### An order of work\n\n1. Measure, with real users if possible.\n2. Fix slow APIs, and oversized images and bundles.\n3. Split code.\n4. Paginate or virtualise long lists.\n5. Move state down.\n6. Add `memo` where the profiler shows a benefit."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Your React page is slow. What do you do?\"** Measure first, with the Network panel, Performance panel and the React Profiler. Slow APIs and large bundles are commonest. Then split code, paginate or virtualise, and move state down. `memo` comes last, where the profile justifies it.",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Split by route\n- Paginate or virtualise long lists\n- Keep typing responsive\n- Memo comes last"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-4",
+   "type": "concept",
+   "title": "Case studies in slowness",
+   "subtopicId": "9-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "These show the method: measure, find the actual cause, fix it, measure again. The numbers are illustrative.\n\n### Case 1: typing lags in a data table\n\n**Symptom:** a 2,000-row orders table, with a filter box. Each key takes a noticeable moment to appear.\n\n**Measure:** the Profiler shows the whole table rendering on every keystroke, at around 180 ms each."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "function Orders({ rows }: { rows: Order[] }) {\n  const [filter, setFilter] = useState('');\n  const visible = rows.filter((r) => r.customer.includes(filter));\n  return (\n    <>\n      <input value={filter} onChange={(e) => setFilter(e.target.value)} />\n      <Table rows={visible} />\n    </>\n  );\n}",
+     "title": "Before: state above the table"
+    },
+    {
+     "type": "markdown",
+     "text": "**Options, in order:**\n\n| Fix | Effect | Effort |\n|---|---|---|\n| Paginate or virtualise to about 50 rows | Render time falls greatly | Medium |\n| `useDeferredValue` + `memo(Table)` | Typing stays smooth; the table catches up | Low |\n| Filter on the server, with debounce | Best for very large data | Medium |"
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "const Table = memo(function Table({ rows }: { rows: Order[] }) { /* ... */ });\n\nfunction Orders({ rows }: { rows: Order[] }) {\n  const [filter, setFilter] = useState('');\n  const deferred = useDeferredValue(filter);\n  const visible = useMemo(\n    () => rows.filter((r) => r.customer.includes(deferred)),\n    [rows, deferred],\n  );\n  return (\n    <>\n      <input value={filter} onChange={(e) => setFilter(e.target.value)} />\n      <Table rows={visible} />\n    </>\n  );\n}",
+     "title": "After: typing is urgent, and the table isn't"
+    },
+    {
+     "type": "markdown",
+     "text": "Note how each tool has a purpose: the deferred value separates urgent from non-urgent, `useMemo` keeps the array reference stable, and `memo` lets React skip the table when that reference hasn't changed. Remove any of them, and the benefit disappears.\n\n### Case 2: a slow first load\n\n**Symptom:** the home page takes 6 seconds on a mid-range phone.\n\n**Measure:** the Network panel shows a 1.9 MB bundle. The visualiser shows a chart library, a date library and a rich text editor, all in the main bundle, and used only on other pages.\n\n| Fix | Result |\n|---|---|\n| Route-level `lazy()` | Editor and charts leave the main bundle |\n| Replace the date library with `Intl` | Removes a large dependency |\n| Enable Brotli compression at the CDN | Smaller transfer |\n| Preload the main image, in WebP, with dimensions | Better LCP and no layout shift |\n\nAdd a **budget** in CI so that it doesn't creep back:"
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "[{ \"path\": \"dist/assets/index-*.js\", \"limit\": \"200 KB\" }]",
+     "title": "A size limit (with the size-limit tool)"
+    },
+    {
+     "type": "markdown",
+     "text": "### Case 3: the page gets slower over time\n\n**Symptom:** a dashboard is fine at first, but sluggish after an hour.\n\n**Measure:** heap snapshots grow by a steady amount with each refresh of the data. Comparing them shows retained detached DOM nodes and many listeners."
+    },
+    {
+     "type": "code",
+     "language": "tsx",
+     "code": "useEffect(() => {\n  const id = setInterval(refresh, 5000);\n  window.addEventListener('resize', onResize);\n  // no cleanup: every remount adds another timer and listener\n}, []);",
+     "title": "The bug"
+    },
+    {
+     "type": "markdown",
+     "text": "**Fix:** add cleanup, and limit retained data: for example, keep the last 500 points in a live chart rather than all of them. Remember that a chart library's instance often needs an explicit `destroy()`.\n\n### Case 4: an animation stutters\n\n**Symptom:** a side drawer janks on low-end phones. The Performance panel shows layout on every frame, since the code animates `left`.\n\n**Fix:** animate `transform: translateX()`, which doesn't trigger layout. Use `will-change: transform` only on what truly animates, as promoting many layers wastes memory.\n\n### Case 5: it's not React at all\n\n**Symptom:** a list takes 3 seconds to appear.\n\n**Measure:** in the Network panel, the API takes 2.8 s, and React takes 40 ms. The trace on the backend shows an N+1 query, the kind your Spring data guide covers. No amount of `memo` would ever fix this, so check the network first. As a full stack developer, you can fix both sides."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  A[Slow screen] --> B{Network panel: slow response?}\n  B -->|yes| C[Backend: trace, query plans, caching]\n  B -->|no| D{Large downloads?}\n  D -->|yes| E[Split code, optimise images]\n  D -->|no| F{Long tasks in Performance panel?}\n  F -->|yes| G[Profile components, reduce rendering]\n  F -->|no| H{Layout or paint?}\n  H -->|yes| I[CSS and animation]",
+     "title": "Where is the time going?"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**\"Tell me how you improved performance.\"** Use numbers you really measured: what the symptom was, how you found the cause, what you changed, and the result. If it's a personal project, say so: \"I profiled my project's table and reduced typing delay by virtualising the list.\"",
+     "title": "Interview answer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Measure before and after\n- Each memo tool only works with the others\n- Budgets stop regressions\n- Check the network first"
+    }
+   ]
+  },
+  {
+   "id": "ch-9-5",
+   "type": "concept",
+   "title": "How Vite and bundling work",
+   "subtopicId": "9-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Understanding the build helps you solve mysterious problems.\n\n### Development and production"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  subgraph D[Development]\n    A[Browser asks for a module] --> B[Vite transforms that one file on request]\n    B --> C[Hot update changes only what you edited]\n  end\n  subgraph P[Production]\n    E[All source] --> F[Bundle and tree shake]\n    F --> G[Minify and hash]\n    G --> H[dist folder]\n  end",
+     "title": "Two modes"
+    },
+    {
+     "type": "markdown",
+     "text": "During development, Vite serves native ES modules, so start-up stays quick even for large apps. Dependencies are pre-bundled once. **Hot Module Replacement** swaps the changed module, and React Refresh keeps component state where it can.\n\n### What a production build does\n\n| Step | Result |\n|---|---|\n| Transpile TS and JSX | Plain JavaScript; types removed with no checking |\n| Tree shaking | Unused exports removed |\n| Code splitting | One chunk per dynamic `import()` |\n| Minification | Shorter names, no whitespace |\n| Hashing | `index-a1b2c3.js`, for long-term caching |\n| CSS processing | Extraction and minification |\n| Source maps | Optional, for debugging |\n\n### Tree shaking in practice"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "// Tree-shakeable: named ES module exports\nimport { format } from 'date-fns';\n\n// Often pulls in everything\nimport _ from 'lodash';\n_.debounce(fn, 300);\n\n// Better\nimport debounce from 'lodash-es/debounce';",
+     "title": "What gets removed depends on how you import"
+    },
+    {
+     "type": "markdown",
+     "text": "Code with side effects at import time can't be removed safely, and that's what the `sideEffects` field in `package.json` tells bundlers about.\n\n### Splitting vendor code"
+    },
+    {
+     "type": "code",
+     "language": "ts",
+     "code": "export default defineConfig({\n  build: {\n    rollupOptions: {\n      output: {\n        manualChunks: {\n          react: ['react', 'react-dom', 'react-router'],\n          query: ['@tanstack/react-query'],\n        },\n      },\n    },\n  },\n});",
+     "title": "vite.config.ts: separate rarely changing libraries"
+    },
+    {
+     "type": "markdown",
+     "text": "When only your app code changes, users keep their cached library chunk. Don't overdo it: too many tiny files can also slow loading. Vite's defaults are good, so measure first, and note that newer Vite versions may use different bundler options.\n\n### Environment and modes\n\n`import.meta.env.MODE`, `DEV` and `PROD` are replaced at build time, so `if (import.meta.env.DEV) {...}` is removed from production bundles. Only variables starting with `VITE_` reach the browser, which protects you from leaking others.\n\n### Common build problems\n\n| Problem | Likely cause |\n|---|---|\n| Works in dev, but a blank page in production | Wrong `base` path; check console and asset URLs |\n| \"Failed to fetch dynamically imported module\" | Old tab after a deployment |\n| Huge bundle | Whole-library imports; use the visualiser |\n| Type error not caught | Vite doesn't type-check; run `tsc` |\n| `process is not defined` | Node-only code or env usage in the browser |\n| Case-sensitive import fails on Linux CI | Windows ignores filename case |\n\nThat last one catches many Windows developers: `import x from './Card'` works locally with `card.tsx`, and fails on a Linux build server."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Dev serves modules, and production bundles\n- Named ES imports allow tree shaking\n- Only VITE_ variables reach the browser\n- Filename case matters on Linux"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### How React renders"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A memoised child still renders on every parent render. Why?",
+       "answer": "A prop, often a function or object, is new each time. Stabilise it with useCallback or useMemo."
+      },
+      {
+       "question": "Typing in a search box makes the page lag. What do you check first?",
+       "answer": "Whether the state sits too high, so that typing renders slow components. Move it down."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Finding what's slow"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does INP measure?",
+       "answer": "How quickly the page visually responds to user interactions."
+      },
+      {
+       "question": "Why profile a production build?",
+       "answer": "Development mode adds checks and double rendering, so its timings mislead."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Fixes that usually matter most"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does virtualisation help a 50,000-row table?",
+       "answer": "Only visible rows exist in the DOM, greatly cutting memory and rendering work."
+      },
+      {
+       "question": "What's the difference between debouncing and useDeferredValue?",
+       "answer": "Debounce delays work by a fixed time, and suits network calls. A deferred value lets rendering lag adaptively, with no fixed delay."
+      },
+      {
+       "question": "Which is usually the first fix for a slow first load?",
+       "answer": "Reduce what's downloaded: split code, optimise images, and check the bundle's contents."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Case studies in slowness"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why do memo, useMemo and useDeferredValue work together in Case 1?",
+       "answer": "The deferred value separates urgency, useMemo keeps a stable array, and memo skips rendering when it's unchanged."
+      },
+      {
+       "question": "The API takes 2.8 seconds and rendering takes 40 ms. Where do you work?",
+       "answer": "On the backend. Rendering is a tiny share of the delay."
+      },
+      {
+       "question": "What would prevent a bundle from growing again?",
+       "answer": "A size budget in CI that fails the build when it passes a limit."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### How Vite and bundling work"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is Vite's development start-up quick for large apps?",
+       "answer": "It transforms files only when the browser requests them, rather than bundling everything first."
+      },
+      {
+       "question": "A build passes on Windows but fails on Linux CI with a missing module. Why?",
+       "answer": "Probably filename case: Windows ignores it, whereas Linux doesn't."
+      },
+      {
+       "question": "Why does a production build need no check for import.meta.env.DEV?",
+       "answer": "The value is replaced at build time, so the dead branch gets removed."
+      }
+     ]
+    }
+   ]
+  }
+ ]
 }
