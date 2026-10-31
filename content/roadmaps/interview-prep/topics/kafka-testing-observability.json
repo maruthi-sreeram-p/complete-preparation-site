@@ -1,0 +1,547 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-3-1",
+   "type": "concept",
+   "title": "A Testing Strategy for Kafka Code",
+   "subtopicId": "3-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "Your Kafka guide has no chapters on this subject, so this part was written for the site, as of October 2026. It follows the versions used in the rest of the Kafka guide (Kafka 4.x, Spring Boot 4.1, Spring for Apache Kafka 4.1) and refers to its chapters by name. Defaults and class names change between releases: check the official documentation of the version you run before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A payment listener passes every unit test, and in production two events of the same order are charged in the wrong order, because the producer forgot to set the record key. No mock could have caught that: a mocked `KafkaTemplate` accepts any arguments. Kafka code is correct only in combination with partitions, serializers, offsets and a broker, so a test strategy for it has to decide, for every property you care about, **which level of test can prove it**.\n\n### What each level proves\n\n| Level | Tool | Proves | Cannot prove | Cost |\n|---|---|---|---|---|\n| Unit | JUnit with plain objects or fakes | Business logic, mapping, idempotency check | Anything about Kafka | Milliseconds |\n| Plain client | `MockConsumer`, `MockProducer` | Your own poll loop, commit and retry logic | Partitioning, real serializers, rebalances | Milliseconds |\n| Embedded broker | `@EmbeddedKafka` | Listener wiring, serialization, topics, error handling, dead letters | The exact broker version and configuration you run | Seconds |\n| Real broker | Testcontainers with the Apache Kafka image | The same, on the real server version and settings | Scale, real network failures | Seconds, shared across tests |\n| Contract | Schema compatibility checks, fixture files | That producers and consumers still agree on events | Behaviour | Milliseconds |\n| Production | Monitoring, alerts, canary traffic | Everything else | | Continuous |\n\nThe levels are not alternatives. Most of your tests should be fast and low, and a small number should go through a real broker, one per property that only a broker can prove: the key chooses the partition, the JSON survives the round trip, a bad record reaches the dead-letter topic, a duplicate does no harm."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  P[\"Production: monitoring and alerts\"] --> R[\"Real broker: few tests, each proves one broker-only property\"]\n  R --> E[\"Embedded broker: listener wiring and failure paths\"]\n  E --> M[\"MockConsumer and MockProducer: loop logic\"]\n  M --> U[\"Unit tests: business rules, many and fast\"]",
+     "title": "The Kafka test pyramid"
+    },
+    {
+     "type": "markdown",
+     "text": "### Design so most tests need no Kafka\n\nThe biggest win is in the code, not the tests. Keep the annotated method thin and put the decisions in a plain class."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport com.shopstream.payment.service.ProcessedEvents;\n\n/** All the decisions of the listener, with no Kafka types in sight. */\npublic class PaymentHandler {\n\n    private final PaymentService payments;\n    private final ProcessedEvents processed;\n\n    public PaymentHandler(PaymentService payments, ProcessedEvents processed) {\n        this.payments = payments;\n        this.processed = processed;\n    }\n\n    /** @return true if the event was charged, false if it was a duplicate */\n    public boolean handle(OrderCreated event) {\n        if (!processed.firstTime(\"order-created:\" + event.orderId())) {\n            return false;\n        }\n        payments.charge(event);\n        return true;\n    }\n}",
+     "title": "PaymentHandler.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The listener becomes one line that calls `handler.handle(event)`. Now the rules (a duplicate is ignored, a failure propagates) are tested with ordinary objects, in microseconds:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\nimport static org.junit.jupiter.api.Assertions.assertFalse;\nimport static org.junit.jupiter.api.Assertions.assertTrue;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport com.shopstream.payment.service.ProcessedEvents;\nimport java.util.ArrayList;\nimport java.util.HashSet;\nimport java.util.List;\nimport java.util.Set;\nimport org.junit.jupiter.api.Test;\n\nclass PaymentHandlerTest {\n\n    private final List<String> charged = new ArrayList<>();\n    private final Set<String> seen = new HashSet<>();\n\n    private final PaymentService payments = new PaymentService() {\n        @Override public void charge(OrderCreated e) { charged.add(e.orderId()); }\n        @Override public void refund(String orderId) { }\n    };\n    private final ProcessedEvents processed = seen::add;       // add() is true only the first time\n\n    private final PaymentHandler handler = new PaymentHandler(payments, processed);\n\n    @Test\n    void duplicateDeliveryChargesOnce() {\n        OrderCreated event = new OrderCreated(\"o-1\", \"c-9\", 4_999, false);\n\n        assertTrue(handler.handle(event));       // first delivery\n        assertFalse(handler.handle(event));      // redelivery after a crash\n\n        assertEquals(List.of(\"o-1\"), charged);\n    }\n}",
+     "title": "PaymentHandlerTest.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The test needs no broker, no Spring context and no mocking library. It states the property that matters in production, *at-least-once delivery must not charge twice*, directly.\n\n### Testing the sending side\n\nFor code written against the plain producer, `MockProducer` records everything sent, so you can assert on the **topic and the key**, which a mocked `KafkaTemplate` would never reveal as wrong."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.order.messaging;\n\nimport org.apache.kafka.clients.producer.Producer;\nimport org.apache.kafka.clients.producer.ProducerRecord;\n\npublic class OrderEventPublisher {\n\n    private final Producer<String, String> producer;\n\n    public OrderEventPublisher(Producer<String, String> producer) {\n        this.producer = producer;\n    }\n\n    public void orderCreated(String orderId, String json) {\n        producer.send(new ProducerRecord<>(\"orders\", orderId, json));   // the key keeps one order's events in order\n    }\n}",
+     "title": "OrderEventPublisher.java"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.order.messaging;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport org.apache.kafka.clients.producer.MockProducer;\nimport org.apache.kafka.common.serialization.StringSerializer;\nimport org.junit.jupiter.api.Test;\n\nclass OrderEventPublisherTest {\n\n    @Test\n    void publishesToOrdersWithTheOrderIdAsKey() {\n        MockProducer<String, String> producer = new MockProducer<>(true, new StringSerializer(), new StringSerializer());\n        new OrderEventPublisher(producer).orderCreated(\"o-42\", \"{\\\"total\\\":10}\");\n\n        var sent = producer.history().get(0);\n        assertEquals(\"orders\", sent.topic());\n        assertEquals(\"o-42\", sent.key());          // the bug a mocked template would hide\n    }\n}",
+     "title": "OrderEventPublisherTest.java"
+    },
+    {
+     "type": "markdown",
+     "text": "### Rules that remove flaky tests\n\nKafka tests are asynchronous, and nearly all flakiness comes from a few causes.\n\n| Cause | Rule |\n|---|---|\n| A test consumer starts *after* the record was produced and misses it | Use `auto.offset.reset=earliest` for test consumers and listeners |\n| `Thread.sleep(2000)` is too short on a slow CI machine and wasteful on a fast one | Wait for the condition with Awaitility (`await().atMost(...).untilAsserted(...)`) or Mockito's `timeout(...)` |\n| Two tests share a topic and group, so one sees the other's records | Use a unique topic name or a unique `group.id` per test, or clean up |\n| Tests assert on the number of `poll()` calls or on timing | Assert on outcomes: rows written, records received, headers present |\n| A test starts a broker for each class | Share one broker and one Spring context across classes (*Integration Tests with Testcontainers*) |\n| Tests run in parallel against one group | Give each its own `group.id` |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "You do not need to prove that `@KafkaListener` calls a method or that Kafka orders a partition. Test your assumptions about them: that your key puts one order's events on one partition, that your JSON round-trips, that your error handler parks what it should.",
+     "title": "Test the property, not the framework"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Separate the decisions from the transport: the listener only delegates to a plain handler, and the handler is tested with ordinary objects. Test your own poll loop with `MockConsumer`, and use an embedded or containerised broker for the few properties only a broker can prove (partitioning by key, serialization, dead-letter routing). Avoid sleeps; wait on conditions, and use `earliest` offsets and unique topics so tests do not interfere.",
+     "title": "Interview angle: How do you unit-test a Kafka consumer?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Decide per property which test level can prove it: mocks cannot prove keys, partitions or serialization\n- Keep listeners thin; test the handler class with plain objects\n- `MockProducer` lets you assert the topic and key of what was sent\n- Test consumers need `auto.offset.reset=earliest`; wait with Awaitility, never sleep\n- Unique topics or groups per test prevent cross-talk\n- A few broker-backed tests, each proving one broker-only property, beat many broad ones"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-2",
+   "type": "concept",
+   "title": "Embedded Broker Tests with spring-kafka-test",
+   "subtopicId": "3-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Between a unit test and a container sits the **embedded broker**: a real Kafka broker started inside the test JVM by `spring-kafka-test` (with Spring Boot 4 the test starter `spring-boot-starter-kafka-test` brings it). It is a genuine broker in KRaft mode with real partitions, real serializers and real consumer groups, started in about a second, with no Docker needed.\n\n### The basic shape"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@SpringBootTest\n@EmbeddedKafka(partitions = 3,\n        topics = { \"orders\", \"orders-dlt\" },\n        bootstrapServersProperty = \"spring.kafka.bootstrap-servers\")\n@TestPropertySource(properties = \"spring.kafka.consumer.auto-offset-reset=earliest\")\nclass PaymentListenerEmbeddedTest {\n\n    @Autowired KafkaTemplate<String, OrderCreated> template;\n    @MockitoBean PaymentService payments;\n\n    @Test\n    void chargesTheOrderThatArrivesOnTheTopic() {\n        template.send(\"orders\", \"o-1\", new OrderCreated(\"o-1\", \"c-9\", 4_999, false));\n\n        verify(payments, timeout(10_000)).charge(argThat(e -> e.orderId().equals(\"o-1\")));\n    }\n}",
+     "title": "PaymentListenerEmbeddedTest (Spring Boot test)"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The annotation starts a broker and creates the two topics with three partitions each. `bootstrapServersProperty` replaces the application's `spring.kafka.bootstrap-servers` with the embedded broker's address, so the real `payment-service` configuration, its listener, its deserializers and its error handler, all run against it unchanged. The test sends with the application's own `KafkaTemplate`, so the producer settings are tested too. `timeout(10_000)` waits for the asynchronous listener instead of sleeping. `@MockitoBean` replaces the service behind the listener, so the test stays about Kafka.\n\n### Reading what the application wrote\n\nSometimes the test must look at a topic, for example to check the dead-letter topic. `KafkaTestUtils` builds a consumer for the embedded broker:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Map<String, Object> props = KafkaTestUtils.consumerProps(\"verifier-\" + UUID.randomUUID(), \"true\", embeddedKafka);\nprops.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, \"earliest\");\ntry (Consumer<String, String> consumer = new DefaultKafkaConsumerFactory<>(\n        props, new StringDeserializer(), new StringDeserializer()).createConsumer()) {\n    embeddedKafka.consumeFromAnEmbeddedTopic(consumer, \"orders-dlt\");\n    ConsumerRecord<String, String> dead = KafkaTestUtils.getSingleRecord(consumer, \"orders-dlt\", Duration.ofSeconds(10));\n    assertThat(dead.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_FQCN)).isNotNull();\n}",
+     "title": "Reading a topic in a test"
+    },
+    {
+     "type": "markdown",
+     "text": "The unique group id keeps the verifying consumer from competing with the application. `getSingleRecord` fails the test with a clear message if no record arrives in time. The header names for dead-letter metadata are constants in `KafkaHeaders` (`DLT_EXCEPTION_FQCN`, `DLT_ORIGINAL_TOPIC`, `DLT_ORIGINAL_OFFSET` and others).\n\n### Embedded broker or container?\n\n| | `@EmbeddedKafka` | Testcontainers |\n|---|---|---|\n| Needs Docker | No | Yes |\n| Start time | About a second | Several seconds for the first start |\n| Broker version | Whatever `spring-kafka-test` bundles | Exactly the image you choose |\n| Broker configuration | Limited | Any (listeners, auth, topics, KRaft settings) |\n| Fidelity to production | Good for application logic | Better; the same image you run |\n| Typical use | Everyday listener and error-handling tests | Pre-merge or nightly tests that must match production, tests with a database in the same setup |\n\nMany teams use both: embedded for the inner loop, containers for a smaller suite that also runs against the database and the exact broker version."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "The broker lives as long as the test class's context. Spring caches contexts across classes, so with different annotations you get several brokers, and with `@DirtiesContext` you pay a restart. Prefer sharing one context configuration, and isolate tests by topic name or group id instead of restarting the broker.",
+     "title": "Gotcha: embedded brokers and the Spring test context cache"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- `@EmbeddedKafka` starts a real KRaft broker in the test JVM: fast and Docker-free\n- `bootstrapServersProperty` points the real application configuration at it\n- Send with the application's own `KafkaTemplate`; wait with Mockito `timeout` or Awaitility\n- `KafkaTestUtils` builds verifying consumers; give them a unique group and `earliest`\n- Use containers when the broker version and configuration must match production\n- Isolate tests by topic or group, not by restarting the broker"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-3",
+   "type": "concept",
+   "title": "Integration Tests with Testcontainers",
+   "subtopicId": "3-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A container test starts the **same Apache Kafka image you run in production**, in Docker, and points the application at it. It takes longer than the embedded broker and is closer to the truth: the real server version, real KRaft configuration, a real listener setup. *Integration Testing with Testcontainers* in Spring Boot Beyond Basics introduced Testcontainers in general; this chapter covers what is specific to Kafka.\n\n### Starting a broker for the test\n\nThe container class for the Apache image lives in the `org.testcontainers.kafka` package (older tutorials show `org.testcontainers.containers.KafkaContainer`, which was built for the Confluent image and is gone from current Testcontainers). Spring Boot's `@ServiceConnection` turns the running container into `spring.kafka.bootstrap-servers` automatically."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@TestConfiguration(proxyBeanMethods = false)\npublic class KafkaContainerConfig {\n\n    // use the same version as your production cluster\n    private static final String IMAGE = \"apache/kafka:4.3.1\";\n\n    @Bean\n    @ServiceConnection\n    KafkaContainer kafka() {\n        return new KafkaContainer(DockerImageName.parse(IMAGE));\n    }\n}",
+     "title": "Kafka container for tests (Spring Boot test)"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@SpringBootTest\n@Import(KafkaContainerConfig.class)\n@TestPropertySource(properties = \"spring.kafka.consumer.auto-offset-reset=earliest\")\nclass OrderFlowIT {\n\n    @Autowired KafkaTemplate<String, OrderCreated> template;\n    @Autowired PaymentLedger ledger;                     // the real service, backed by a test database\n\n    @Test\n    void eventsOfOneOrderAreProcessedInOrder() {\n        String key = \"o-\" + UUID.randomUUID();\n        for (int i = 1; i <= 50; i++) {\n            template.send(\"orders\", key, new OrderCreated(key, \"c-9\", i, false));   // totalCents carries the sequence\n        }\n\n        await().atMost(Duration.ofSeconds(30))\n               .untilAsserted(() -> assertThat(ledger.totalsFor(key)).hasSize(50));\n        assertThat(ledger.totalsFor(key)).isSorted();            // same key, one partition, in order\n    }\n}",
+     "title": "OrderFlowIT (Spring Boot test)"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** This test proves exactly the property that mocks cannot: records with one key arrive in the order they were sent. It uses a unique key so that earlier runs on a shared broker do not interfere, and it waits on the outcome with `await`. A container also lets you place the *database* in the same test setup and check the end result, a row in the ledger, instead of a mocked call.\n\n### Sharing the broker\n\nStarting a container per test class dominates the run time. Declare the container once as a bean in a shared `@TestConfiguration` (as above) or as a `static` field of a base class, so that every test class that uses the same Spring context configuration reuses one broker. Spring caches the context, and the container lives with it. Isolate tests from one another with unique keys, topics or group ids, as in the rules of the first chapter.\n\n### What to put in a container test\n\nKeep this suite small and meaningful. Good candidates:\n\n- **Ordering by key**, as above.\n- **A full round trip** through the real serializers: object to JSON to the broker and back to the listener.\n- **Consumer group behaviour that needs a real coordinator**, for instance that two application instances share the partitions (start two contexts in one test).\n- **Configuration you rely on**: the topic is created with the partitions and retention you intend; the dead-letter topic has at least as many partitions as the source topic.\n- **Failure of the broker**: stop and restart the container in the test and check that the producer retries and the consumer reconnects. For network faults between application and broker, the Testcontainers Toxiproxy module can add latency or cut the connection.\n\n### CI practicalities\n\n- The CI runner needs Docker, and enough memory for the broker plus the database.\n- Pin the image tag. A floating tag changes behaviour between runs.\n- First start pulls the image; cache it on the runner so the pull is not repeated.\n- If a build occasionally fails with a container start error, retry the start rather than the whole job, and look at the container log, which Testcontainers prints on failure."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "A mock verifies that your code calls an API; it cannot verify what Kafka does with the call. A real broker verifies the properties that matter in production: that the key places records on one partition and keeps their order, that serialization round-trips, that a consumer group commits and resumes correctly, and that the topics have the configuration you expect. Containers give that with the exact production version, at a cost of seconds, which is why the suite stays small and focused.",
+     "title": "Interview angle: Why use Testcontainers for Kafka instead of mocking the clients?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A container test runs the exact production image and proves broker-only properties\n- For the Apache image use the `org.testcontainers.kafka` container; `@ServiceConnection` wires the address\n- Share one container across test classes through the cached Spring context\n- Prove ordering with a unique key and many sequenced records\n- Test configuration you depend on: partitions, retention, dead-letter topic size\n- Pin image tags and cache them on CI"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-4",
+   "type": "concept",
+   "title": "Testing Failure Paths and Event Contracts",
+   "subtopicId": "3-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The happy path is the part of a consumer that is easy to test and rarely the part that fails. The code that decides whether one malformed record stalls a partition, or whether a transient error costs a duplicate charge, is error handling, and it deserves tests as careful as the business logic.\n\n### Make the back-off testable\n\nA production back-off of seconds makes tests slow. Take the back-off as a bean, so that tests can replace it with milliseconds."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.config;\n\nimport com.shopstream.payment.service.PermanentPaymentException;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.context.annotation.Profile;\nimport org.springframework.kafka.core.KafkaOperations;\nimport org.springframework.kafka.listener.DeadLetterPublishingRecoverer;\nimport org.springframework.kafka.listener.DefaultErrorHandler;\nimport org.springframework.util.backoff.BackOff;\nimport org.springframework.util.backoff.FixedBackOff;\n\n@Configuration\nclass ErrorHandlingConfig {\n\n    @Bean\n    @Profile(\"!test\")\n    BackOff productionBackOff() {\n        return new FixedBackOff(1_000L, 3);\n    }\n\n    @Bean\n    @Profile(\"test\")\n    BackOff testBackOff() {\n        return new FixedBackOff(10L, 3);            // same shape, 100 times faster\n    }\n\n    @Bean\n    DefaultErrorHandler errorHandler(KafkaOperations<Object, Object> template, BackOff backOff) {\n        var handler = new DefaultErrorHandler(new DeadLetterPublishingRecoverer(template), backOff);\n        handler.addNotRetryableExceptions(PermanentPaymentException.class);\n        return handler;\n    }\n}",
+     "title": "ErrorHandlingConfig.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The test changes only the time, not the behaviour. That is the right kind of difference between test and production.\n\n### The tests worth writing\n\nEach of these pins down one decision of the error policy. They run against the embedded broker (or a container) with a fake service that counts calls.\n\n| Test | Setup | Assert |\n|---|---|---|\n| **A transient failure is retried and then succeeds** | The fake fails twice, then works | The handler was called 3 times; nothing in the dead-letter topic |\n| **A permanent failure is not retried** | The fake throws `PermanentPaymentException` | Called exactly once; one record in `orders-dlt` with `DLT_EXCEPTION_FQCN` set |\n| **Retries are bounded** | The fake always fails | Called 4 times (the first attempt plus 3 retries); one dead letter |\n| **A poison pill does not block the partition** | Send bytes that are not JSON, then a valid event with the same key | The valid event is processed; the bad bytes are in the dead-letter topic with the original payload intact |\n| **A duplicate has no extra effect** | Send the same event twice | One charge |\n| **Dead letters keep their origin** | Any dead-lettered record | `DLT_ORIGINAL_TOPIC`, partition and offset headers match the source |\n\nThe poison-pill test is the most valuable one. Send the bad record with a raw byte-array producer, bypassing the application's JSON serializer, so the broker really holds invalid JSON:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Map<String, Object> props = KafkaTestUtils.producerProps(embeddedKafka);\ntry (Producer<String, byte[]> raw = new DefaultKafkaProducerFactory<>(\n        props, new StringSerializer(), new ByteArraySerializer()).createProducer()) {\n    raw.send(new ProducerRecord<>(\"orders\", \"o-7\", \"{not json\".getBytes(StandardCharsets.UTF_8)));\n    raw.send(new ProducerRecord<>(\"orders\", \"o-7\", validJson(\"o-8\")));     // must still be processed\n}\nverify(payments, timeout(10_000)).charge(argThat(e -> e.orderId().equals(\"o-8\")));",
+     "title": "Sending a record that is not valid JSON (Spring Boot test)"
+    },
+    {
+     "type": "markdown",
+     "text": "If this test passes, a malformed record cannot stall a partition. If the service lacks `ErrorHandlingDeserializer`, the test fails by timing out, which is exactly the production failure, found in a build.\n\n### Events are an API\n\nBetween services, an event is a public interface, and changing it can break consumers you do not own. The test strategy is the one for any API: **make compatibility a check, not a hope**.\n\n| Technique | How it works | Fits |\n|---|---|---|\n| Schema compatibility in CI | The build asks the Schema Registry whether the new schema is compatible with the registered one (the registry's `/compatibility/subjects/<subject>/versions/latest` endpoint, or the registry's Maven plugin) and fails if not | Avro, Protobuf, JSON Schema with a registry (*Evolving Schemas Safely*) |\n| Fixture files | Keep real examples of every past version of the event as files in the consumer's test resources; send each through the real listener and assert that it is still understood | JSON events without a registry |\n| Consumer-driven contracts | Each consumer publishes the shape it relies on (Pact message pacts, Spring Cloud Contract); the producer's build verifies it | Many independent consumer teams |\n\nThe fixture technique costs almost nothing and catches the most common break: someone renames `customerId` to `buyerId`. Send each fixture to the topic with a `KafkaTemplate<String, String>`, wait for the effect, and the listener's real deserializer does the checking. Add the new fixture whenever the event changes, and never delete the old ones until no producer can send them."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The failure-path tests. A poison pill must go to the dead-letter topic without stalling the partition; a transient error must be retried and a permanent one must not; redelivery must not repeat an effect. They are the behaviours that fail in production, they cannot be seen in a happy-path test, and they are cheap to write once the back-off is injectable.",
+     "title": "Interview angle: What are the most important consumer tests, and why?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Inject the back-off so tests run in milliseconds with production's shape\n- Test each policy decision: retry then succeed, permanent not retried, bounded retries, dead-letter metadata\n- The poison-pill test (bad bytes, then a good record) proves a partition cannot be stalled\n- Send invalid data with a raw byte producer to bypass your own serializer\n- Treat events as an API: schema compatibility checks, fixture files, consumer-driven contracts\n- Keep fixtures of every historical event version"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-5",
+   "type": "concept",
+   "title": "Metrics: What to Watch on Producers, Consumers and Brokers",
+   "subtopicId": "3-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A Kafka application can be broken in many ways while every health check says UP: the consumer is alive but ten minutes behind, the producer retries silently, a broker lost a replica. Monitoring Kafka means choosing a **small set of signals** that each answer a specific question, and alerting on the ones that mean users are affected.\n\n### Getting client metrics out of Spring Boot\n\nEvery Kafka client keeps hundreds of metrics. With Micrometer on the classpath, Spring Boot registers them for you: it adds a metrics listener to the producer and consumer factories, so each client's metrics appear as Micrometer meters tagged with the `client.id`. Add the actuator and a registry and expose the endpoint:"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "management:\n  endpoints:\n    web:\n      exposure:\n        include: health,prometheus\nspring:\n  kafka:\n    listener:\n      observation-enabled: true      # Spring's own timers and traces for each listener invocation\n    template:\n      observation-enabled: true",
+     "title": "application.yml"
+    },
+    {
+     "type": "markdown",
+     "text": "The Kafka metric `records-lag-max` of the group `consumer-fetch-manager-metrics` becomes `kafka.consumer.fetch.manager.records.lag.max` in Micrometer and `kafka_consumer_fetch_manager_records_lag_max` in Prometheus. The naming rule is mechanical, but registries differ in detail, so copy the exact names from `/actuator/prometheus` of your own service before writing queries and alerts.\n\nOn top of the client metrics Spring adds a timer per listener invocation (`spring.kafka.listener`, with the listener id, the result and the exception as tags) and per send (`spring.kafka.template`). They answer the question the client metrics cannot: how long does **my handler** take, and how often does it fail."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[\"Spring Boot app: Kafka clients and listener timers\"] --> M[\"Micrometer\"]\n  M --> P[\"Prometheus\"]\n  B[\"Brokers: JMX metrics\"] --> X[\"JMX exporter\"]\n  X --> P\n  E[\"Group offsets exporter\"] --> P\n  P --> G[\"Grafana dashboards\"]\n  P --> R[\"Alert rules\"]",
+     "title": "From the clients to a dashboard"
+    },
+    {
+     "type": "markdown",
+     "text": "### Consumer signals\n\n| Metric (client name) | Question it answers | Look for |\n|---|---|---|\n| `records-lag-max`, `records-lag` (per partition) | How far behind are we | Growth over time; one partition far above the others |\n| `records-consumed-rate` | How fast are we working | A drop to zero while lag is positive: stuck |\n| `fetch-latency-avg`, `fetch-rate` | Is fetching slow | High latency with an idle handler points at the network or brokers |\n| `time-between-poll-max`, `poll-idle-ratio-avg` | Is the handler the bottleneck | Time between polls near `max.poll.interval.ms`; idle ratio near zero |\n| `rebalance-total`, `rebalance-latency-avg`, `last-rebalance-seconds-ago` | Is the group unstable | Rebalances without a deploy |\n| `commit-latency-avg`, `failed-rebalance-total` | Is committing healthy | Rising latency or failures |\n| `spring.kafka.listener` timer, tagged `result=failure` | How long and how often does my handler fail | p99 latency, failure ratio |\n\n### Producer signals\n\n| Metric | Question | Look for |\n|---|---|---|\n| `record-error-rate`, `record-retry-rate` | Are sends failing or retrying | Anything above zero for a sustained time |\n| `request-latency-avg` | How slow are the brokers | Sudden increase |\n| `batch-size-avg`, `records-per-request-avg` | Is batching effective | Tiny batches under load mean the tuning is off |\n| `buffer-available-bytes`, `buffer-exhausted-rate` | Is the producer backing up | Available buffer shrinking toward zero: `send()` will start to block |\n| `produce-throttle-time-avg` | Are quotas throttling us | Non-zero values |\n\n### Broker signals\n\nBroker metrics are exposed over JMX. A Prometheus JMX exporter running as an agent in the broker process turns them into metrics; managed Kafka services expose the same ones in their own console.\n\n| MBean | Meaning | Healthy |\n|---|---|---|\n| `kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions` | Partitions led by this broker with fewer in-sync replicas than configured | 0 |\n| `kafka.server:type=ReplicaManager,name=UnderMinIsrPartitionCount` | Partitions below `min.insync.replicas`: producers with `acks=all` fail | 0 |\n| `kafka.controller:type=KafkaController,name=OfflinePartitionsCount` | Partitions with no leader: unavailable | 0 |\n| `kafka.controller:type=KafkaController,name=ActiveControllerCount` | One controller must be active (the sum across the cluster) | 1 |\n| `kafka.server:type=BrokerTopicMetrics,name=BytesInPerSec` and `BytesOutPerSec` | Throughput per broker | Balanced across brokers |\n| `kafka.network:type=RequestMetrics,name=TotalTimeMs,request=Produce` (and `FetchConsumer`) | Total request time, with percentiles | p99 stable |\n| `kafka.server:type=KafkaRequestHandlerPool,name=RequestHandlerAvgIdlePercent` | Spare capacity of the request threads | Not near zero |\n| `kafka.server:type=ReplicaManager,name=IsrShrinksPerSec` | Replicas dropping out of sync | Close to zero, with spikes only during incidents |\n\nOutside Kafka, watch the **disk usage of the log directories**: a full disk takes a broker down. A topic's size on disk is roughly its write rate multiplied by its retention, which *Topics, Partitions and the Commit Log* explains.\n\n### Lag as a service-level signal\n\nA lag number means little without the rate. Ten thousand records behind is two seconds of work at 5,000 records per second and four hours at one per second. The useful questions are *is it growing* and *how long until it is drained*:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "lag / consumption rate\n= sum(kafka_consumer_fetch_manager_records_lag) / sum(kafka_consumer_fetch_manager_records_consumed_rate)",
+     "title": "Time to drain, approximately"
+    },
+    {
+     "type": "markdown",
+     "text": "Define the objective in time (\"orders are charged within 30 seconds of creation, 99% of the time\") and alert on that, using lag only as the cause you investigate. A consumer that is working through a spike will have a large lag that is falling; an alert that fires on the absolute number wakes people for it."
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "groups:\n  - name: kafka-consumers\n    rules:\n      - alert: ConsumerLagGrowing\n        expr: |\n          max by (job) (kafka_consumer_fetch_manager_records_lag_max) > 10000\n          and\n          deriv(max by (job) (kafka_consumer_fetch_manager_records_lag_max)[15m:1m]) > 0\n        for: 15m\n        annotations:\n          summary: \"Lag above 10000 and still growing for 15 minutes\"\n      - alert: ConsumerGroupUnstable\n        expr: increase(kafka_consumer_coordinator_rebalance_total[30m]) > 5\n        annotations:\n          summary: \"More than five rebalances in 30 minutes without a deploy: check poll interval and restarts\"",
+     "title": "prometheus-rules.yml (adapt the names to your exporter)"
+    },
+    {
+     "type": "markdown",
+     "text": "Group the alert by the consequence a user would feel. Page on **sustained** growth, on any offline partition, and on a growing dead-letter topic. Treat a single rebalance, a short lag spike and one retried send as information."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Track consumer lag per group and partition, but judge it as time to drain and as trend, not as a raw number. Add the consumption rate, the time between polls and the rebalance counters to tell a slow handler from an unstable group, and the handler's own latency and failure ratio. On the broker side watch under-replicated and offline partitions, request latency and disk usage. Alert on sustained user-visible conditions, and make the dead-letter topic's growth an alert of its own.",
+     "title": "Interview angle: How do you monitor Kafka consumers in production?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Boot binds Kafka client metrics to Micrometer; copy exact names from `/actuator/prometheus`\n- Consumer: lag (trend and per partition), consumed rate, time between polls, rebalances\n- Producer: error and retry rate, request latency, buffer availability\n- Broker: under-replicated, under-min-ISR and offline partitions, request time, disk\n- Express lag as time to drain and tie alerts to a service-level objective\n- Page on sustained conditions and dead-letter growth, not on single blips"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-6",
+   "type": "concept",
+   "title": "Tracing, Logging and Correlation",
+   "subtopicId": "3-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "When an order is slow, you want to follow it from the HTTP request, through the `orders` topic, into the `payment-service`, and out again. Kafka decouples the services in time, so the usual call stack disappears. Correlation is what puts it back: the same trace id and the same business id on every log line along the way.\n\n### Traces across the topic\n\nWith observation enabled on the template and the listener (the properties in the previous chapter) and a tracing bridge on the classpath (Micrometer Tracing with OpenTelemetry), Spring Kafka carries the trace context in a **record header**. The producer side starts a span and writes a `traceparent` header (the W3C standard format); the listener side reads it and continues the same trace."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant C as Client\n  participant O as order-service\n  participant K as orders topic\n  participant P as payment-service\n  C->>O: POST /orders (traceparent created)\n  O->>K: send (span: orders send, header traceparent)\n  K-->>P: record with traceparent header\n  P->>P: handle (span: orders receive, same trace id)\n  P->>K: publish PaymentAuthorized (header propagated)",
+     "title": "One trace across the topic"
+    },
+    {
+     "type": "markdown",
+     "text": "In the tracing UI you see one trace with the HTTP span, the send, and the receive spans of every service, and the gap between send and receive is the time the record spent waiting in the topic, which is queueing delay you can read directly.\n\nWhat to know before relying on it:\n\n- **Batch listeners** process many records in one call, so one span cannot have all their parents; per-record trace linking is lost or reduced to links. Keep trace-critical flows on record listeners.\n- **Handing work to another thread** leaves the trace context behind unless you propagate it; use the instrumented executors.\n- **Retries and dead letters** keep the original headers, including `traceparent`, so a dead letter is traceable to the request that caused it. Keep it when you copy records by hand.\n- **Sampling** decides what you can see. A low sample rate means most traces are not there when you need one: sample errors preferentially if your backend allows.\n- The header costs a few dozen bytes per record, which matters only for tiny, very high-volume records.\n\n### Business ids in every log line\n\nA trace id answers \"which request\", but support asks \"what happened to order o-42\". Put both in the **MDC** (mapped diagnostic context), so that the logging pattern prints them on every line. A `RecordInterceptor` runs around each record on the container thread, which is the right place."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.config;\n\nimport org.apache.kafka.clients.consumer.Consumer;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.slf4j.MDC;\nimport org.springframework.kafka.listener.RecordInterceptor;\n\npublic class MdcRecordInterceptor<K, V> implements RecordInterceptor<K, V> {\n\n    @Override\n    public ConsumerRecord<K, V> intercept(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {\n        MDC.put(\"kafka.topic\", record.topic());\n        MDC.put(\"kafka.partition\", Integer.toString(record.partition()));\n        MDC.put(\"kafka.offset\", Long.toString(record.offset()));\n        if (record.key() != null) {\n            MDC.put(\"kafka.key\", String.valueOf(record.key()));      // the order id in ShopStream\n        }\n        return record;                                                // returning null would skip the record\n    }\n\n    @Override\n    public void afterRecord(ConsumerRecord<K, V> record, Consumer<K, V> consumer) {\n        MDC.remove(\"kafka.topic\");\n        MDC.remove(\"kafka.partition\");\n        MDC.remove(\"kafka.offset\");\n        MDC.remove(\"kafka.key\");                                      // threads are reused: never leak into the next record\n    }\n}",
+     "title": "MdcRecordInterceptor.java"
+    },
+    {
+     "type": "markdown",
+     "text": "Register it on your container factory with `factory.setRecordInterceptor(new MdcRecordInterceptor<>())`, and add the keys to the log pattern, for example `%X{kafka.topic}-%X{kafka.partition}@%X{kafka.offset} key=%X{kafka.key}`. Every line the handler writes, including lines written by libraries it calls, now names the record it belongs to.\n\n### What to log, and at what level\n\n| Event | Level | Content |\n|---|---|---|\n| A record handled | DEBUG (or a metric) | Not one INFO line per record at high volume |\n| A handler retried | WARN | Attempt number, exception, topic-partition@offset |\n| A record sent to the dead-letter topic | ERROR | Origin, exception class and message, the business id |\n| A rebalance | INFO | The client logs this itself: keep `org.apache.kafka.clients.consumer.internals` at INFO |\n| Connection problems | WARN | The client logs these; do not silence `org.apache.kafka.clients.NetworkClient` |\n\nNever log full payloads with personal data (a customer's address, card details); log ids and let people look the rest up where access is controlled."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "When a client starts, it logs every setting with its effective value (`ConsumerConfig values:` and `ProducerConfig values:`). When behaviour differs from what you thought you configured, such as a default you did not know about, a property that was ignored, or a profile that did not apply, that block is the first place to look.",
+     "title": "Read the effective configuration from the log"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The producer writes the trace context into a record header (W3C `traceparent`), the consumer reads it and continues the trace, and the time between the two spans is the time the record waited in the topic. In Spring this is switched on with observation on the template and the listener plus a tracing bridge. Add the business key and topic-partition-offset to the MDC so logs can be correlated even when a trace was not sampled.",
+     "title": "Interview angle: How do you trace a request across an asynchronous Kafka hop?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Trace context travels in a record header, so a trace continues across the topic\n- The gap between send and receive spans is queueing delay\n- Batch listeners and thread hand-offs weaken or lose per-record traces\n- Put business id, topic, partition and offset in the MDC with a `RecordInterceptor`, and remove them afterwards\n- Log retries at WARN and dead letters at ERROR; keep payloads with personal data out of logs\n- The client's start-up log prints every effective setting: use it"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-7",
+   "type": "concept",
+   "title": "A Troubleshooting Playbook",
+   "subtopicId": "3-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Kafka problems arrive as symptoms: \"orders are not being charged\", \"the dashboard shows lag\", \"the service keeps restarting\". This chapter gives a method, the commands you need, and three incidents worked from symptom to fix.\n\n### The method\n\n1. **Say what is wrong in one sentence**, in terms of what users or other services see.\n2. **Find the layer**: producer, broker, or consumer. Compare the end offset of the topic (is anything being written?) with the group's committed offsets (is anything being read?).\n3. **Look at the narrowest scope first**: one partition, one consumer, one broker. Problems that affect \"everything\" are usually the broker or the network; problems that affect \"one partition\" are usually a record or a key.\n4. **Read the client logs** before the dashboards: they state the reason for rebalances, commit failures and connection errors.\n5. **Change one thing**, and observe the signal that proved the problem.\n\n### The command-line toolbox"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group payment-service\nkafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group payment-service --members --verbose\nkafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group payment-service --state",
+     "title": "Where is the group, and how far behind?"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic orders\nkafka-topics.sh --bootstrap-server localhost:9092 --describe --under-replicated-partitions\nkafka-topics.sh --bootstrap-server localhost:9092 --describe --unavailable-partitions\nkafka-get-offsets.sh --bootstrap-server localhost:9092 --topic orders --time -1      # latest offsets (-2 for earliest)\nkafka-configs.sh --bootstrap-server localhost:9092 --entity-type topics --entity-name orders --describe",
+     "title": "Is the topic healthy, and what does it contain?"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic orders \\\n  --partition 3 --offset 1200 --max-messages 5 \\\n  --formatter-property print.offset=true --formatter-property print.key=true --formatter-property print.headers=true",
+     "title": "Look at actual records (Kafka 4.2 and later; older versions use --property)"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "kafka-metadata-quorum.sh --bootstrap-server localhost:9092 describe --status      # KRaft controllers\nkafka-log-dirs.sh --bootstrap-server localhost:9092 --describe --topic-list orders  # sizes per broker and partition\nkafka-dump-log.sh --files /var/lib/kafka/data/orders-3/00000000000000000000.log --print-data-log",
+     "title": "The cluster itself"
+    },
+    {
+     "type": "markdown",
+     "text": "### Symptom to cause\n\n| Symptom | Likely causes | Check |\n|---|---|---|\n| **Lag grows on all partitions** | Handler slower than before (database, remote call), too few consumers, a GC problem | `time-between-poll`, the handler timer, thread dump, CPU |\n| **Lag grows on one partition** | A hot key, or a record the handler cannot process (stuck on the same offset) | `--describe` per partition; logs for that partition; `CURRENT-OFFSET` not moving |\n| **Consumers keep rejoining** | `max.poll.interval.ms` exceeded, restarts, session timeouts | `consumer poll timeout has expired`, restart counts, rebalance metrics |\n| **No records arrive** | Wrong topic or group; `latest` offset with a new group; paused container; ACL denied; a `read_committed` consumer behind an open transaction; an application that never started the listener | Group `--describe`, container state, `TopicAuthorizationException`, `isolation.level` |\n| **Duplicates** | At-least-once after a crash or rebalance; producer retries without idempotence | Idempotent handler; `enable.idempotence`; `CommitFailedException` in logs |\n| **Records \"lost\"** | Auto-commit with asynchronous processing; committing before processing; skipping a poison record silently; retention shorter than the downtime | Commit strategy; dead-letter topic; `OffsetOutOfRangeException` and \"resetting offset\" in logs |\n| **Producer times out: \"Failed to update metadata\"** | Wrong bootstrap address, DNS, or brokers advertising an address clients cannot reach (`advertised.listeners`) | Connect to the bootstrap, then check the host and port the cluster tells clients to use |\n| **`NotEnoughReplicasException`** | Fewer in-sync replicas than `min.insync.replicas`, with `acks=all` | `UnderMinIsrPartitionCount`, broker health, `--under-replicated-partitions` |\n| **`OffsetOutOfRangeException`** | The group was down longer than the topic's retention; offsets point to deleted data | The `auto.offset.reset` policy; widen retention or alert on lag earlier |\n| **`CommitFailedException`** | Group rebalanced before the commit | Poll interval, processing time, `max.poll.records` |\n| **`FencedInstanceIdException`** | Two live members share one `group.instance.id` | Pod naming; use a StatefulSet or unique ordinals |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A consumer with `isolation.level=read_committed` cannot read past the first record of a transaction that is still open; the broker holds the \"last stable offset\" back. If a transactional producer hangs or dies, consumers appear alive but stuck until the transaction times out. Look for an old open transaction before blaming the consumer.",
+     "title": "Gotcha: a transaction left open stalls a read_committed consumer"
+    },
+    {
+     "type": "markdown",
+     "text": "### Incident 1: lag grows after a deploy\n\n**Symptoms.** Alert: the `payment-service` lag is rising on all 12 partitions since 14:05. No errors. Consumers are all assigned.\n\n**Diagnosis.** The `spring.kafka.listener` timer shows p99 handler time at 900 ms, up from 40 ms at 14:05. `time-between-poll-max` is still far from the poll interval, so no rebalance. A deploy at 14:03 added a query on an unindexed column in the charge path.\n\n**Fix.** Roll back the deploy. The lag drains without intervention, because the consumers were healthy and the work was only slower. After the fix, add the index and a test that fails if the handler needs a full scan; add the handler-time p99 to the dashboard next to lag.\n\n**Why this order.** Rolling back is the fastest way to stop the growth. Scaling out would not have helped: with 12 consumers on 12 partitions, there was nothing to add.\n\n### Incident 2: one partition stuck on the same offset\n\n**Symptoms.** Lag grows only on partition 3 of `orders`. `CURRENT-OFFSET` for that partition has not moved for an hour. The other partitions are fine.\n\n**Diagnosis.** The logs of the consumer that owns partition 3 repeat one JSON parsing exception for offset 1204 every few seconds. A producer bug wrote a record that is not valid JSON, and this service has no `ErrorHandlingDeserializer`, so `poll()` throws on the same bytes every time.\n\n**Fix.**\n\n1. Keep the bytes: read the record with `kafka-console-consumer.sh --partition 3 --offset 1204 --max-messages 1` and store it, or copy it to a dead-letter topic.\n2. Move past it. With the group stopped, run `kafka-consumer-groups.sh --group payment-service --topic orders:3 --reset-offsets --shift-by 1 --execute`, then start the consumers. The application should not need the manual step again once it uses `ErrorHandlingDeserializer` with a dead-letter recoverer.\n3. Tell the producing team, and add the failure-path test from *Testing Failure Paths and Event Contracts*.\n\n**Why this order.** Saving the record first matters: after the offset moves, retention will eventually delete it, and the only evidence of the producer's bug would be gone.\n\n### Incident 3: a rebalance every few minutes\n\n**Symptoms.** Every three to five minutes the group rebalances. Lag climbs and falls in waves. Some orders are charged twice.\n\n**Diagnosis.** The log lines `consumer poll timeout has expired` appear on one pod just before each rebalance. That pod receives a partition whose records trigger a call to a slow fraud-check service, taking up to 8 seconds, and `max.poll.records` is 500: 4,000 seconds of work in the worst case against a 300-second poll interval. When it leaves, its partitions move; the next pod gets the slow records and repeats the cycle. The duplicates come from the batches that were being processed when the member left.\n\n**Fix.** Add a timeout of 2 seconds to the fraud-check call, lower `max.poll.records` to 50, enable static membership and `CooperativeStickyAssignor`, and make the handler idempotent (it was not). Watch `rebalance-total` return to zero between deploys.\n\n**Why this order.** The timeout removes the cause; the lower poll size bounds the damage if it recurs; static and cooperative settings make unavoidable rebalances cheap; idempotency makes the duplicates harmless."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "First, is that partition's committed offset moving at all? If it is frozen, a record is failing repeatedly: read the consumer's log for that partition and offset. Second, if it is moving slowly, is a hot key sending most traffic to that partition? Check key distribution and the partition's end offset growth against the others. Third, is the member that owns it unhealthy or restarting (rebalances, a stuck thread)? Use `--describe --members` to see who owns it.",
+     "title": "Interview angle: Lag is growing on a single partition while the others are fine. What are your first three checks?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Describe the symptom, find the layer, look at the narrowest scope, read client logs, change one thing\n- Compare end offsets (written) with committed offsets (read) to split producer from consumer problems\n- One frozen partition means a bad record or a hot key; all partitions slow means the handler or the infrastructure\n- Save the evidence before skipping a poison record: `--shift-by 1` only with the group stopped\n- `read_committed` consumers stall behind open transactions\n- Rolling back beats scaling when the work got slower, not bigger"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### A Testing Strategy for Kafka Code"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why can a test with a mocked `KafkaTemplate` pass while the system loses per-order ordering?",
+       "answer": "The mock accepts any arguments, so a missing or wrong record key goes unnoticed. Ordering depends on the key choosing the partition, which only a test that captures the sent record's key, or one that uses a real broker, can check."
+      },
+      {
+       "question": "A Kafka integration test passes locally and fails on CI about one run in ten. Name three likely causes.",
+       "answer": "A fixed `sleep` that is too short on slow machines; a test consumer using `latest` that subscribes after the record was produced; or two tests sharing a topic or group so one consumes the other's records. Fix with condition-based waiting, `earliest`, and unique topics or groups."
+      },
+      {
+       "question": "Why is it useful to pass `Producer` and `Consumer` interfaces instead of concrete classes?",
+       "answer": "The test doubles `MockProducer` and `MockConsumer` implement the same interfaces, so the class can be tested without a broker."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Embedded Broker Tests with spring-kafka-test"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does `bootstrapServersProperty = \"spring.kafka.bootstrap-servers\"` do?",
+       "answer": "It makes the annotation set that property to the embedded broker's address, so the application's own Kafka configuration connects to the embedded broker instead of a real cluster."
+      },
+      {
+       "question": "Why give the verifying consumer a unique `group.id`?",
+       "answer": "If it used the application's group id it would join that group and take partitions (and records) away from the listener under test. A unique group lets it read independently."
+      },
+      {
+       "question": "When is the embedded broker not enough?",
+       "answer": "When behaviour depends on the exact broker version or configuration you run in production (authentication, listener setup, specific server settings), or when you want the same container setup as your CI uses for the database."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Integration Tests with Testcontainers"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What should an ordering test look like, and why use a unique key?",
+       "answer": "Send many records that carry a sequence number with one key, wait for all to be processed, and assert the processing order. A unique key stops records from earlier tests or runs on a shared broker from mixing into the check."
+      },
+      {
+       "question": "Why is the container declared once and shared rather than started per test class?",
+       "answer": "Starting a broker takes seconds, so a container per class makes the suite slow. A shared bean lives as long as the cached Spring context, so all classes with the same configuration reuse one broker."
+      },
+      {
+       "question": "Name a failure mode that only a container (not an embedded broker) lets you reproduce realistically.",
+       "answer": "Stopping and restarting the broker, or cutting the network with a proxy such as Toxiproxy, to verify producer retries and consumer reconnection against a server whose version and configuration match production."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Testing Failure Paths and Event Contracts"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why must the bad record in a poison-pill test be sent with a byte-array producer?",
+       "answer": "The application's own serializer would turn any object into valid JSON. To put invalid bytes on the topic, as a faulty producer in production would, the test must bypass that serializer."
+      },
+      {
+       "question": "A permanent business error is retried three times before reaching the dead-letter topic. What is wrong and how do you prove the fix?",
+       "answer": "The exception is not classified as non-retryable. Register it with `addNotRetryableExceptions`, and add a test where the fake throws it and asserts exactly one call and one dead letter."
+      },
+      {
+       "question": "What is the cheapest way to detect that a producer's change broke a consumer?",
+       "answer": "Keep fixture files of past event versions in the consumer's test resources and send each through the real listener on every build; a renamed or retyped field makes the test fail before release."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Metrics: What to Watch on Producers, Consumers and Brokers"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A lag of 50,000 and a lag of 500 on two services: which is worse?",
+       "answer": "It cannot be said without the consumption rate. Fifty thousand records at 10,000 per second drains in five seconds; five hundred at one per second takes more than eight minutes and may be stuck. Compare time to drain and the trend."
+      },
+      {
+       "question": "Which broker metric tells you that a producer using `acks=all` is about to fail?",
+       "answer": "`UnderMinIsrPartitionCount` above zero: some partitions have fewer in-sync replicas than `min.insync.replicas`, so such writes are rejected."
+      },
+      {
+       "question": "Why is the `spring.kafka.listener` timer useful in addition to client metrics?",
+       "answer": "Client metrics describe Kafka's side (fetching, lag, polling). The listener timer measures your handler: how long each invocation takes and how many fail, which tells you whether lag comes from slow or failing processing."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Tracing, Logging and Correlation"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why must the interceptor remove the MDC keys after each record?",
+       "answer": "Container threads are reused for the next record. Keys left in the MDC would be printed on unrelated log lines and attribute them to the wrong order."
+      },
+      {
+       "question": "A dead-lettered record cannot be linked to its original request. What was likely lost?",
+       "answer": "The `traceparent` header, because whoever copied or republished the record built a new one without the original headers. Copy headers when you park or replay records."
+      },
+      {
+       "question": "What does a long gap between the send span and the receive span tell you?",
+       "answer": "The record waited in the topic: the consumer group was behind (lag), paused, rebalancing, or too small. Look at lag and consumption rate for that period."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### A Troubleshooting Playbook"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you skip exactly one bad record in partition 3 without losing it?",
+       "answer": "First store its bytes (console consumer at that offset, or copy to a dead-letter topic). Then stop the group and run `kafka-consumer-groups.sh --reset-offsets --shift-by 1 --topic orders:3 --execute`, and start it again."
+      },
+      {
+       "question": "A group shows no lag and no errors, yet new orders are not processed. What do you check?",
+       "answer": "Whether the group is reading the right topic and starting at `latest` (a new group id skips existing records), whether the container is paused or not started, whether a `read_committed` consumer is stuck behind an open transaction, and whether the producer is actually writing (compare topic end offsets over time)."
+      },
+      {
+       "question": "Why do duplicates often appear together with rebalances?",
+       "answer": "A member that leaves mid-batch has not committed the batch. The new owner starts from the last committed offset and processes those records again. Idempotent handlers make this harmless; cooperative rebalancing, static membership and smaller batches make it rarer."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

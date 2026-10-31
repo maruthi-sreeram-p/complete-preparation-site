@@ -1,0 +1,502 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-1-1",
+   "type": "concept",
+   "title": "The Consumer at a Glance",
+   "subtopicId": "1-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "Your Kafka guide has no chapters on this subject, so this part was written for the site, as of October 2026. It follows the versions used in the rest of the Kafka guide (Kafka 4.x, Spring Boot 4.1, Spring for Apache Kafka 4.1) and refers to its chapters by name. Defaults and class names change between releases: check the official documentation of the version you run before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "In ShopStream the `order-service` publishes an `OrderCreated` event to the `orders` topic. Somebody has to read it. The `notification-service` wants to e-mail the customer, the `payment-service` wants to charge the card, and each of them must see every order. The object that does the reading is a `KafkaConsumer`, the consumer class of the same `kafka-clients` library that holds the producer you met in *The Producer at a Glance*. This chapter writes the smallest useful consumer, explains the loop at its centre, and lists the rules that every later chapter builds on.\n\nA producer is an engine that you hand records to. A consumer is the opposite: it is a loop that you drive. Kafka never pushes anything into your code. You call `poll()`, you get back whatever records have arrived, you process them, and you call `poll()` again. Everything else a consumer does (finding the brokers, joining its group, being told which partitions it owns, fetching data, sending heartbeats, committing offsets) happens inside or around that call.\n\n### Your first consumer\n\nThe project setup is the one from the producer chapter: `kafka-clients` 4.3.1 plus `slf4j-api` and `slf4j-simple`. Only three settings are required to start reading: `bootstrap.servers`, `key.deserializer` and `value.deserializer`. A fourth one, `group.id`, is required as soon as you use `subscribe()`, which is almost always."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.Properties;\nimport org.apache.kafka.clients.consumer.ConsumerConfig;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.ConsumerRecords;\nimport org.apache.kafka.clients.consumer.KafkaConsumer;\nimport org.apache.kafka.common.serialization.StringDeserializer;\n\npublic class FirstConsumer {\n\n    public static void main(String[] args) {\n        Properties props = new Properties();\n        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        props.put(ConsumerConfig.GROUP_ID_CONFIG, \"notification-service\");\n        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, \"earliest\");\n\n        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {\n            consumer.subscribe(List.of(\"orders\"));\n            while (true) {\n                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));\n                for (ConsumerRecord<String, String> record : records) {\n                    System.out.printf(\"%s-%d@%d key=%s value=%s%n\",\n                            record.topic(), record.partition(), record.offset(),\n                            record.key(), record.value());\n                }\n            }\n        }\n    }\n}",
+     "title": "FirstConsumer.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** `group.id` names the consumer group. Every instance of the `notification-service` uses the same name, so Kafka treats them as one logical reader and shares the partitions between them. `auto.offset.reset=earliest` only matters the first time a group runs: with no stored position, it starts at the beginning of each partition instead of at the end. The `try`-with-resources block closes the consumer, which tells the broker that this member has left. And the loop never ends, because a consumer is a long-running service.\n\nRun the producer from the earlier chapter in a second terminal and the records appear here with their partition and offset. Start a second copy of this program and watch the partitions of `orders` split between the two.\n\n### What poll() really does\n\n`poll(Duration)` looks like \"get me some records\", but it is the heart of the client. In a single call it can:\n\n- connect to the cluster and find the **group coordinator** (a broker) on the first call;\n- take part in a **rebalance**, which means joining the group and receiving the partitions you now own;\n- **fetch** data from the partition leaders and hand you the records that are ready;\n- **commit** offsets if auto-commit is on and the interval has passed;\n- run your **rebalance callbacks**, on your own thread, inside the call.\n\nThe timeout is a maximum, not a delay. If records are already buffered, `poll()` returns at once. If nothing arrives, it returns an empty `ConsumerRecords` after the timeout, and your loop simply goes round again."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[\"poll(timeout)\"] --> B[\"records returned\"]\n  B --> C[\"process each record\"]\n  C --> D[\"commit offsets\"]\n  D --> A\n  A -. \"inside poll\" .-> E[\"group join, rebalance callbacks, fetch, heartbeat bookkeeping\"]",
+     "title": "The consumer loop"
+    },
+    {
+     "type": "markdown",
+     "text": "This loop shape is why the **time between two `poll()` calls** is a health signal. If your processing of one batch takes longer than `max.poll.interval.ms` (5 minutes by default), the client assumes the thread is stuck and leaves the group. *Rebalancing in Practice* returns to this.\n\n### What a record carries\n\nA `ConsumerRecord<K, V>` is read-only and carries everything the broker stored plus where it came from:\n\n| Accessor | Meaning |\n|---|---|\n| `topic()`, `partition()` | Where the record lives |\n| `offset()` | Its position in that partition, starting at 0 |\n| `key()`, `value()` | The deserialized key and value (either can be `null`) |\n| `timestamp()`, `timestampType()` | `CreateTime` (set by the producer) or `LogAppendTime` (set by the broker) |\n| `headers()` | Key-value metadata that is not part of the business payload |\n| `leaderEpoch()` | Which leader generation wrote it (used internally to detect log truncation) |\n\nA `null` value is legal and meaningful: on a compacted topic it is a **tombstone** that means \"delete this key\". A listener that calls `record.value().length()` without a check will fail on the first one.\n\n### subscribe() or assign()\n\nThere are two ways to tell the consumer what to read, and they exclude each other in one consumer instance.\n\n| | `subscribe(topics)` | `assign(partitions)` |\n|---|---|---|\n| Who chooses the partitions | The group: Kafka balances them between members | You: a fixed list of `TopicPartition` |\n| Rebalancing | Yes | None |\n| `group.id` required | Yes | No (needed only if you commit offsets) |\n| Reacts to a member crashing | Yes, partitions move to survivors | No, nobody takes over |\n| Typical use | Application services scaling out | Tools, replays, a service that stores its own offsets |\n\n`subscribe` also accepts a regular expression (`subscribe(Pattern.compile(\"orders\\\\..*\"))`), which picks up new matching topics when the metadata refreshes. Use it sparingly: topic creation then changes your group's subscription and triggers a rebalance.\n\n### One thread per consumer"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Calling `poll()`, `commitSync()` or `seek()` from two threads throws `ConcurrentModificationException: KafkaConsumer is not safe for multi-threaded access`. The single exception is `wakeup()`, which is designed to be called from another thread to break a blocked `poll()` (used for shutdown, see the last chapter of this Part). A consumer belongs to the thread that polls it. If you want parallelism, you create one consumer per thread or hand work to a pool, and *Fetching, Throughput and Parallelism* shows both.",
+     "title": "Gotcha: KafkaConsumer is not thread-safe"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "No. All calls must come from one thread at a time, and the client checks this and throws `ConcurrentModificationException`. The one thread-safe method is `wakeup()`: it makes the current or next blocking call throw `WakeupException`, so a shutdown hook can call `wakeup()`, the polling thread catches the exception, commits what it has finished and closes the consumer.",
+     "title": "Interview angle: Is KafkaConsumer thread-safe? How do you stop it from another thread?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A consumer is a loop you drive: you call `poll()`, Kafka never pushes records\n- `poll()` also joins the group, runs rebalance callbacks, fetches and may auto-commit, so call it regularly\n- The timeout is a maximum wait, not a delay\n- `subscribe` lets the group balance partitions; `assign` gives you fixed partitions and no rebalancing\n- A `KafkaConsumer` instance belongs to one thread; only `wakeup()` may be called from outside\n- A `null` value is a tombstone, not an error"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-2",
+   "type": "concept",
+   "title": "Consumer Groups and Partition Assignment",
+   "subtopicId": "1-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A topic is split into partitions so that many machines can share the work. A **consumer group** is the mechanism that does the sharing on the reading side. The rule is short and has large consequences: *within one group, every partition is read by exactly one member at a time.*\n\n### The rule and what follows from it\n\nTake the `orders` topic with six partitions."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  subgraph T[\"orders - 6 partitions\"]\n    P0[\"P0\"]\n    P1[\"P1\"]\n    P2[\"P2\"]\n    P3[\"P3\"]\n    P4[\"P4\"]\n    P5[\"P5\"]\n  end\n  subgraph G1[\"group notification-service\"]\n    A1[\"member A\"]\n    A2[\"member B\"]\n    A3[\"member C\"]\n  end\n  subgraph G2[\"group payment-service\"]\n    B1[\"member X\"]\n  end\n  P0 --> A1\n  P1 --> A1\n  P2 --> A2\n  P3 --> A2\n  P4 --> A3\n  P5 --> A3\n  P0 --> B1\n  P1 --> B1\n  P2 --> B1\n  P3 --> B1\n  P4 --> B1\n  P5 --> B1",
+     "title": "One topic, two groups"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Groups are independent.** Both services see every record, because each group keeps its own position. Adding a new reader of `orders` never affects the others.\n- **Inside a group, records are divided.** Each record reaches one member of the group, which is what makes a group behave like a work queue.\n- **The partition count is the ceiling.** With six partitions, a seventh member in the same group receives nothing. It sits idle until another member leaves. This is why the partition count is chosen with future throughput in mind.\n- **Ordering is per partition.** One member reads a partition in order. Two records of different partitions can be processed in any order, which is why `orderId` is the record key.\n\n### Who is in charge: the group coordinator\n\nFor each group, one broker acts as its **group coordinator**. It is the leader of the partition of the internal `__consumer_offsets` topic that the group id hashes to (50 partitions by default). The coordinator knows the members, notices when one stops sending heartbeats, and stores the group's committed offsets. Clients find it automatically; you never configure it.\n\nYou can ask it about any group from the command line:"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "kafka-consumer-groups.sh --bootstrap-server localhost:9092 \\\n  --describe --group notification-service --members --verbose",
+     "title": "Inspecting a group"
+    },
+    {
+     "type": "markdown",
+     "text": "`--state` shows the group state. For a classic group: `Stable` when everything is assigned, `PreparingRebalance` or `CompletingRebalance` while members are changing, `Empty` when no member is connected but offsets are still stored, and `Dead` when the group has gone. Groups on the new protocol report their own states (for example while the coordinator is moving partitions), but `Stable` and `Empty` mean the same.\n\n### Classic protocol: the assignors\n\nBy default, groups run the **classic rebalance protocol**. Members send `JoinGroup` to the coordinator. The coordinator picks one member as the group leader. That leader, inside your application process, runs a **partition assignor** to decide who gets what, and sends the result back through the coordinator in `SyncGroup`. The assignor is chosen with `partition.assignment.strategy`.\n\n| Assignor | Rebalance style | Idea |\n|---|---|---|\n| `RangeAssignor` | Eager | Per topic, gives each member a contiguous range of partitions. Topics with the same partition count are co-partitioned: member A gets partition 0 and 1 of both `orders` and `payments`. Can be uneven when counts do not divide |\n| `RoundRobinAssignor` | Eager | Deals all partitions of all subscribed topics out one by one |\n| `StickyAssignor` | Eager | As balanced as round robin, but tries to keep each partition with its previous owner |\n| `CooperativeStickyAssignor` | Cooperative | Same result as sticky, reached in two rounds so that members keep reading partitions that do not move |\n\nThe default list is `RangeAssignor, CooperativeStickyAssignor`. The group uses the first assignor that **every** member supports, so with the default a group runs `RangeAssignor` and the cooperative one is there only to make the migration possible. To move a group to cooperative rebalancing without downtime, first make sure that every member lists `CooperativeStickyAssignor` (the default already does), then roll out `partition.assignment.strategy=CooperativeStickyAssignor` on its own. Setting it on some members only, with others still on the old list, is the classic way to break a rolling deploy."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Use `CooperativeStickyAssignor` for services that scale out and restart often (Kubernetes). Keep `RangeAssignor` when a job joins two topics by partition number and needs partition *n* of both on the same member (a stream-stream join, for example).",
+     "title": "Choose the assignor on purpose"
+    },
+    {
+     "type": "markdown",
+     "text": "### The new protocol (Kafka 4.0 and later)\n\nKafka 4.0 made a redesigned protocol, KIP-848, generally available. With it the **coordinator on the broker** computes the assignment, and members only send heartbeats that say what they subscribe to and which partitions they currently own. The coordinator moves partitions one member at a time: it asks the old owner to give a partition up, waits for the acknowledgement, then hands the partition to the new owner. There is no group-wide pause and no `JoinGroup`/`SyncGroup` barrier. A new member joining or a deploy restarting one pod disturbs only the partitions that move.\n\nYou opt in on the client:"
+    },
+    {
+     "type": "code",
+     "language": "properties",
+     "code": "group.protocol=consumer\n# optional: choose the server-side assignor (uniform is the default; range is the other)\ngroup.remote.assignor=uniform",
+     "title": "Opting in to the new group protocol"
+    },
+    {
+     "type": "markdown",
+     "text": "| | Classic protocol | New consumer protocol |\n|---|---|---|\n| Enable | Default | `group.protocol=consumer` on the client |\n| Who computes the assignment | The group leader, in a client process | The coordinator, on the broker |\n| Assignor setting | `partition.assignment.strategy` (client) | `group.remote.assignor` selects a server-side assignor |\n| Liveness settings | `session.timeout.ms`, `heartbeat.interval.ms` (client) | Set on the broker for the group (`group.consumer.session.timeout.ms`, `group.consumer.heartbeat.interval.ms`) |\n| Rebalance cost | Barrier for the whole group unless cooperative | Incremental by design |\n| Custom assignors in your code | Yes | No (the assignor is a broker feature) |\n\n`max.poll.interval.ms` and `max.poll.records` still apply, because they describe your processing loop. Whether you can use the new protocol also depends on the client library: the Java client supports it from 4.0, other clients vary, so check the library you use. For a service built on Spring Boot 4 (and so on a 4.x client) it is a configuration change you can try on one consumer group at a time.\n\n### Share groups: a different model\n\nKafka 4.2 made **share groups** (KIP-932, the `KafkaShareConsumer` API) production-ready. They answer a different question. A normal group gives a partition to one member, which guarantees order and caps parallelism at the partition count. A share group lets **many members read the same partition**; the broker hands out records individually, and each record is acknowledged on its own (accept, release for redelivery, or reject), the way a work queue works.\n\n| | Consumer group | Share group |\n|---|---|---|\n| Records per partition are read by | One member | Many members at once |\n| Parallelism limit | Number of partitions | Not tied to partitions |\n| Order within a partition | Guaranteed | Not guaranteed |\n| Acknowledgement | Offset per partition (everything before it) | Per record |\n| Fits | Event streams, per-key order, stateful processing | Background jobs, tasks of independent items |\n\nFor ShopStream, `orders.events` is a stream where the order of one order's events matters, so it belongs to normal groups. A pool of workers that resize product images, where any worker may take any job, is what share groups were designed for. They add no priorities or delayed delivery, so Kafka does not turn into a full job scheduler."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "At most one per partition; extra members stay idle. A hot partition cannot be split by adding consumers, because one partition is read by one member. Fixes: a better key that spreads the load, more partitions (accepting that the key-to-partition mapping changes), or moving that workload to a share group when order does not matter.",
+     "title": "Interview angle: What is the maximum useful number of consumers in a group, and how do you handle a hot partition?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Within a group each partition has exactly one reader; across groups every group reads everything\n- The partition count is the ceiling on parallelism of a group\n- The group coordinator is a broker; it tracks members and stores offsets in `__consumer_offsets`\n- Classic protocol: the group leader runs an assignor; `CooperativeStickyAssignor` avoids stop-the-world rebalances\n- Kafka 4.0 added the broker-side protocol (`group.protocol=consumer`); you opt in per client\n- Share groups (production-ready in 4.2) give queue-style, per-record consumption without per-partition order"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-3",
+   "type": "concept",
+   "title": "Offsets and Commits",
+   "subtopicId": "1-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A consumer can stop, crash or be redeployed, and when it comes back it must continue where it left off. The memory that makes this possible is the **committed offset**: a number per partition, stored by the group, that says how far the group has progressed.\n\n### Position and committed offset\n\nTwo numbers are easy to confuse:\n\n- The **position** is the offset of the next record that this consumer will hand to you from `poll()`. It lives in the consumer's memory and moves forward with every poll.\n- The **committed offset** is the position that has been saved on the broker. It is what a new or restarted member starts from."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "The committed offset means \"the next record to read\". After processing the record at offset 41, the value to commit is 42. `commitSync()` without arguments does this for you by committing the current position. When you build the map yourself, write `new OffsetAndMetadata(record.offset() + 1)`. Committing `record.offset()` makes the group read the last processed record again after every restart.",
+     "title": "Gotcha: commit the offset of the next record, not of the last one"
+    },
+    {
+     "type": "markdown",
+     "text": "Commits are stored as ordinary records in the internal compacted topic `__consumer_offsets`, keyed by *(group, topic, partition)*. The Kafka server keeps a group's offsets for `offsets.retention.minutes` (7 days by default) after the group becomes empty. A service that is stopped for longer than that loses its place and falls back to `auto.offset.reset`.\n\n### Where a group starts: auto.offset.reset\n\nWhen a group has **no committed offset** for a partition (a new group, or offsets that expired), or the committed offset points to a record that no longer exists, the consumer applies `auto.offset.reset`.\n\n| Value | Behaviour |\n|---|---|\n| `latest` (default) | Start at the end: you see only records produced from now on |\n| `earliest` | Start at the oldest record still in the partition |\n| `none` | Throw an exception (`NoOffsetForPartitionException`) so that the application decides |\n| `by_duration:<ISO-8601 duration>` | Start at the offset from that long ago, for example `by_duration:PT1H` (Kafka 4.0 and later) |\n\nIt is **not** applied on every start, only when no valid offset exists. Changing it for a group that already has offsets does nothing, and that is a frequent surprise: \"I set `earliest` but the service still skips the old orders\" means the group had committed offsets already. To replay, you reset the group's offsets (see below).\n\n### Auto-commit and its limits\n\n`enable.auto.commit` is `true` by default with `auto.commit.interval.ms=5000`. The consumer commits the offsets returned by the **previous** `poll()` from inside the next `poll()`, if the interval has passed. When all processing happens inside the loop, before the next `poll()`, a crash replays at most the work since the last commit, which gives **at-least-once** delivery. That is acceptable for idempotent work.\n\nAuto-commit becomes dangerous when processing is **not finished** when `poll()` is called again: records handed to another thread, an async call that has not returned, a batch that you buffer for later. The next `poll()` commits their offsets, the process crashes, and those records are never read again: **at-most-once**, silently. For business code, switch auto-commit off and commit yourself.\n\n### Committing manually\n\nWith `enable.auto.commit=false`, you decide when a record counts as done. Four calls matter:\n\n| Call | Behaviour |\n|---|---|\n| `commitSync()` | Commits the position of everything returned by the last `poll()`. Blocks, retries retriable errors, throws if it cannot succeed |\n| `commitSync(Map<TopicPartition, OffsetAndMetadata>)` | Commits exactly the offsets you give: use it to commit part of a batch |\n| `commitAsync(callback)` | Sends the commit and returns; the callback reports the result. **Does not retry**, so that a late retry cannot overwrite a newer commit |\n| `close()` | Commits pending auto-commit offsets (if enabled), leaves the group |\n\nA pattern that is both fast and safe: commit asynchronously inside the loop, and synchronously once at the end."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.time.Duration;\nimport java.util.HashMap;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Properties;\nimport org.apache.kafka.clients.consumer.ConsumerConfig;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.ConsumerRecords;\nimport org.apache.kafka.clients.consumer.KafkaConsumer;\nimport org.apache.kafka.clients.consumer.OffsetAndMetadata;\nimport org.apache.kafka.common.TopicPartition;\nimport org.apache.kafka.common.errors.WakeupException;\nimport org.apache.kafka.common.serialization.StringDeserializer;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\npublic class CommitPatterns {\n\n    private static final Logger log = LoggerFactory.getLogger(CommitPatterns.class);\n\n    static Properties config() {\n        Properties props = new Properties();\n        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        props.put(ConsumerConfig.GROUP_ID_CONFIG, \"payment-service\");\n        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, \"false\");\n        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, \"earliest\");\n        return props;\n    }\n\n    /** Fast path: async commit after each batch, one sync commit before leaving. */\n    static void asyncThenSync(KafkaConsumer<String, String> consumer) {\n        try {\n            while (true) {\n                ConsumerRecords<String, String> records = consumer.poll(Duration.ofSeconds(1));\n                for (ConsumerRecord<String, String> record : records) {\n                    handle(record);\n                }\n                consumer.commitAsync((offsets, ex) -> {\n                    if (ex != null) {\n                        log.warn(\"async commit failed for {}\", offsets, ex);   // the next commit will cover it\n                    }\n                });\n            }\n        } catch (WakeupException shutdown) {\n            // expected on shutdown\n        } finally {\n            try {\n                consumer.commitSync();       // last chance, with retries\n            } finally {\n                consumer.close();\n            }\n        }\n    }\n\n    /** Slow handlers: commit every N records so that a crash replays little. */\n    static void commitEveryN(KafkaConsumer<String, String> consumer, int n) {\n        Map<TopicPartition, OffsetAndMetadata> pending = new HashMap<>();\n        int sinceCommit = 0;\n        while (true) {\n            for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofSeconds(1))) {\n                handle(record);\n                pending.put(new TopicPartition(record.topic(), record.partition()),\n                        new OffsetAndMetadata(record.offset() + 1));         // the NEXT offset\n                if (++sinceCommit >= n) {\n                    consumer.commitSync(pending);\n                    pending.clear();\n                    sinceCommit = 0;\n                }\n            }\n        }\n    }\n\n    static void handle(ConsumerRecord<String, String> record) {\n        // charge the card, write to the database ...\n    }\n\n    public static void main(String[] args) {\n        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(config())) {\n            consumer.subscribe(List.of(\"orders\"));\n            asyncThenSync(consumer);\n        }\n    }\n}",
+     "title": "CommitPatterns.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The asynchronous callback only logs. Retrying a failed async commit would be wrong, because by then a later commit may already have succeeded and the retry would move the group *backwards*. The final `commitSync()` has no such risk, because nothing follows it. And `commitEveryN` keeps one entry per partition in `pending`, always the highest offset plus one.\n\nWhen a commit fails with `CommitFailedException`, the group has already rebalanced and given your partitions to someone else; the records you processed will be processed again by the new owner. That is why handlers should be idempotent, and the next chapter shows how to commit in time when a partition is taken away.\n\n### What the commit position means for delivery\n\n| When you commit | Result after a crash | Delivery |\n|---|---|---|\n| Before processing | Records read but not processed are skipped | At most once |\n| After processing | Records processed but not yet committed are read again | At least once |\n| Atomically with the effect | Neither lost nor repeated | Exactly once for that effect |\n\nThe third row has two real implementations. Inside Kafka (read, process, write to another topic), **transactions** commit the produced records and the consumed offsets together; the producer calls `sendOffsetsToTransaction`, and downstream consumers use `isolation.level=read_committed` so that they see only committed transactions. See *Transactions in Spring Kafka* for the Spring form. For a database effect, the practical answer is an **idempotent consumer**: store a processed-event id with the effect, so that a replay does nothing; see *Idempotent Consumers and the Inbox Pattern*.\n\n### Moving the position: seek, replay and reset\n\nA consumer can go anywhere in a partition it owns:\n\n| Call | Use |\n|---|---|\n| `seek(partition, offset)` | Jump to an exact offset (re-read after an error, skip a bad record) |\n| `seekToBeginning(partitions)`, `seekToEnd(partitions)` | Start over, or skip the backlog |\n| `offsetsForTimes(map)` | Find the first offset at or after a timestamp; combine with `seek` to replay \"everything since 09:00\" |\n| `position(partition)`, `committed(set)` | Read the current position, or the last committed offset |\n| `beginningOffsets(...)`, `endOffsets(...)`, `currentLag(partition)` | Compute how far behind you are |\n\nThese work on partitions the consumer currently owns, so do them after the assignment arrives (inside `onPartitionsAssigned`, or after the first `poll()`).\n\nTo reposition a **whole group** from outside, with every member stopped (the tool refuses to change a group that has active members), use the command line:"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "# show what would happen (no --execute means a dry run)\nkafka-consumer-groups.sh --bootstrap-server localhost:9092 \\\n  --group payment-service --topic orders --reset-offsets --to-datetime 2026-10-30T09:00:00.000\n\n# apply it\nkafka-consumer-groups.sh --bootstrap-server localhost:9092 \\\n  --group payment-service --topic orders --reset-offsets --to-datetime 2026-10-30T09:00:00.000 --execute",
+     "title": "Resetting a group's offsets"
+    },
+    {
+     "type": "markdown",
+     "text": "The options are `--to-earliest`, `--to-latest`, `--to-offset`, `--to-datetime`, `--by-duration`, `--shift-by` (forward or backward from the current offset) and `--from-file`. `--shift-by 1` on one partition is the standard way to skip a single poison record, and the troubleshooting chapter of *Testing, Monitoring and Troubleshooting* walks through it."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The group resumes from the last committed offset, so the order is delivered again: at-least-once. It is made safe by making the handler idempotent (a unique processed-event id, an upsert, a conditional update) or by using Kafka transactions when the output is another Kafka topic. Committing *before* processing would trade duplicates for lost records, which is almost never the right trade.",
+     "title": "Interview angle: Your consumer processed an order and crashed before committing. What happens on restart, and how do you make that safe?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The committed offset is the NEXT record to read: commit `offset + 1`\n- `auto.offset.reset` applies only when the group has no valid committed offset\n- Auto-commit is fine when all work finishes inside the loop; it loses records when work is handed off\n- `commitAsync` never retries; finish with one `commitSync` before closing\n- `CommitFailedException` means a rebalance already moved the partition to someone else\n- Replay a group with `--reset-offsets` while it is stopped; replay one consumer with `seek`"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-4",
+   "type": "concept",
+   "title": "Rebalancing in Practice",
+   "subtopicId": "1-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **rebalance** is the group deciding again who reads which partition. It is how Kafka survives a crashed pod and how it uses a new one, so it is not a fault. It becomes a problem when it happens too often, takes too long, or catches your code in the middle of unfinished work. This chapter explains what starts a rebalance, what the callbacks give you, and how to stop the avoidable ones.\n\n### What starts a rebalance\n\n- A member **joins** the group (a new pod, a restart).\n- A member **leaves**: a clean `close()`, a crash that stops its heartbeats (`session.timeout.ms`), or a thread that does not call `poll()` within `max.poll.interval.ms`.\n- The **subscription changes**: a topic matching a `subscribe(Pattern)` appears, or the partition count of a subscribed topic grows.\n- An operator or the application forces one (`enforceRebalance()`, rarely).\n\n### Eager and cooperative rebalances\n\nWith an **eager** protocol (`RangeAssignor`, `RoundRobinAssignor`, `StickyAssignor`) every rebalance is a stop-the-world event. Each member gives up all its partitions, the group re-forms, and everyone receives a fresh assignment, even partitions that end up exactly where they were. For the whole time, nobody reads anything.\n\nWith a **cooperative** protocol (`CooperativeStickyAssignor`, or the new broker-side protocol) members keep the partitions that do not move and only the moving ones pause."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant A as Member A (P0 P1 P2)\n  participant B as Member B (P3 P4 P5)\n  participant C as Member C (new)\n  Note over A,C: Eager\n  A->>A: revoke P0 P1 P2\n  B->>B: revoke P3 P4 P5\n  C->>C: join\n  Note over A,C: nothing is read while the group re-forms\n  A->>A: assigned P0 P1\n  B->>B: assigned P3 P4\n  C->>C: assigned P2 P5\n  Note over A,C: Cooperative\n  A->>A: revoke only P2, keeps reading P0 P1\n  B->>B: revoke only P5, keeps reading P3 P4\n  C->>C: assigned P2 P5",
+     "title": "Eager versus cooperative when member C joins"
+    },
+    {
+     "type": "markdown",
+     "text": "### The rebalance listener\n\n`subscribe(topics, listener)` lets you react. The three methods run on your polling thread, **inside** `poll()`:\n\n| Callback | When | What to do |\n|---|---|---|\n| `onPartitionsRevoked(partitions)` | Before partitions are taken away. You still own them | Finish or flush work for these partitions and **commit their offsets** |\n| `onPartitionsAssigned(partitions)` | After new partitions arrive | Load state, `seek` to a stored position, log |\n| `onPartitionsLost(partitions)` | The partitions are already gone (session expired, member fenced). Defaults to calling `onPartitionsRevoked` | Do **not** commit: it would fail. Drop local state only |\n\nTwo details cause real bugs. With a cooperative protocol the collections are **incremental**: `onPartitionsRevoked` receives only the partitions that leave and `onPartitionsAssigned` only the ones that are added, so do not treat the argument as the full assignment (call `consumer.assignment()` for that). And with an eager protocol `onPartitionsRevoked` can be called with an empty collection on the first join, so handle that."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.util.Collection;\nimport java.util.HashMap;\nimport java.util.Map;\nimport org.apache.kafka.clients.consumer.Consumer;\nimport org.apache.kafka.clients.consumer.ConsumerRebalanceListener;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.OffsetAndMetadata;\nimport org.apache.kafka.common.TopicPartition;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\n/** Remembers what is finished and commits it for exactly the partitions that leave. */\npublic class OffsetTrackingListener implements ConsumerRebalanceListener {\n\n    private static final Logger log = LoggerFactory.getLogger(OffsetTrackingListener.class);\n\n    private final Consumer<?, ?> consumer;\n    private final Map<TopicPartition, OffsetAndMetadata> finished = new HashMap<>();\n\n    public OffsetTrackingListener(Consumer<?, ?> consumer) {\n        this.consumer = consumer;\n    }\n\n    /** Call after a record has been fully processed. */\n    public void markFinished(ConsumerRecord<?, ?> record) {\n        finished.put(new TopicPartition(record.topic(), record.partition()),\n                new OffsetAndMetadata(record.offset() + 1));\n    }\n\n    /** Offsets for the regular commit. */\n    public Map<TopicPartition, OffsetAndMetadata> snapshot() {\n        return new HashMap<>(finished);\n    }\n\n    @Override\n    public void onPartitionsRevoked(Collection<TopicPartition> partitions) {\n        Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();\n        for (TopicPartition tp : partitions) {\n            OffsetAndMetadata offset = finished.remove(tp);\n            if (offset != null) {\n                toCommit.put(tp, offset);\n            }\n        }\n        if (!toCommit.isEmpty()) {\n            log.info(\"revoked {}, committing {}\", partitions, toCommit);\n            consumer.commitSync(toCommit);          // still the owner: this succeeds\n        }\n    }\n\n    @Override\n    public void onPartitionsLost(Collection<TopicPartition> partitions) {\n        log.warn(\"lost {}: another member owns them now, dropping local state\", partitions);\n        partitions.forEach(finished::remove);       // committing here would throw\n    }\n\n    @Override\n    public void onPartitionsAssigned(Collection<TopicPartition> partitions) {\n        log.info(\"assigned {}, full assignment is now {}\", partitions, consumer.assignment());\n    }\n}",
+     "title": "OffsetTrackingListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The class commits only for the partitions in the argument, so under a cooperative protocol the partitions that stay keep their normal commit schedule. If your loop already commits after **every** batch before the next `poll()`, this listener has nothing to do: rebalance callbacks run only inside `poll()`, at which point everything is committed. You need it when you commit less often than you poll (every N records, or on a timer) or when you keep records in a buffer.\n\n### Three clocks: heartbeat, session and poll interval\n\nLiveness is judged by three separate settings, and they catch three different failures.\n\n| Setting | Default | Catches | What the group does |\n|---|---|---|---|\n| `heartbeat.interval.ms` | 3 s | Not a detector: how often a background thread pings the coordinator | Keep it at most a third of the session timeout |\n| `session.timeout.ms` | 45 s | The process died or cannot reach the broker (no heartbeats) | Coordinator removes the member and rebalances |\n| `max.poll.interval.ms` | 5 min | The process is alive, but the thread is stuck or too slow between `poll()` calls | The client leaves the group itself; your partitions move |\n| `max.poll.records` | 500 | Not a detector: caps the batch you get from one `poll()` | Lets you bound the time one batch takes |\n\nThe heartbeat thread keeps running while your code is busy, which is why a hung handler is *not* detected by the session timeout. The poll interval is the only guard against it. A rule that keeps you safe: **`max.poll.records` times the worst-case time per record must stay well below `max.poll.interval.ms`**. With 500 records and 2 seconds per record in a bad moment, one batch needs 1,000 seconds, far above 300. Lower `max.poll.records` before you raise the interval.\n\nWhen the interval is exceeded, the symptoms are always the same: the log line `consumer poll timeout has expired`, a `CommitFailedException` on the next commit, a rebalance, and records that are processed twice, because the new owner starts from the last commit.\n\n### Rebalance storms\n\nA single slow batch can start a chain reaction. A member exceeds the poll interval and leaves; its partitions move to the others; they now have more to do, so they too exceed the interval; each leaving member triggers another rebalance, and rebalances themselves stop reading. Garbage-collection pauses longer than the session timeout, and rolling deploys that restart pods one after another, produce the same pattern.\n\n| Cause | Remedy |\n|---|---|\n| Rolling deploy restarts every pod | **Static membership**: a stable `group.instance.id` per member, so a quick restart does not leave the group |\n| Eager assignor | Move to `CooperativeStickyAssignor` or to the new group protocol |\n| Batches too slow | Lower `max.poll.records`, speed up the handler, or hand work to a pool with pause and resume |\n| GC pauses, CPU starvation | Size the heap and CPU limits; make `session.timeout.ms` longer than the longest pause |\n| Autoscaler adds and removes pods in a loop | Add stabilisation windows; scale on lag, not on CPU alone |\n\n**Static membership** works like this. With `group.instance.id=notification-2`, the coordinator remembers the member and its partitions for `session.timeout.ms` after it disappears. If the same instance id comes back within that time, it simply gets its partitions back and the group never rebalances. A clean `close()` of a static member does not send a leave request. The id must be **unique and stable**: two live members with the same id make the older one fail with `FencedInstanceIdException`, and an id based on a random pod name changes at every restart and gives no benefit. In Kubernetes use a StatefulSet, or an ordinal you control."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Static membership is usually paired with a larger `session.timeout.ms` (a few minutes) so that a restart fits inside it. The price is that a member that really died keeps its partitions for that long, and those partitions are not read. Pick a value just above your normal restart time.",
+     "title": "Gotcha: a long session timeout hides real failures"
+    },
+    {
+     "type": "markdown",
+     "text": "### Seeing rebalances\n\nThe client logs the reason at INFO level: look for `Request joining group due to:` and for the poll-timeout message above. As metrics (group `consumer-coordinator-metrics`): `rebalance-total`, `rebalance-latency-avg`, `failed-rebalance-total`, `last-rebalance-seconds-ago` and `assigned-partitions`. A group that rebalances every few minutes without any deploy has a liveness problem, not bad luck."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The handler is taking longer than the poll interval for one batch. Reduce `max.poll.records` so a batch finishes in time, find and fix the slow call (a database query, a downstream HTTP call without a timeout), and only then consider raising `max.poll.interval.ms`. Add static membership and cooperative rebalancing to keep restarts cheap, and make the handler idempotent because the partition's records will be delivered again.",
+     "title": "Interview angle: Consumers keep leaving and rejoining the group, lag rises, and the logs mention `max.poll.interval.ms`. What do you do?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A rebalance is normal; frequent or long ones are the problem\n- Eager protocols stop the whole group; cooperative and the new protocol move only the partitions that change\n- `onPartitionsRevoked` is the last chance to commit; `onPartitionsLost` is too late and must not commit\n- Cooperative callbacks receive only the changed partitions, not the full assignment\n- The session timeout detects dead processes; the poll interval detects stuck or slow ones\n- Keep `max.poll.records` times worst-case record time well below `max.poll.interval.ms`\n- Static membership (`group.instance.id`) removes rebalances caused by quick restarts"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-5",
+   "type": "concept",
+   "title": "Fetching, Throughput and Parallelism",
+   "subtopicId": "1-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "When a consumer is too slow, the temptation is to add threads. Sometimes that is right, but first you need to know where the time goes: waiting for data, receiving it, or processing it. This chapter follows a record from the broker to your method and shows the settings and the parallelism patterns that apply at each step.\n\n### How records reach poll()\n\nThe consumer sends **fetch requests** to the leader of each partition it owns. The broker answers when it has `fetch.min.bytes` of data or when `fetch.max.wait.ms` has passed, whichever comes first. Responses are kept in a buffer inside the consumer. `poll()` then simply takes up to `max.poll.records` records out of that buffer, which is why it often returns instantly.\n\n| Setting | Default | Effect |\n|---|---|---|\n| `fetch.min.bytes` | 1 | The broker answers as soon as any data exists. Raise it (for example to 64 KB or more) for fewer, bigger responses and better throughput, at the cost of latency |\n| `fetch.max.wait.ms` | 500 | The longest the broker holds a fetch open waiting for `fetch.min.bytes`. This is the latency ceiling when traffic is low |\n| `max.partition.fetch.bytes` | 1 MB | Per-partition cap on one response. A larger single batch is still returned, so a consumer never gets stuck on a big record |\n| `fetch.max.bytes` | 50 MB | Cap on the whole response across partitions |\n| `max.poll.records` | 500 | How many records one `poll()` hands to your code. It does not change how much is fetched |\n\nFor a **low-latency** consumer, leave the defaults: with `fetch.min.bytes=1` records come back as soon as they exist. For a **throughput** consumer (a nightly analytics load), raise `fetch.min.bytes` and `max.partition.fetch.bytes` so that each request carries more data. Compression is transparent: the consumer decompresses for you, which costs CPU on your side."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Measure first. `fetch-latency-avg` and `records-per-request-avg` (group `consumer-fetch-manager-metrics`) tell you whether fetching is slow. If the time between polls (`time-between-poll-avg`) is large and `poll-idle-ratio-avg` is low, the time goes into **your handler**, and no fetch setting will help.",
+     "title": "Fetching is rarely the bottleneck"
+    },
+    {
+     "type": "markdown",
+     "text": "### Reading from a nearby replica\n\nBy default every fetch goes to the partition leader, which in a three-zone cloud deployment often means traffic across zones. Since Kafka 2.4 a consumer can fetch from a follower in its own rack (KIP-392). Set `client.rack` on the consumer to its zone, and on the brokers `broker.rack` and `replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector`. Reads then stay in the zone, and you save cross-zone cost. See *Replication: Leaders, Followers and the ISR* for what followers know about the log.\n\n### Lag: the number that matters\n\n**Lag** of a partition is the distance between the newest record (the log end offset) and the position of the group. It is the amount of work waiting. Three ways to read it:\n\n- From the command line: `kafka-consumer-groups.sh --describe --group payment-service` (the `LAG` column).\n- Inside the client: `consumer.currentLag(partition)` returns an `OptionalLong` computed from cached fetch information (empty when nothing is known yet), and `endOffsets(...)` minus `position(...)` gives the same figure with a network call.\n- As a metric: `records-lag-max` in `consumer-fetch-manager-metrics`, and `records-lag` per partition.\n\nA growing lag means your group is slower than the producers. Count alone is not enough: a lag of 10,000 records at 5,000 records per second is two seconds; at 10 records per second it is a quarter of an hour. *Testing, Monitoring and Troubleshooting* turns this into alerts.\n\n### Pattern 1: one consumer per thread\n\nThe simplest way to use more cores is more consumers in the same group. Each runs its own loop on its own thread, owns its own partitions, and keeps per-partition order. Spring Kafka's `concurrency` setting does exactly this."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.time.Duration;\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Properties;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.TimeUnit;\nimport java.util.concurrent.atomic.AtomicBoolean;\nimport org.apache.kafka.clients.consumer.ConsumerConfig;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.KafkaConsumer;\nimport org.apache.kafka.common.errors.WakeupException;\n\npublic class ConsumerPool {\n\n    private final List<Loop> loops = new ArrayList<>();\n    private final ExecutorService executor;\n\n    public ConsumerPool(int threads, Properties base, List<String> topics) {\n        this.executor = Executors.newFixedThreadPool(threads);\n        for (int i = 0; i < threads; i++) {\n            Properties props = new Properties();\n            props.putAll(base);\n            props.put(ConsumerConfig.CLIENT_ID_CONFIG, \"payment-\" + i);   // distinct ids make metrics readable\n            Loop loop = new Loop(new KafkaConsumer<>(props), topics);\n            loops.add(loop);\n            executor.submit(loop);\n        }\n    }\n\n    public void shutdown() throws InterruptedException {\n        loops.forEach(Loop::stop);\n        executor.shutdown();\n        executor.awaitTermination(30, TimeUnit.SECONDS);\n    }\n\n    static final class Loop implements Runnable {\n        private final KafkaConsumer<String, String> consumer;\n        private final List<String> topics;\n        private final AtomicBoolean stopped = new AtomicBoolean();\n\n        Loop(KafkaConsumer<String, String> consumer, List<String> topics) {\n            this.consumer = consumer;\n            this.topics = topics;\n        }\n\n        @Override\n        public void run() {\n            try {\n                consumer.subscribe(topics);\n                while (!stopped.get()) {\n                    for (ConsumerRecord<String, String> record : consumer.poll(Duration.ofSeconds(1))) {\n                        process(record);\n                    }\n                    consumer.commitSync();\n                }\n            } catch (WakeupException e) {\n                if (!stopped.get()) {\n                    throw e;                       // a wakeup nobody asked for\n                }\n            } finally {\n                consumer.close();\n            }\n        }\n\n        void stop() {\n            stopped.set(true);\n            consumer.wakeup();                     // the only thread-safe call\n        }\n\n        private void process(ConsumerRecord<String, String> record) {\n            // the business logic\n        }\n    }\n}",
+     "title": "ConsumerPool.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The constructor creates each `KafkaConsumer` on the calling thread but only *uses* it on its own pool thread, which is allowed because no two threads use it at the same time. `stop()` sets a flag and then calls `wakeup()`, so a loop blocked in `poll()` ends promptly. With six partitions and eight threads, two threads are idle: more threads than partitions achieve nothing.\n\n### Pattern 2: one polling thread, many workers\n\nWhen the handler waits on slow I/O, one thread per partition wastes memory and caps you at the partition count. The alternative is to let the polling thread do **only** polling and committing, and give each partition's batch to a pool. The partition is **paused** while its batch is processed, so `poll()` keeps the membership alive and returns nothing for that partition, and **resumed** after the batch is done and its offsets are committed."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.time.Duration;\nimport java.util.HashMap;\nimport java.util.Iterator;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.concurrent.ExecutionException;\nimport java.util.concurrent.ExecutorService;\nimport java.util.concurrent.Executors;\nimport java.util.concurrent.Future;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.ConsumerRecords;\nimport org.apache.kafka.clients.consumer.KafkaConsumer;\nimport org.apache.kafka.clients.consumer.OffsetAndMetadata;\nimport org.apache.kafka.common.TopicPartition;\n\npublic class PartitionWorkers {\n\n    private record Work(long firstOffset, long nextOffset, Future<?> future) { }\n\n    private final KafkaConsumer<String, String> consumer;\n    private final ExecutorService workers = Executors.newFixedThreadPool(8);\n    private final Map<TopicPartition, Work> inFlight = new HashMap<>();\n    private volatile boolean running = true;\n\n    public PartitionWorkers(KafkaConsumer<String, String> consumer) {\n        this.consumer = consumer;\n    }\n\n    public void run() {\n        while (running) {\n            ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(200));\n            for (TopicPartition tp : records.partitions()) {\n                List<ConsumerRecord<String, String>> batch = records.records(tp);\n                consumer.pause(List.of(tp));                            // no new records for tp meanwhile\n                inFlight.put(tp, new Work(\n                        batch.get(0).offset(),\n                        batch.get(batch.size() - 1).offset() + 1,\n                        workers.submit(() -> batch.forEach(this::handle))));\n            }\n            finishCompleted();\n        }\n    }\n\n    private void finishCompleted() {\n        Map<TopicPartition, OffsetAndMetadata> done = new HashMap<>();\n        Iterator<Map.Entry<TopicPartition, Work>> it = inFlight.entrySet().iterator();\n        while (it.hasNext()) {\n            Map.Entry<TopicPartition, Work> e = it.next();\n            if (!e.getValue().future().isDone()) {\n                continue;\n            }\n            it.remove();\n            try {\n                e.getValue().future().get();\n                done.put(e.getKey(), new OffsetAndMetadata(e.getValue().nextOffset()));\n            } catch (ExecutionException | InterruptedException failure) {\n                consumer.seek(e.getKey(), e.getValue().firstOffset()); // read the batch again\n            }\n            consumer.resume(List.of(e.getKey()));\n        }\n        if (!done.isEmpty()) {\n            consumer.commitSync(done);\n        }\n    }\n\n    private void handle(ConsumerRecord<String, String> record) {\n        // slow I/O\n    }\n\n    public void stop() {\n        running = false;\n    }\n}",
+     "title": "PartitionWorkers.java"
+    },
+    {
+     "type": "markdown",
+     "text": "This is the shape that frameworks implement for you, and it hides traps:\n\n- **A rebalance during processing.** Partitions can be revoked while a worker still runs. The new owner then processes the same records. Handlers must be idempotent, and a production version must wait for or cancel the in-flight work in `onPartitionsRevoked`.\n- **Order inside a partition** is kept only because a partition has at most one batch in flight. Two batches of the same partition running in parallel would break it.\n- **Failures.** The sketch seeks back and retries forever; a real one needs a retry limit and a dead-letter topic.\n- **Pause state and rebalances.** With some protocols the pause state does not survive a reassignment; re-pause partitions that still have work in `onPartitionsAssigned`.\n\nUse this pattern only when you have measured that blocking I/O is the problem and the partition count is the limit. Otherwise Pattern 1, or more partitions, is simpler and safer."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "A virtual thread can run a consumer loop, and cheap threads make \"wait for an HTTP call\" less expensive. They do not remove the ceiling of one reader per partition, and they do not make it safe to process two records of the same partition at once. The ordering rules above stay as they are.",
+     "title": "Virtual threads change the cost of blocking, not the rules"
+    },
+    {
+     "type": "markdown",
+     "text": "### When the consumer cannot keep up\n\n| Symptom | Options, in the order to try them |\n|---|---|\n| Lag grows, handler is CPU-bound | Optimise the handler, add members (up to the partition count) |\n| Lag grows, handler waits on a database | Batch the writes (one bulk insert per poll instead of one per record), add an index, add a connection pool of the right size |\n| Lag grows, handler waits on a remote API | Timeouts and bulkheads first; then Pattern 2, or a queue-like share group if order does not matter |\n| All members are busy and the partition count is the limit | Add partitions (this remaps keys; see the Producer part), or split the work across topics |\n| One partition is far behind the others | A hot key or a stuck record: look at keys and at the last error for that partition |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "No. A group has at most one member per partition, so 12 of the 24 pods are idle. To use more consumers you need more partitions, which changes the key-to-partition mapping and so breaks per-key order across the change. The better first steps are making the handler faster, batching its I/O, or moving the work that needs no ordering to a different mechanism.",
+     "title": "Interview angle: You have 12 partitions and your consumer lag grows. You scale the service from 12 to 24 pods. Does it help?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Fetch settings tune how data crosses the network; `max.poll.records` only limits what poll hands to your code\n- Raise `fetch.min.bytes` for throughput, leave the defaults for latency\n- Lag is the work waiting; judge it as time to drain, not only as a count\n- One consumer per thread is the simple way to scale; threads beyond the partition count are idle\n- A polling thread plus workers needs pause, resume, in-order batches per partition and idempotent handlers\n- Follower fetching (`client.rack`) cuts cross-zone traffic"
+    }
+   ]
+  },
+  {
+   "id": "ch-1-6",
+   "type": "concept",
+   "title": "Failures, Shutdown and Testing a Plain Consumer",
+   "subtopicId": "1-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Everything so far assumed that records are valid and handlers succeed. Production does not. This chapter handles the three failures a plain consumer must handle itself (a record that cannot be deserialized, a handler that keeps failing, and a request to stop), then assembles them into one class and tests it without a broker.\n\n### The poison pill that never reaches your code\n\nIf a record cannot be deserialized, `poll()` itself throws a `RecordDeserializationException`. Your handler never sees it, and the failure is not tied to a processing attempt: the consumer's position has not moved, so the **next** `poll()` fetches the same bytes and throws again. The loop spins, committing nothing, forever.\n\nThe exception tells you where the problem is. `topicPartition()` and `offset()` name the record, and recent clients also carry the raw `keyBuffer()`, `valueBuffer()` and `headers()`, so the bytes are not lost. The standard answer is to **park the record and skip it**: write it to a dead-letter topic, then `seek` past it."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "try {\n    records = consumer.poll(Duration.ofSeconds(1));\n} catch (RecordDeserializationException e) {\n    deadLetter(e);                                              // keep the bytes\n    consumer.seek(e.topicPartition(), e.offset() + 1);          // move on\n    continue;\n}",
+     "title": "Parking an undecodable record"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Logging the offset and seeking past it removes the record from the pipeline, and by the time somebody investigates, the retention period may have deleted the original. Always write the raw bytes and the reason to a dead-letter topic first, and make sure that write has succeeded before you seek.",
+     "title": "Gotcha: skipping without parking is silent data loss"
+    },
+    {
+     "type": "markdown",
+     "text": "### A handler that fails\n\nA handler can throw because of a bug, a missing reference, or a downstream outage. These need different reactions, and the plain client gives you no framework for them, so the policy is yours. A sound default for a plain consumer:\n\n1. **Retry a few times in place**, with a short back-off, for failures that are probably temporary. This blocks the partition, so keep the total well below `max.poll.interval.ms`.\n2. **Then park the record** on a dead-letter topic with the exception message in a header, wait for the write to be acknowledged, and continue.\n3. **Never swallow the exception** and carry on without parking: that is the same silent loss as above.\n4. If the dead-letter write itself fails, **stop**: do not commit, let the process end or retry, so that nothing is lost.\n\n*Error Handling in Spring Kafka Listeners* and *Non-Blocking Retries with @RetryableTopic* show how Spring packages these decisions, including retry topics that avoid blocking the partition at all.\n\n### Stopping cleanly\n\nA consumer that is killed in the middle of a batch causes duplicates; one that stops cleanly does not. The pattern from the first chapters is: a shutdown hook calls `wakeup()`; the polling thread catches `WakeupException`; it finishes or abandons the current batch, commits what is done, and calls `close()`. `close()` waits (up to 30 seconds by default) for the final commit and then sends a leave request, so the group rebalances immediately instead of waiting for the session timeout.\n\n### One production-shaped consumer\n\nThe class below combines the pieces. It takes the `Consumer` and `Producer` **interfaces** rather than concrete clients, which is what lets the next section test it without a broker."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.nio.ByteBuffer;\nimport java.nio.charset.StandardCharsets;\nimport java.time.Duration;\nimport java.util.List;\nimport java.util.concurrent.CountDownLatch;\nimport java.util.concurrent.TimeUnit;\nimport org.apache.kafka.clients.consumer.Consumer;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.ConsumerRecords;\nimport org.apache.kafka.clients.producer.Producer;\nimport org.apache.kafka.clients.producer.ProducerRecord;\nimport org.apache.kafka.common.errors.RecordDeserializationException;\nimport org.apache.kafka.common.errors.WakeupException;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\n\npublic class OrderConsumer implements Runnable {\n\n    @FunctionalInterface\n    public interface RecordHandler {\n        void handle(ConsumerRecord<String, String> record) throws Exception;\n    }\n\n    private static final Logger log = LoggerFactory.getLogger(OrderConsumer.class);\n    private static final String DLT = \"orders-dlt\";\n    private static final int MAX_ATTEMPTS = 3;\n\n    private final Consumer<String, String> consumer;\n    private final Producer<byte[], byte[]> dltProducer;\n    private final RecordHandler handler;\n    private final CountDownLatch stopped = new CountDownLatch(1);\n\n    public OrderConsumer(Consumer<String, String> consumer,\n                         Producer<byte[], byte[]> dltProducer,\n                         RecordHandler handler) {\n        this.consumer = consumer;\n        this.dltProducer = dltProducer;\n        this.handler = handler;\n    }\n\n    @Override\n    public void run() {\n        try {\n            consumer.subscribe(List.of(\"orders\"));\n            while (true) {\n                ConsumerRecords<String, String> records;\n                try {\n                    records = consumer.poll(Duration.ofMillis(500));\n                } catch (RecordDeserializationException e) {\n                    parkUndecodable(e);\n                    consumer.seek(e.topicPartition(), e.offset() + 1);\n                    continue;\n                }\n                for (ConsumerRecord<String, String> record : records) {\n                    handleWithRetry(record);\n                }\n                if (!records.isEmpty()) {\n                    consumer.commitSync();                  // after the whole batch is done or parked\n                }\n            }\n        } catch (WakeupException shutdown) {\n            log.info(\"shutdown requested\");\n        } finally {\n            stopped.countDown();\n        }\n    }\n\n    /** Called from another thread (a shutdown hook). */\n    public void shutdown() throws InterruptedException {\n        consumer.wakeup();\n        stopped.await(30, TimeUnit.SECONDS);\n    }\n\n    private void handleWithRetry(ConsumerRecord<String, String> record) {\n        for (int attempt = 1; ; attempt++) {\n            try {\n                handler.handle(record);\n                return;\n            } catch (Exception ex) {\n                if (attempt >= MAX_ATTEMPTS) {\n                    park(record, ex);\n                    return;\n                }\n                log.warn(\"attempt {} failed for {}-{}@{}\", attempt,\n                        record.topic(), record.partition(), record.offset(), ex);\n                pause(200L * attempt);                       // short and bounded\n            }\n        }\n    }\n\n    private void park(ConsumerRecord<String, String> record, Exception ex) {\n        ProducerRecord<byte[], byte[]> dead = new ProducerRecord<>(DLT,\n                record.key() == null ? null : record.key().getBytes(StandardCharsets.UTF_8),\n                record.value() == null ? null : record.value().getBytes(StandardCharsets.UTF_8));\n        dead.headers().add(\"dlt-reason\", String.valueOf(ex.getMessage()).getBytes(StandardCharsets.UTF_8));\n        dead.headers().add(\"dlt-origin\", (record.topic() + \"-\" + record.partition() + \"@\" + record.offset())\n                .getBytes(StandardCharsets.UTF_8));\n        sendAndWait(dead);\n    }\n\n    private void parkUndecodable(RecordDeserializationException e) {\n        ProducerRecord<byte[], byte[]> dead = new ProducerRecord<>(DLT, bytes(e.keyBuffer()), bytes(e.valueBuffer()));\n        dead.headers().add(\"dlt-reason\", String.valueOf(e.getMessage()).getBytes(StandardCharsets.UTF_8));\n        sendAndWait(dead);\n    }\n\n    private void sendAndWait(ProducerRecord<byte[], byte[]> dead) {\n        try {\n            dltProducer.send(dead).get(10, TimeUnit.SECONDS);   // must succeed before we move on\n        } catch (Exception failure) {\n            throw new IllegalStateException(\"dead-letter write failed; stopping without committing\", failure);\n        }\n    }\n\n    private static byte[] bytes(ByteBuffer buffer) {\n        if (buffer == null) {\n            return null;\n        }\n        byte[] copy = new byte[buffer.remaining()];\n        buffer.duplicate().get(copy);\n        return copy;\n    }\n\n    private static void pause(long millis) {\n        try {\n            Thread.sleep(millis);\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt();\n        }\n    }\n}",
+     "title": "OrderConsumer.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** The dead-letter write waits for its acknowledgement (`get(10, SECONDS)`) and a failure throws, so a lost dead letter stops the consumer instead of passing silently. The commit happens once per batch, after every record has either succeeded or been parked, so a crash replays at most one batch. The consumer is not closed here: whoever created it closes it, which keeps the class easy to test.\n\n### Wiring it up"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport java.util.Properties;\nimport org.apache.kafka.clients.consumer.ConsumerConfig;\nimport org.apache.kafka.clients.consumer.KafkaConsumer;\nimport org.apache.kafka.clients.producer.KafkaProducer;\nimport org.apache.kafka.clients.producer.ProducerConfig;\nimport org.apache.kafka.common.serialization.ByteArraySerializer;\nimport org.apache.kafka.common.serialization.StringDeserializer;\n\npublic class OrderConsumerMain {\n\n    public static void main(String[] args) throws Exception {\n        Properties c = new Properties();\n        c.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        c.put(ConsumerConfig.GROUP_ID_CONFIG, \"payment-service\");\n        c.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        c.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());\n        c.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, \"false\");\n        c.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, \"100\");\n        c.put(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,\n                \"org.apache.kafka.clients.consumer.CooperativeStickyAssignor\");\n\n        Properties p = new Properties();\n        p.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, \"localhost:9092\");\n        p.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());\n        p.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());\n        p.put(ProducerConfig.ACKS_CONFIG, \"all\");\n\n        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(c);\n             KafkaProducer<byte[], byte[]> dlt = new KafkaProducer<>(p)) {\n            OrderConsumer app = new OrderConsumer(consumer, dlt, record -> {\n                System.out.println(\"charging for order \" + record.key());\n            });\n            Runtime.getRuntime().addShutdownHook(new Thread(() -> {\n                try {\n                    app.shutdown();\n                } catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                }\n            }));\n            app.run();\n        }\n    }\n}",
+     "title": "OrderConsumerMain.java"
+    },
+    {
+     "type": "markdown",
+     "text": "### Testing without a broker\n\nBecause `OrderConsumer` depends on the `Consumer` and `Producer` interfaces, the clients ship test doubles for it: `MockConsumer` and `MockProducer`, both in `kafka-clients`. `MockConsumer` runs scheduled tasks one per `poll()` call, so a test scripts the sequence: assign the partition, add records, request a stop."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.consumer;\n\nimport static org.junit.jupiter.api.Assertions.assertEquals;\n\nimport java.util.ArrayList;\nimport java.util.List;\nimport java.util.Map;\nimport java.util.Set;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.apache.kafka.clients.consumer.MockConsumer;\nimport org.apache.kafka.clients.consumer.OffsetResetStrategy;\nimport org.apache.kafka.clients.producer.MockProducer;\nimport org.apache.kafka.common.TopicPartition;\nimport org.apache.kafka.common.serialization.ByteArraySerializer;\nimport org.junit.jupiter.api.Test;\n\nclass OrderConsumerTest {\n\n    @Test\n    void poisonRecordIsParkedAndTheBatchIsCommitted() {\n        TopicPartition tp = new TopicPartition(\"orders\", 0);\n        MockConsumer<String, String> consumer = new MockConsumer<>(OffsetResetStrategy.EARLIEST);\n        MockProducer<byte[], byte[]> dlt =\n                new MockProducer<>(true, new ByteArraySerializer(), new ByteArraySerializer());\n        List<String> handled = new ArrayList<>();\n\n        OrderConsumer app = new OrderConsumer(consumer, dlt, record -> {\n            if (record.value().contains(\"poison\")) {\n                throw new IllegalStateException(\"cannot process\");\n            }\n            handled.add(record.key());\n        });\n\n        consumer.schedulePollTask(() -> {                         // poll 1: we own the partition\n            consumer.rebalance(List.of(tp));\n            consumer.updateBeginningOffsets(Map.of(tp, 0L));\n        });\n        consumer.schedulePollTask(() -> {                         // poll 2: two records arrive\n            consumer.addRecord(new ConsumerRecord<>(\"orders\", 0, 0L, \"o-1\", \"{\\\"total\\\":10}\"));\n            consumer.addRecord(new ConsumerRecord<>(\"orders\", 0, 1L, \"o-2\", \"{poison}\"));\n        });\n        consumer.schedulePollTask(consumer::wakeup);              // poll 3: ask the loop to stop\n\n        app.run();\n\n        assertEquals(List.of(\"o-1\"), handled);\n        assertEquals(1, dlt.history().size());                    // the poison record was parked\n        assertEquals(2L, consumer.committed(Set.of(tp)).get(tp).offset());   // next offset after the batch\n    }\n}",
+     "title": "OrderConsumerTest.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The test proves three behaviours that a hand-written loop often gets wrong: a bad record does not stop the good one before it, the bad record ends up in the dead-letter topic rather than disappearing, and the committed offset is the **next** offset (2), not the last (1). It does not prove anything about partitioning, ordering across partitions, or real rebalances; those need a real broker, and *Testing, Monitoring and Troubleshooting* shows how."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "One record on the partition cannot be deserialized. The exception is raised by `poll()` before the position moves, so the same bytes are fetched again on every call. Catch `RecordDeserializationException`, write the raw bytes to a dead-letter topic, then `seek` to `offset + 1`. In Spring Kafka the same job is done by wrapping the deserializer in `ErrorHandlingDeserializer`, covered in *Deserialization, Conversion and Poison Pills*.",
+     "title": "Interview angle: A consumer throws a deserialization exception on every `poll()` and makes no progress. What happened and what do you do?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A deserialization failure is thrown by `poll()` itself and repeats until you seek past the record\n- Park the raw bytes on a dead-letter topic and wait for the write before skipping\n- Retry a few times in place, then park; never swallow an error silently\n- Stop cleanly: `wakeup()` from the hook, catch `WakeupException`, commit, `close()`\n- Write consumer code against the `Consumer` and `Producer` interfaces so `MockConsumer` and `MockProducer` can drive it\n- Mocks check your logic, not partitioning, ordering or rebalancing"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### The Consumer at a Glance"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a consumer need a `group.id`?",
+       "answer": "With `subscribe()`, the group id names the set of consumers that share a topic's partitions and the key under which their committed offsets are stored. Without it Kafka cannot balance partitions or remember where the group stopped."
+      },
+      {
+       "question": "What does `poll(Duration.ofSeconds(1))` do when no records are available?",
+       "answer": "It waits up to one second, then returns an empty `ConsumerRecords`. The timeout is the longest it will wait; it returns immediately when data is buffered. During the call it can also join the group, run rebalance callbacks and send fetch requests."
+      },
+      {
+       "question": "Two copies of the `notification-service` run with the same `group.id`, and a third service runs with a different one. Who sees which orders?",
+       "answer": "The two copies split the partitions of `orders` between them, so each record reaches exactly one of them. The third service is a separate group and receives every record. Groups are independent readers of the same log."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Consumer Groups and Partition Assignment"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A topic has 4 partitions and a group has 6 members. What happens?",
+       "answer": "Four members each read one partition and two members are idle. They are standby: if an active member dies, an idle one takes over its partition after a rebalance."
+      },
+      {
+       "question": "Why do two topics that are both joined by a consumer often need the same partition count and the same key?",
+       "answer": "`RangeAssignor` gives the same member the same partition numbers of every topic, and the default partitioner maps a key to the same partition number in both. Together they put all records of one key on one member, which a join or a shared in-memory state needs."
+      },
+      {
+       "question": "Name two differences between the classic and the new group protocol.",
+       "answer": "The classic protocol computes assignments in a client process and stops the whole group during a rebalance unless the cooperative assignor is used; the new protocol computes them on the broker and moves partitions incrementally. Liveness settings also move from the client to the broker."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Offsets and Commits"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A group has committed offset 120 for `orders-0`. Which record does it read first after a restart?",
+       "answer": "The record at offset 120. The committed offset names the next record to read, so records up to 119 count as done."
+      },
+      {
+       "question": "Why does `commitAsync` not retry on failure?",
+       "answer": "A retry could arrive after a newer commit and move the stored offset backwards, causing already processed records to be read again. The next successful commit supersedes a lost one anyway, and a final `commitSync` covers the shutdown case."
+      },
+      {
+       "question": "You changed `auto.offset.reset` to `earliest` but the service still ignores old orders. Why?",
+       "answer": "The group already has committed offsets, and the setting only applies when no valid offset exists. Reset the group's offsets with `kafka-consumer-groups.sh --reset-offsets` (with the group stopped), or use a new `group.id`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Rebalancing in Practice"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When does `onPartitionsLost` run instead of `onPartitionsRevoked`, and why must it not commit?",
+       "answer": "It runs when the member has already lost its partitions without a chance to hand them over, for example after a session timeout or when it was fenced. Another member owns them now, so a commit from this member is rejected; you should only clean up local state."
+      },
+      {
+       "question": "A handler is fast on average but occasionally takes 6 minutes for a batch. What breaks and how do you fix it?",
+       "answer": "The thread does not call `poll()` within the 5-minute `max.poll.interval.ms`, so the client leaves the group, the partitions are reassigned and the batch is processed again by someone else. Reduce `max.poll.records` or the work per record, set timeouts on the slow call, or move the slow work to a worker pool while the polling thread keeps polling with the partitions paused."
+      },
+      {
+       "question": "Why does a Deployment with random pod names get no benefit from `group.instance.id`?",
+       "answer": "The id is only useful if the restarted member presents the same id. A new random pod name is a new member, so the coordinator sees a join instead of a return, and the old entry waits out the session timeout."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Fetching, Throughput and Parallelism"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between `fetch.min.bytes` and `max.poll.records`?",
+       "answer": "`fetch.min.bytes` controls how much data the broker waits for before answering a fetch request, so it shapes network traffic and latency. `max.poll.records` caps how many already fetched records one `poll()` returns to your code, so it shapes the size of a processing batch."
+      },
+      {
+       "question": "Why must a partition be paused while a worker processes its batch?",
+       "answer": "Otherwise the next `poll()` would return more records of that partition while the previous batch is still running, which could run two batches of one partition in parallel and break per-partition order. Pausing keeps polling (and group membership) alive while returning nothing for that partition."
+      },
+      {
+       "question": "How would you compute the lag of one partition in code?",
+       "answer": "Subtract the position from the log end offset: `consumer.endOffsets(List.of(tp)).get(tp) - consumer.position(tp)`, or read it from local information with `consumer.currentLag(tp)`, which returns an `OptionalLong`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Failures, Shutdown and Testing a Plain Consumer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is `consumer.close()` better than killing the process?",
+       "answer": "`close()` commits pending offsets (when auto-commit is on or you commit before it) and sends a leave request, so the group rebalances immediately and the records are not processed twice. A killed process leaves the partitions unowned until the session timeout expires and replays everything since the last commit."
+      },
+      {
+       "question": "Which thread may call `wakeup()` and what does it do?",
+       "answer": "Any thread. It makes the current or the next blocking consumer call throw `WakeupException` on the polling thread, which is the supported way to interrupt `poll()` for a shutdown."
+      },
+      {
+       "question": "In the test above, why is the committed offset 2 when the last record has offset 1?",
+       "answer": "Committed offsets name the next record to read. After the batch (offsets 0 and 1) is finished, the group's position is 2."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

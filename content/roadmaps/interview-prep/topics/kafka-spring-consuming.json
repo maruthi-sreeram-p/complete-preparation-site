@@ -1,0 +1,538 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-2-1",
+   "type": "concept",
+   "title": "The @KafkaListener Programming Model",
+   "subtopicId": "2-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "Your Kafka guide has no chapters on this subject, so this part was written for the site, as of October 2026. It follows the versions used in the rest of the Kafka guide (Kafka 4.x, Spring Boot 4.1, Spring for Apache Kafka 4.1) and refers to its chapters by name. Defaults and class names change between releases: check the official documentation of the version you run before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "*Producing with KafkaTemplate* showed the sending side. This Part is its mirror image, and it picks up where *The Java Consumer API* stopped. In that Part you wrote the `poll()` loop, the commits, the rebalance callbacks and the shutdown by hand. Spring Kafka keeps the same `KafkaConsumer` underneath and writes that loop for you. What you write is a method."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.support.KafkaHeaders;\nimport org.springframework.messaging.handler.annotation.Header;\nimport org.springframework.messaging.handler.annotation.Payload;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderCreatedListener {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderCreatedListener.class);\n\n    private final PaymentService payments;\n\n    public OrderCreatedListener(PaymentService payments) {\n        this.payments = payments;\n    }\n\n    @KafkaListener(id = \"payment-orders\", topics = \"orders\", groupId = \"payment-service\")\n    public void onOrderCreated(@Payload OrderCreated event,\n                               @Header(KafkaHeaders.RECEIVED_KEY) String key,\n                               @Header(KafkaHeaders.RECEIVED_PARTITION) int partition,\n                               @Header(KafkaHeaders.OFFSET) long offset) {\n        log.info(\"order {} from partition {} offset {}\", key, partition, offset);\n        payments.charge(event);\n    }\n}",
+     "title": "OrderCreatedListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "And the matching configuration for the `payment-service`, using the same Spring Boot 4.1 and Spring Kafka 4.1 versions as the producing chapters:"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  kafka:\n    bootstrap-servers: localhost:9092\n    consumer:\n      group-id: payment-service\n      auto-offset-reset: earliest\n      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer\n      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer\n      properties:\n        spring.json.value.default.type: com.shopstream.payment.events.OrderCreated\n        spring.json.use.type.headers: false\n        spring.json.trusted.packages: com.shopstream.payment.events",
+     "title": "application.yml (payment-service)"
+    },
+    {
+     "type": "markdown",
+     "text": "No loop, no `poll()`, no commit and no `main`. At startup Spring Boot finds the annotation, creates a **listener container** for it, subscribes to `orders` and starts a thread that polls. For every record, the container deserializes the value, builds the arguments your method asks for, and calls it.\n\n### What the annotation does\n\n`@KafkaListener` is processed once, when the application context starts. The bean post-processor registers an **endpoint** with the `KafkaListenerEndpointRegistry`, and the container factory (`kafkaListenerContainerFactory`, built by Boot from `spring.kafka.consumer.*` and `spring.kafka.listener.*`) creates the container from it. So the annotation does not subscribe anything itself. It describes what to subscribe to, and the factory decides how to run it. Everything you can change about running (threads, acknowledgement, error handling) is a property of the factory or the container, and the next chapters cover each.\n\n### What a listener method can ask for\n\nSpring resolves each parameter of the method from the record. The payload is the deserialized value; anything else you request is read from the record's metadata.\n\n| Parameter | What you get |\n|---|---|\n| `OrderCreated event` or `@Payload OrderCreated event` | The deserialized value |\n| `@Header(KafkaHeaders.RECEIVED_KEY) String key` | The record key |\n| `@Header(KafkaHeaders.RECEIVED_TOPIC)`, `RECEIVED_PARTITION`, `OFFSET`, `RECEIVED_TIMESTAMP` | Where the record came from and when |\n| `@Header(\"source\") String source` | Any custom header, by name |\n| `ConsumerRecord<String, OrderCreated> record` | The complete raw record: topic, partition, offset, key, value, headers |\n| `Message<OrderCreated> message` | The Spring Messaging form: payload plus all headers as a map |\n| `Acknowledgment ack` | A handle for committing yourself (next chapters) |\n| `Consumer<?, ?> consumer` | The underlying `KafkaConsumer`, for rare low-level needs; only valid on the container thread |\n| `List<...>` of the above | Selected by a batch listener (*Batch Listeners and Throughput Tuning*) |\n\nChoose by what the method needs. A handler that only needs the business object should declare only the object: it is the easiest to unit-test, because you can call it like any other method. Take the `ConsumerRecord` when you need several metadata fields together.\n\n### Attributes you will use\n\n| Attribute | Purpose |\n|---|---|\n| `topics` | One or more topic names. Placeholders such as `${shopstream.topics.orders}` are resolved from the environment |\n| `topicPattern` | A regular expression instead of fixed names (rebalances when matching topics appear) |\n| `topicPartitions` | Fixed partitions, optionally with starting offsets. The container then **assigns** instead of subscribing: no group balancing |\n| `groupId` | The `group.id` for this listener, overriding `spring.kafka.consumer.group-id` |\n| `id` | The container's name; it also appears in thread names, logs and the registry |\n| `containerFactory` | Use a differently configured factory (for example one with manual acknowledgement) |\n| `concurrency` | Number of consumer threads for this listener (next chapter) |\n| `autoStartup` | `false` keeps the container stopped until you start it |\n| `properties` | Extra consumer properties for this listener only, such as `max.poll.records=50` |\n| `batch` | `true` makes this one a batch listener |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "If you set `id` but not `groupId`, the `id` becomes the consumer group (the attribute `idIsGroup` is `true` by default). Renaming a listener's `id` in a refactoring then silently moves it to a **new group** with no committed offsets. It starts at `auto.offset.reset`, so it either re-reads every record in the topic or skips everything that is already waiting. Always set `groupId` explicitly in business listeners, and treat it as a stable identifier like a database table name.",
+     "title": "Gotcha: the id is also the group id"
+    },
+    {
+     "type": "markdown",
+     "text": "### Several message types on one topic: @KafkaHandler\n\nA topic such as `orders.events` can carry more than one event type. Put `@KafkaListener` on the class and mark one method per type with `@KafkaHandler`. Spring picks the method by the type of the deserialized payload."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCancelled;\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.annotation.KafkaHandler;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.stereotype.Component;\n\n@Component\n@KafkaListener(id = \"payment-order-events\", topics = \"orders.events\", groupId = \"payment-service\")\npublic class OrderEventsListener {\n\n    private static final Logger log = LoggerFactory.getLogger(OrderEventsListener.class);\n\n    private final PaymentService payments;\n\n    public OrderEventsListener(PaymentService payments) {\n        this.payments = payments;\n    }\n\n    @KafkaHandler\n    public void created(OrderCreated event) {\n        payments.charge(event);\n    }\n\n    @KafkaHandler\n    public void cancelled(OrderCancelled event) {\n        payments.refund(event.orderId());\n    }\n\n    @KafkaHandler(isDefault = true)\n    public void unknown(Object other) {\n        log.warn(\"ignoring unexpected payload {}\", other.getClass().getName());\n    }\n}",
+     "title": "OrderEventsListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "This only works if the deserializer can produce different classes, which means the record must say which class it carries. *Deserialization, Conversion and Poison Pills* explains type headers and their safer alternative, type mapping. The default handler is not optional in practice: without it a record of an unknown type fails the listener and goes through error handling."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "At application startup the `KafkaListenerAnnotationBeanPostProcessor` registers an endpoint, and the `ConcurrentKafkaListenerContainerFactory` builds a listener container from it. The container owns one or more `KafkaConsumer` instances and the threads that run their `poll()` loops, and it calls the annotated method for each record. The annotation describes what to listen to; the container does the polling, committing and error handling.",
+     "title": "Interview angle: What does `@KafkaListener(topics = \"orders\")` actually create, and when?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- `@KafkaListener` registers an endpoint; a container built by the factory runs the poll loop\n- A method declares what it needs: payload, headers, `ConsumerRecord`, `Acknowledgment`\n- Prefer the plain payload parameter: such methods are easy to unit-test\n- `id` is also the `group.id` unless `groupId` is set: always set `groupId`\n- `topicPartitions` assigns partitions manually and bypasses group balancing\n- `@KafkaHandler` on methods lets one class listen to several event types"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-2",
+   "type": "concept",
+   "title": "Listener Containers, Threads and Concurrency",
+   "subtopicId": "2-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The listener container is where Spring's design and Kafka's rules meet, and nearly every consumer problem in production comes back to how it runs. This chapter shows how many threads and consumers there really are, what that means for your code, and how to start, pause and stop them.\n\n### One consumer, one thread\n\nThe basic unit is the `KafkaMessageListenerContainer`. It owns exactly **one `KafkaConsumer`** and **one thread** that runs its `poll()` loop and calls your method. Everything from *The Java Consumer API* applies unchanged: the thread polls, your method runs on that thread, and while it runs nothing polls.\n\nBoot's factory creates a `ConcurrentMessageListenerContainer` for each `@KafkaListener`. It is a parent that creates `concurrency` of those basic containers. With `concurrency: 3` you get three consumers in the same group, each with its own thread, sharing the partitions between them, which is exactly the *one consumer per thread* pattern from the previous Part, done for you."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  L[\"@KafkaListener payment-orders\"] --> R[\"KafkaListenerEndpointRegistry\"]\n  R --> C[\"ConcurrentMessageListenerContainer, concurrency = 3\"]\n  C --> K1[\"container 1: thread + KafkaConsumer\"]\n  C --> K2[\"container 2: thread + KafkaConsumer\"]\n  C --> K3[\"container 3: thread + KafkaConsumer\"]\n  K1 --> M[\"your method, called on the container thread\"]\n  K2 --> M\n  K3 --> M",
+     "title": "What exists at runtime for one listener"
+    },
+    {
+     "type": "markdown",
+     "text": "You set the number in the annotation (`concurrency = \"3\"`, which also accepts a placeholder) or for all listeners with `spring.kafka.listener.concurrency`.\n\n### Counting consumers\n\nParallelism is the product of three numbers, and the partition count is the ceiling:\n\n| Quantity | Example |\n|---|---|\n| Partitions of `orders` | 12 |\n| Application instances (pods) | 4 |\n| `concurrency` per instance | 3 |\n| Consumers in the group | 4 × 3 = 12, each owns one partition |\n| If you scale to 6 pods | 18 consumers for 12 partitions: 6 are idle |\n\nSetting `concurrency` above the number of partitions *one instance can receive* just creates idle threads. When you add instances, lower `concurrency` or keep an eye on the total. The thread names, which contain the listener id (for example `payment-orders-0-C-1`), tell you in a thread dump which container a thread belongs to.\n\n### What this means for your code\n\nThree consequences follow from the design, and each causes a class of bugs.\n\n**Order.** The container calls your method for one record at a time per consumer thread, in offset order within a partition. You never see two records of the same partition at the same time, so per-partition order is kept without any work from you.\n\n**Thread safety.** With `concurrency` above 1 the same listener bean is called from several threads **at the same time**, one per partition group. A Spring `@Component` is a singleton, so a mutable field in it is shared state. Keep listeners stateless, or protect what they share.\n\n**Blocking.** While your method runs, the thread does not poll. A call that takes minutes (a slow HTTP service, a database lock) eats the `max.poll.interval.ms` budget and finally causes a rebalance, as in *Rebalancing in Practice*. Bound every external call with a timeout, keep `max.poll.records` honest, and see the batch chapter for the sizing rule."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "In a running application, a thread dump (or the log pattern `%thread`) should show exactly `concurrency` listener threads per instance. If you see more, a listener is declared twice; if you see fewer, one of them failed to start, and the log will say why.",
+     "title": "A quick sanity check for concurrency"
+    },
+    {
+     "type": "markdown",
+     "text": "### Starting, pausing and stopping\n\nContainers have a lifecycle, and the registry gives you a handle to each one by its `id`."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.ops;\n\nimport java.util.Set;\nimport org.springframework.kafka.config.KafkaListenerEndpointRegistry;\nimport org.springframework.kafka.listener.MessageListenerContainer;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class ListenerControl {\n\n    private final KafkaListenerEndpointRegistry registry;\n\n    public ListenerControl(KafkaListenerEndpointRegistry registry) {\n        this.registry = registry;\n    }\n\n    /** Stop taking new records, keep the group membership alive. */\n    public void pause(String listenerId) {\n        MessageListenerContainer container = registry.getListenerContainer(listenerId);\n        if (container != null) {\n            container.pause();\n        }\n    }\n\n    public void resume(String listenerId) {\n        MessageListenerContainer container = registry.getListenerContainer(listenerId);\n        if (container != null) {\n            container.resume();\n        }\n    }\n\n    public boolean isPaused(String listenerId) {\n        MessageListenerContainer container = registry.getListenerContainer(listenerId);\n        return container != null && container.isContainerPaused();\n    }\n\n    public Set<String> all() {\n        return registry.getListenerContainerIds();\n    }\n}",
+     "title": "ListenerControl.java"
+    },
+    {
+     "type": "markdown",
+     "text": "`pause()` is a request: the container finishes the records it already has, then keeps polling with all partitions paused, so the member stays in the group and no rebalance happens, but no new records are delivered. That is the right tool when a downstream system is down (a circuit breaker can call it) or during a maintenance window. `stop()` is different: it leaves the group, which causes a rebalance. Use it for a real shutdown.\n\nSetting `autoStartup = \"false\"` on the annotation keeps a container stopped until you call `registry.getListenerContainer(id).start()`. A common use is a feature flag, or a listener that must wait until a cache has been loaded.\n\nOn application shutdown Spring stops the containers and waits for the record in progress to finish, up to `shutdownTimeout` (10 seconds by default; `ContainerProperties.setShutdownTimeout`). If your handler can run longer than that, either raise it or accept that the record will be delivered again, and pair it with Spring Boot's graceful shutdown so that the web server also drains.\n\n### Knowing when a container is stuck\n\nThe container publishes Spring application events, and two of them are worth reacting to:\n\n| Event | Published when | Use |\n|---|---|---|\n| `ListenerContainerIdleEvent` | No records for `idle-event-interval` | Finish a batch job, release resources, detect a silent topic |\n| `NonResponsiveConsumerEvent` | The thread has not called `poll()` for longer than `no-poll-threshold` × `poll-timeout`, checked every `monitor-interval` | Detect a hung handler **before** the poll interval expires |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.ops;\n\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.context.event.EventListener;\nimport org.springframework.kafka.event.NonResponsiveConsumerEvent;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class StuckConsumerWatcher {\n\n    private static final Logger log = LoggerFactory.getLogger(StuckConsumerWatcher.class);\n\n    @EventListener\n    public void onStuck(NonResponsiveConsumerEvent event) {\n        log.error(\"listener {} has not polled for {} ms; partitions {}\",\n                event.getListenerId(), event.getTimeSinceLastPoll(), event.getTopicPartitions());\n        // raise a metric or alert here; do not call the container from inside the event handler\n    }\n}",
+     "title": "StuckConsumerWatcher.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The settings are `spring.kafka.listener.idle-event-interval`, `monitor-interval` and `no-poll-threshold` (and `poll-timeout`, which defaults to 5 seconds). The non-responsive event is a cheap liveness signal: a handler stuck on a lock produces it long before the five-minute poll interval produces a rebalance."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Spring starts five consumers in the same group, but only three get a partition; two are idle. Parallelism stays at three. The bean is a singleton called from up to three threads at the same time, so it is thread-safe only if it is stateless or its shared state is protected. Records of one partition are still handled one at a time and in order.",
+     "title": "Interview angle: Your listener has `concurrency = 5` and the topic has 3 partitions. What happens, and is the listener bean thread-safe by default?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- One basic container is one `KafkaConsumer` and one thread; `concurrency` creates several of them in the same group\n- Total consumers = instances × concurrency, capped usefully by the partition count\n- Per-partition order is kept; listener beans are called from several threads at once, so keep them stateless\n- A blocking handler stops polling and eventually triggers a rebalance: set timeouts\n- `pause()` keeps group membership and stops delivery; `stop()` leaves the group\n- `NonResponsiveConsumerEvent` warns about a hung handler before the poll interval expires"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-3",
+   "type": "concept",
+   "title": "Offsets, Acknowledgement Modes and Seeking",
+   "subtopicId": "2-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "*Offsets and Commits* explained the rules: commit the offset of the next record, after processing, never before. In a Spring listener you do not call `commitSync()`; you choose an **acknowledgement mode** and the container commits for you. This chapter covers what each mode costs, how to take over manually, and how to move a running listener to another position.\n\n### Spring turns off auto-commit\n\nSpring Kafka sets `enable.auto.commit=false` unless you configure it otherwise, and does all committing itself, from the consumer thread, using one of the `AckMode` values:\n\n| `AckMode` | The container commits | Replay window after a crash |\n|---|---|---|\n| `BATCH` (default) | After the listener has processed every record returned by one `poll()` | Up to `max.poll.records` records |\n| `RECORD` | After each record | At most one record, but one commit round trip per record |\n| `TIME` / `COUNT` / `COUNT_TIME` | After a time or a record count since the last commit, at a batch boundary | Up to that time or count, plus the batch |\n| `MANUAL` | After your listener calls `ack.acknowledge()`; the commit happens when the batch ends | Whatever you have not acknowledged |\n| `MANUAL_IMMEDIATE` | At once, inside `acknowledge()` | Whatever you have not acknowledged |\n\nSet it with `spring.kafka.listener.ack-mode` or on `ContainerProperties.setAckMode`. For a business service, `BATCH` or `RECORD` with an idempotent handler is the sound default: the container commits only after your method returned normally, so the only way to lose a record is to throw and be dropped by an error handler you configured on purpose."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "When the listener throws, the container does not commit that record. The error handler then decides: retry (by seeking back), publish to a dead-letter topic, or give up. Only when the handler recovers or skips the record does the offset move past it. This is why error handling and acknowledgement are one topic, and why *Error Handling in Spring Kafka Listeners* is the companion to this chapter.",
+     "title": "Gotcha: an exception is not a commit"
+    },
+    {
+     "type": "markdown",
+     "text": "### Acknowledging yourself\n\nWith `MANUAL` or `MANUAL_IMMEDIATE`, you declare an `Acknowledgment` parameter and decide when the record counts as done. That fits the case where \"done\" is not \"the method returned\", for example after you have also committed a database transaction that a framework completes later."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport java.time.Duration;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;\nimport org.springframework.kafka.core.ConsumerFactory;\nimport org.springframework.kafka.listener.ContainerProperties;\nimport org.springframework.kafka.support.Acknowledgment;\nimport org.springframework.stereotype.Component;\n\n@Configuration\nclass ManualAckConfig {\n\n    @Bean\n    ConcurrentKafkaListenerContainerFactory<String, OrderCreated> manualAckFactory(\n            ConsumerFactory<String, OrderCreated> consumerFactory) {\n        var factory = new ConcurrentKafkaListenerContainerFactory<String, OrderCreated>();\n        factory.setConsumerFactory(consumerFactory);\n        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);\n        return factory;\n    }\n}\n\n@Component\npublic class ManualAckListener {\n\n    private final PaymentService payments;\n\n    ManualAckListener(PaymentService payments) {\n        this.payments = payments;\n    }\n\n    @KafkaListener(id = \"payment-manual\", topics = \"orders\", groupId = \"payment-service\",\n            containerFactory = \"manualAckFactory\")\n    public void on(OrderCreated event, Acknowledgment ack) {\n        try {\n            payments.charge(event);\n            ack.acknowledge();                          // only now does this record count as done\n        } catch (IllegalStateException temporary) {\n            ack.nack(Duration.ofSeconds(2));            // redeliver this record after 2 seconds\n        }\n    }\n}",
+     "title": "ManualAckListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** `acknowledge()` marks the record; with `MANUAL` the container performs the commit at the end of the batch, with `MANUAL_IMMEDIATE` right away. `nack(Duration)` tells the container to discard the rest of the current batch, seek every partition back to the failed record and redeliver it after the pause. It must be called on the container thread, so do not hand the `Acknowledgment` to a pool and call it from there. Offsets are positions, so there is no such thing as acknowledging \"just\" one record: acknowledging record 12 commits offset 13 and thereby everything before it. Skipping `acknowledge()` is therefore not a reliable way to ask for a redelivery, because a later acknowledgement on the same partition commits past the record you skipped. If you want a record delivered again, say so with `nack`, and acknowledge every record you finished, in order.\n\n### Choosing a mode\n\n| Situation | Mode |\n|---|---|\n| Handler is idempotent, throughput matters | `BATCH` |\n| Handler is slow and each record is expensive to repeat | `RECORD` |\n| \"Done\" is decided by code outside the method (async result, later transaction) | `MANUAL` / `MANUAL_IMMEDIATE`, acknowledged on the container thread |\n| Read-process-write to another Kafka topic with exactly-once effect | A transactional container; see *Transactions in Spring Kafka* |\n\n### Moving a running listener: seeking\n\nSometimes the position must change without stopping the service: replay yesterday's orders into a new read model, jump to the end after an outage you decide to skip, or start a new listener at a fixed point. Spring offers two tools.\n\n**Initial offsets in the annotation** fix the start position at startup. Naming partitions makes the container *assign* them, so the listener is outside group balancing:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@KafkaListener(id = \"order-audit\", groupId = \"order-audit\",\n        topicPartitions = @TopicPartition(topic = \"orders\",\n                partitionOffsets = @PartitionOffset(partition = \"*\", initialOffset = \"0\")))\nvoid audit(ConsumerRecord<String, String> record) { /* ... */ }",
+     "title": "Replay from the start at every startup"
+    },
+    {
+     "type": "markdown",
+     "text": "**`ConsumerSeekAware`** lets code move the position while the listener runs. The base class `AbstractConsumerSeekAware` keeps the seek callbacks of every assigned partition for you:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport java.time.Instant;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.listener.AbstractConsumerSeekAware;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class ReplayableListener extends AbstractConsumerSeekAware {\n\n    @KafkaListener(id = \"order-projection\", topics = \"orders\", groupId = \"order-projection\")\n    public void on(ConsumerRecord<String, String> record) {\n        // update the read model\n    }\n\n    /** E.g. called from an admin endpoint: re-read everything since a point in time. */\n    public void replaySince(Instant from) {\n        seekToTimestamp(from.toEpochMilli());      // queued, then executed by the container threads\n    }\n\n    public void replayAll() {\n        seekToBeginning();\n    }\n}",
+     "title": "ReplayableListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The seeks are queued and carried out by each container thread before its next poll, because a `KafkaConsumer` may only be touched by its own thread. For custom behaviour at startup, override `onPartitionsAssigned(Map<TopicPartition, Long>, ConsumerSeekCallback)` and call methods such as `seekToBeginning(topic, partition)` or `seekToTimestamp(topic, partition, ts)` on the callback."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "A replay delivers records the service has handled before. If the handler sends e-mails or charges cards, a replay duplicates them. Replay into read models, caches and projections, which are rebuilt by repeating the same writes, and protect side effects with an idempotency check.",
+     "title": "Replay needs an idempotent handler"
+    },
+    {
+     "type": "markdown",
+     "text": "### Rebalance hooks in Spring\n\nIf you need the equivalent of the listener from the previous Part, declare a bean of type `ConsumerAwareRebalanceListener`. Boot attaches a single such bean to the container factory. It receives the consumer itself and offers `onPartitionsRevokedBeforeCommit`, `onPartitionsRevokedAfterCommit`, `onPartitionsAssigned` and `onPartitionsLost`; the \"before commit\" variant is where you flush buffered work, because the container commits right after it."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The container commits according to `AckMode`: by default after the whole batch returned by one `poll()` was processed without throwing. A record is redelivered if the listener throws and the error handler retries (it seeks back), if the process dies before the commit, or if a rebalance moves the partition before the commit. Because delivery is therefore at-least-once, the handler must be idempotent.",
+     "title": "Interview angle: With Spring Kafka, when exactly is an offset committed, and what makes a record be redelivered?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Spring disables Kafka's auto-commit and commits itself according to `AckMode`\n- `BATCH` (default) commits after each poll's records; `RECORD` after each record; `MANUAL` after your `acknowledge()`\n- A thrown exception means no commit for that record; the error handler decides whether to retry, park or skip\n- `nack(Duration)` redelivers after a pause and must be called on the container thread\n- Named partitions in `topicPartitions` mean manual assignment and no group balancing\n- `AbstractConsumerSeekAware` replays a running listener; seeks are executed on the container thread"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-4",
+   "type": "concept",
+   "title": "Deserialization, Conversion and Poison Pills",
+   "subtopicId": "2-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A listener method receives a Java object, but the broker stores bytes. Between the two there are two separate steps, and most mysterious consumer failures happen in one of them. Knowing which step failed tells you where to look.\n\n1. **Deserialization.** The Kafka client turns the key and value bytes into objects with a `Deserializer`. This runs inside `poll()`, *before* the container sees the record.\n2. **Conversion.** Spring adapts what the deserializer produced to the parameters of your method (a payload type, headers, a `ConsumerRecord`). This runs inside the container, per record, and may use a `MessageConverter`.\n\n### Four ways to get from bytes to an object\n\n| Approach | Conversion happens in | The target type comes from | Good for |\n|---|---|---|---|\n| JSON deserializer with type headers | The client | A `__TypeId__` header written by the producer | One codebase that owns both ends |\n| JSON deserializer with a default type | The client | `spring.json.value.default.type` | A topic that carries one event type |\n| JSON deserializer with **type mapping** | The client | A short token in the header, mapped to a class by each side | Several event types, services that must not share class names |\n| `StringDeserializer` plus a JSON message converter | Spring, per listener method | The type of the method parameter | Producers in other languages; each consumer using its own class |\n| Avro or Protobuf deserializer with a registry | The client | The schema id inside the payload | Governed contracts (*Schema Registry*) |\n\nThe first row is the convenient default and the trap. `JacksonJsonSerializer` writes the **fully qualified Java class name** of the producer's class into a header, and a consumer using that header must have the same class on its classpath, in the same package. That ties two services to each other's internal class names. For ShopStream the `order-service` knows `com.shopstream.order.OrderCreated` while the `payment-service` has its own `com.shopstream.payment.events.OrderCreated`; the header would name a class the second service does not have.\n\n### Type mapping: names instead of classes\n\nWith type mapping both sides agree on a short token, and each maps it to its own class. The class name never travels."
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  kafka:\n    producer:\n      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer\n      properties:\n        spring.json.type.mapping: created:com.shopstream.order.OrderCreated,cancelled:com.shopstream.order.OrderCancelled",
+     "title": "order-service: producer side"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  kafka:\n    consumer:\n      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer\n      properties:\n        spring.json.type.mapping: created:com.shopstream.payment.events.OrderCreated,cancelled:com.shopstream.payment.events.OrderCancelled\n        spring.json.trusted.packages: com.shopstream.payment.events",
+     "title": "payment-service: consumer side"
+    },
+    {
+     "type": "markdown",
+     "text": "The producer's header now says `created`, and the consumer maps it to its own class. A token with no mapping fails conversion. That is why the `@KafkaHandler` example in the first chapter keeps a default handler, and why a new event type must be added to the consumers' mapping before the producer starts to send it.\n\nIf the topic carries only one type, skip headers altogether: set `spring.json.add.type.headers: false` on the producer and `spring.json.use.type.headers: false` with `spring.json.value.default.type` on the consumer, as in the first chapter's configuration."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "When the deserializer builds an object from a class named in a header, it would instantiate whatever class the header names, and a crafted record could name a dangerous one. `spring.json.trusted.packages` restricts it to your event packages. The error `The class '...' is not in the trusted packages` should be fixed by listing the right package, never by setting `*`. A default type or a type mapping avoids the question, because the class is chosen by your configuration, not by the record.",
+     "title": "Gotcha: trusted packages are a security control, not a nuisance"
+    },
+    {
+     "type": "markdown",
+     "text": "### Unreadable records\n\nBoth steps can fail, and they fail differently.\n\n| Failure | Where | What happens without protection |\n|---|---|---|\n| Malformed bytes or JSON that does not fit the class | Deserialization, in `poll()` | `poll()` throws, the position does not move, the same bytes are fetched again: the **poison pill** that blocks the partition |\n| A header or token that maps to no class, a parameter that cannot be built | Conversion, in the container | `MessageConversionException` or `MethodArgumentResolutionException` before your method is called |\n\nWrapping the deserializer in `ErrorHandlingDeserializer` closes the first hole. It catches the exception, hands the container a record with a null value and the failure in a header, and lets the error handler send the raw bytes to a dead-letter topic. *Error Handling in Spring Kafka Listeners* has the configuration and the recoverer. Spring classifies deserialization and conversion failures as **not retryable** by default, since retrying the same bytes cannot succeed, so they go straight to the recoverer.\n\n### Validating the payload\n\nA syntactically valid record can still be nonsense: a negative total, a missing customer id. Bean Validation works on listener parameters if you register a validator with the endpoint registrar."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.config;\n\nimport org.springframework.beans.factory.annotation.Qualifier;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.annotation.KafkaListenerConfigurer;\nimport org.springframework.kafka.config.KafkaListenerEndpointRegistrar;\nimport org.springframework.validation.Validator;\n\n@Configuration\nclass KafkaValidationConfig implements KafkaListenerConfigurer {\n\n    private final Validator validator;\n\n    KafkaValidationConfig(@Qualifier(\"defaultValidator\") Validator validator) {\n        this.validator = validator;\n    }\n\n    @Override\n    public void configureKafkaListeners(KafkaListenerEndpointRegistrar registrar) {\n        registrar.setValidator(validator);\n    }\n}",
+     "title": "KafkaValidationConfig.java"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public record OrderCreated(\n        @NotBlank String orderId,\n        @NotBlank String customerId,\n        @Positive long totalCents) { }\n\n@KafkaListener(id = \"payment-orders\", topics = \"orders\", groupId = \"payment-service\")\npublic void onOrderCreated(@Valid @Payload OrderCreated event) { /* ... */ }",
+     "title": "Constraints on the event and @Valid on the parameter"
+    },
+    {
+     "type": "markdown",
+     "text": "A violation raises `MethodArgumentNotValidException`. It is **not** on Spring's default list of non-retryable exceptions (that list holds the deserialization, conversion and argument-resolution failures), so by default the container would retry it with the whole back-off before giving up. Register it as fatal: `errorHandler.addNotRetryableExceptions(MethodArgumentNotValidException.class)`. An invalid record never becomes valid by waiting.\n\n### Tombstones and absent values\n\nOn a compacted topic, a record with a `null` value deletes its key. Your method must be ready for it. The payload parameter is required by default, and a missing payload would fail argument resolution, so mark it optional:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.catalog.messaging;\n\nimport com.shopstream.catalog.model.Product;\nimport java.util.Map;\nimport java.util.concurrent.ConcurrentHashMap;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.support.KafkaHeaders;\nimport org.springframework.messaging.handler.annotation.Header;\nimport org.springframework.messaging.handler.annotation.Payload;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class TombstoneListener {\n\n    private final Map<String, Product> cache = new ConcurrentHashMap<>();\n\n    @KafkaListener(id = \"catalog-cache\", topics = \"products.compacted\", groupId = \"catalog-cache\")\n    public void on(@Header(KafkaHeaders.RECEIVED_KEY) String sku, @Payload(required = false) Product product) {\n        if (product == null) {\n            cache.remove(sku);          // tombstone: the product was deleted\n        } else {\n            cache.put(sku, product);\n        }\n    }\n}",
+     "title": "TombstoneListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "Note the `ConcurrentHashMap`: the cache is shared state in a singleton listener, which the previous chapter warned about.\n\n### Evolving the event\n\nProducers add fields over time. A consumer that fails on a field it does not know breaks at the first deploy of the producer. Spring's JSON deserializer ignores unknown properties by default, which is the tolerant-reader behaviour you want. The rules that keep it working: add fields, do not rename or repurpose them; make new fields optional with a sensible default in the consumer's class; deploy consumers before producers when a field becomes required. For stricter guarantees use a schema registry and compatibility checks (*Evolving Schemas Safely*)."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "It carries the producer's fully qualified class name, so every consumer needs a class with that exact name, which couples deployments and leaks internals. Disable type headers and use a default type for single-type topics, or use `spring.json.type.mapping` so only short agreed tokens travel. Also keep `spring.json.trusted.packages` narrow, because a header-driven type is an injection surface.",
+     "title": "Interview angle: Why can a JSON `__TypeId__` header be a problem between microservices, and what do you do about it?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Deserialization runs in the client during `poll()`; conversion runs in the container per record\n- Type headers couple services to class names: prefer a default type or `spring.json.type.mapping`\n- Keep `spring.json.trusted.packages` to your own packages, never `*`\n- `ErrorHandlingDeserializer` turns a poison pill into a record the error handler can park\n- Register a validator through `KafkaListenerConfigurer`, and add `MethodArgumentNotValidException` to the non-retryable list\n- A tombstone is a null value: declare `@Payload(required = false)`"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-5",
+   "type": "concept",
+   "title": "Batch Listeners and Throughput Tuning",
+   "subtopicId": "2-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A record listener calls your method once per record. That is the right default, because the code is simple and the failure unit is one record. It is also expensive when each call does a database round trip: 500 records means 500 inserts. A **batch listener** receives the whole poll result at once, which lets you do one bulk write per batch.\n\n### Turning it on\n\nEither per listener, or for all listeners of the factory:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.store.OrderStore;\nimport java.util.ArrayList;\nimport java.util.List;\nimport org.apache.kafka.clients.consumer.ConsumerRecord;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.kafka.listener.BatchListenerFailedException;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class OrderBatchListener {\n\n    private final OrderStore store;\n\n    OrderBatchListener(OrderStore store) {\n        this.store = store;\n    }\n\n    @KafkaListener(id = \"order-archive\", topics = \"orders\", groupId = \"order-archive\",\n            batch = \"true\", properties = \"max.poll.records=200\")\n    public void archive(List<ConsumerRecord<String, OrderCreated>> records) {\n        List<OrderCreated> valid = new ArrayList<>(records.size());\n        for (int i = 0; i < records.size(); i++) {\n            OrderCreated event = records.get(i).value();\n            if (event == null) {\n                // a record that cannot be processed: tell the container exactly which one\n                throw new BatchListenerFailedException(\"null payload\", i);\n            }\n            valid.add(event);\n        }\n        store.insertAll(valid);                 // one bulk statement for up to 200 records\n    }\n}",
+     "title": "OrderBatchListener.java"
+    },
+    {
+     "type": "markdown",
+     "text": "The same effect for every listener comes from `spring.kafka.listener.type: batch`. The method parameter can be `List<OrderCreated>` (payloads only), `List<ConsumerRecord<K, V>>` (full records), `ConsumerRecords<K, V>`, or a `List<Message<V>>` when you also want headers.\n\n**What a batch is.** It is exactly what one `poll()` returned: **up to** `max.poll.records` records, possibly across several partitions, and possibly a single record when traffic is low. Never assume the list is full, and never assume it holds one partition. Order within each partition is kept.\n\n### When a batch fails\n\nThe container needs to know how far the batch succeeded. If the method throws an arbitrary exception, it cannot tell, and the whole batch is retried, then recovered as a whole. If you throw a `BatchListenerFailedException` with the **index** (or the record) that failed, the container commits the offsets of the records before it, retries from the failed one, and recovers only that record when retries are exhausted. *Error Handling in Spring Kafka Listeners* covers the batch error flow and the dead-letter details; the practical rule is to report the failing index whenever you can name it."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "If `store.insertAll` fails after inserting 150 of 200 rows, the whole batch is delivered again. Run the write in one transaction, or make each row idempotent (a unique key with `ON CONFLICT DO NOTHING`), otherwise a retry duplicates the first 150. This is the batch form of the idempotent-consumer rule.",
+     "title": "Gotcha: a bulk write must be all-or-nothing, or idempotent"
+    },
+    {
+     "type": "markdown",
+     "text": "### Dropping records before the listener\n\nA `RecordFilterStrategy` removes records before the method is called, for example events of a test tenant or of another region. Return `true` to **discard** a record."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.config;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.listener.adapter.RecordFilterStrategy;\n\n@Configuration\nclass FilterConfig {\n\n    @Bean\n    RecordFilterStrategy<String, OrderCreated> skipTestOrders() {\n        return record -> record.value() != null && record.value().test();   // true = discard\n    }\n}",
+     "title": "FilterConfig.java"
+    },
+    {
+     "type": "markdown",
+     "text": "Boot attaches a single `RecordFilterStrategy` bean to the auto-configured factory. A filtered record is not acknowledged unless the factory's `ackDiscarded` is `true`; with manual or per-record acknowledgement, set it, or a trailing discarded record keeps the commit behind and is read again after a restart.\n\n### Tuning checklist\n\nChange one thing at a time and watch lag and the time between polls.\n\n| Symptom | Likely cause | Try |\n|---|---|---|\n| Lag grows, CPU idle, handler is waiting on the database | One round trip per record | Batch listener with a bulk write; connection pool sized for `concurrency` |\n| Lag grows, all consumer threads busy | Not enough consumers | Raise `concurrency` up to the partitions per instance; add instances up to the partition count |\n| Rebalances during busy periods | Batch takes too long | Lower `max.poll.records`; fix the slow call; check `max.poll.interval.ms` |\n| High latency at low traffic | Fetch settings tuned for throughput | Default `fetch.min.bytes`; check `fetch.max.wait.ms` |\n| Commit overhead visible in profiles | `AckMode.RECORD` on a fast handler | `BATCH`, with an idempotent handler |\n| One partition always behind | Hot key | Look at keys; change the key or the partitioning |\n\nThe settings sit in `spring.kafka.consumer.properties` (for example `max.poll.records`, `fetch.min.bytes`) and in `spring.kafka.listener.*` (`concurrency`, `ack-mode`, `type`). A per-listener override goes in the annotation's `properties` attribute, as the batch example does."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Choose it when the cost per record is dominated by something that can be amortised, typically database writes or HTTP calls to a bulk endpoint. You must handle a partially failed batch (report the failing index with `BatchListenerFailedException`), make the bulk operation atomic or idempotent because failures redeliver, and remember that the batch holds whatever one poll returned, up to `max.poll.records`, not a fixed size.",
+     "title": "Interview angle: When would you choose a batch listener over a record listener, and what must you handle?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A batch listener receives what one `poll()` returned, up to `max.poll.records`, possibly from several partitions\n- Use it to amortise per-record cost, typically one bulk write per batch\n- Throw `BatchListenerFailedException` with the failing index so earlier records are committed\n- Make the bulk operation atomic or idempotent, because a failed batch is redelivered\n- `RecordFilterStrategy` drops records before the listener; set `ackDiscarded` when acknowledging per record\n- Tune one setting at a time, guided by lag and time between polls"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-6",
+   "type": "concept",
+   "title": "Putting It Together: The payment-service Consumer",
+   "subtopicId": "2-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter assembles the previous ones into the consuming side of ShopStream's `payment-service`: it reads `OrderCreated` from `orders`, charges the card exactly once in effect, and parks anything it cannot handle. The point is less the code than the **list of decisions** and where each one lives.\n\n### The flow"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TB\n  B[\"broker: orders\"] --> D[\"JacksonJsonDeserializer inside ErrorHandlingDeserializer\"]\n  D --> V[\"validation\"]\n  V --> L[\"PaymentListener: idempotency check, charge\"]\n  L --> A[\"offset committed by the container\"]\n  D -- \"undecodable\" --> X[\"error handler\"]\n  V -- \"invalid\" --> X\n  L -- \"business error or retries exhausted\" --> X\n  X --> T[\"orders-dlt with failure headers\"]",
+     "title": "One order through the payment-service consumer"
+    },
+    {
+     "type": "markdown",
+     "text": "### Configuration"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  kafka:\n    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}\n    consumer:\n      group-id: payment-service\n      auto-offset-reset: earliest\n      max-poll-records: 100\n      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer\n      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer\n      properties:\n        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JacksonJsonDeserializer\n        spring.json.value.default.type: com.shopstream.payment.events.OrderCreated\n        spring.json.use.type.headers: false\n        spring.json.trusted.packages: com.shopstream.payment.events\n        max.poll.interval.ms: 300000\n    listener:\n      ack-mode: record\n      concurrency: 3\n      idle-event-interval: 60s\n      no-poll-threshold: 3\n      monitor-interval: 30s\n      observation-enabled: true",
+     "title": "application.yml (payment-service)"
+    },
+    {
+     "type": "markdown",
+     "text": "### The error policy and the listener"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.config;\n\nimport com.shopstream.payment.service.PermanentPaymentException;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\nimport org.springframework.kafka.core.KafkaOperations;\nimport org.springframework.kafka.listener.DeadLetterPublishingRecoverer;\nimport org.springframework.kafka.listener.DefaultErrorHandler;\nimport org.springframework.messaging.handler.invocation.MethodArgumentResolutionException;\nimport org.springframework.util.backoff.FixedBackOff;\n\n@Configuration\nclass PaymentKafkaConfig {\n\n    @Bean\n    DefaultErrorHandler errorHandler(KafkaOperations<Object, Object> template) {\n        var recoverer = new DeadLetterPublishingRecoverer(template);          // orders -> orders-dlt, same partition\n        var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1_000L, 3));   // 3 retries, 1 s apart\n        handler.addNotRetryableExceptions(PermanentPaymentException.class, MethodArgumentResolutionException.class);\n        return handler;\n    }\n}",
+     "title": "PaymentKafkaConfig.java"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "package com.shopstream.payment.messaging;\n\nimport com.shopstream.payment.events.OrderCreated;\nimport com.shopstream.payment.service.PaymentService;\nimport com.shopstream.payment.service.ProcessedEvents;\nimport org.slf4j.Logger;\nimport org.slf4j.LoggerFactory;\nimport org.springframework.kafka.annotation.KafkaListener;\nimport org.springframework.stereotype.Component;\n\n@Component\npublic class PaymentListener {\n\n    private static final Logger log = LoggerFactory.getLogger(PaymentListener.class);\n\n    private final PaymentService payments;\n    private final ProcessedEvents processed;\n\n    PaymentListener(PaymentService payments, ProcessedEvents processed) {\n        this.payments = payments;\n        this.processed = processed;\n    }\n\n    @KafkaListener(id = \"payment-orders\", topics = \"orders\", groupId = \"payment-service\")\n    public void onOrderCreated(OrderCreated event) {\n        if (!processed.firstTime(\"order-created:\" + event.orderId())) {\n            log.info(\"duplicate order {} ignored\", event.orderId());\n            return;                                   // redelivery after a crash or rebalance\n        }\n        payments.charge(event);                       // throws PermanentPaymentException for e.g. an unknown customer\n    }\n}",
+     "title": "PaymentListener.java"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A record that failed deserialization reaches the recoverer with its original `byte[]` value. The auto-configured template serializes values as JSON, which would encode those bytes as Base64 text and corrupt the dead letter. Production code builds the `DeadLetterPublishingRecoverer` with a map of templates (one with a `ByteArraySerializer` for `byte[]` values, one for objects); *Error Handling in Spring Kafka Listeners* shows exactly that. The short form above is enough only when you do not use `ErrorHandlingDeserializer`.",
+     "title": "Gotcha: the dead-letter template must be able to write raw bytes"
+    },
+    {
+     "type": "markdown",
+     "text": "### The decisions and where they live\n\n| Decision | Where | Why |\n|---|---|---|\n| Stable group id | `groupId` and `consumer.group-id` | A renamed id is a new group with no offsets |\n| Defensive deserialization | `ErrorHandlingDeserializer` around `JacksonJsonDeserializer` | A malformed record becomes a dead letter, not a stuck partition |\n| No class names on the wire | Default type, `use.type.headers: false` | The producer's classes stay private |\n| Commit after each record | `ack-mode: record` | A crash replays at most one charge |\n| Idempotent handler | `ProcessedEvents.firstTime(...)` | Delivery is at-least-once; a replay must be harmless |\n| Permanent errors fail fast | `addNotRetryableExceptions` | Retrying an unknown customer wastes the partition's time |\n| Bounded retries, then park | `FixedBackOff(1000, 3)` plus `DeadLetterPublishingRecoverer` | Total wait about three seconds, far below the poll interval |\n| Parallelism | `concurrency: 3` with 12 partitions and 4 pods | One partition per consumer, none idle |\n| Visibility | `observation-enabled`, idle and non-responsive events | Traces, lag and a hung handler show up in monitoring |\n\nFor failures that are temporary but long (a payment gateway down for ten minutes), blocking retries are the wrong tool, because they stall the partition; use `@RetryableTopic` as in *Non-Blocking Retries with @RetryableTopic*. The next Part shows how to test this configuration, including the dead-letter path, and how to watch it in production."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A consumer's behaviour is a handful of decisions: group id, deserialization safety, commit point, idempotency, error classification, retry bounds, parallelism\n- Each decision has one home in configuration or code; write them down\n- Business errors are permanent: do not retry them\n- Blocking retries are for short outages; long ones need retry topics\n- Test the dead-letter path as carefully as the happy path"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### The @KafkaListener Programming Model"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Which `group.id` does `@KafkaListener(id = \"payment-orders\", topics = \"orders\")` use, and why is that a hazard?",
+       "answer": "`payment-orders`, because `idIsGroup` is true and no `groupId` is given. Renaming the `id` later changes the group, which has no committed offsets, so the listener restarts from `auto.offset.reset`."
+      },
+      {
+       "question": "How is the record's key made available to a listener method that takes the payload?",
+       "answer": "Add a parameter `@Header(KafkaHeaders.RECEIVED_KEY) String key`, or take the whole `ConsumerRecord`. The container resolves each parameter from the record."
+      },
+      {
+       "question": "Why is a `@KafkaHandler(isDefault = true)` method recommended on a class with several handlers?",
+       "answer": "A record whose payload type matches no handler would otherwise fail, enter error handling and may end up in a dead-letter topic. A default handler lets you log and ignore event types your service does not care about."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Listener Containers, Threads and Concurrency"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does `pause()` on a container differ from `stop()`?",
+       "answer": "`pause()` keeps the consumers polling with their partitions paused, so the group membership stays and no rebalance occurs; delivery resumes with `resume()`. `stop()` shuts the consumers down, leaving the group and triggering a rebalance."
+      },
+      {
+       "question": "Why can a stateless-looking listener still break when `concurrency` is raised from 1 to 3?",
+       "answer": "With three consumer threads the same singleton bean is called concurrently. Any mutable field (a list, a counter, a `SimpleDateFormat`, a non-thread-safe client) is now shared and can be corrupted. At `concurrency = 1` the problem was invisible."
+      },
+      {
+       "question": "What is the difference between `max.poll.interval.ms` and Spring's `NonResponsiveConsumerEvent`?",
+       "answer": "`max.poll.interval.ms` is the client's limit: past it the member leaves the group. The event is Spring's earlier warning: when the thread has not polled for `no-poll-threshold` times `poll-timeout`, an event is published so you can alert while the consumer is still in the group."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Offsets, Acknowledgement Modes and Seeking"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A listener uses `AckMode.MANUAL` and returns without calling `acknowledge()`. What happens to the offset?",
+       "answer": "That record is not committed by itself, and if no later record of the partition is acknowledged either, a restart or rebalance resumes from the last committed offset and delivers it again. But acknowledging a later record commits past it, so omitting `acknowledge()` is not a dependable redelivery mechanism; use `nack`."
+      },
+      {
+       "question": "Why must `Acknowledgment.nack` be called from the container thread?",
+       "answer": "`nack` seeks the consumer back and sleeps, and a `KafkaConsumer` may only be used by the thread that polls it. Calling it from a worker thread would break that rule and the container cannot apply the seek safely."
+      },
+      {
+       "question": "How do you make a running listener re-read the last 24 hours without redeploying?",
+       "answer": "Extend `AbstractConsumerSeekAware` and call `seekToTimestamp(...)` with the start time (for example from an admin endpoint). The container threads perform the seek before their next poll. The handler must be idempotent, because the records have been handled before."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Deserialization, Conversion and Poison Pills"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a malformed record without `ErrorHandlingDeserializer` more dangerous than one that makes your handler throw?",
+       "answer": "A handler exception happens after the record was handed over, so the container's error handler can retry, park or skip it. A deserialization exception is thrown by `poll()` itself before the position moves, so the same bytes are fetched on every poll and the partition makes no progress."
+      },
+      {
+       "question": "A producer starts sending a new event type. What must happen first when you use type mapping?",
+       "answer": "Every consumer's mapping must include the new token and class (or have a default handler that tolerates unknown tokens), otherwise conversion fails. Add the mapping to consumers, deploy them, then let the producer send."
+      },
+      {
+       "question": "Which exceptions does Spring treat as non-retryable by default, and what should you add?",
+       "answer": "Deserialization, message conversion, conversion, argument resolution, no-such-method and class-cast failures. Add business validation failures such as `MethodArgumentNotValidException` and your own permanent errors, since retrying them cannot succeed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Batch Listeners and Throughput Tuning"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A batch listener sometimes receives a list with a single record. Is something wrong?",
+       "answer": "No. A batch is whatever one `poll()` returned. At low traffic that can be one record. Code must not assume a minimum size."
+      },
+      {
+       "question": "What does throwing `BatchListenerFailedException(message, 7)` change compared with throwing an ordinary exception?",
+       "answer": "The container learns that records 0 to 6 succeeded, commits their offsets, and retries or recovers from record 7. With an ordinary exception it cannot tell and retries the whole batch."
+      },
+      {
+       "question": "Your bulk insert uses `INSERT` without a uniqueness check and a retry produces duplicates. What are the fixes?",
+       "answer": "Wrap the batch write in a single transaction so it is all-or-nothing, and/or give each row a natural unique key and insert with a conflict-ignoring form, so that processing the same record twice has no further effect."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Putting It Together: The payment-service Consumer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "In the flow above, which three situations end up in `orders-dlt`?",
+       "answer": "A record that cannot be deserialized, a record that fails validation (when classified as non-retryable), and a record whose handler keeps failing until the back-off is exhausted, or throws a permanent business exception."
+      },
+      {
+       "question": "Why does the configuration commit per record while the poll size is 100?",
+       "answer": "The handler charges a card, which is expensive to repeat. Committing after each record keeps the replay window after a crash to a single record, at the cost of one commit round trip per record. The idempotency check makes even that single replay harmless."
+      },
+      {
+       "question": "What would you change if the payment gateway is down for 20 minutes?",
+       "answer": "Blocking retries would hold the partition and risk the poll interval. Move transient failures to retry topics with delays (`@RetryableTopic`), or pause the container with a circuit breaker until the gateway recovers, and keep the idempotency check in place."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

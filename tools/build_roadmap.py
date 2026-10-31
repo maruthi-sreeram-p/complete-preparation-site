@@ -25,6 +25,15 @@ from guide_source import DOCUMENT, build_sections, load_parts  # noqa: E402
 
 PLAN_FILE = "Day_By_Day_Plan.xlsx"
 
+# folders under tools/ with guides written for the site; their chapters are listed from the sources
+WRITTEN_GUIDE_FOLDERS = ["frontend", "kafka"]
+
+# PDF part titles that promise chapters the PDF does not have (the missing ones are covered by the written Kafka parts)
+TITLE_OVERRIDES = {
+    ("Kafka", 6): "Spring Kafka in Production: Errors, Retries and Transactions",
+    ("Kafka", 7): "Kafka Streams",
+}
+
 # plan name -> (slug, pdf file)
 GUIDES = {
     "Core Java": ("core-java", "Core_Java_In_Depth.pdf"),
@@ -193,6 +202,22 @@ def nearest_parents(upper, lower_size, j):
     return [tid for o, tid in offsets if o == best]
 
 
+def link_tree(result, categories):
+    """A tree like NeetCode's: within each stage the steps fan out in rows of 1, 3, 5, 1, 3, 5 ...
+    Reading the rows top to bottom and left to right gives the learning order. Sets topic["requires"] in place."""
+    rows = []
+    for stage in categories:
+        members = [t for t in result if t["category"] == stage["id"]]
+        i = 0
+        while i < len(members):
+            size = ROW_SIZES[sum(1 for _ in stage_rows(rows, stage["id"])) % len(ROW_SIZES)]
+            rows.append(members[i:i + size])
+            i += size
+    for upper, lower in zip(rows, rows[1:]):
+        for j, topic in enumerate(lower):
+            topic["requires"] = nearest_parents(upper, len(lower), j)
+
+
 def page_range(chapters):
     lo = min(c["start"] for c in chapters)
     hi = max(c["end"] for c in chapters)
@@ -302,7 +327,7 @@ def main():
             summary += f" · plan days {source['planDays']}"
         return {
             "id": f"{GUIDES[guide][0]}-part-{part}",
-            "title": f"{guide} · Part {part}: {info['title']}",
+            "title": f"{guide} · Part {part}: {TITLE_OVERRIDES.get((guide, part), info['title'])}",
             "category": stage_id,
             "summary": summary,
             "subtopics": [{"id": c["num"].replace(".", "-"), "title": c["title"],
@@ -311,8 +336,10 @@ def main():
         }
 
     # guides written for the site: their chapters come from the sources
-    written = {part["id"]: build_sections(part, n, None)[1]
-               for n, part in enumerate(load_parts(Path(__file__).resolve().parent / "frontend"), 1)}
+    written = {}
+    for folder in WRITTEN_GUIDE_FOLDERS:
+        for n, part in enumerate(load_parts(Path(__file__).resolve().parent / folder), 1):
+            written[part["id"]] = build_sections(part, n, None)[1]
 
     placed = set()
     for tree in path["trees"]:
@@ -343,19 +370,7 @@ def main():
                         entry["subtopics"] = written[topic["id"]]
                         entry["summary"] = f"{len(entry['subtopics'])} chapters"
                     result.append(entry)
-        # A tree like NeetCode's: within each stage the steps fan out in rows of 1, 3, 5, 1, 3, 5 ...
-        # Reading the rows top to bottom and left to right gives the learning order.
-        rows = []
-        for stage in categories:
-            members = [t for t in result if t["category"] == stage["id"]]
-            i = 0
-            while i < len(members):
-                size = ROW_SIZES[sum(1 for _ in stage_rows(rows, stage["id"])) % len(ROW_SIZES)]
-                rows.append(members[i:i + size])
-                i += size
-        for upper, lower in zip(rows, rows[1:]):
-            for j, topic in enumerate(lower):
-                topic["requires"] = nearest_parents(upper, len(lower), j)
+        link_tree(result, categories)
 
         out = {"title": tree["title"], "shortTitle": tree["shortTitle"], "order": tree["order"],
                "description": tree["description"], "layout": "tree",
