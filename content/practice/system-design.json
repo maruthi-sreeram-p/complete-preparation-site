@@ -1,0 +1,69 @@
+{
+ "id": "system-design",
+ "title": "System design",
+ "group": "System design",
+ "order": 30,
+ "description": "Short design questions with the reasoning interviewers want to hear: caching, scaling, consistency and safe APIs.",
+ "platforms": [
+  {
+   "name": "GeeksforGeeks: System Design",
+   "url": "https://www.geeksforgeeks.org/system-design/system-design-tutorial/",
+   "note": "Tutorials and case studies"
+  },
+  {
+   "name": "System Design Primer",
+   "url": "https://github.com/donnemartin/system-design-primer",
+   "note": "A large open-source guide"
+  }
+ ],
+ "questions": [
+  {
+   "id": "design-url-shortener",
+   "type": "written",
+   "title": "Design a URL shortener",
+   "level": "Medium",
+   "prompt": "Outline a URL shortener: API, how short codes are generated, storage, and how you scale reads.",
+   "answer": "**API**: `POST /urls` (long URL in, short code out) and `GET /{code}` (redirect with 301 or 302; use 302 if you want to count clicks).\n\n**Code generation**: base-62 of a unique counter (a distributed ID generator or a database sequence in ranges handed to each server), or a random 7-character code with a collision check. A counter avoids collisions but is guessable; random codes are not guessable.\n\n**Storage**: a key-value mapping `code -> long URL` (a relational table with the code as primary key is enough; a NoSQL store scales further). **Reads dominate** (maybe 100:1), so put a cache (Redis) in front keyed by code, add a CDN or edge cache for popular links, and scale the stateless service horizontally. Add expiry, rate limits and abuse checks (malicious URLs)."
+  },
+  {
+   "id": "design-rate-limiter",
+   "type": "written",
+   "title": "Rate limiting algorithms",
+   "level": "Medium",
+   "prompt": "Compare fixed window, sliding window and token bucket rate limiting. Where would you keep the counters?",
+   "answer": "**Fixed window**: count requests per fixed interval (per minute). Simple, but a burst across a boundary can allow twice the limit. **Sliding window** (log or counter): counts over the last N seconds, smoother but needs more memory or a weighted estimate. **Token bucket**: tokens are added at a steady rate up to a capacity and each request takes one; it permits short bursts while enforcing the average rate. **Leaky bucket** smooths output to a constant rate.\n\nKeep counters in a shared fast store such as **Redis**, using atomic operations (`INCR` with `EXPIRE`, or a Lua script for the token bucket) so all application instances see the same count. Identify clients by API key, user id or IP, return `429 Too Many Requests` with a `Retry-After` header, and decide what happens if the limiter store is unavailable (fail open or closed)."
+  },
+  {
+   "id": "design-caching",
+   "type": "written",
+   "title": "Caching strategies and invalidation",
+   "level": "Medium",
+   "prompt": "Describe cache-aside, write-through and write-behind, and the main ways a cache goes wrong.",
+   "answer": "**Cache-aside**: the application reads the cache, on a miss loads from the database and fills the cache; writes go to the database and invalidate (or update) the cache entry. **Write-through**: writes go to the cache and the database together, so reads are always fresh but writes are slower. **Write-behind**: writes go to the cache and are flushed to the database later: fast, but data can be lost if the cache fails.\n\nFailure modes: **stale data** (set a TTL and invalidate on writes), **cache stampede** (many requests rebuild a hot key at once: use locks, request coalescing or staggered TTLs), **penetration** (requests for keys that do not exist always reach the database: cache negative results or use a Bloom filter), and **hot keys** or **eviction storms**. Caching trades consistency for speed, so decide how stale each piece of data may be."
+  },
+  {
+   "id": "design-cap",
+   "type": "written",
+   "title": "CAP and consistency",
+   "level": "Hard",
+   "prompt": "State the CAP theorem accurately and say what it means when choosing a database.",
+   "answer": "In the presence of a network **partition**, a distributed system must choose between **consistency** (every read sees the latest write) and **availability** (every request gets a response). When there is no partition, you can have both; the real trade-off then is between latency and consistency (PACELC).\n\nIn practice: a CP system (for example a strongly consistent store used for coordination, or a relational primary with synchronous replicas) refuses or delays requests it cannot answer correctly; an AP system (for example Cassandra or DynamoDB with eventual consistency) keeps answering and reconciles later. Choose per use case: balances and inventory counts need strong consistency, a social feed or a product view counter can tolerate eventual consistency."
+  },
+  {
+   "id": "design-scaling-db",
+   "type": "written",
+   "title": "Scaling a database",
+   "level": "Medium",
+   "prompt": "A single relational database is the bottleneck. List the steps you would take, in order.",
+   "answer": "1. **Measure** and fix the queries first: indexes, query plans, N+1 problems, connection pool size.\n2. **Cache** hot reads (Redis, application cache).\n3. **Scale up** the instance (more CPU, memory, faster disks): cheap and quick, with a limit.\n4. **Read replicas** for read-heavy load, accepting replication lag for those reads.\n5. **Partition** large tables (by date or key) to keep indexes small and make old data easy to drop.\n6. **Shard** across servers by a key such as tenant or user id when writes outgrow one machine; this costs cross-shard queries and transactions, so do it last.\n7. Move suitable data to a store designed for it (search to Elasticsearch, time series to a time-series database, events to Kafka)."
+  },
+  {
+   "id": "design-idempotent-payment",
+   "type": "written",
+   "title": "A safe payment API",
+   "level": "Hard",
+   "prompt": "A client may retry a payment request after a timeout. How do you make sure the customer is charged once?",
+   "answer": "Make the operation **idempotent** with an **idempotency key**: the client sends a unique key (a UUID) with each logical payment. The server stores, in the same transaction as the charge, a row keyed by that key holding the request fingerprint and the result. A retry with the same key returns the stored result instead of charging again; a retry with the same key but a different body is rejected.\n\nAlso: record the payment state as a state machine (`created -> authorised -> captured`), make calls to the payment provider with their idempotency key too, handle the unknown outcome after a timeout by asking the provider for the status before retrying, and reconcile against provider reports. Use a unique constraint on the key so two concurrent retries cannot both succeed."
+  }
+ ]
+}

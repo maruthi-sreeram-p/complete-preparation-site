@@ -15,4 +15,5 @@ export const paths = {
   dashboard: (roadmapId) => `/r/${roadmapId}`,
   roadmap: (roadmapId) => `/r/${roadmapId}/roadmap`,
   topic: (roadmapId, topicId) => `/r/${roadmapId}/topics/${topicId}`,
+  practice: (subjectId) => (subjectId ? `/practice/${subjectId}` : '/practice'),
 }

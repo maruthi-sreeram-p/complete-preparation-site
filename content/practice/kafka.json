@@ -1,0 +1,85 @@
+{
+ "id": "kafka",
+ "title": "Kafka and messaging",
+ "group": "Messaging",
+ "order": 20,
+ "description": "Partitions, consumer groups, offsets, failures and patterns: the Kafka questions behind event-driven Java services.",
+ "platforms": [
+  {
+   "name": "Apache Kafka documentation",
+   "url": "https://kafka.apache.org/documentation/",
+   "note": "The official reference"
+  },
+  {
+   "name": "Confluent Developer",
+   "url": "https://developer.confluent.io/",
+   "note": "Courses and tutorials"
+  }
+ ],
+ "questions": [
+  {
+   "id": "kafka-ordering",
+   "type": "written",
+   "title": "Partitions and ordering",
+   "level": "Medium",
+   "prompt": "What does Kafka guarantee about the order of messages, and how do you keep the events of one order together?",
+   "answer": "Kafka guarantees order **within a partition** only, not across a topic. A producer chooses the partition: with a key, the default partitioner hashes the key, so all records with the same key go to the same partition and are read in order. For ShopStream use the `orderId` as the key.\n\nConsequences: the number of partitions is the ceiling for consumer parallelism in a group; adding partitions later changes the key-to-partition mapping and can break per-key order across the change; a hot key creates a hot partition that more partitions cannot fix."
+  },
+  {
+   "id": "kafka-consumer-groups",
+   "type": "written",
+   "title": "Consumer groups",
+   "level": "Easy",
+   "prompt": "How do consumer groups work? What happens with more consumers than partitions?",
+   "answer": "Consumers that share a `group.id` form a group, and Kafka assigns each partition to **exactly one** member of the group, so the group as a whole reads every record once. Different groups are independent and each reads every record. If the group has more members than partitions, the extra members are idle (they act as standbys). When a member joins, leaves or stops sending heartbeats, the group **rebalances** and partitions are reassigned."
+  },
+  {
+   "id": "kafka-offsets",
+   "type": "written",
+   "title": "Offsets and delivery guarantees",
+   "level": "Medium",
+   "prompt": "When should a consumer commit offsets? Explain at-most-once, at-least-once and exactly-once.",
+   "answer": "The committed offset is the **next** record to read. Committing *before* processing gives **at-most-once** (a crash loses the records). Committing *after* processing gives **at-least-once** (a crash repeats the records since the last commit): the usual choice, with an **idempotent** handler so a repeat has no extra effect.\n\n**Exactly-once** is possible inside Kafka (read, process, write to another topic) with transactions and `read_committed` consumers. For effects outside Kafka, such as a database write or an e-mail, you get the same result with at-least-once delivery plus idempotent processing (a unique key or a processed-events table)."
+  },
+  {
+   "id": "kafka-rebalance",
+   "type": "written",
+   "title": "Rebalances",
+   "level": "Medium",
+   "prompt": "What causes a consumer group rebalance, and how do you avoid unnecessary ones?",
+   "answer": "Triggers: a member joins or leaves (a deploy, a crash), a missed heartbeat (`session.timeout.ms`), a consumer that does not call `poll()` within `max.poll.interval.ms` (a slow handler), or a change in the subscribed topics or partitions.\n\nReduce them by keeping batch processing well below the poll interval (lower `max.poll.records`, set timeouts on slow calls), using **static membership** (`group.instance.id`) so quick restarts do not rejoin, and using the **cooperative** assignor or the new group protocol so only the moving partitions pause. Make handlers idempotent, because a rebalance causes redelivery of uncommitted records."
+  },
+  {
+   "id": "kafka-fast",
+   "type": "written",
+   "title": "Why is Kafka fast?",
+   "level": "Medium",
+   "prompt": "Give four reasons Kafka achieves high throughput.",
+   "answer": "1. **Sequential disk I/O**: it only appends to log segments, and sequential access is fast even on spinning disks.\n2. **Page cache**: it relies on the operating system's page cache instead of its own heap cache, so reads of recent data come from memory.\n3. **Zero copy**: it sends file data from the page cache to the network socket with `sendfile`, without copying through user space.\n4. **Batching and compression**: producers batch records and compress whole batches; consumers fetch in batches.\n\nPartitioning adds horizontal scalability on top."
+  },
+  {
+   "id": "kafka-retention",
+   "type": "written",
+   "title": "Retention and compaction",
+   "level": "Medium",
+   "prompt": "What is the difference between time-based retention and log compaction? When do you use each?",
+   "answer": "With **retention** (`retention.ms` / `retention.bytes`) old log segments are deleted after a time or size limit, whether or not they were read. Use it for event streams you process once or for a limited replay window.\n\nWith **log compaction** (`cleanup.policy=compact`) Kafka keeps at least the **latest record per key** and removes older ones; a record with a null value (a tombstone) deletes the key. Use it for changelogs and state: the current price of each product, user profiles, or the internal `__consumer_offsets` topic. A new consumer can rebuild the full current state by reading the compacted topic."
+  },
+  {
+   "id": "kafka-dlt",
+   "type": "written",
+   "title": "Failures and dead-letter topics",
+   "level": "Medium",
+   "prompt": "A listener keeps failing on one record. What are your options, and what is a poison pill?",
+   "answer": "A **poison pill** is a record that can never be processed (malformed JSON, a reference to something that does not exist). Retrying forever blocks the partition behind it.\n\nOptions: retry a few times with a back-off for transient errors; classify permanent errors (validation, conversion) as non-retryable; then publish the record, with the exception and its origin in headers, to a **dead-letter topic** and continue. For long outages use **retry topics** with delays so the main partition is not blocked. Wrap deserializers (`ErrorHandlingDeserializer`) so an unreadable record reaches the error handler instead of failing `poll()` forever, and alert on dead-letter volume."
+  },
+  {
+   "id": "kafka-outbox",
+   "type": "written",
+   "title": "The transactional outbox",
+   "level": "Hard",
+   "prompt": "Why is writing to the database and then sending to Kafka unsafe, and how does the outbox pattern solve it?",
+   "answer": "A service that saves an order and then publishes an event performs a **dual write**: if it crashes between the two, the order exists without its event (or the event without the order), and no transaction spans both systems.\n\nWith the **outbox** pattern the service writes the event into an `outbox` table **in the same database transaction** as the business change, so both commit or neither does. A separate relay then reads new outbox rows and publishes them to Kafka (by polling, or by change data capture with a tool such as Debezium), marking them sent. The relay may publish twice after a crash, so delivery is at-least-once and consumers must be idempotent."
+  }
+ ]
+}

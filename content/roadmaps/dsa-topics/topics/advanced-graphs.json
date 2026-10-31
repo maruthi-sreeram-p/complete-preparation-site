@@ -1,0 +1,133 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-15-1",
+   "type": "concept",
+   "title": "The idea",
+   "subtopicId": "15-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "This tree follows the topics and the problem list of NeetCode's roadmap (the NeetCode 150), with a learning page written for this site for each topic. The explanations and Java templates are ours; the problems belong to LeetCode, and each one links to its LeetCode page."
+    },
+    {
+     "type": "markdown",
+     "text": "The Graphs topic covered traversal and connectivity. Here the edges have **weights** or the question is about a special structure: shortest paths, minimum spanning trees, and paths that use every edge exactly once.\n\n| Question | Algorithm | Cost |\n|---|---|---|\n| Shortest path from one source, **non-negative** weights | **Dijkstra** with a min-heap | O((V + E) log V) |\n| Shortest path with at most **k edges**, or with negative weights | **Bellman-Ford** (relax all edges k times) | O(k · E) |\n| Connect all nodes with minimum total weight | **Kruskal** (sort edges + Union-Find) or **Prim** (min-heap) | O(E log E) |\n| Use every edge exactly once | **Hierholzer's** Eulerian path | O(E) |\n| Order from pairwise constraints (alien dictionary) | Build a graph, then topological sort | O(V + E) |\n| Shortest path where the \"cost\" is the worst edge on the way | Dijkstra variant (heap by the maximum so far) | O(V² log V) on a grid |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "\"network delay\", \"cheapest\", \"minimum cost to connect all\", \"at most k stops\", \"weights\", \"itinerary that uses all tickets\". Unweighted shortest path is plain BFS; do not reach for Dijkstra then.",
+     "title": "Signal words"
+    },
+    {
+     "type": "markdown",
+     "text": "**Dijkstra in one sentence:** always expand the unvisited node with the smallest known distance. Once a node is taken from the heap its distance is final, *provided no edge weight is negative*. With a negative edge that argument fails, so use Bellman-Ford."
+    }
+   ]
+  },
+  {
+   "id": "ch-15-2",
+   "type": "concept",
+   "title": "The Java toolkit and templates",
+   "subtopicId": "15-2",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "java",
+     "code": "import java.util.*;\n\npublic class AdvancedGraphs {\n\n    /** Dijkstra: edges are {from, to, weight}. Returns the distance to every node (Long.MAX_VALUE if unreachable). */\n    static long[] dijkstra(int n, int[][] edges, int source) {\n        List<List<int[]>> next = new ArrayList<>();\n        for (int i = 0; i < n; i++) next.add(new ArrayList<>());\n        for (int[] e : edges) next.get(e[0]).add(new int[] { e[1], e[2] });\n\n        long[] dist = new long[n];\n        Arrays.fill(dist, Long.MAX_VALUE);\n        dist[source] = 0;\n        PriorityQueue<long[]> heap = new PriorityQueue<>((a, b) -> Long.compare(a[1], b[1]));   // {node, distance}\n        heap.offer(new long[] { source, 0 });\n        while (!heap.isEmpty()) {\n            long[] top = heap.poll();\n            int u = (int) top[0];\n            if (top[1] > dist[u]) continue;                  // a stale entry: a shorter route was found since\n            for (int[] edge : next.get(u)) {\n                long candidate = dist[u] + edge[1];\n                if (candidate < dist[edge[0]]) {\n                    dist[edge[0]] = candidate;\n                    heap.offer(new long[] { edge[0], candidate });\n                }\n            }\n        }\n        return dist;\n    }\n\n    /** Network Delay Time: the answer is the largest shortest distance, or -1 if some node is unreachable. */\n    static int networkDelayTime(int[][] times, int n, int k) {\n        long[] dist = dijkstra(n + 1, times, k);             // nodes are 1-based, so index 0 is unused\n        long worst = 0;\n        for (int node = 1; node <= n; node++) {\n            if (dist[node] == Long.MAX_VALUE) return -1;\n            worst = Math.max(worst, dist[node]);\n        }\n        return (int) worst;\n    }\n\n    /** Cheapest Flights Within K Stops: Bellman-Ford limited to k + 1 edges, relaxing from the previous round's costs. */\n    static int findCheapestPrice(int n, int[][] flights, int src, int dst, int k) {\n        int[] cost = new int[n];\n        Arrays.fill(cost, Integer.MAX_VALUE);\n        cost[src] = 0;\n        for (int round = 0; round <= k; round++) {\n            int[] next = cost.clone();                       // read old costs, write new ones: no extra hops in a round\n            for (int[] f : flights) {\n                if (cost[f[0]] != Integer.MAX_VALUE && cost[f[0]] + f[2] < next[f[1]]) {\n                    next[f[1]] = cost[f[0]] + f[2];\n                }\n            }\n            cost = next;\n        }\n        return cost[dst] == Integer.MAX_VALUE ? -1 : cost[dst];\n    }\n\n    /** Min Cost to Connect All Points: Kruskal with a tiny union-find; all pairs are candidate edges (Manhattan distance). */\n    static int minCostConnectPoints(int[][] points) {\n        int n = points.length;\n        List<int[]> edges = new ArrayList<>();               // {weight, a, b}\n        for (int i = 0; i < n; i++)\n            for (int j = i + 1; j < n; j++)\n                edges.add(new int[] { Math.abs(points[i][0] - points[j][0]) + Math.abs(points[i][1] - points[j][1]), i, j });\n        edges.sort((a, b) -> Integer.compare(a[0], b[0]));\n\n        int[] parent = new int[n];\n        for (int i = 0; i < n; i++) parent[i] = i;\n        int total = 0, used = 0;\n        for (int[] e : edges) {\n            int ra = find(parent, e[1]), rb = find(parent, e[2]);\n            if (ra == rb) continue;                          // would close a cycle\n            parent[ra] = rb;\n            total += e[0];\n            if (++used == n - 1) break;                      // a spanning tree has n - 1 edges\n        }\n        return total;\n    }\n\n    private static int find(int[] parent, int x) {\n        while (parent[x] != x) {\n            parent[x] = parent[parent[x]];\n            x = parent[x];\n        }\n        return x;\n    }\n}",
+     "title": "AdvancedGraphs.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** In `dijkstra` the heap may hold several entries for one node; the `top[1] > dist[u]` check discards the outdated ones, which is simpler than a \"decrease key\" operation that `PriorityQueue` does not have. In `findCheapestPrice` the `clone()` matters: updating `cost` in place would let a path use more than one new edge per round and break the stops limit.\n\n### Other patterns in this topic\n\n- **Swim in Rising Water** is Dijkstra where a path's cost is the **highest cell** on it, not the sum: the heap is keyed by that maximum, and the first time you pop the target you have the answer.\n- **Reconstruct Itinerary** is an Eulerian path: build adjacency lists sorted lexicographically (a `PriorityQueue` per airport), do a DFS that consumes edges, and add each airport to the route in **post-order**; the reversed list is the itinerary.\n- **Alien Dictionary** turns each pair of adjacent words into at most one ordering edge between the first differing letters, then topologically sorts the letters. A cycle, or a longer word before its own prefix, means the input is invalid."
+    }
+   ]
+  },
+  {
+   "id": "ch-15-3",
+   "type": "concept",
+   "title": "Pitfalls and interview angle",
+   "subtopicId": "15-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- **Dijkstra with negative edges** gives wrong answers silently. Know the condition.\n- **Using `int` for distances** that can overflow when adding; use `long` or an infinity that cannot overflow.\n- **Updating Bellman-Ford costs in place** when the number of edges is limited.\n- **Stale heap entries** if you forget the skip check: correct but slower, and wrong if you mark nodes visited at push time.\n- **1-based labels** (Network Delay Time): allocate `n + 1` slots."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Dijkstra assumes that when a node is taken from the heap, no later path can be shorter, because any later path must add non-negative weights. A negative edge can make a longer-looking path shorter after the node was finalised, so its distance is wrong. Bellman-Ford, which re-examines every edge repeatedly, handles negative weights (and detects negative cycles).",
+     "title": "Interview angle: Why does Dijkstra fail with negative edge weights?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Dijkstra: heap by distance, skip stale entries, non-negative weights only\n- Bellman-Ford relaxes all edges up to k times: use it for \"at most k edges\" and negative weights\n- Kruskal: sort edges, add the cheapest edge that does not close a cycle (Union-Find)\n- Eulerian paths use Hierholzer's algorithm with post-order output\n- Alien Dictionary is a graph built from adjacent words plus a topological sort\n- Use `long` distances and read the previous round's costs when limiting edges"
+    }
+   ]
+  },
+  {
+   "id": "ch-15-4",
+   "type": "concept",
+   "title": "Practice: the NeetCode 150 problems",
+   "subtopicId": "15-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The NeetCode 150 problems for **Advanced Graphs**: 6 in all (0 easy, 3 medium, 3 hard), in the order NeetCode lists them. Do the easy ones first, then the medium ones. For every problem, write down the idea and the complexity in one sentence before you look at a solution."
+    },
+    {
+     "type": "markdown",
+     "text": "| # | Problem | Level | |\n|---|---|---|---|\n| 743 | [Network Delay Time](https://leetcode.com/problems/network-delay-time/) | Medium |  |\n| 332 | [Reconstruct Itinerary](https://leetcode.com/problems/reconstruct-itinerary/) | Hard |  |\n| 1584 | [Min Cost to Connect All Points](https://leetcode.com/problems/min-cost-to-connect-all-points/) | Medium |  |\n| 778 | [Swim in Rising Water](https://leetcode.com/problems/swim-in-rising-water/) | Hard |  |\n| 269 | [Alien Dictionary](https://leetcode.com/problems/alien-dictionary/) | Hard | LeetCode Premium |\n| 787 | [Cheapest Flights Within K Stops](https://leetcode.com/problems/cheapest-flights-within-k-stops/) | Medium |  |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "title": "Practise and track them",
+     "text": "Open **Practice** in the top bar and choose **Advanced Graphs** (under DSA by topic) to tick problems off, keep notes on each one, and add problems of your own."
+    },
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Premium problems",
+     "text": "Problems marked LeetCode Premium need a paid LeetCode account. If you do not have one, skip them: the free problems of the topic teach the same ideas."
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Pitfalls and interview angle"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the complexity of Dijkstra with a binary heap?",
+       "answer": "O((V + E) log V): each edge may push one heap entry, and each push or pop costs O(log) in the heap size."
+      },
+      {
+       "question": "Why clone the cost array each round in the Cheapest Flights Within K Stops solution?",
+       "answer": "To make sure round i only extends paths that used at most i edges. Updating in place would let one round chain several new edges, so a route could exceed the allowed number of stops."
+      },
+      {
+       "question": "When would you choose Prim's over Kruskal's for a minimum spanning tree?",
+       "answer": "Prim's with a heap suits dense graphs, because it grows one tree and never sorts all edges. Kruskal's suits sparse graphs or when the edges are already given as a list, since it only needs a sort and a Union-Find."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

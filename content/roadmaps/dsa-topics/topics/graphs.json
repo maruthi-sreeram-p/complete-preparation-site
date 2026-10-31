@@ -1,0 +1,133 @@
+{
+ "source": {
+  "document": "Written for this site (not from your PDFs)"
+ },
+ "sections": [
+  {
+   "id": "ch-11-1",
+   "type": "concept",
+   "title": "The idea",
+   "subtopicId": "11-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Not from your PDFs",
+     "text": "This tree follows the topics and the problem list of NeetCode's roadmap (the NeetCode 150), with a learning page written for this site for each topic. The explanations and Java templates are ours; the problems belong to LeetCode, and each one links to its LeetCode page."
+    },
+    {
+     "type": "markdown",
+     "text": "A graph is nodes connected by edges. Grids, courses with prerequisites, friend networks, word transformations and maps are all graphs in disguise. The skill is (1) **modelling** the problem as nodes and edges, and (2) picking the right traversal.\n\n| Need | Tool | Notes |\n|---|---|---|\n| Visit everything reachable, count components | DFS or BFS with a `visited` set | O(V + E) |\n| Shortest path in an **unweighted** graph (fewest moves) | BFS | First time you reach a node is the shortest |\n| Order tasks with prerequisites, detect a cycle | Topological sort (Kahn's algorithm with in-degrees, or DFS) | Only for directed graphs |\n| \"Are these two connected?\", merge groups, find a redundant edge | Union-Find (disjoint set) | Nearly O(1) per operation |\n| Shortest path with weights | Dijkstra | See *Advanced Graphs* |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "\"number of islands or regions\", \"connected\", \"prerequisite\", \"course schedule\", \"shortest number of steps\", \"minimum moves\", \"clone\", \"valid tree\". A grid is a graph where each cell has up to four neighbours.",
+     "title": "Signal words"
+    },
+    {
+     "type": "markdown",
+     "text": "How a graph is stored decides the code: an **adjacency list** (`List<List<Integer>>` or `Map<Integer, List<Integer>>`) takes O(V + E) space and suits sparse graphs, an **adjacency matrix** takes O(V²) and suits dense graphs and quick edge checks, and a grid needs no extra structure: the neighbours are computed from the coordinates."
+    }
+   ]
+  },
+  {
+   "id": "ch-11-2",
+   "type": "concept",
+   "title": "The Java toolkit and templates",
+   "subtopicId": "11-2",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "java",
+     "code": "import java.util.*;\n\npublic class GraphTemplates {\n\n    /** Number of Islands: DFS flood fill; each island is sunk (marked visited) as soon as it is counted. */\n    static int numIslands(char[][] grid) {\n        int islands = 0;\n        for (int r = 0; r < grid.length; r++) {\n            for (int c = 0; c < grid[0].length; c++) {\n                if (grid[r][c] == '1') {\n                    islands++;\n                    sink(grid, r, c);\n                }\n            }\n        }\n        return islands;\n    }\n\n    private static void sink(char[][] grid, int r, int c) {\n        if (r < 0 || c < 0 || r >= grid.length || c >= grid[0].length || grid[r][c] != '1') return;\n        grid[r][c] = '0';                                    // visited\n        sink(grid, r + 1, c);\n        sink(grid, r - 1, c);\n        sink(grid, r, c + 1);\n        sink(grid, r, c - 1);\n    }\n\n    /** Rotting Oranges: BFS from all rotten oranges at once; the number of levels is the number of minutes. */\n    static int orangesRotting(int[][] grid) {\n        Queue<int[]> queue = new ArrayDeque<>();\n        int fresh = 0;\n        for (int r = 0; r < grid.length; r++)\n            for (int c = 0; c < grid[0].length; c++) {\n                if (grid[r][c] == 2) queue.add(new int[] { r, c });\n                else if (grid[r][c] == 1) fresh++;\n            }\n        int[][] moves = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };\n        int minutes = 0;\n        while (!queue.isEmpty() && fresh > 0) {\n            minutes++;\n            for (int size = queue.size(); size > 0; size--) {          // one level = one minute\n                int[] cell = queue.poll();\n                for (int[] m : moves) {\n                    int r = cell[0] + m[0], c = cell[1] + m[1];\n                    if (r >= 0 && c >= 0 && r < grid.length && c < grid[0].length && grid[r][c] == 1) {\n                        grid[r][c] = 2;\n                        fresh--;\n                        queue.add(new int[] { r, c });\n                    }\n                }\n            }\n        }\n        return fresh == 0 ? minutes : -1;\n    }\n\n    /** Course Schedule II via Kahn's algorithm: edge {a, b} means a must come before b. Empty result = cycle. */\n    static int[] topologicalOrder(int n, int[][] edges) {\n        List<List<Integer>> next = new ArrayList<>();\n        for (int i = 0; i < n; i++) next.add(new ArrayList<>());\n        int[] inDegree = new int[n];\n        for (int[] e : edges) {\n            next.get(e[0]).add(e[1]);\n            inDegree[e[1]]++;\n        }\n        Queue<Integer> ready = new ArrayDeque<>();\n        for (int i = 0; i < n; i++) if (inDegree[i] == 0) ready.add(i);\n        int[] order = new int[n];\n        int taken = 0;\n        while (!ready.isEmpty()) {\n            int u = ready.poll();\n            order[taken++] = u;\n            for (int v : next.get(u)) if (--inDegree[v] == 0) ready.add(v);\n        }\n        return taken == n ? order : new int[0];              // fewer than n means a cycle blocked some nodes\n    }\n\n    /** Union-Find with path compression and union by size. */\n    static class UnionFind {\n        private final int[] parent, size;\n        int components;\n\n        UnionFind(int n) {\n            parent = new int[n];\n            size = new int[n];\n            components = n;\n            for (int i = 0; i < n; i++) { parent[i] = i; size[i] = 1; }\n        }\n\n        int find(int x) {\n            while (parent[x] != x) {\n                parent[x] = parent[parent[x]];               // path compression\n                x = parent[x];\n            }\n            return x;\n        }\n\n        /** @return false when a and b were already connected (the edge would close a cycle) */\n        boolean union(int a, int b) {\n            int ra = find(a), rb = find(b);\n            if (ra == rb) return false;\n            if (size[ra] < size[rb]) { int t = ra; ra = rb; rb = t; }\n            parent[rb] = ra;\n            size[ra] += size[rb];\n            components--;\n            return true;\n        }\n    }\n\n    /** Redundant Connection: the first edge whose endpoints are already connected. */\n    static int[] findRedundantConnection(int[][] edges) {\n        UnionFind uf = new UnionFind(edges.length + 1);\n        for (int[] e : edges) if (!uf.union(e[0], e[1])) return e;\n        return new int[0];\n    }\n}",
+     "title": "GraphTemplates.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**What to notice.** In `orangesRotting`, **multi-source BFS** starts with every rotten orange in the queue, so all of them spread in parallel. `size` is read before the level loop so that one pass equals one minute. `UnionFind.union` returning a boolean is what turns \"redundant connection\" and \"graph valid tree\" into one-liners."
+    }
+   ]
+  },
+  {
+   "id": "ch-11-3",
+   "type": "concept",
+   "title": "Pitfalls and interview angle",
+   "subtopicId": "11-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- **Marking visited too late.** Mark a node when you *enqueue* it (BFS), not when you dequeue it, or it can be queued many times.\n- **Directed versus undirected.** Add the edge in both directions for undirected graphs, and remember that \"parent\" must be ignored when detecting cycles with DFS.\n- **Cycle detection in directed graphs** needs three states (unvisited, in progress, done) in DFS, or Kahn's algorithm; a plain `visited` set gives false positives.\n- **Deep recursion.** DFS on a 1000 x 1000 grid can overflow the Java stack: use BFS or an explicit stack.\n- **Modifying the input grid** is fine in interviews if you say so; otherwise use a separate `boolean[][]`."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "BFS. It explores in order of distance, so the first time it reaches the target is via a shortest path (in an unweighted graph). DFS finds *a* path, not necessarily the shortest one.",
+     "title": "Interview angle: BFS or DFS for shortest path in a maze?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Model the problem: what are the nodes, what are the edges?\n- DFS or BFS with a visited set is O(V + E); BFS gives shortest paths in unweighted graphs\n- Multi-source BFS starts with all sources in the queue\n- Kahn's algorithm orders prerequisites and detects cycles by counting taken nodes\n- Union-Find answers connectivity and finds the edge that closes a cycle\n- Mark visited when enqueuing; beware recursion depth on large grids"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-4",
+   "type": "concept",
+   "title": "Practice: the NeetCode 150 problems",
+   "subtopicId": "11-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The NeetCode 150 problems for **Graphs**: 13 in all (0 easy, 12 medium, 1 hard), in the order NeetCode lists them. Do the easy ones first, then the medium ones. For every problem, write down the idea and the complexity in one sentence before you look at a solution."
+    },
+    {
+     "type": "markdown",
+     "text": "| # | Problem | Level | |\n|---|---|---|---|\n| 200 | [Number of Islands](https://leetcode.com/problems/number-of-islands/) | Medium |  |\n| 133 | [Clone Graph](https://leetcode.com/problems/clone-graph/) | Medium |  |\n| 695 | [Max Area of Island](https://leetcode.com/problems/max-area-of-island/) | Medium |  |\n| 417 | [Pacific Atlantic Water Flow](https://leetcode.com/problems/pacific-atlantic-water-flow/) | Medium |  |\n| 130 | [Surrounded Regions](https://leetcode.com/problems/surrounded-regions/) | Medium |  |\n| 994 | [Rotting Oranges](https://leetcode.com/problems/rotting-oranges/) | Medium |  |\n| 286 | [Walls and Gates](https://leetcode.com/problems/walls-and-gates/) | Medium | LeetCode Premium |\n| 207 | [Course Schedule](https://leetcode.com/problems/course-schedule/) | Medium |  |\n| 210 | [Course Schedule II](https://leetcode.com/problems/course-schedule-ii/) | Medium |  |\n| 684 | [Redundant Connection](https://leetcode.com/problems/redundant-connection/) | Medium |  |\n| 323 | [Number of Connected Components in an Undirected Graph](https://leetcode.com/problems/number-of-connected-components-in-an-undirected-graph/) | Medium | LeetCode Premium |\n| 261 | [Graph Valid Tree](https://leetcode.com/problems/graph-valid-tree/) | Medium | LeetCode Premium |\n| 127 | [Word Ladder](https://leetcode.com/problems/word-ladder/) | Hard |  |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "title": "Practise and track them",
+     "text": "Open **Practice** in the top bar and choose **Graphs** (under DSA by topic) to tick problems off, keep notes on each one, and add problems of your own."
+    },
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "Premium problems",
+     "text": "Problems marked LeetCode Premium need a paid LeetCode account. If you do not have one, skip them: the free problems of the topic teach the same ideas."
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Pitfalls and interview angle"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you detect a cycle in a directed graph?",
+       "answer": "Run Kahn's algorithm: if fewer than n nodes can be taken (some never reach in-degree 0), a cycle exists. Or use DFS with three states and report a cycle when you reach a node that is still in progress."
+      },
+      {
+       "question": "Why does BFS find the shortest path in an unweighted graph?",
+       "answer": "It visits nodes in non-decreasing order of distance from the source, so the first time a node is reached it is by a path with the fewest edges."
+      },
+      {
+       "question": "What does Union-Find give you that DFS does not?",
+       "answer": "Fast incremental connectivity: after each new edge you can ask whether two nodes are already connected in nearly O(1), without re-traversing the graph. That suits problems where edges arrive one by one."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

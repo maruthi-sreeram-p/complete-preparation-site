@@ -1,5 +1,5 @@
 import { Link, NavLink, matchPath, useLocation, useNavigate } from 'react-router-dom'
-import { House, LayoutDashboard, Waypoints } from 'lucide-react'
+import { House, LayoutDashboard, ListChecks, Waypoints } from 'lucide-react'
 import Wordmark from '@/components/ui/Wordmark.jsx'
 import { getRoadmap, listRoadmaps } from '@/lib/content/registry.js'
 import { computeStats } from '@/lib/progress/state.js'
@@ -9,7 +9,7 @@ import { cn, paths } from '@/lib/util.js'
 
 const navClass = (active) =>
   cn(
-    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-sm font-medium transition-colors sm:px-3.5',
+    'inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-medium transition-colors lg:px-4 xl:px-6',
     active
       ? 'bg-linear-to-r from-accent to-accent-2 text-white shadow-sm'
       : 'text-muted hover:bg-panel-2 hover:text-ink',
@@ -31,8 +31,8 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-30 h-14 border-b border-line bg-canvas">
-      {/* equal outer columns keep the nav in the true centre of the screen */}
-      <div className="grid h-full w-full grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 lg:px-6">
+      {/* on wide screens equal outer columns keep the nav in the true centre; below that the nav takes the room that is left */}
+      <div className="grid h-full w-full grid-cols-[auto_1fr_auto] items-center gap-4 px-4 lg:px-6 xl:grid-cols-[1fr_auto_1fr]">
         <div className="flex min-w-0 items-center gap-3">
           <Link to="/" className="flex items-center gap-2 font-semibold tracking-tight">
             <span className="logo-mark size-8 shrink-0" aria-hidden="true" />
@@ -55,15 +55,18 @@ export default function Header() {
         </div>
 
         {roadmap ? (
-          <nav className="flex items-center gap-1 rounded-full border border-line bg-panel p-1" aria-label="Main">
-            <NavLink to="/" end className={({ isActive }) => navClass(isActive)}>
-              <House size={15} /> <span className="hidden sm:inline">Home</span>
+          <nav className="flex items-center gap-1.5 justify-self-center rounded-full border border-line bg-panel p-1.5 lg:gap-2 xl:gap-4" aria-label="Main">
+            <NavLink to="/" end aria-label="Home" title="Home" className={({ isActive }) => navClass(isActive)}>
+              <House size={15} /> <span className="hidden lg:inline">Home</span>
             </NavLink>
-            <NavLink to={paths.roadmap(roadmap.id)} className={({ isActive }) => navClass(isActive || onTopic)}>
-              <Waypoints size={15} /> <span className="hidden sm:inline">Roadmap</span>
+            <NavLink to={paths.roadmap(roadmap.id)} aria-label="Roadmap" title="Roadmap" className={({ isActive }) => navClass(isActive || onTopic)}>
+              <Waypoints size={15} /> <span className="hidden lg:inline">Roadmap</span>
             </NavLink>
-            <NavLink to={paths.dashboard(roadmap.id)} end className={({ isActive }) => navClass(isActive)}>
-              <LayoutDashboard size={15} /> <span className="hidden sm:inline">Dashboard</span>
+            <NavLink to={paths.practice()} aria-label="Practice" title="Practice" className={({ isActive }) => navClass(isActive)}>
+              <ListChecks size={15} /> <span className="hidden lg:inline">Practice</span>
+            </NavLink>
+            <NavLink to={paths.dashboard(roadmap.id)} end aria-label="Dashboard" title="Dashboard" className={({ isActive }) => navClass(isActive)}>
+              <LayoutDashboard size={15} /> <span className="hidden lg:inline">Dashboard</span>
             </NavLink>
           </nav>
         ) : (

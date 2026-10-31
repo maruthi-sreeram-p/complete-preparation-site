@@ -94,3 +94,37 @@ copy it into `roadmaps/` to see it).
 
 The frontend stage comes from `tools/build_frontend_topics.py`: it was written for the site, not extracted from a PDF.
 Re-running the extractor with `--force` overwrites a topic file, including hand-added code walkthroughs.
+
+## Practice subjects
+
+The **Practice** page reads one file per subject from `content/practice/<subjectId>.json`. Adding a subject is adding a file.
+
+```jsonc
+{
+  "id": "databases", "title": "…", "group": "Databases", "order": 1, "description": "…",
+  "platforms": [{ "name": "LeetCode", "url": "https://…", "note": "…" }],     // "practise this elsewhere" links
+  "dataset": { "title": "…", "description": "markdown", "sql": "CREATE TABLE …; INSERT …;" },  // makes "sql" questions runnable
+  "questions": [
+    { "id": "unique-id", "type": "written", "title": "…", "level": "Easy|Medium|Hard", "prompt": "markdown",
+      "hint": "markdown", "answer": "model answer, markdown" },
+    { "id": "…", "type": "sql", "title": "…", "prompt": "…", "solution": "SELECT …", "ordered": true },
+    { "id": "…", "type": "coding", "title": "…", "level": "…",
+      "links": [{ "platform": "LeetCode", "label": "…", "number": 1, "url": "https://leetcode.com/problems/two-sum/", "premium": false }] }
+  ]
+}
+```
+
+- Question ids must be unique across all subjects: answers and ticks are saved under them (in this browser, key `prep-site:practice`).
+- **sql** questions run on SQLite compiled to WebAssembly (`sql.js`), in the browser, on a fresh copy of the subject's `dataset` for every run.
+  "Check answer" runs the learner's query and `solution` on the same data and compares the results (column names and, unless `ordered` is true, row order are ignored).
+- Learners can add their own problems to any subject (a link, or a LeetCode problem number).
+- `npm test` runs every `solution` on its dataset and checks the shipped files (`src/lib/practice/content.test.js`).
+
+Sources: `tools/build_practice.py` writes `databases`, `core-java`, `spring-boot`, `kafka` and `system-design` from `tools/practice/*.py`;
+`tools/build_dsa_topics.py` writes one `dsa-<topic>` subject per topic of the DSA tree.
+
+## DSA by topic
+
+`roadmaps/dsa-topics/` is a second way into DSA: the 18 topics of NeetCode's roadmap with its dependency graph, a short Java guide for each
+(`tools/dsa/NN-<topic>.md`, format in `tools/guide_source.py`) and its NeetCode 150 problems. The topics, edges and problems live in
+`tools/dsa/problems.py`; run `python -I tools/build_dsa_topics.py` after editing it. The Java Full Stack tree teaches DSA by pattern; this one is by topic.
