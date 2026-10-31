@@ -1,0 +1,157 @@
+{
+  "source": {
+    "document": "Written for this site (not from your PDFs)"
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "type": "introduction",
+      "title": "LLMs from Spring Boot",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Not from your PDFs",
+          "text": "No guide of yours covers this, so this page was written for the site, as of October 2026. Tools and versions change quickly: check the official documentation before relying on details."
+        },
+        "Spring AI gives you a portable API over model providers, in normal Spring style. LangChain4j is the main alternative, and the concepts are the same. The examples here follow the Spring AI 2.0 documentation."
+      ]
+    },
+    {
+      "id": "setup",
+      "type": "code",
+      "title": "Setup",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "xml",
+          "code": "<dependency>\n  <groupId>org.springframework.ai</groupId>\n  <artifactId>spring-ai-starter-model-anthropic</artifactId>   <!-- or -model-openai and others -->\n</dependency>",
+          "title": "pom.xml, with the Spring AI BOM managing the version"
+        },
+        {
+          "type": "code",
+          "language": "properties",
+          "code": "spring.ai.anthropic.api-key=${ANTHROPIC_API_KEY}",
+          "title": "The key comes from the environment, never from Git"
+        },
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Provider property names",
+          "text": "Model names and properties change often. Take current values from the Spring AI and provider documentation."
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "type": "code",
+      "title": "Chat and structured output",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Service\nclass TicketTriage {\n\n    record Triage(String category, int priority, String summary) {}\n\n    private final ChatClient chat;\n\n    TicketTriage(ChatClient.Builder builder) {\n        this.chat = builder\n            .defaultSystem(\"You triage support tickets for a bookstore. Priority is 1 (urgent) to 3 (low).\")\n            .build();\n    }\n\n    Triage triage(String ticket) {\n        return chat.prompt()\n            .user(ticket)\n            .call()\n            .entity(Triage.class);\n    }\n}",
+          "title": "A real feature in 20 lines",
+          "walkthrough": [
+            {
+              "lines": "4",
+              "title": "A record as schema",
+              "text": "The output is mapped to a Java record, so the rest of your code stays typed."
+            },
+            {
+              "lines": "8-11",
+              "title": "Builder injection",
+              "text": "Spring Boot auto-configures `ChatClient.Builder`. The system prompt holds your instructions."
+            },
+            {
+              "lines": "14-17",
+              "title": "The call",
+              "text": "`entity` converts the response. The model is called at this point, so it needs a timeout and error handling."
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Validate the result",
+          "text": "A typed result can still be wrong. Validate it (for example, priority within 1 to 3) before acting on it."
+        }
+      ]
+    },
+    {
+      "id": "stream",
+      "type": "code",
+      "title": "Streaming to the browser",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@GetMapping(value = \"/api/chat\", produces = MediaType.TEXT_EVENT_STREAM_VALUE)\nFlux<String> chat(@RequestParam String message) {\n    return chat.prompt().user(message).stream().content();\n}",
+          "title": "The user sees text at once rather than waiting"
+        }
+      ]
+    },
+    {
+      "id": "resilience",
+      "type": "concept",
+      "title": "Treat it like any remote dependency",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Concern",
+            "Approach"
+          ],
+          "rows": [
+            [
+              "Timeouts and retries",
+              "Set explicitly; retry only rate limits and transient errors"
+            ],
+            [
+              "Cost",
+              "Log token usage per feature and user, and rate-limit users"
+            ],
+            [
+              "Fallback",
+              "Degrade gracefully: the app should work when the model is down"
+            ],
+            [
+              "Tests",
+              "Mock `ChatModel` in unit tests; use evaluations for quality"
+            ],
+            [
+              "Privacy",
+              "Know what data you send to the provider, and remove what isn't needed"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- `ChatClient` is the entry point.\n- `entity()` maps output to records, but validate the values.\n- Stream for user-facing text.\n- Add timeouts, limits and fallbacks as for any remote call."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why inject `ChatClient.Builder` rather than hard-coding a provider?",
+              "answer": "Configuration chooses the model, so you can switch providers, and tests can substitute it."
+            },
+            {
+              "question": "When is `.call()` actually sent to the model?",
+              "answer": "When a terminal method such as `content()`, `entity()` or `chatResponse()` runs."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

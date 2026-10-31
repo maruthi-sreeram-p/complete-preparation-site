@@ -1,0 +1,167 @@
+{
+  "source": {
+    "document": "Written for this site (not from your PDFs)"
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "type": "introduction",
+      "title": "A Spring Boot app on AWS",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Not from your PDFs",
+          "text": "No guide of yours covers this, so this page was written for the site, as of October 2026. Tools and versions change quickly: check the official documentation before relying on details."
+        },
+        "This is the reference shape to draw from memory, and then adapt to your project.",
+        {
+          "type": "diagram",
+          "format": "mermaid",
+          "title": "Reference architecture",
+          "code": "flowchart TD\n  U[Users] --> CF[CloudFront CDN]\n  CF --> S3[S3: React build]\n  CF --> ALB[Application Load Balancer<br/>public subnets, two AZs]\n  ALB --> ECS[ECS Fargate tasks: Spring Boot<br/>private subnets]\n  ECS --> RDS[(RDS PostgreSQL<br/>primary and standby)]\n  ECS --> REDIS[(ElastiCache)]\n  ECS --> SQS[SQS queue]\n  SQS --> W[Worker tasks]\n  ECS -. role .-> SM[Secrets Manager]\n  ECS -. logs .-> CW[CloudWatch]",
+          "caption": "Only the load balancer and CDN face the internet; everything else stays private.",
+          "components": [
+            {
+              "name": "CloudFront and S3",
+              "description": "Serve the React build cheaply and globally, and route `/api` to the load balancer."
+            },
+            {
+              "name": "ALB",
+              "description": "Terminates TLS, health-checks tasks and spreads traffic across AZs."
+            },
+            {
+              "name": "ECS Fargate",
+              "description": "Runs your container in private subnets, scaled on CPU or request count."
+            },
+            {
+              "name": "RDS Multi-AZ",
+              "description": "A synchronous standby for failover. Add read replicas for read scale; they are different things."
+            },
+            {
+              "name": "SQS and workers",
+              "description": "Move slow work out of the request, with a dead-letter queue for failures."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "network",
+      "type": "concept",
+      "title": "VPC basics",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Piece",
+            "Purpose"
+          ],
+          "rows": [
+            [
+              "Public subnet",
+              "Has a route to an internet gateway: load balancers"
+            ],
+            [
+              "Private subnet",
+              "No inbound internet: applications and databases"
+            ],
+            [
+              "NAT gateway",
+              "Lets private resources call out; costs per hour and per GB"
+            ],
+            [
+              "VPC endpoint",
+              "Private path to services such as S3, avoiding NAT"
+            ],
+            [
+              "Security group",
+              "Stateful firewall per resource: database allows only the app's group"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "id": "deliver",
+      "type": "concept",
+      "title": "Deploy and scale",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Concern",
+            "Choice"
+          ],
+          "rows": [
+            [
+              "Infrastructure",
+              "Terraform or AWS CDK, in Git: no console clicking"
+            ],
+            [
+              "Pipeline",
+              "GitHub Actions with an OIDC role, no stored AWS keys; push to ECR, then update the service"
+            ],
+            [
+              "Release",
+              "Rolling, or blue-green; schema changes stay backward compatible"
+            ],
+            [
+              "Scaling",
+              "Target tracking on ECS; connection pool sizes must fit the database's limit"
+            ],
+            [
+              "Backups",
+              "Automated RDS snapshots, and test the restore"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "variant": "warning",
+          "title": "Gotcha",
+          "text": "Autoscaling can exhaust database connections: tasks times pool size must stay under the limit. RDS Proxy can help."
+        }
+      ]
+    },
+    {
+      "id": "notes",
+      "type": "notes",
+      "title": "Important notes",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "**Design this for 99.9% availability on AWS.** Stateless tasks across at least two AZs behind an ALB, RDS Multi-AZ, health checks, autoscaling, backups with tested restores, alarms on user-facing symptoms, and safe deployments. Then state the costs and what you left out, such as multi-region."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- Public: load balancer and CDN only.\n- Multi-AZ gives availability; read replicas give read scale.\n- Infrastructure as code, and OIDC instead of stored keys.\n- Check autoscaling against database connection limits."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "What is the difference between RDS Multi-AZ and a read replica?",
+              "answer": "Multi-AZ is a synchronous standby for failover, not used for reads in the classic setup. A read replica is asynchronous and serves reads, so it can lag."
+            },
+            {
+              "question": "A task in a private subnet cannot reach an external API. What do you check?",
+              "answer": "The route to a NAT gateway, the security group's outbound rules, and DNS. Check the network ACL too."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -125,10 +125,36 @@ def chars_markdown(chars):
     return re.sub(r"[ \t]+", " ", "".join(out)).strip()
 
 
+SUPERSCRIPTS = str.maketrans("0123456789+-−=()nrkxyabcmtip", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁻⁼⁽⁾ⁿʳᵏˣʸᵃᵇᶜᵐᵗⁱᵖ")
+SUBSCRIPTS = str.maketrans("0123456789+-−=()nrkxaimtp", "₀₁₂₃₄₅₆₇₈₉₊₋₋₌₍₎ₙᵣₖₓₐᵢₘₜₚ")
+
+
+def attach_scripts(chars):
+    """Move superscripts and subscripts onto their line, as Unicode: 25² rather than a stray 2."""
+    out = []
+    for c in chars:
+        if not c["text"].strip() or c["size"] >= 8 or is_mono(c):
+            out.append(c)
+            continue
+        # the line it sits on overlaps it most: a script can also graze the line above or below
+        body = [d for d in chars if d["text"].strip() and c["size"] < 0.85 * d["size"] and abs(d["x0"] - c["x0"]) < 40
+                and min(c["bottom"], d["bottom"]) - max(c["top"], d["top"]) > 0.4 * (c["bottom"] - c["top"])]
+        if not body:
+            out.append(c)
+            continue
+        near = min(body, key=lambda d: abs(d["x0"] - c["x0"]))
+        raised = (c["top"] + c["bottom"]) / 2 < (near["top"] + near["bottom"]) / 2
+        text = c["text"].translate(SUPERSCRIPTS if raised else SUBSCRIPTS)
+        if text == c["text"] and text.isalpha():  # no Unicode script form, such as a raised q
+            text = ("^" if raised else "_") + text
+        out.append({**c, "text": text, "top": near["top"], "bottom": near["bottom"]})
+    return out
+
+
 def lines_of(chars):
     """Group chars into lines by vertical position."""
     groups = []
-    for c in sorted(chars, key=lambda c: (round(c["top"]), c["x0"])):
+    for c in sorted(attach_scripts(chars), key=lambda c: (round(c["top"]), c["x0"])):
         if groups and abs(groups[-1]["top"] - c["top"]) < 2.5:
             groups[-1]["chars"].append(c)
         else:
@@ -573,7 +599,7 @@ def convert(pdf, wanted, page_range):
                     flow = Flow()
                     continue
                 m = re.match(r"(\d+\.\d+)\s+(.+)$", text)
-                if info["bold"] > 0.8 and info["size"] >= 14 and m:
+                if info["bold"] > 0.8 and round(info["size"], 1) >= 14 and m:  # some PDFs report 13.9999...
                     close_chapter()
                     flow = Flow()
                     if m.group(1) in wanted:

@@ -36,7 +36,9 @@ GUIDES = {
     "Kafka": ("kafka", "Kafka_Complete_Guide.pdf"),
     "Git, Docker and CI/CD": ("git-docker-cicd", "Git_Docker_CICD_Guide.pdf"),
     "DSA Patterns": ("dsa-patterns", "DSA_Patterns.pdf"),
+    "Aptitude": ("aptitude", "Aptitude_Mastery_Guide.pdf"),
 }
+GUIDE_DIRS = {"Aptitude": "../01-Aptitude"}  # guides kept outside the main folder
 GUIDE_RE = "|".join(sorted((re.escape(g) for g in GUIDES), key=len, reverse=True))
 MARKER = re.compile(
     rf"(?:(?P<guide>{GUIDE_RE})\s+)?Part\s+(?P<p1>\d+)(?:\s+(?:and|to)\s+(?P<p2>\d+))?(?:\s*\([^)]*\))?\s*:?"
@@ -201,7 +203,7 @@ def main():
     days = {int(r[0]): {"week": int(r[3]), "theme": r[4], "study": r[5], "dsa": r[9], "output": r[12],
                         "minutes": int(float(r[13])) if r[13] else None} for r in rows}
 
-    outlines = {g: load_outline(folder / pdf) for g, (_, pdf) in GUIDES.items()}
+    outlines = {g: load_outline(folder / GUIDE_DIRS.get(g, ".") / pdf) for g, (_, pdf) in GUIDES.items()}
 
     # (guide, part) -> {"chapters": {num: chapter}, "days": set, "first": (day, order)}
     topics, mentions, order_counter = {}, [], 0

@@ -1,0 +1,159 @@
+{
+  "source": {
+    "document": "Written for this site (not from your PDFs)"
+  },
+  "sections": [
+    {
+      "id": "intro",
+      "type": "introduction",
+      "title": "RAG: answering from your own data",
+      "blocks": [
+        {
+          "type": "callout",
+          "variant": "note",
+          "title": "Not from your PDFs",
+          "text": "No guide of yours covers this, so this page was written for the site, as of October 2026. Tools and versions change quickly: check the official documentation before relying on details."
+        },
+        "A model doesn't know your documents. **Retrieval-augmented generation** finds relevant text and puts it in the prompt. This is the most common AI feature you'll be asked to build, and the most useful to practise.",
+        {
+          "type": "diagram",
+          "format": "mermaid",
+          "title": "The two RAG pipelines",
+          "code": "flowchart TD\n  subgraph ingest[Ingestion, ahead of time]\n    A[Documents] --> B[Split into chunks] --> C[Embed each chunk] --> D[(Vector store)]\n  end\n  subgraph query[Query, per request]\n    Q[Question] --> E[Embed the question] --> F[Find similar chunks]\n    D --> F\n    F --> G[Prompt: rules, chunks, question] --> H[LLM] --> I[Answer with citations]\n  end",
+          "caption": "Retrieval quality limits answer quality: most bad RAG answers are retrieval problems."
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "concept",
+      "title": "Embeddings and vector stores",
+      "blocks": [
+        "An embedding model turns text into a vector so that similar meanings land close together. A vector store finds the nearest vectors, even when no words match. **You likely already run one:** PostgreSQL with the `pgvector` extension is a sensible first choice over a new database.",
+        {
+          "type": "table",
+          "headers": [
+            "Decision",
+            "Starting point",
+            "Why it matters"
+          ],
+          "rows": [
+            [
+              "Chunk size",
+              "A few hundred tokens with some overlap",
+              "Too large dilutes; too small loses context"
+            ],
+            [
+              "Number retrieved",
+              "Start around 3 to 5, then tune",
+              "More costs more and adds noise"
+            ],
+            [
+              "Search",
+              "Combine keyword and vector search",
+              "Vector search misses exact codes and names"
+            ],
+            [
+              "Filtering",
+              "Filter by tenant and permissions",
+              "Security: never retrieve what the user can't see"
+            ]
+          ],
+          "caption": "Starting values only: measure on your own data."
+        }
+      ]
+    },
+    {
+      "id": "code",
+      "type": "code",
+      "title": "With Spring AI",
+      "blocks": [
+        {
+          "type": "code",
+          "language": "java",
+          "code": "@Service\nclass DocsAssistant {\n\n    private final VectorStore store;\n    private final ChatClient chat;\n\n    DocsAssistant(VectorStore store, ChatClient.Builder builder) {\n        this.store = store;\n        this.chat = builder.build();\n    }\n\n    void ingest(Resource pdf) {\n        List<Document> pages = new PagePdfDocumentReader(pdf).get();\n        store.add(new TokenTextSplitter().apply(pages));      // embeds and stores the chunks\n    }\n\n    String ask(String question) {\n        return chat.prompt()\n            .advisors(QuestionAnswerAdvisor.builder(store).build())   // retrieves and adds the context\n            .user(question)\n            .call()\n            .content();\n    }\n}",
+          "title": "Ingest and ask"
+        },
+        {
+          "type": "callout",
+          "variant": "tip",
+          "title": "Good practice project",
+          "text": "RAG over your own guides would make a strong portfolio project, because you can judge whether the answers are correct."
+        }
+      ]
+    },
+    {
+      "id": "quality",
+      "type": "notes",
+      "title": "Making it good",
+      "blocks": [
+        {
+          "type": "table",
+          "headers": [
+            "Symptom",
+            "Likely cause",
+            "Try"
+          ],
+          "rows": [
+            [
+              "Wrong or missing answers",
+              "Retrieval misses the right chunk",
+              "Better chunking, hybrid search, reranking"
+            ],
+            [
+              "Invents facts",
+              "Prompt allows it, or context is weak",
+              "Answer only from context; allow \"I don't know\"; add citations"
+            ],
+            [
+              "Outdated answers",
+              "Stale index",
+              "Re-ingest on change, and track document versions"
+            ],
+            [
+              "Shows others' data",
+              "No filter at retrieval",
+              "Filter by user permissions in the search itself"
+            ]
+          ]
+        },
+        {
+          "type": "callout",
+          "variant": "interview",
+          "title": "Interview angle",
+          "text": "**Design a chatbot over company documents.** Cover ingestion and updates, chunking, embeddings, hybrid retrieval, access control at retrieval, the prompt with citations, streaming, evaluation, cost limits, and a fallback when nothing relevant is found."
+        },
+        {
+          "type": "callout",
+          "variant": "keypoints",
+          "title": "Key points",
+          "text": "- RAG: retrieve relevant text, then generate from it.\n- Start with pgvector if you already use PostgreSQL.\n- Enforce permissions during retrieval, never only in the prompt.\n- Evaluate retrieval separately from generation."
+        }
+      ]
+    },
+    {
+      "id": "practice",
+      "type": "practice",
+      "title": "Practice questions",
+      "blocks": [
+        {
+          "type": "questions",
+          "items": [
+            {
+              "question": "Why not simply send all your documents to the model?",
+              "answer": "They won't fit the context window, cost would be high, and irrelevant text reduces quality."
+            },
+            {
+              "question": "Vector search misses the error code `ERR-4021`. Why, and how do you fix it?",
+              "answer": "Embeddings capture meaning and handle exact identifiers poorly. Add keyword search and combine the results."
+            },
+            {
+              "question": "Why isn't \"don't reveal other tenants' data\" in the prompt a security control?",
+              "answer": "A prompt can be overridden or ignored. If a chunk isn't retrieved, it can't leak, so filter in the query."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

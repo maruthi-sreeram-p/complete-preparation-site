@@ -79,11 +79,11 @@ function Home({ roadmap, progress }) {
         </h1>
         <TrailFlourish />
         <p className="mt-6 font-display text-[clamp(1.25rem,2.6vw,2.25rem)] font-medium tracking-tight">
-          From your first Java class to your final mock interview.
+          From working developer to your next offer.
         </p>
         <p className="mt-3 max-w-2xl text-muted">
-          One path through everything a Java full stack developer needs: the language, Spring, databases, system design,
-          React and deployment.
+          One path for a Java full stack developer with 3 to 4 years of experience: JVM and Spring depth, system design,
+          AWS, React, AI engineering and the interview itself.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
@@ -122,7 +122,7 @@ function Home({ roadmap, progress }) {
       <section className="px-4 py-16 lg:px-6">
         <div className="text-center">
           <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">The trail</h2>
-          <p className="mt-3 text-muted">Eleven stages, in order. Click any stop to jump in.</p>
+          <p className="mt-3 text-muted">{stops.length} stages, in order. Click any stop to jump in.</p>
         </div>
         <WindingTrail roadmapId={roadmap.id} stops={stops} current={currentStop} />
         <VerticalTrail roadmapId={roadmap.id} stops={stops} current={currentStop} />
