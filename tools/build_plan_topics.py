@@ -9,6 +9,7 @@ Reads Day_By_Day_Plan.xlsx and Java_FullStack_12Week_Plan.xlsx (its "Resume Fixe
 """
 import json
 import re
+import runpy
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
@@ -130,6 +131,10 @@ def main():
                 {"type": "markdown", "text": "From the *Project Interview Prep* tab of `Java_FullStack_12Week_Plan.xlsx`."},
                 {"type": "table", "headers": ["Project", "Topic to defend", "Questions to be ready for"],
                  "rows": [[PROJECT_LABELS.get(x[0], x[0]), x[1], x[2]] for x in projects]}]})
+
+        mock = Path(__file__).resolve().parent / "mock_interviews" / f"mock{day}.py"
+        if mock.exists():   # question sets written for the site: tools/mock_interviews/mock<day>.py
+            sections += runpy.run_path(str(mock))[f"MOCK_{day}"]
 
         content = generic({"source": topic["source"], "sections": sections})
         (out_dir / f"{topic['id']}.json").write_text(json.dumps(content, indent=2, ensure_ascii=False) + "\n",
