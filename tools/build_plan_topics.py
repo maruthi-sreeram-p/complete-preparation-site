@@ -60,6 +60,33 @@ def minutes(value):
         return value or ""
 
 
+# The spreadsheet names the author's own projects and quotes their resume; the published site stays generic.
+PROJECT_LABELS = {
+    "CareerFlux": "Your main project",
+    "Distributed Key-Value Store": "Your project 2",
+    "Swagruha Food": "Your project 3",
+    "Nexus AI": "Your project 4",
+    "Internship project (medication tracker)": "Your internship project",
+}
+RESUME_ROWS = {   # row number -> (issue, fix); None keeps the spreadsheet's text
+    "1": ("Internship title is cut off", "Correct the job title and project name on each internship line"),
+    "5": (None, "Use a concrete line: your role, your stack and what you built, for example event pipelines and JWT-secured APIs"),
+    "6": ("A skill is listed but used in no project", None),
+    "7": ("Formatting: missing spaces in the skills list", None),
+}
+
+
+def generic(value):
+    """The plan names the author's own project; the published site says "your project" instead."""
+    if isinstance(value, str):
+        return re.sub(r"^CareerFlux", "Your project", value).replace("at least CareerFlux", "at least your main project").replace("CareerFlux", "your project")
+    if isinstance(value, list):
+        return [generic(v) for v in value]
+    if isinstance(value, dict):
+        return {k: generic(v) for k, v in value.items()}
+    return value
+
+
 def main():
     folder = Path(sys.argv[1])
     out_dir = Path(__file__).resolve().parent.parent / "content" / "roadmaps" / ROADMAP_ID / "topics"
@@ -96,14 +123,15 @@ def main():
             sections.append({"id": "resume-fixes", "type": "notes", "title": "Resume fixes", "blocks": [
                 {"type": "markdown", "text": "From the *Resume Fixes* tab of `Java_FullStack_12Week_Plan.xlsx`."},
                 {"type": "table", "headers": ["#", "Issue", "Fix", "Priority"],
-                 "rows": [[x[0], x[1], x[2], x[3] if len(x) > 3 else ""] for x in resume]}]})
+                 "rows": [[x[0], RESUME_ROWS.get(x[0], (None, None))[0] or x[1], RESUME_ROWS.get(x[0], (None, None))[1] or x[2],
+                           x[3] if len(x) > 3 else ""] for x in resume]}]})
         if day == "52" and projects:
             sections.append({"id": "project-prep", "type": "practice", "title": "Project interview prep", "blocks": [
                 {"type": "markdown", "text": "From the *Project Interview Prep* tab of `Java_FullStack_12Week_Plan.xlsx`."},
                 {"type": "table", "headers": ["Project", "Topic to defend", "Questions to be ready for"],
-                 "rows": [[x[0], x[1], x[2]] for x in projects]}]})
+                 "rows": [[PROJECT_LABELS.get(x[0], x[0]), x[1], x[2]] for x in projects]}]})
 
-        content = {"source": topic["source"], "sections": sections}
+        content = generic({"source": topic["source"], "sections": sections})
         (out_dir / f"{topic['id']}.json").write_text(json.dumps(content, indent=2, ensure_ascii=False) + "\n",
                                                      encoding="utf-8")
         print(topic["id"], [s["title"] for s in sections])

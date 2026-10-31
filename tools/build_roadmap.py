@@ -45,6 +45,11 @@ MARKER = re.compile(
 )
 
 STAGE_COLORS = ["violet", "blue", "cyan", "teal", "fuchsia", "amber", "rose", "green", "slate"]
+def generic(text):
+    """The plan names the author's own project; the published site says "your project" instead."""
+    return re.sub(r"^CareerFlux", "Your project", text).replace("at least CareerFlux", "at least your main project").replace("CareerFlux", "your project")
+
+
 PLAN_ONLY_DAYS = {51, 52, 53, 54, 55, 56}
 ROW_SIZES = [1, 3, 5]
 
@@ -278,7 +283,7 @@ def main():
     # ------------------------------------------------------------ the ordered path
     path = json.loads((Path(__file__).resolve().parent / "learning_path.json").read_text(encoding="utf-8"))
     plan_only = {
-        51: ("plan-day-51-deploy-careerflux", "Build day: deploy CareerFlux"),
+        51: ("plan-day-51-deploy-your-project", "Build day: deploy your project"),
         52: ("plan-day-52-resume-walkthroughs", "Resume and project walkthroughs"),
         53: ("plan-day-53-mock-core-java-spring", "Mock interview 1: Core Java and Spring Boot"),
         54: ("plan-day-54-mock-databases-design", "Mock interview 2: Databases and System Design"),
@@ -326,7 +331,7 @@ def main():
                 elif "plan" in item:
                     day = item["plan"]
                     tid, title = plan_only[day]
-                    result.append({"id": tid, "title": title, "category": stage["id"], "summary": days[day]["output"],
+                    result.append({"id": tid, "title": title, "category": stage["id"], "summary": generic(days[day]["output"]),
                                    "estimatedMinutes": days[day]["minutes"],
                                    "source": {"document": PLAN_FILE, "planDays": str(day)}})
                 else:

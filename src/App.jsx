@@ -6,6 +6,9 @@ import DashboardPage from '@/features/dashboard/DashboardPage.jsx'
 import RoadmapPage from '@/features/roadmap/RoadmapPage.jsx'
 import TopicPage from '@/features/topic/TopicPage.jsx'
 import HomePage from '@/features/home/HomePage.jsx'
+import CopyrightPage from '@/features/legal/CopyrightPage.jsx'
+import PrivacyPage from '@/features/legal/PrivacyPage.jsx'
+import TermsPage from '@/features/legal/TermsPage.jsx'
 
 export default function App() {
   return (
@@ -17,6 +20,9 @@ export default function App() {
           <Route path="roadmap" element={<RoadmapPage />} />
           <Route path="topics/:topicId" element={<TopicPage />} />
         </Route>
+        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="terms" element={<TermsPage />} />
+        <Route path="copyright" element={<CopyrightPage />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
