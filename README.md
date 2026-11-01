@@ -46,6 +46,7 @@ python -I tools/build_roadmap.py <folder>                      # roadmap.json fr
 python -I tools/extract_topic.py <folder> <roadmap.json> --doc <Guide.pdf> <topics dir> [--force]
 python -I tools/build_plan_topics.py <folder>                  # pages for the plan-only days
 python -I tools/build_frontend_topics.py                       # pages for the frontend stage (not from a PDF)
+python -I tools/build_gate.py                                  # the GATE CSE tree: notes + MCQs checked at build time (see content/README.md)
 ```
 
 The order of the learning path lives in `tools/learning_path.json`.

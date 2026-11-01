@@ -1,0 +1,916 @@
+{
+ "source": {
+  "document": "Written for this site against the official GATE 2027 CS syllabus (IIT Madras)",
+  "questions": 60
+ },
+ "sections": [
+  {
+   "id": "ch-7-1",
+   "type": "concept",
+   "title": "Instruction set and addressing modes",
+   "subtopicId": "7-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site against the official GATE 2027 CS syllabus from IIT Madras. The questions are original and in the style of GATE: they drill the concepts GATE repeats, they are not copies of past papers. If the official syllabus changes, the official PDF wins."
+    },
+    {
+     "type": "markdown",
+     "text": "### Instruction formats\n\nAn instruction has an **opcode** and zero or more **operand** fields. The number of explicit addresses classifies the machine:\n\n| Type | Example for X = (A + B) × (C + D) | Instructions |\n|---|---|---|\n| 3-address | ADD T1, A, B / ADD T2, C, D / MUL X, T1, T2 | 3 |\n| 2-address | MOV T, A / ADD T, B / MOV U, C / ADD U, D / MUL T, U / MOV X, T | 6 |\n| 1-address (accumulator) | LOAD A / ADD B / STORE T / LOAD C / ADD D / MUL T / STORE X | 7 |\n| 0-address (stack) | PUSH A, PUSH B, ADD, PUSH C, PUSH D, ADD, MUL, POP X | 8 |\n\n**Instruction length** = opcode bits + operand bits. With 64 opcodes (6 bits) and three register operands among 32 registers (5 bits each), the minimum is 6 + 15 = 21 bits.\n\n### Expanding opcodes\n\nA fixed-length instruction can reuse operand bits as opcode bits for instructions with fewer operands. Suppose a 16-bit instruction with 4-bit fields: a 4-bit opcode gives 16 codes. If 14 are used for 3-address instructions, 2 codes remain and each one expands by the next 4 bits into 16 two-address opcodes, giving 2 × 16 = 32 slots. If 30 are used, 2 remain, and each expands by another 4 bits to 16 one-address opcodes: **2 × 16 = 32** one-address instructions. The rule: *unused codes at a level × 2^(bits added at the next level)*.\n\n### Addressing modes\n\n| Mode | Effective address (EA) | Memory accesses for the operand |\n|---|---|---|\n| Immediate | none (the operand is in the instruction) | 0 |\n| Register | operand is in a register | 0 |\n| Direct (absolute) | EA = address field | 1 |\n| Register indirect | EA = contents of register | 1 |\n| Memory indirect | EA = M[address field] | 2 |\n| Indexed / displacement | EA = register + offset | 1 |\n| Base register | EA = base register + offset (supports relocation) | 1 |\n| PC-relative | EA = PC + offset (the PC already points to the **next** instruction) | 1 |\n| Auto-increment / decrement | EA = register, then register ± size | 1 |\n| Stack | EA = SP | 1 |\n\n- A relative branch at address 1000 in a 4-byte-instruction machine with offset +20 goes to (1000 + 4) + 20 = **1024**.\n- A memory-indirect instruction with a one-word encoding needs 1 (fetch) + 2 = **3** memory accesses.\n- Word-addressable memory: address bits = log₂(words). Byte-addressable: log₂(bytes). 28 address bits give 2²⁸ = 256 MB.\n- **Endianness:** little-endian stores the least significant byte at the lowest address. 0x12345678 at address 100 puts 0x78 at 100, 0x56 at 101, 0x34 at 102 and 0x12 at 103.\n\n### RISC and CISC\n\n| | RISC | CISC |\n|---|---|---|\n| Instruction length | fixed | variable |\n| Operands in ALU instructions | registers only (**load/store architecture**) | memory operands allowed |\n| Addressing modes | few | many |\n| Control unit | usually hardwired | usually microprogrammed |\n| Registers | many | few |\n| Pipelining | easy | harder |"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Instruction size** = opcode bits + Σ operand bits. For register operands each takes ⌈log₂(registers)⌉ bits.\n- **Expanding opcode:** (remaining codes at a level) × 2^(bits gained at next level) = number of instructions at the next level.\n- **EA questions:** substitute carefully and watch for \"PC already incremented\".\n- **Memory accesses:** immediate 0, register 0, direct 1, indirect 2, plus 1 for the instruction fetch.\n- **Counting instructions for an expression:** a 1-address (accumulator) machine needs a LOAD/STORE for every temporary, so (A+B)×(C+D) needs 7.",
+     "title": "Instruction-set cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-2",
+   "type": "concept",
+   "title": "Arithmetic and the ALU",
+   "subtopicId": "7-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Datapath and flags\n\nThe ALU combines an adder with logic gates. After an operation it sets **status flags**: Z (zero), N (negative), C (carry out), V (signed overflow). Adding 0xFF + 0x01 on 8 bits gives 0x00 with Z = 1 and C = 1, but V = 0 (−1 + 1 = 0 is no overflow). **V = (carry into the sign bit) ⊕ (carry out of the sign bit).** 0x7F + 0x01 = 0x80 sets V = 1.\n\nA ripple-carry adder's delay grows as O(n). A carry-lookahead adder with tree structure grows as **O(log n)**.\n\n### Multiplication\n\n**Shift-and-add:** for each multiplier bit, add the multiplicand (shifted) to the partial product if the bit is 1. The product of two n-bit numbers needs 2n bits.\n\n**Booth's algorithm** handles signed multipliers. Scan the multiplier from the right, looking at the pair (bᵢ, bᵢ₋₁), with b₋₁ = 0:\n\n| bᵢ bᵢ₋₁ | Action |\n|---|---|\n| 0 0 or 1 1 | shift only |\n| 0 1 | **add** the multiplicand |\n| 1 0 | **subtract** the multiplicand |\n\nFor multiplier 1101 (−3): pairs are (1,0) subtract, (0,1) add, (1,0) subtract, (1,1) nothing, i.e. 3 add/subtract operations. A long run of 1s costs only two operations, so Booth is fast for such numbers. The **worst case is an alternating pattern** (0101…), which needs an operation at every bit.\n\n### Division\n\n**Restoring division** of n-bit numbers takes n iterations of shift and subtract, restoring the remainder when the subtraction goes negative. **Non-restoring division** avoids the restore step by adding in the next iteration instead."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Overflow vs carry:** carry matters for unsigned arithmetic, V matters for signed. They are independent.\n- **Booth operations** = number of boundaries between runs of 0s and 1s in the multiplier (with an appended 0 on the right).\n- **n-bit × n-bit** gives a 2n-bit product, e.g. 16×16 needs 32 bits.\n- **Division by n-bit divisor:** n iterations.\n- **Lookahead:** gates compute all carries from G and P in parallel, so delay is logarithmic in the width, not linear.",
+     "title": "ALU cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-3",
+   "type": "concept",
+   "title": "Control unit",
+   "subtopicId": "7-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The control unit generates the control signals that sequence the fetch–decode–execute cycle.\n\n| | Hardwired | Microprogrammed |\n|---|---|---|\n| Implementation | combinational logic and state counters | a control store (ROM) of microinstructions |\n| Speed | **faster** | slower (extra memory access per micro-step) |\n| Flexibility | hard to change | easy to change or extend |\n| Used in | RISC | CISC |\n\n### Microinstructions\n\n- A **horizontal** microinstruction has one bit per control signal. It is wide and allows much parallelism, with little decoding.\n- A **vertical** microinstruction encodes groups of mutually exclusive signals in fields, so it is narrower, and needs decoders, but allows less parallelism.\n- The **control address register** (CAR) holds the address of the next microinstruction. Sequencing uses an incrementer, a branch field and a condition select.\n- **Control store size** = (number of microinstructions) × (microinstruction width). A 1K-word store with 40 horizontal signals and a 10-bit next-address field uses 1024 × 50 = 51 200 bits.\n- **Encoded width:** a field choosing among n signals (plus \"none\") needs ⌈log₂(n + 1)⌉ bits. Fields of 16, 8 and 4 signals need 5 + 4 + 3 = 12 bits."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Hardwired = fast, rigid, RISC. Microprogrammed = flexible, slower, CISC.**\n- **Horizontal = wide + parallel. Vertical = narrow + encoded.**\n- **Bits = ⌈log₂(n + 1)⌉ per field** when a \"no signal\" choice is required, ⌈log₂ n⌉ when it is not. Read the question.\n- **Control memory** = words × width. Don't forget the next-address field.",
+     "title": "Control-unit cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-4",
+   "type": "concept",
+   "title": "Memory hierarchy and cache",
+   "subtopicId": "7-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Why it works\n\nPrograms show **temporal locality** (reuse recently used items) and **spatial locality** (use nearby items). Traversing a C array row by row exhibits spatial locality. The hierarchy: registers → cache (SRAM) → main memory (DRAM) → disk, each larger, slower and cheaper per bit. **DRAM needs periodic refresh**; SRAM does not.\n\n### Performance formulas\n\n- **Hit ratio** h = hits / accesses.\n- **Average memory access time (AMAT)** = hit time + miss rate × miss penalty.\n- If the miss path goes cache then memory (hierarchical): T = h·t_c + (1 − h)(t_c + t_m). If memory is accessed in parallel (simultaneous): T = h·t_c + (1 − h)·t_m.\n- **Two levels:** AMAT = t_L1 + m_L1 (t_L2 + m_L2 · t_mem), where m_L2 is the local miss rate of L2.\n- **CPU time = IC × CPI × clock period.** With memory stalls, CPI = base CPI + (memory accesses per instruction) × miss rate × miss penalty.\n- **Miss penalty with a narrow bus:** latency + (words per block) × (time per transfer).\n\n### Organisation and address breakdown\n\nMemory address = **tag | index | offset**.\n\n| Organisation | Where a block can go | Index bits |\n|---|---|---|\n| Direct-mapped | exactly one line: block mod (number of lines) | log₂(lines) |\n| k-way set-associative | any of k lines in set (block mod sets) | log₂(sets) |\n| Fully associative | any line | 0 |\n\nSteps: offset bits = log₂(block size); number of blocks = cache size / block size; number of sets = blocks / k; index bits = log₂(sets); **tag bits = address bits − index − offset**.\n\nExample: 32 KB, 4-way, 64-byte blocks, 32-bit addresses. Blocks = 512, sets = 128 (7 index bits), offset = 6 bits, tag = 32 − 7 − 6 = **19**.\n\n**Total storage** per line = data bits + tag bits + valid bit (+ dirty bit for write-back). A direct-mapped 16 KB cache with 16-byte blocks and 32-bit addresses has 1024 lines, 4 offset bits, 10 index bits and an 18-bit tag, so each line holds 128 + 18 + 1 = 147 bits and the total is 1024 × 147 = 150 528 bits.\n\n### Policies and misses\n\n| Topic | Details |\n|---|---|\n| Replacement | LRU, FIFO, random (only needed when there is a choice, i.e. not direct-mapped) |\n| Write-through | write to cache and memory at once; a write buffer hides the delay |\n| Write-back | write to memory only when a dirty line is evicted; needs a **dirty bit** |\n| Write-allocate / no-allocate | whether a write miss loads the block |\n| Compulsory miss | first reference to a block |\n| Capacity miss | working set is bigger than the cache |\n| Conflict miss | too many blocks map to the same set (only in direct-mapped and set-associative caches) |\n\nA larger block reduces compulsory misses through spatial locality, but at fixed capacity it can raise conflict misses and the miss penalty."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Write the formula chain:** offset → blocks → sets → index → tag. Doing it in this order avoids mistakes.\n- **Block number mod lines** gives the line in a direct-mapped cache. Block 1234 in a 64-line cache goes to line 1234 mod 64 = 18.\n- **Associativity moves bits from index to tag.** Fully associative has no index.\n- **Cache size** = sets × ways × block size. 32 sets × 2 ways × 16 B = 1024 B.\n- **Trace small examples:** list the accesses and mark each hit or miss. Blocks 0, 4, 8 in a 4-line direct-mapped cache all land in line 0 and keep evicting one another.\n- **Effective access time with a target:** t = h·t_c + (1 − h)(t_c + t_m). Solve for h: 20 = 10h + 110(1 − h) gives h = 0.9.\n- **CPI with misses:** only count the fraction of instructions that access memory (loads and stores) for data misses.",
+     "title": "Cache cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-5",
+   "type": "concept",
+   "title": "Memory interfacing",
+   "subtopicId": "7-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- **Chip arithmetic:** chips needed = (total words / chip words) × (total width / chip width). A 64K × 16 memory from 16K × 8 chips needs (64K/16K) × (16/8) = 8 chips.\n- The high-order address bits select a chip row through a decoder. For four rows of chips, 2 address lines drive the decoder.\n- **Interleaving:** with low-order interleaving, consecutive addresses go to different modules, so sequential accesses overlap and bandwidth rises.\n- Secondary storage (magnetic disks) is no longer named in the 2027 syllabus, so spend your time elsewhere."
+    }
+   ]
+  },
+  {
+   "id": "ch-7-6",
+   "type": "concept",
+   "title": "I/O interface: programmed I/O, interrupts and DMA",
+   "subtopicId": "7-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Technique | How data moves | CPU involvement |\n|---|---|---|\n| Programmed I/O | CPU polls the device status and moves each word | CPU is busy waiting |\n| Interrupt-driven | device raises an interrupt when ready; CPU runs an ISR per transfer | CPU free between interrupts |\n| **DMA** | the DMA controller moves blocks directly between device and memory | CPU involved only at start and end |\n\n- **Memory-mapped I/O** shares the address space with memory so ordinary loads and stores reach device registers. **Isolated I/O** has separate I/O instructions and its own address space.\n- **Interrupts:** a vectored interrupt supplies the address (or number) of its service routine; in a non-vectored one the CPU polls to find the source. A **daisy chain** gives the highest priority to the device electrically closest to the CPU.\n- **DMA modes:** *burst* keeps the bus until the whole block is moved, *cycle stealing* takes one memory cycle at a time, *transparent* uses cycles the CPU does not need.\n- **Interrupt overhead:** 1000 interrupts per second at 20 µs each costs 1000 × 20 µs = 20 ms per second = 2% of the CPU.\n- **DMA cost:** a device moving 2 MB/s with 4-byte words does 500 000 transfers per second, and at 100 ns per stolen cycle that uses 500 000 × 100 ns = 0.05 s, or **5%**, of memory time."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Interrupt vs DMA:** interrupts free the CPU between words, DMA frees it between blocks.\n- **Cycle stealing percentage** = (transfers per second) × (cycle time).\n- **Highest priority in daisy chain:** the device nearest the CPU.\n- **Burst = whole block, cycle stealing = one word at a time.**",
+     "title": "I/O cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-7",
+   "type": "concept",
+   "title": "Instruction pipelining and hazards",
+   "subtopicId": "7-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A classic five-stage pipeline has IF (fetch), ID (decode and register read), EX (execute), MEM (memory access) and WB (write back).\n\n### Performance\n\nFor k stages, n instructions and cycle time T (and no stalls):\n\n- **Total time = (k + n − 1) × T.** For k = 5 and n = 100 that is 104 cycles.\n- **Speedup over a non-pipelined machine** = (n × k × T_np) / ((k + n − 1) × T), approaching T_np / T for large n. With equal stages and no overhead it tends to k.\n- **Cycle time** = the slowest stage delay + latch overhead. Stage delays 100, 150, 200 and 120 ps give a 200 ps cycle, so 100 instructions take (4 + 99) × 200 = 20 600 ps.\n- **Ideal CPI = 1.** With stalls, CPI = 1 + average stall cycles per instruction.\n- **Average CPI from an instruction mix** = Σ (fraction × cycles). 40% at 1, 30% at 2, 20% at 3, 10% at 4 gives 0.4 + 0.6 + 0.6 + 0.4 = 2.0.\n- **Amdahl's law:** speedup = 1 / ((1 − f) + f/s). If 60% of the work is sped up 4×, the speedup is 1 / (0.4 + 0.15) ≈ 1.82.\n\n### Hazards\n\n| Hazard | Cause | Remedy |\n|---|---|---|\n| **Structural** | two instructions need the same resource in a cycle (for example one memory port) | duplicate resources, separate instruction and data caches, or stall |\n| **Data: RAW** (read after write) | an instruction reads a register an earlier one has not yet written | forwarding, or stall |\n| Data: WAR / WAW | later instruction writes before an earlier one reads or writes | only in out-of-order machines, handled by renaming |\n| **Control** | a branch changes the PC after later instructions were fetched | branch prediction, delayed branches, earlier resolution |\n\n- **Forwarding** passes the ALU result straight to the next EX stage. With full forwarding, ALU-to-ALU dependences cost 0 stalls. A **load followed by a dependent use** costs **1 stall** because the data is not available until MEM.\n- Without forwarding, a dependent instruction right after its producer needs 2 stall cycles (if the register file writes in the first half and reads in the second half of a cycle).\n- **Branch penalty example:** 20% branches, 60% of them taken, 3-cycle penalty when taken gives CPI = 1 + 0.2 × 0.6 × 3 = 1.36.\n- **CPU time** = IC × CPI / clock rate. 10⁹ instructions at CPI 1.5 on a 2 GHz clock take 0.75 s."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Pipeline time:** (k + n − 1) cycles. The first instruction takes k cycles and each later one adds 1.\n- **Clock period is set by the slowest stage plus latch overhead.** Balance the stages.\n- **Stall counting:** write the instructions in a table, one row each, and shift a dependent instruction right until its operand is available.\n- **Load-use = 1 stall even with forwarding.**\n- **Naming the hazard:** read after write = RAW (true dependence), write after read = WAR, write after write = WAW.\n- **CPI with branches:** 1 + (branch fraction) × (taken or mispredicted fraction) × (penalty).",
+     "title": "Pipeline cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-8",
+   "type": "concept",
+   "title": "Cheat sheet: COA on one page",
+   "subtopicId": "7-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Topic | Formula or fact |\n|---|---|\n| Instruction size | opcode bits + operand bits |\n| Expanding opcodes | remaining codes × 2^(bits gained) |\n| Relative branch | target = (address of next instruction) + offset |\n| Signed overflow | carry into sign ⊕ carry out of sign |\n| Booth | 01 add, 10 subtract; worst case 0101… |\n| Hardwired / microprogrammed | fast, RISC / flexible, CISC |\n| Control store | words × width |\n| Cache | offset = log₂ block; index = log₂ sets; tag = rest |\n| AMAT | hit time + miss rate × miss penalty |\n| Hierarchical access time | h·t_c + (1 − h)(t_c + t_m) |\n| CPU time | IC × CPI × clock period |\n| DMA modes | burst, cycle stealing, transparent |\n| Pipeline time | (k + n − 1) × T |\n| Load-use hazard | 1 stall with forwarding |\n| Amdahl | 1 / ((1 − f) + f/s) |"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (60 questions)",
+   "subtopicId": "7-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "60 original GATE-style questions on 7 areas. Pick an answer to see why it is right and which trap catches people. The marks shown are what a question like this would carry in GATE; in the real exam a wrong 1-mark MCQ costs 1/3 mark and a wrong 2-mark MCQ costs 2/3."
+    },
+    {
+     "type": "mcq",
+     "id": "gate-coa",
+     "items": [
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* An instruction set has 64 opcodes and 3-register instructions that name registers from a set of 32. The minimum number of bits needed to encode such an instruction is",
+       "o": [
+        "32",
+        "18",
+        "21",
+        "24"
+       ],
+       "a": 2,
+       "w": "64 opcodes need 6 bits and each of the 3 register operands needs log₂ 32 = 5 bits: 6 + 15 = 21."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* An instruction word is 16 bits long and every address field is 4 bits wide. The encoding has 14 three-address instructions and 30 two-address instructions. Using the expanding-opcode technique, the maximum number of one-address instructions that can be encoded is",
+       "o": [
+        "48",
+        "32",
+        "16",
+        "64"
+       ],
+       "a": 1,
+       "w": "The first 4 bits give 16 codes. 14 are used, leaving 2, and each expands by 4 bits into 16 two-address opcodes: 32 slots. 30 are used, leaving 2, and each expands by 4 more bits into 16 one-address opcodes: 2 × 16 = 32."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(1 mark)* In which addressing mode is the effective address equal to the contents of a register?",
+       "o": [
+        "direct",
+        "PC-relative",
+        "register indirect",
+        "immediate"
+       ],
+       "a": 2,
+       "w": "In register indirect mode the register holds the address of the operand. In immediate mode the operand is in the instruction, in direct mode the address is in the instruction, and PC-relative adds an offset to the PC."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(1 mark)* The instruction LOAD R1, 100(R2) uses displacement addressing and R2 holds 2000. The effective address of the operand is",
+       "o": [
+        "100",
+        "2000",
+        "2100",
+        "1900"
+       ],
+       "a": 2,
+       "w": "The effective address is the register contents plus the displacement: 2000 + 100 = 2100."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* A 4-byte branch instruction is at address 1000 and uses PC-relative addressing with an offset of +20. The PC has already been incremented to point to the next instruction. The branch target address is",
+       "o": [
+        "1024",
+        "1020",
+        "1004",
+        "1028"
+       ],
+       "a": 0,
+       "w": "The PC holds 1000 + 4 = 1004 when the offset is added, so the target is 1004 + 20 = 1024."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* A single-word instruction uses memory-indirect addressing for its source operand. Counting the instruction fetch, the number of memory accesses needed to obtain the operand is",
+       "o": [
+        "4",
+        "1",
+        "2",
+        "3"
+       ],
+       "a": 3,
+       "w": "One access fetches the instruction, a second reads the pointer stored at the address given in the instruction, and a third reads the operand at the address of that pointer: 3."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* X = (A + B) × (C + D) is to be computed on an accumulator (one-address) machine with LOAD, STORE, ADD and MUL instructions. The minimum number of instructions needed is",
+       "o": [
+        "5",
+        "7",
+        "6",
+        "8"
+       ],
+       "a": 1,
+       "w": "LOAD A, ADD B, STORE T, LOAD C, ADD D, MUL T, STORE X. The temporary T is needed because the accumulator can hold only one partial result."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* A 32-bit word 0x12345678 is stored at address 100 in a little-endian machine. The byte stored at address 100 is",
+       "o": [
+        "0x56",
+        "0x78",
+        "0x34",
+        "0x12"
+       ],
+       "a": 1,
+       "w": "Little-endian stores the least significant byte at the lowest address: 100 → 0x78, 101 → 0x56, 102 → 0x34, 103 → 0x12."
+      },
+      {
+       "t": "Instruction set and addressing",
+       "q": "*(2 marks)* Which of the following is a typical feature of a RISC architecture?",
+       "o": [
+        "A large number of complex addressing modes",
+        "Variable-length instructions with memory operands in ALU instructions",
+        "A microprogrammed control unit as the standard design",
+        "Load–store architecture with fixed-length instructions"
+       ],
+       "a": 3,
+       "w": "RISC machines restrict memory access to load and store instructions, use a few fixed-length formats and usually a hardwired control unit. The other options describe CISC designs."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* The number of add or subtract operations that Booth's algorithm performs for the 4-bit multiplier 1101 is",
+       "o": [
+        "2",
+        "4",
+        "1",
+        "3"
+       ],
+       "a": 3,
+       "w": "With an appended 0 on the right, the bit pairs (bᵢ, bᵢ₋₁) from the right are (1,0) subtract, (0,1) add, (1,0) subtract and (1,1) no operation. That is 3 operations."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* Which 8-bit multiplier needs the largest number of add/subtract steps in Booth's algorithm?",
+       "o": [
+        "11111111",
+        "00000000",
+        "00001111",
+        "01010101"
+       ],
+       "a": 3,
+       "w": "Booth acts at every boundary between a 0 and a 1 (with 0 appended on the right). The alternating pattern 01010101 has such a boundary at every position, giving 8 operations, while 11111111 needs 1, 00001111 needs 2 and 00000000 needs 0."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* An 8-bit ALU adds 0xFF and 0x01 (the 8-bit result is 0x00). Which flags are set?",
+       "o": [
+        "Carry and overflow, but not zero",
+        "Zero and carry, but not overflow",
+        "Zero and overflow, but not carry",
+        "Only zero"
+       ],
+       "a": 1,
+       "w": "The 9-bit sum is 0x100, so the carry out is 1 and the 8-bit result is zero, so Z = 1. As signed numbers this is (−1) + 1 = 0, which does not overflow: both carries around the sign bit are 1, so their XOR is 0."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* Dividing an 8-bit unsigned number by another 8-bit unsigned number using restoring division requires how many shift-and-subtract iterations?",
+       "o": [
+        "16",
+        "4",
+        "8",
+        "7"
+       ],
+       "a": 2,
+       "w": "The algorithm produces one quotient bit per iteration, so an 8-bit quotient needs 8 iterations."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* Two 16-bit unsigned integers are multiplied. The minimum number of bits needed to hold every possible product is",
+       "o": [
+        "32",
+        "31",
+        "16",
+        "17"
+       ],
+       "a": 0,
+       "w": "The largest product is (2¹⁶ − 1)² = 2³² − 2¹⁷ + 1, which exceeds 2³¹, so 32 bits are needed (the product of two n-bit numbers needs up to 2n bits)."
+      },
+      {
+       "t": "Arithmetic and ALU",
+       "q": "*(2 marks)* With tree-structured carry-lookahead logic, the addition delay of an n-bit adder grows as",
+       "o": [
+        "O(n)",
+        "O(log n)",
+        "O(1)",
+        "O(n²)"
+       ],
+       "a": 1,
+       "w": "Lookahead units compute groups of carries in parallel, combining them in a tree whose depth is logarithmic in n. A ripple-carry adder is O(n)."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(1 mark)* Compared with a microprogrammed control unit, a hardwired control unit is generally",
+       "o": [
+        "slower and less flexible",
+        "faster but less flexible",
+        "slower and more flexible",
+        "faster and more flexible"
+       ],
+       "a": 1,
+       "w": "Hardwired control is implemented directly in logic, so there is no control-store access and it is faster. Changing it means redesigning the circuit, so it is less flexible."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(2 marks)* A microprogrammed control unit has a control memory of 1024 words. Each microinstruction is horizontal with 40 control-signal bits plus a 10-bit next-address field. The size of the control memory in bits is",
+       "o": [
+        "61 440",
+        "10 240",
+        "51 200",
+        "40 960"
+       ],
+       "a": 2,
+       "w": "Each word is 40 + 10 = 50 bits, and there are 1024 words: 1024 × 50 = 51 200 bits."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(2 marks)* In a vertical microinstruction format, three fields choose among 16, 8 and 4 mutually exclusive control signals. Each field must also be able to select \"no signal\". The minimum number of bits in the control-signal part of the microinstruction is",
+       "o": [
+        "28",
+        "15",
+        "12",
+        "9"
+       ],
+       "a": 2,
+       "w": "A field with n signals plus \"none\" needs ⌈log₂(n + 1)⌉ bits: ⌈log₂ 17⌉ = 5, ⌈log₂ 9⌉ = 4 and ⌈log₂ 5⌉ = 3. The total is 5 + 4 + 3 = 12."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(2 marks)* Compared with vertical microinstructions, horizontal microinstructions are",
+       "o": [
+        "wider and allow more parallelism between micro-operations",
+        "narrower and need more decoding",
+        "wider and allow less parallelism",
+        "narrower and allow more parallelism"
+       ],
+       "a": 0,
+       "w": "A horizontal format gives each control signal its own bit, so words are long but several signals can be active in the same microinstruction without decoding. A vertical format encodes mutually exclusive signals in fields, so it is narrower but needs decoders and offers less parallelism."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(1 mark)* In a microprogrammed control unit, the control address register holds",
+       "o": [
+        "the opcode of the current instruction",
+        "the address of the next microinstruction",
+        "the data to be written to memory",
+        "the address of the next machine instruction"
+       ],
+       "a": 1,
+       "w": "The control address register (CAR) points into the control store and selects the microinstruction to be executed next. The program counter holds the address of the next machine instruction."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A direct-mapped cache has a size of 64 KB, a block size of 32 bytes and a 32-bit physical address. The number of tag bits is",
+       "o": [
+        "17",
+        "16",
+        "15",
+        "14"
+       ],
+       "a": 1,
+       "w": "Offset = log₂ 32 = 5 bits. Number of blocks = 64 KB / 32 B = 2048, so the index = 11 bits. Tag = 32 − 11 − 5 = 16."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A 4-way set-associative cache of size 32 KB has 64-byte blocks and the physical address is 32 bits. The number of tag bits is",
+       "o": [
+        "18",
+        "20",
+        "17",
+        "19"
+       ],
+       "a": 3,
+       "w": "Blocks = 32 KB / 64 B = 512. Sets = 512 / 4 = 128, so the index = 7 bits. Offset = 6 bits. Tag = 32 − 7 − 6 = 19."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A fully associative cache of 16 KB has 64-byte lines and a 32-bit address. The tag in each line has",
+       "o": [
+        "32 bits",
+        "24 bits",
+        "26 bits",
+        "20 bits"
+       ],
+       "a": 2,
+       "w": "There is no index in a fully associative cache. Only the offset (log₂ 64 = 6 bits) is removed, so the tag is 32 − 6 = 26 bits."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A direct-mapped cache of 16 KB has 16-byte blocks and a 32-bit address. Each line has a data block, a tag and 1 valid bit. The total number of bits of storage in the cache (data + tags + valid bits) is",
+       "o": [
+        "153 600",
+        "150 528",
+        "147 456",
+        "131 072"
+       ],
+       "a": 1,
+       "w": "There are 1024 lines. Offset = 4 bits, index = 10 bits, tag = 32 − 14 = 18 bits. Each line holds 128 + 18 + 1 = 147 bits, so the total is 1024 × 147 = 150 528."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A cache has a hit time of 1 ns, a miss rate of 5% and a miss penalty of 20 ns. The average memory access time is",
+       "o": [
+        "2.5 ns",
+        "2 ns",
+        "3 ns",
+        "1.5 ns"
+       ],
+       "a": 1,
+       "w": "AMAT = hit time + miss rate × miss penalty = 1 + 0.05 × 20 = 2 ns."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* An L1 cache has a 2 ns hit time and a 10% miss rate. The L2 cache has a 10 ns access time and a local miss rate of 20%. Main memory takes 100 ns. The average memory access time is",
+       "o": [
+        "6 ns",
+        "4 ns",
+        "5 ns",
+        "12 ns"
+       ],
+       "a": 2,
+       "w": "AMAT = 2 + 0.1 × (10 + 0.2 × 100) = 2 + 0.1 × 30 = 5 ns."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A processor has a base CPI of 1. 30% of instructions are loads or stores, the data cache miss rate is 2% and the miss penalty is 100 cycles. Instruction fetches always hit. The effective CPI is",
+       "o": [
+        "2.0",
+        "3.0",
+        "1.3",
+        "1.6"
+       ],
+       "a": 3,
+       "w": "CPI = 1 + 0.30 × 0.02 × 100 = 1 + 0.6 = 1.6."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A direct-mapped cache has 4 lines. The block addresses 0, 4, 8, 0, 4, 8 are accessed in this order. The number of cache misses is",
+       "o": [
+        "3",
+        "5",
+        "4",
+        "6"
+       ],
+       "a": 3,
+       "w": "Blocks 0, 4 and 8 all map to line 0 (address mod 4 = 0), so each access evicts the previous block and every access is a miss: 6 misses."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A fully associative cache with 3 lines uses LRU replacement. The block references are 1, 2, 3, 4, 1, 2, 5, 1, 2, 3, 4, 5 and the cache is initially empty. The number of misses is",
+       "o": [
+        "12",
+        "9",
+        "8",
+        "10"
+       ],
+       "a": 3,
+       "w": "Tracing LRU gives misses on 1, 2, 3, 4, 1, 2, 5, 3, 4 and 5, and hits on the two references to 1 and 2 after 5. That is 10 misses. (FIFO would give 9.)"
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* Which cache write policy requires a dirty bit for each cache line?",
+       "o": [
+        "write-back",
+        "write-through",
+        "write-around",
+        "none of these"
+       ],
+       "a": 0,
+       "w": "Write-back updates memory only when a modified line is evicted, so the cache must remember which lines are dirty. Write-through updates memory on every write and has no need for the bit."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* For a fixed cache capacity, increasing the block size typically",
+       "o": [
+        "has no effect on the miss rate",
+        "increases the hit time only",
+        "reduces compulsory misses, but may raise conflict misses and the miss penalty",
+        "reduces all three kinds of misses"
+       ],
+       "a": 2,
+       "w": "Larger blocks exploit spatial locality, so fewer first-reference misses occur. But fewer blocks fit in the cache, which can increase conflict misses, and each miss moves more data, so the miss penalty rises."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A cache miss that happens because the block is referenced for the first time is called a",
+       "o": [
+        "compulsory miss",
+        "conflict miss",
+        "capacity miss",
+        "coherence miss"
+       ],
+       "a": 0,
+       "w": "First-reference misses are compulsory (cold-start) misses. They occur even in an infinitely large cache."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* An 8-way set-associative cache of 64 KB has 64-byte blocks. The number of sets is",
+       "o": [
+        "128",
+        "64",
+        "256",
+        "1024"
+       ],
+       "a": 0,
+       "w": "Blocks = 64 KB / 64 B = 1024. Sets = 1024 / 8 = 128."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A direct-mapped cache has 64 lines. Memory block number 1234 is placed in cache line number",
+       "o": [
+        "19",
+        "34",
+        "18",
+        "52"
+       ],
+       "a": 2,
+       "w": "Line = block number mod number of lines = 1234 mod 64. Since 64 × 19 = 1216, the remainder is 18."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A cache has an access time of 10 ns. On a miss, main memory (100 ns) is accessed after the cache access, so a miss costs 110 ns. The effective access time is 20 ns. The hit ratio is",
+       "o": [
+        "0.9",
+        "0.8",
+        "0.95",
+        "0.99"
+       ],
+       "a": 0,
+       "w": "20 = 10h + 110(1 − h) = 110 − 100h, so h = 0.9."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A 2-way set-associative cache has 32 sets and a 16-byte block size. The capacity of the cache is",
+       "o": [
+        "2048 bytes",
+        "512 bytes",
+        "1024 bytes",
+        "4096 bytes"
+       ],
+       "a": 2,
+       "w": "Capacity = sets × ways × block size = 32 × 2 × 16 = 1024 bytes."
+      },
+      {
+       "t": "Cache memory",
+       "q": "*(2 marks)* A cache has 64-byte blocks. The memory has a 50 ns latency for the first transfer and the bus carries 8 bytes every 10 ns. Assuming the miss penalty is the latency plus the bus transfer time of the whole block, the miss penalty is",
+       "o": [
+        "130 ns",
+        "60 ns",
+        "690 ns",
+        "90 ns"
+       ],
+       "a": 0,
+       "w": "A 64-byte block takes 64 / 8 = 8 transfers of 10 ns = 80 ns. Adding the 50 ns latency gives 130 ns."
+      },
+      {
+       "t": "Memory system",
+       "q": "*(2 marks)* A 64K × 16 memory is to be built from 16K × 8 memory chips. The number of chips required is",
+       "o": [
+        "16",
+        "6",
+        "4",
+        "8"
+       ],
+       "a": 3,
+       "w": "(64K / 16K) rows × (16 bits / 8 bits per chip) columns = 4 × 2 = 8 chips."
+      },
+      {
+       "t": "Memory system",
+       "q": "*(2 marks)* In the 64K × 16 memory built from 16K × 8 chips, how many of the address lines are used to select between the rows of chips?",
+       "o": [
+        "4",
+        "2",
+        "3",
+        "1"
+       ],
+       "a": 1,
+       "w": "The total address space is 64K (16 address lines) and each chip row covers 16K (14 lines). The remaining 16 − 14 = 2 lines feed a 2-to-4 decoder that selects one of the 4 rows."
+      },
+      {
+       "t": "Memory system",
+       "q": "*(1 mark)* Which of the following memories needs periodic refreshing of its contents?",
+       "o": [
+        "DRAM",
+        "SRAM",
+        "ROM",
+        "Cache memory built from flip-flops"
+       ],
+       "a": 0,
+       "w": "A DRAM cell stores charge on a capacitor, which leaks away, so the contents must be refreshed regularly. SRAM keeps its value as long as power is on."
+      },
+      {
+       "t": "Memory system",
+       "q": "*(2 marks)* A C program traverses a two-dimensional array row by row (row-major, the layout used by C). This access pattern mainly exhibits",
+       "o": [
+        "sequential consistency",
+        "temporal locality only",
+        "no locality",
+        "spatial locality"
+       ],
+       "a": 3,
+       "w": "Consecutive elements of a row lie at consecutive addresses, so each fetched cache block serves several following accesses, which is spatial locality."
+      },
+      {
+       "t": "Memory system",
+       "q": "*(1 mark)* A byte-addressable memory is addressed with 28 address bits. Its capacity is",
+       "o": [
+        "128 MB",
+        "256 MB",
+        "512 MB",
+        "28 MB"
+       ],
+       "a": 1,
+       "w": "2²⁸ bytes = 2⁸ × 2²⁰ = 256 MB."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(2 marks)* A device transfers data at 2 MB/s using DMA with 4-byte words. Each word transfer steals one memory cycle of 100 ns. The fraction of memory time used by the DMA transfers is",
+       "o": [
+        "5%",
+        "10%",
+        "2%",
+        "20%"
+       ],
+       "a": 0,
+       "w": "2 MB/s ÷ 4 bytes = 500 000 transfers per second. At 100 ns each that is 500 000 × 100 ns = 0.05 s per second, or 5%."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(1 mark)* Which I/O techniques let the CPU do useful work while a slow device is preparing data?",
+       "o": [
+        "programmed I/O only",
+        "polling",
+        "interrupt-driven I/O and DMA",
+        "none of them"
+       ],
+       "a": 2,
+       "w": "In programmed I/O the CPU busy-waits and polls. With interrupts the CPU runs other code until the device signals, and with DMA the controller moves the data itself."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(2 marks)* In which DMA transfer mode does the DMA controller retain control of the bus until the entire block has been transferred?",
+       "o": [
+        "burst mode",
+        "cycle stealing",
+        "interleaved mode",
+        "transparent mode"
+       ],
+       "a": 0,
+       "w": "In burst (block) mode the controller keeps the bus for the whole block, locking out the CPU. Cycle stealing takes the bus for one word at a time, and transparent mode uses only cycles the CPU is not using."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(2 marks)* A vectored interrupt scheme is one in which",
+       "o": [
+        "the CPU polls every device to find the source of the interrupt",
+        "the interrupting device supplies a number or address used to find its service routine",
+        "interrupts are disabled during the service routine",
+        "all interrupts jump to one fixed service routine"
+       ],
+       "a": 1,
+       "w": "In a vectored interrupt the device places a vector on the bus, so the CPU can branch straight to the right routine. Non-vectored schemes need polling or a single shared routine."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(2 marks)* In a daisy-chain interrupt priority scheme, the device with the highest priority is",
+       "o": [
+        "chosen at random",
+        "the one farthest from the CPU",
+        "the one electrically closest to the CPU",
+        "the one that interrupted first"
+       ],
+       "a": 2,
+       "w": "The acknowledge signal passes through the devices in order, starting with the one nearest the CPU, so that device wins whenever it is requesting."
+      },
+      {
+       "t": "I/O and DMA",
+       "q": "*(2 marks)* A device raises 1000 interrupts per second. Each interrupt costs the CPU 20 µs of overhead. The fraction of CPU time spent on this overhead is",
+       "o": [
+        "20%",
+        "0.2%",
+        "0.02%",
+        "2%"
+       ],
+       "a": 3,
+       "w": "1000 × 20 µs = 20 ms per second = 2% of the CPU time."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A 5-stage pipeline with a 1-cycle-per-stage design executes 100 instructions with no stalls. The total number of clock cycles needed is",
+       "o": [
+        "505",
+        "500",
+        "100",
+        "104"
+       ],
+       "a": 3,
+       "w": "Time = (k + n − 1) = 5 + 99 = 104 cycles: 5 cycles for the first instruction and 1 more cycle for each of the other 99."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A 5-stage pipeline with equal stage delays executes 1000 instructions with no stalls. The speedup over a non-pipelined machine (whose instruction time is 5 stage delays) is approximately",
+       "o": [
+        "4.00",
+        "5.00",
+        "4.98",
+        "3.75"
+       ],
+       "a": 2,
+       "w": "Speedup = (1000 × 5) / (5 + 999) = 5000 / 1004 ≈ 4.98. It approaches 5 only as n grows."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A non-pipelined processor needs 10 ns per instruction. A pipelined design splits the work into 5 stages of 2 ns each and adds 0.5 ns of latch overhead per stage. For a very large number of instructions the speedup is",
+       "o": [
+        "5",
+        "2.5",
+        "4",
+        "3.33"
+       ],
+       "a": 2,
+       "w": "The pipelined cycle time is 2 + 0.5 = 2.5 ns, so the asymptotic speedup is 10 / 2.5 = 4."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A four-stage pipeline has stage delays of 100 ps, 150 ps, 200 ps and 120 ps (ignore latch overhead). The time to execute 100 instructions with no stalls is",
+       "o": [
+        "20 600 ps",
+        "15 000 ps",
+        "47 000 ps",
+        "18 000 ps"
+       ],
+       "a": 0,
+       "w": "The clock period is the slowest stage, 200 ps. The total time is (4 + 99) × 200 = 20 600 ps."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* Consider I1: R1 ← R2 + R3 followed by I2: R4 ← R1 + R5. The dependence between I1 and I2 is a",
+       "o": [
+        "RAW hazard",
+        "structural hazard",
+        "WAW hazard",
+        "WAR hazard"
+       ],
+       "a": 0,
+       "w": "I2 reads R1 which I1 writes, so it must read after the write: read-after-write (RAW), a true data dependence."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* In a 5-stage pipeline with full forwarding, a load instruction is immediately followed by an instruction that uses the loaded register. The number of stall cycles required is",
+       "o": [
+        "1",
+        "2",
+        "3",
+        "0"
+       ],
+       "a": 0,
+       "w": "The loaded value is available only after the MEM stage, but the dependent instruction needs it at the start of its EX stage, one cycle earlier than forwarding can supply it. One bubble is unavoidable."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* In a pipelined processor 20% of the instructions are branches and 60% of the branches are taken. A taken branch costs a 3-cycle penalty, a not-taken branch costs none, and the base CPI is 1. The average CPI is",
+       "o": [
+        "2.2",
+        "1.6",
+        "1.12",
+        "1.36"
+       ],
+       "a": 3,
+       "w": "CPI = 1 + 0.20 × 0.60 × 3 = 1 + 0.36 = 1.36."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A processor executes 40% ALU instructions (1 cycle), 30% load/store instructions (2 cycles), 20% branches (3 cycles) and 10% other instructions (4 cycles). The average CPI is",
+       "o": [
+        "2.0",
+        "1.8",
+        "2.2",
+        "2.5"
+       ],
+       "a": 0,
+       "w": "CPI = 0.4×1 + 0.3×2 + 0.2×3 + 0.1×4 = 0.4 + 0.6 + 0.6 + 0.4 = 2.0."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A program has 10⁹ instructions, an average CPI of 1.5, and runs on a 2 GHz processor. Its execution time is",
+       "o": [
+        "1.5 s",
+        "0.75 s",
+        "3 s",
+        "0.5 s"
+       ],
+       "a": 1,
+       "w": "CPU time = IC × CPI / clock rate = 10⁹ × 1.5 / (2 × 10⁹) = 0.75 s."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* 60% of a program's execution time is sped up by a factor of 4, and the rest is unchanged. By Amdahl's law the overall speedup is approximately",
+       "o": [
+        "2.5",
+        "1.5",
+        "4",
+        "1.82"
+       ],
+       "a": 3,
+       "w": "Speedup = 1 / ((1 − 0.6) + 0.6/4) = 1 / (0.4 + 0.15) = 1 / 0.55 ≈ 1.82."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A write-after-read (WAR) hazard occurs when",
+       "o": [
+        "two instructions both write the same register in the wrong order",
+        "two instructions need the same functional unit in the same cycle",
+        "a later instruction reads a register before an earlier instruction has written it",
+        "a later instruction writes a register before an earlier instruction has read it"
+       ],
+       "a": 3,
+       "w": "WAR is an anti-dependence: the later instruction's write must not overtake the earlier instruction's read. (b) is RAW, (c) is WAW and (d) is a structural hazard."
+      },
+      {
+       "t": "Pipelining",
+       "q": "*(2 marks)* A pipelined processor has a single memory port used both for instruction fetch and for data access. When a load or store is in its MEM stage, an instruction fetch also wants the memory in the same cycle. This situation is called a",
+       "o": [
+        "data hazard",
+        "structural hazard",
+        "control hazard",
+        "write-after-write hazard"
+       ],
+       "a": 1,
+       "w": "Two instructions competing for the same hardware resource in the same clock cycle is a structural hazard. It is avoided by separate instruction and data caches or by stalling."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Cheat sheet: COA on one page"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What happens to the tag size when a cache of fixed size becomes more associative?",
+       "answer": "The number of sets falls, so the index shrinks and the tag grows by the same number of bits. A fully associative cache has no index bits."
+      },
+      {
+       "question": "Why does a load followed immediately by a dependent instruction stall even with forwarding?",
+       "answer": "The loaded value is not available until the end of the MEM stage, which is after the dependent instruction already needs it at the start of its EX stage, so one bubble is unavoidable."
+      },
+      {
+       "question": "Compare the CPU involvement in programmed I/O, interrupt-driven I/O and DMA.",
+       "answer": "In programmed I/O the CPU polls and moves every word. In interrupt-driven I/O the CPU is free between words but runs an ISR for each. With DMA the CPU sets up the transfer and handles one interrupt at the end of the block."
+      },
+      {
+       "question": "A 64K × 16 memory is built from 16K × 8 chips. How many chips and how many chip-select address bits?",
+       "answer": "(64K / 16K) × (16 / 8) = 8 chips arranged as 4 rows of 2 chips side by side. Two high-order address bits select the row through a 2-to-4 decoder."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

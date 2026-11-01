@@ -6,7 +6,8 @@ Source format (one file per part):
   @more                       instead of @part: a file named NN-more-*.md adds chapters to part NN
   ## Chapter title            starts a chapter; ### and markdown tables work as usual
   ```mermaid Title            a diagram; ```java Title is a titled code block
-  !tip Title :: text          a callout (note, tip, warning, important, interview, realworld)
+  !tip Title :: text          a callout (note, tip, warning, important, interview, realworld, cheat)
+  !cheat Title ::             a callout with a body of several lines (lists, tables), closed by a line "!end"
   !keypoints a ;; b ;; c      a key points list
   ?? question                 a practice question; the next line is "=> answer"
 """
@@ -60,10 +61,18 @@ def parse(path):
             flush()
             points = [p.strip() for p in line[len("!keypoints "):].split(";;")]
             chapter["blocks"].append({"type": "callout", "variant": "keypoints", "title": "Key points", "text": "\n".join(f"- {p}" for p in points)})
-        elif re.match(r"!(note|tip|warning|important|interview|realworld) ", line):
+        elif re.match(r"!(note|tip|warning|important|interview|realworld|cheat) ", line):
             flush()
             variant, rest = line[1:].split(" ", 1)
-            title, text = rest.split(" :: ", 1) if " :: " in rest else (None, rest)
+            if rest.rstrip().endswith("::"):  # body on the following lines, up to "!end"
+                body = []
+                while lines[i].strip() != "!end":
+                    body.append(lines[i])
+                    i += 1
+                i += 1
+                title, text = rest.rstrip()[:-2].strip(), "\n".join(body)
+            else:
+                title, text = rest.split(" :: ", 1) if " :: " in rest else (None, rest)
             block = {"type": "callout", "variant": variant, "text": text.strip()}
             if title:
                 block["title"] = title.strip()

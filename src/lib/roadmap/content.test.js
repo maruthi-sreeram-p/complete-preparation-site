@@ -51,3 +51,41 @@ describe('DSA by topic', () => {
     }
   })
 })
+
+describe('GATE CSE tree', () => {
+  const { roadmap } = load('gate-cs')
+  const topicFile = (id) => JSON.parse(readFileSync(join(ROOT, 'gate-cs', 'topics', `${id}.json`), 'utf8'))
+  const questionsOf = (id) => topicFile(id).sections.flatMap((s) => s.blocks).filter((b) => b.type === 'mcq').flatMap((b) => b.items)
+  const subjects = roadmap.topics.filter((t) => t.id !== 'gate-start')
+
+  it('covers the 13 subject areas of the CS syllabus plus the start page', () => {
+    expect(roadmap.topics).toHaveLength(14)
+    expect(roadmap.sequence[0]).toBe('gate-start')
+  })
+
+  it('gives every subject at least 50 well-formed questions', () => {
+    for (const t of subjects) {
+      const items = questionsOf(t.id)
+      expect(items.length, `${t.id}: number of questions`).toBeGreaterThanOrEqual(50)
+      for (const [i, q] of items.entries()) {
+        const where = `${t.id} question ${i + 1}`
+        expect(q.o, `${where}: options`).toHaveLength(4)
+        expect(new Set(q.o).size, `${where}: distinct options`).toBe(4)
+        expect(Number.isInteger(q.a) && q.a >= 0 && q.a < 4, `${where}: answer index`).toBe(true)
+        expect(q.w?.length, `${where}: explanation`).toBeGreaterThan(10)
+      }
+    }
+  })
+
+  it('does not always put the right answer in the same place', () => {
+    for (const t of subjects) {
+      const counts = [0, 1, 2, 3].map((k) => questionsOf(t.id).filter((q) => q.a === k).length)
+      expect(Math.max(...counts) - Math.min(...counts), `${t.id}: answers per position ${counts}`).toBeLessThanOrEqual(2)
+    }
+  })
+
+  it('has unique question-set ids so saved answers cannot collide', () => {
+    const ids = subjects.map((t) => topicFile(t.id).sections.flatMap((s) => s.blocks).find((b) => b.type === 'mcq').id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})

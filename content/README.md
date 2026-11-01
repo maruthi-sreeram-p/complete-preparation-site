@@ -128,3 +128,18 @@ Sources: `tools/build_practice.py` writes `databases`, `core-java`, `spring-boot
 `roadmaps/dsa-topics/` is a second way into DSA: the 18 topics of NeetCode's roadmap with its dependency graph, a short Java guide for each
 (`tools/dsa/NN-<topic>.md`, format in `tools/guide_source.py`) and its NeetCode 150 problems. The topics, edges and problems live in
 `tools/dsa/problems.py`; run `python -I tools/build_dsa_topics.py` after editing it. The Java Full Stack tree teaches DSA by pattern; this one is by topic.
+
+## GATE CSE tree
+
+`roadmaps/gate-cs/` follows the official GATE 2027 CS syllabus (IIT Madras): a start page (exam pattern, marking scheme, strategy and a pointer to the Aptitude tree for General Aptitude) and 13 subject topics. Each subject has detailed notes, **cheat codes** (the `cheat` callout) and 60 original GATE-style MCQs. The questions are written for the site; they are not copies of past papers.
+
+```
+tools/gate/NN-<subject>.md         notes (guide format of tools/guide_source.py; !cheat Title :: … !end for cheat codes)
+tools/gate/mcq/NN-<subject>.txt    the MCQs, format documented at the top of tools/build_gate.py
+tools/gate/helpers.py              names the !py checks of the MCQs can use
+python -I tools/build_gate.py      writes content/roadmaps/gate-cs/ and checks every question
+```
+
+A question marks its right option with `*`, and an optional `!py` line is run at build time against `ans` (the right option): numeric answers are recomputed with small reference implementations (schedulers, page replacement, Banker's algorithm, LR automata, SQL on SQLite, CIDR maths …), so a wrong key fails the build. Options are placed so the right answer is spread evenly over A to D. `npm test` also checks every subject has at least 50 well-formed questions.
+
+The study order is the `ROWS` list in `tools/build_gate.py`. Keep each row within one stage, because the tree layout draws a stage heading wherever a row's stage changes.

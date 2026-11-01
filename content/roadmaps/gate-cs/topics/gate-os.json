@@ -1,0 +1,932 @@
+{
+ "source": {
+  "document": "Written for this site against the official GATE 2027 CS syllabus (IIT Madras)",
+  "questions": 60
+ },
+ "sections": [
+  {
+   "id": "ch-12-1",
+   "type": "concept",
+   "title": "System calls, processes and threads",
+   "subtopicId": "12-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site against the official GATE 2027 CS syllabus from IIT Madras. The questions are original and in the style of GATE: they drill the concepts GATE repeats, they are not copies of past papers. If the official syllabus changes, the official PDF wins."
+    },
+    {
+     "type": "markdown",
+     "text": "### Kernel mode and system calls\n\nThe CPU runs in **user mode** or **kernel (privileged) mode**. Instructions that can disturb other programs or the hardware are privileged: disabling interrupts, setting the timer, changing the memory-management registers, and I/O instructions. A **system call** is how a program asks the OS for a service. It executes a **trap** (software interrupt) that switches to kernel mode, jumps to the handler, and returns to user mode afterwards.\n\n### Processes\n\nA **process** is a program in execution: code, data, heap, stack, and a **process control block (PCB)** that holds its state, registers, memory-management information and open files."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "stateDiagram-v2\n  [*] --> New\n  New --> Ready: admitted\n  Ready --> Running: scheduler dispatch\n  Running --> Ready: time slice expired / preempted\n  Running --> Waiting: I/O or event wait\n  Waiting --> Ready: I/O or event complete\n  Running --> Terminated: exit\n  Terminated --> [*]",
+     "title": "Process states"
+    },
+    {
+     "type": "markdown",
+     "text": "A **context switch** saves the PCB of the running process and loads that of the next. It is pure overhead.\n\n### fork, exec and wait\n\n`fork()` creates a child that is a copy of the caller. It returns **0 in the child** and the **child's PID in the parent** (and −1 on failure). After a `fork`, both processes continue with the next statement.\n\n- k consecutive `fork()` calls (or a loop with k forks) create **2ᵏ processes** in total, including the original, so 2ᵏ − 1 new ones.\n- `for (i = 0; i < 3; i++) fork(); printf(\"X\");` prints X **8** times.\n- `if (fork() == 0) { fork(); } printf(\"A\");` prints A **3** times: the parent once, the child, and the grandchild.\n- `exec()` replaces the process image. `wait()` makes the parent block until a child terminates.\n- A **zombie** is a terminated process whose parent has not yet called `wait()`. An **orphan** is a child whose parent has terminated.\n\n### Threads\n\nA thread is a unit of CPU use. Threads of one process **share** the code, global data, heap and open files, but each has its own **stack, registers and program counter**.\n\n| | User-level threads | Kernel-level threads |\n|---|---|---|\n| Managed by | a library, in user space | the OS kernel |\n| Switching cost | low | higher |\n| A blocking system call | **blocks the whole process** | blocks only that thread |\n| Multiprocessor use | one kernel thread at a time | true parallelism |\n\n### Inter-process communication\n\nProcesses communicate by **shared memory** (fastest, since after setup no kernel call is needed, but they must synchronise) or by **message passing** (pipes, message queues, sockets, simpler and works across machines). Signals deliver simple notifications."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **fork counting:** draw a tree. Every `fork()` doubles the number of running copies from that point on.\n- **Return value:** `0` means \"I am the child\".\n- **Privileged instructions:** anything that changes protection or timing (disable interrupts, set timer, halt, I/O). Plain arithmetic and reading a register are not.\n- **User threads block together,** kernel threads independently.\n- **Fastest IPC:** shared memory. **Easiest to get right:** message passing.",
+     "title": "Process cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-2",
+   "type": "concept",
+   "title": "CPU scheduling",
+   "subtopicId": "12-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Criteria and definitions\n\nCPU utilisation and throughput should be high; turnaround, waiting and response times should be low.\n\n- **Turnaround time = completion time − arrival time.**\n- **Waiting time = turnaround time − burst time.**\n- **Response time** = first run − arrival.\n\n| Algorithm | Preemptive? | Notes |\n|---|---|---|\n| FCFS | no | simple, **convoy effect** (short jobs wait behind a long one) |\n| SJF | no | minimum average waiting time among non-preemptive algorithms; starvation of long jobs |\n| SRTF | yes | preemptive SJF, minimum average waiting time overall |\n| Priority | either | starvation of low priority, cured by **aging** |\n| Round robin | yes | time quantum q; large q → FCFS; very small q → too much switching |\n| Multilevel (feedback) queue | yes | processes move between queues |\n\n### Worked example\n\nProcesses (arrival, burst): P1 (0, 5), P2 (1, 3), P3 (2, 8), P4 (3, 2).\n\n| Algorithm | Completion times (P1, P2, P3, P4) | Average waiting | Average turnaround |\n|---|---|---|---|\n| FCFS | 5, 8, 16, 18 | 5.75 | 10.25 |\n| SJF (non-preemptive) | 5, 10, 18, 7 | 4.0 | 8.5 |\n| SRTF | 10, 4, 18, 6 | 3.5 | 8.0 |\n| Round robin, q = 2 | 14, 11, 18, 10 | 7.25 | 11.75 |\n\nPriority scheduling (non-preemptive, all arrive at 0, lower number = higher priority): P1 (burst 6, priority 2), P2 (2, 1), P3 (8, 4), P4 (3, 3). The order is P2, P1, P4, P3, the waiting times are 0, 2, 8, 11, and the average is 5.25.\n\nOther formulas:\n\n- In round robin with n processes, quantum q and context-switch time s, a process can wait up to **(n − 1)(q + s)** before running again. With n = 5, q = 10 ms and s = 2 ms that is 48 ms.\n- **CPU utilisation with n processes** that each wait for I/O a fraction p of the time: 1 − pⁿ. For p = 0.4 and n = 3 that is 1 − 0.064 = 0.936."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Draw the Gantt chart,** then read off completion times. Waiting time = completion − arrival − burst.\n- **Preemptive shortest-job (SRTF):** at every arrival, compare the new burst with the remaining time of the running process.\n- **Round-robin tie rule:** a new arrival joins the queue before the preempted process (state the convention you used).\n- **Averages:** SRTF ≤ SJF ≤ FCFS for waiting time on the usual examples, but not by law for every input (FCFS can tie).\n- **Starvation fix = aging.** **Convoy effect = FCFS.**",
+     "title": "Scheduling cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-3",
+   "type": "concept",
+   "title": "Process synchronisation",
+   "subtopicId": "12-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### The critical-section problem\n\nA solution must give **mutual exclusion**, **progress** (only processes outside their remainder section decide who enters next, and the decision cannot be postponed forever) and **bounded waiting** (no process waits forever while others enter repeatedly).\n\nA **race condition** means the result depends on the interleaving. Two threads that each increment a shared counter twice, using load–add–store with no synchronisation, can end with 2, 3 or 4, never below 2 and never above 4. With N increments each the range is 2 to 2N.\n\n### Solutions\n\n| Mechanism | Remarks |\n|---|---|\n| **Peterson's algorithm** | two processes, `flag[2]` and `turn`; satisfies all three requirements (software only) |\n| **Test-and-set / compare-and-swap** | atomic hardware instructions; spinlocks that busy-wait |\n| Disabling interrupts | only for kernel code on a single CPU |\n| **Semaphore** | integer S with atomic `wait` (P: S−−, block if S < 0) and `signal` (V: S++, wake one) |\n| Monitor | a language construct: one process active inside at a time, with condition variables |\n\n- A **binary semaphore** is initialised to 1 and gives mutual exclusion. A **counting semaphore** controls access to a pool of identical resources.\n- If a semaphore starts at S and k `wait`s and m `signal`s complete, its value is S − k + m. For S = 10, 6 waits and 4 signals leave 8. With initial value 3, eight processes that execute `wait` and none that `signal` leave **5 blocked**.\n\n### Classic problems\n\n- **Bounded buffer (producer–consumer):** semaphores `mutex = 1`, `empty = N`, `full = 0`. The producer does wait(empty), wait(mutex), insert, signal(mutex), signal(full). The consumer does the mirror image. **Swapping the order of wait(empty) and wait(mutex) can deadlock.**\n- **Readers–writers:** many readers or one writer. In the first version (readers have priority) writers may **starve**.\n- **Dining philosophers:** five philosophers and five forks. If each takes the left fork first, all can hold one fork and **deadlock**. Cures: allow only four to sit at once, pick up both forks atomically, or number the forks and always pick the lower one first.\n- **Two processes with semaphores S and T:** P1 does wait(S), wait(T), …; P2 does wait(T), wait(S), …. A bad interleaving gives deadlock."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Semaphore value arithmetic:** S_final = S_initial − (#wait) + (#signal). If it goes negative, its magnitude is the number of blocked processes.\n- **Race range:** for two threads incrementing n times each, the minimum is 2 and the maximum is 2n.\n- **Deadlock smell:** two locks taken in opposite orders by two processes.\n- **Producer–consumer initial values:** `empty = N`, `full = 0`, `mutex = 1`.\n- **Busy waiting** (spinlocks) wastes CPU cycles but avoids a context switch; it is good only for very short critical sections.",
+     "title": "Synchronisation cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-4",
+   "type": "concept",
+   "title": "Deadlock",
+   "subtopicId": "12-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A set of processes is **deadlocked** if each waits for a resource held by another in the set. Four conditions must **all** hold:\n\n1. **Mutual exclusion**, 2. **hold and wait**, 3. **no preemption**, 4. **circular wait**.\n\nRemoving any one prevents deadlock. Imposing a total order on resource types and requiring requests in increasing order breaks **circular wait**.\n\n### Resource-allocation graph\n\nWith **one instance** of each resource, a cycle in the graph means deadlock. With several instances a cycle is necessary but not sufficient.\n\n### Sizing a pool\n\nn processes each need at most m units of a single resource type. Deadlock cannot occur if the total R satisfies **R ≥ n(m − 1) + 1**, because even if every process holds m − 1 units, one unit left lets someone finish. For n = 4 and m = 3 the minimum is 4 × 2 + 1 = **9**.\n\n### Banker's algorithm (avoidance)\n\nKeep **Available**, **Allocation** and **Max**; **Need = Max − Allocation**. A state is **safe** if there is an order in which every process can obtain its Need, finish and release its Allocation. To test it: find a process whose Need ≤ Work (initially Available), add its Allocation to Work, and repeat. Complexity O(m·n²). An unsafe state *may* lead to deadlock, but not necessarily. A safe state never does.\n\nExample: Available (2, 1); Allocation P0 (1,1), P1 (3,1), P2 (2,3), P3 (2,1); Max P0 (3,1), P1 (6,2), P2 (4,6), P3 (2,5). Need: P0 (2,0), P1 (3,1), P2 (2,3), P3 (0,4). Only P0 can run first: Work becomes (3,2). Then only P1: (6,3). Then P2: (8,6). Then P3. The only safe sequence is **P0, P1, P2, P3**.\n\n### Detection and recovery\n\nAllow deadlock, run a detection algorithm (like the safety test, using current requests), and recover by terminating processes or preempting resources."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Four conditions** (mutual exclusion, hold and wait, no preemption, circular wait): preemption itself is *not* a condition.\n- **Minimum for deadlock freedom:** n(m − 1) + 1.\n- **Banker's by hand:** compute Need, then repeatedly pick any process with Need ≤ Work. If you get stuck, the state is unsafe.\n- **Prevention** attacks one of the four conditions; **avoidance** (Banker) keeps the system in safe states.\n- **Cycle + single instances = deadlock.**",
+     "title": "Deadlock cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-5",
+   "type": "concept",
+   "title": "Memory management",
+   "subtopicId": "12-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Contiguous allocation\n\nEach process gets one block. Strategies for choosing a hole: **first fit** (first big enough), **best fit** (smallest big enough, leaves tiny holes), **worst fit** (largest). Contiguous allocation suffers **external fragmentation** (free space in unusable pieces), cured by compaction.\n\nExample: holes 150K, 400K, 250K, 600K in order, requests 200K, 120K, 350K, 500K. First fit places 200K in 400K, 120K in 150K, 350K in 600K, and 500K has nowhere to go. **Best fit** places 200K in 250K, 120K in 150K, 350K in 400K, 500K in 600K: all placed.\n\n### Paging\n\nPhysical memory is divided into **frames**, logical memory into **pages** of the same size. A logical address is **page number | offset**.\n\n- For a page size of 2ᵏ bytes, the offset has **k bits**; the page number has (address bits − k) bits.\n- For 32-bit addresses and 4 KB (2¹²) pages: 20-bit page number, so 2²⁰ page-table entries. With 4-byte entries the page table is 4 MB.\n- **Internal fragmentation:** the last page is partly empty. A 50 000-byte process with 4096-byte pages needs 13 pages (53 248 bytes), wasting 3248 bytes.\n- **Multi-level paging:** page the page table so each piece fits in one page. A page of 4 KB holds 1024 four-byte entries (10 bits). So 20 bits need **2 levels**. With 48-bit addresses, 4 KB pages and 8-byte entries (9 bits per level): (48 − 12)/9 = **4 levels**.\n- **Inverted page table:** one entry per physical frame, searched by hash.\n- **TLB** (translation lookaside buffer) caches translations. With TLB time t, memory time m and hit ratio h: **EAT = h(t + m) + (1 − h)(t + 2m)** for a single-level table. With t = 10 ns, m = 100 ns, h = 0.9: 0.9 × 110 + 0.1 × 210 = 120 ns.\n\n### Segmentation\n\nA logical address is (segment, offset). The segment table gives a **base** and a **limit**. If offset ≥ limit the hardware raises an addressing error (trap). Otherwise physical address = base + offset."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Offset bits = log₂(page size).** Page number bits = address bits − offset bits.\n- **Page table size** = number of pages × entry size.\n- **Levels:** keep dividing the page-number bits by (bits per page of entries) and round up.\n- **EAT with TLB:** misses cost one extra memory access (single-level paging).\n- **Internal fragmentation** is wasted space inside a page; **external** is wasted space between blocks.\n- **Best fit is not always best:** it leaves tiny useless holes. Try each strategy in order on a sequence.",
+     "title": "Memory cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-6",
+   "type": "concept",
+   "title": "Virtual memory",
+   "subtopicId": "12-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Demand paging** loads a page only when it is first referenced. A reference to a page that is not in memory causes a **page fault**: the OS finds the page on disk, loads it into a free (or victim) frame, updates the page table and restarts the instruction.\n\n**Effective access time with faults:** EAT = (1 − p)·m + p·s, where p is the fault rate and s the fault service time. With m = 200 ns, s = 8 ms and p = 1/10 000: 0.9999 × 200 + 0.0001 × 8 000 000 ≈ 1000 ns, five times slower than no faults.\n\n### Page replacement\n\n| Policy | Evicts | Notes |\n|---|---|---|\n| FIFO | oldest page | simple; can suffer **Belady's anomaly** (more frames, more faults) |\n| LRU | least recently used | good, but can be pathological; a stack algorithm |\n| Optimal (OPT) | page used furthest in the future | minimum faults, not implementable; a stack algorithm |\n| Clock (second chance) | approximates LRU using a reference bit | |\n\nBelady's anomaly: for the reference string 1 2 3 4 1 2 5 1 2 3 4 5, FIFO has 9 faults with 3 frames but 10 with 4. LRU and OPT never show the anomaly.\n\nReference string 4 1 2 4 5 1 3 4 2 5 1 2 with 3 frames: FIFO 9 faults, LRU 10, OPT 7. (LRU is not always better than FIFO.) A loop 1 2 3 4 5 repeated over 4 frames with LRU faults on **every** reference.\n\n- **Thrashing:** a process spends more time paging than executing, because it has too few frames. CPU utilisation drops. The **working set** WS(t, Δ) is the set of pages used in the last Δ references. For references … 4 4 2 3 with Δ = 4, WS = {4, 2, 3}.\n- **Copy-on-write:** after `fork`, parent and child share the pages until one writes.\n- **Page size:** larger pages shrink the page table and speed disk transfers, but increase internal fragmentation."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Simulate replacement on paper:** list the frames after each reference and mark each fault. OPT looks ahead; LRU looks back.\n- **OPT ≤ LRU ≤ FIFO usually,** but only OPT is guaranteed to be best. FIFO can beat LRU on special strings.\n- **Belady's anomaly = FIFO only** (among the standard policies).\n- **EAT with faults:** the fault term dominates, because disks are millions of times slower than memory.\n- **Thrashing fix:** reduce the degree of multiprogramming or use the working-set model.",
+     "title": "Virtual-memory cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-7",
+   "type": "concept",
+   "title": "File systems and disk scheduling",
+   "subtopicId": "12-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### File allocation\n\n| Method | Pros | Cons |\n|---|---|---|\n| Contiguous | fast, sequential and direct access | **external fragmentation**, file growth is hard |\n| Linked (and FAT) | no external fragmentation | slow direct access; FAT keeps the table in memory |\n| Indexed (inode) | direct access, no external fragmentation | index block overhead |\n\nIn a **Unix inode**, a few **direct** pointers point at data blocks, then one **single**, one **double** and one **triple indirect** pointer. With block size B and pointer size P, a block holds B/P pointers. For B = 1 KB and P = 4 bytes that is 256. A file with 10 direct, 1 single and 1 double indirect pointer can be at most 10 + 256 + 256² = 65 802 blocks = **65 802 KB**.\n\nA FAT has one entry per disk block: an 8 GB disk with 4 KB blocks has 2³³ / 2¹² = 2²¹ entries.\n\n### Disk access time\n\n**Access time = seek time + rotational latency + transfer time.** The average rotational latency is half a revolution. At 7200 RPM one revolution takes 60/7200 = 8.33 ms, so the average latency is 4.17 ms. With an 8 ms seek and a 0.1 ms transfer: about 12.3 ms.\n\n### Disk scheduling (head at 50, requests 82, 170, 43, 140, 24, 16, 190, cylinders 0–199)\n\n| Algorithm | Idea | Total head movement |\n|---|---|---|\n| FCFS | serve in arrival order | 642 |\n| **SSTF** | nearest request next (may starve far requests) | 208 |\n| SCAN (elevator) | sweep to the end, then reverse | 332 (going up first) |\n| LOOK | sweep only as far as the last request, then reverse | 314 |\n| C-SCAN, C-LOOK | sweep one way, jump back, serve in one direction | uniform wait |"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Pointers per block = block size / pointer size.** Maximum file = (direct + P + P² + P³) blocks × block size.\n- **Rotational latency = half a rotation** = 30 / RPM seconds.\n- **Disk scheduling by hand:** write the visiting order, then add the absolute differences.\n- **SCAN goes to the physical end;** LOOK stops at the last request.\n- **Contiguous allocation = external fragmentation.** Indexed and linked do not have it.",
+     "title": "File-system and disk cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-8",
+   "type": "concept",
+   "title": "Cheat sheet: Operating Systems on one page",
+   "subtopicId": "12-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Topic | Fact |\n|---|---|\n| k forks | 2ᵏ processes |\n| Thread-private | stack, registers, PC |\n| TAT / WT | CT − AT / TAT − BT |\n| SRTF | minimum average waiting time |\n| RR wait bound | (n − 1)(q + s) |\n| Semaphore | S − #wait + #signal |\n| Peterson | mutual exclusion, progress, bounded waiting |\n| Deadlock conditions | mutual exclusion, hold and wait, no preemption, circular wait |\n| Deadlock-free pool | R ≥ n(m − 1) + 1 |\n| Banker's | Need = Max − Allocation; find a safe sequence |\n| Paging | offset = log₂ page size |\n| EAT with TLB | h(t + m) + (1 − h)(t + 2m) |\n| EAT with faults | (1 − p)m + p·s |\n| Belady | FIFO only |\n| Inode | pointers/block = B/P; add direct + P + P² + P³ |\n| Disk access | seek + ½ rotation + transfer |"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (60 questions)",
+   "subtopicId": "12-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "60 original GATE-style questions on 7 areas. Pick an answer to see why it is right and which trap catches people. The marks shown are what a question like this would carry in GATE; in the real exam a wrong 1-mark MCQ costs 1/3 mark and a wrong 2-mark MCQ costs 2/3."
+    },
+    {
+     "type": "mcq",
+     "id": "gate-os",
+     "items": [
+      {
+       "t": "Processes and threads",
+       "q": "*(1 mark)* Which of the following instructions should be executed only in kernel (privileged) mode?",
+       "o": [
+        "adding two registers",
+        "loading an immediate value into a register",
+        "disabling interrupts",
+        "reading a local variable from the stack"
+       ],
+       "a": 2,
+       "w": "Disabling interrupts, setting the timer and changing memory-protection registers could let a user program take over the machine, so they are privileged. Ordinary arithmetic and loads are not."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(2 marks)* How many times is X printed by the following program (assume every fork succeeds)?\n```c\nint main(void) {\n    for (int i = 0; i < 3; i++) fork();\n    printf(\"X\");\n    return 0;\n}\n```",
+       "o": [
+        "6",
+        "3",
+        "16",
+        "8"
+       ],
+       "a": 3,
+       "w": "Each fork doubles the number of running processes. After 3 iterations there are 2³ = 8 processes, and each of them executes the printf once."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(2 marks)* How many times is A printed by the following program (assume every fork succeeds)?\n```c\nint main(void) {\n    if (fork() == 0) { fork(); }\n    printf(\"A\");\n    return 0;\n}\n```",
+       "o": [
+        "4",
+        "3",
+        "2",
+        "6"
+       ],
+       "a": 1,
+       "w": "The parent skips the if body and prints once. The child (fork returned 0) forks again, and the child and the grandchild each print once. Total 1 + 2 = 3."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(1 mark)* A process moves from the running state to the ready state when",
+       "o": [
+        "it terminates",
+        "its time slice expires or a higher-priority process preempts it",
+        "its I/O operation completes",
+        "it requests an I/O operation"
+       ],
+       "a": 1,
+       "w": "A running process that is still able to run but has lost the CPU returns to the ready queue. A request for I/O would send it to the waiting state."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(2 marks)* Which of the following is NOT shared among the threads of a single process?",
+       "o": [
+        "global variables",
+        "open file descriptors",
+        "the stack",
+        "the heap"
+       ],
+       "a": 2,
+       "w": "Each thread has its own stack, registers and program counter so that it can run independently. Code, global data, the heap and open files are shared by all threads of the process."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(2 marks)* A process uses many-to-one user-level threads. One of its threads makes a blocking system call. As a result",
+       "o": [
+        "the other threads run on other CPUs",
+        "all the threads of the process are blocked",
+        "the process is terminated",
+        "only that thread is blocked"
+       ],
+       "a": 1,
+       "w": "The kernel knows only about the process, so it blocks the whole process. This is one disadvantage of user-level threads compared with kernel threads."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(1 mark)* A process that has terminated but whose parent has not yet called wait() is called a",
+       "o": [
+        "orphan",
+        "zombie",
+        "thread",
+        "daemon"
+       ],
+       "a": 1,
+       "w": "A zombie keeps its entry in the process table so the parent can collect its exit status. An orphan is a running child whose parent has died."
+      },
+      {
+       "t": "Processes and threads",
+       "q": "*(1 mark)* Which inter-process communication mechanism is generally the fastest once it has been set up?",
+       "o": [
+        "shared memory",
+        "message queues",
+        "sockets",
+        "pipes"
+       ],
+       "a": 0,
+       "w": "With shared memory, processes read and write the same region directly with no system call per message. The others copy data through the kernel (but are easier to use safely)."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* The processes P1, P2, P3, P4 arrive at times 0, 1, 2, 3 with CPU bursts 5, 3, 8, 2 respectively. With FCFS scheduling the average waiting time is",
+       "o": [
+        "4.5",
+        "6.5",
+        "5.75",
+        "5.25"
+       ],
+       "a": 2,
+       "w": "The run order is P1 (0–5), P2 (5–8), P3 (8–16), P4 (16–18). Waiting times: 0, 5 − 1 = 4, 8 − 2 = 6, 16 − 3 = 13. The average is 23/4 = 5.75."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* For the same processes (arrivals 0, 1, 2, 3 and bursts 5, 3, 8, 2), the average waiting time with non-preemptive shortest-job-first scheduling is",
+       "o": [
+        "3.5",
+        "4.5",
+        "5.75",
+        "4.0"
+       ],
+       "a": 3,
+       "w": "P1 runs 0–5 (only process present). Then the shortest is P4 (5–7), P2 (7–10) and P3 (10–18). Waiting times: P1 0, P4 5 − 3 = 2, P2 7 − 1 = 6, P3 10 − 2 = 8. The average is 16/4 = 4.0."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* For the same processes (arrivals 0, 1, 2, 3 and bursts 5, 3, 8, 2), the average waiting time with shortest-remaining-time-first (preemptive SJF) scheduling is",
+       "o": [
+        "3.0",
+        "4.5",
+        "4.0",
+        "3.5"
+       ],
+       "a": 3,
+       "w": "P1 runs 0–1; P2 (3) preempts it (P1 has 4 left) and runs 1–4; P4 runs 4–6; P1 runs 6–10; P3 runs 10–18. Completion times: P2 4, P4 6, P1 10, P3 18. Waiting times: P1 5, P2 0, P3 8, P4 1, average 14/4 = 3.5."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* For the same processes (arrivals 0, 1, 2, 3 and bursts 5, 3, 8, 2), round-robin scheduling with time quantum 2 gives an average turnaround time of (a new arrival joins the queue before the preempted process)",
+       "o": [
+        "10.25",
+        "11.75",
+        "12.5",
+        "8.0"
+       ],
+       "a": 1,
+       "w": "The completion times are P4 10, P2 11, P1 14, P3 18. Turnaround times (completion − arrival): 14, 10, 16, 7. The average is 47/4 = 11.75."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* Four processes arrive at time 0 with (burst, priority): P1 (6, 2), P2 (2, 1), P3 (8, 4) and P4 (3, 3). A smaller number means higher priority and scheduling is non-preemptive. The average waiting time is",
+       "o": [
+        "4.5",
+        "5.25",
+        "8.2",
+        "6.0"
+       ],
+       "a": 1,
+       "w": "The order is P2, P1, P4, P3. Waiting times: 0, 2, 8, 11. The average is 21/4 = 5.25."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(1 mark)* As the time quantum of round-robin scheduling becomes very large, the algorithm behaves like",
+       "o": [
+        "multilevel feedback queue",
+        "shortest-job-first",
+        "first-come first-served",
+        "priority scheduling"
+       ],
+       "a": 2,
+       "w": "If the quantum exceeds every burst, each process runs to completion in arrival order once it gets the CPU, which is FCFS."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(1 mark)* The convoy effect, in which many short processes wait behind one long process, is associated with",
+       "o": [
+        "multilevel feedback queues",
+        "shortest-remaining-time-first scheduling",
+        "first-come first-served scheduling",
+        "round-robin scheduling"
+       ],
+       "a": 2,
+       "w": "FCFS is non-preemptive and orders processes by arrival, so a long CPU burst at the front delays everything behind it."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(1 mark)* Aging, which gradually raises the priority of a waiting process, is a technique to prevent",
+       "o": [
+        "deadlock",
+        "thrashing",
+        "priority inversion",
+        "starvation"
+       ],
+       "a": 3,
+       "w": "In priority scheduling a low-priority process may never run. Raising its priority as it waits guarantees that it eventually gets the CPU."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* Five processes share the CPU using round robin with a time quantum of 10 ms. Each context switch takes 2 ms. In the worst case, how long can a process wait between the end of its quantum and the start of its next one (all five processes always ready)?",
+       "o": [
+        "48 ms",
+        "50 ms",
+        "60 ms",
+        "40 ms"
+       ],
+       "a": 0,
+       "w": "The other four processes each run for a quantum plus a context switch: 4 × (10 + 2) = 48 ms."
+      },
+      {
+       "t": "CPU scheduling",
+       "q": "*(2 marks)* A system keeps 3 independent processes in memory. Each process spends 40% of its time waiting for I/O. Using the probabilistic model (all three wait at once with probability 0.4³), the CPU utilisation is",
+       "o": [
+        "0.784",
+        "1.0",
+        "0.936",
+        "0.6"
+       ],
+       "a": 2,
+       "w": "The CPU is idle only if all three processes are waiting: 0.4³ = 0.064. So the utilisation is 1 − 0.064 = 0.936."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(1 mark)* Which of the following is NOT a requirement of a solution to the critical-section problem?",
+       "o": [
+        "bounded waiting",
+        "progress",
+        "mutual exclusion",
+        "all processes run at the same speed"
+       ],
+       "a": 3,
+       "w": "A correct solution must work whatever the relative speeds of the processes. Mutual exclusion, progress and bounded waiting are the three requirements."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(1 mark)* A counting semaphore is initialised to 10. Then 6 wait (P) operations and 4 signal (V) operations are completed on it. The value of the semaphore is",
+       "o": [
+        "10",
+        "6",
+        "8",
+        "12"
+       ],
+       "a": 2,
+       "w": "Each wait decrements and each signal increments: 10 − 6 + 4 = 8."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(1 mark)* A counting semaphore is initialised to 3. Eight processes execute wait() on it and no process executes signal(). The number of processes that are blocked is",
+       "o": [
+        "8",
+        "3",
+        "5",
+        "0"
+       ],
+       "a": 2,
+       "w": "The first 3 processes pass and the semaphore reaches 0. The other 8 − 3 = 5 block."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(2 marks)* Two threads each execute counter = counter + 1 twice on a shared variable that starts at 0. The increment is compiled to a load, an add and a store, with no synchronisation. The smallest possible final value of counter is",
+       "o": [
+        "1",
+        "2",
+        "3",
+        "4"
+       ],
+       "a": 1,
+       "w": "If both threads load the same old value and write back in turn, increments are lost. Enumerating every interleaving of the load and store steps shows that the possible final values are 2, 3 and 4, so the smallest is 2 (never 1). In general, with n increments per thread the range is 2 to 2n."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(2 marks)* For two processes, Peterson's algorithm (shared flag[2] and turn variables) satisfies",
+       "o": [
+        "mutual exclusion, progress and bounded waiting",
+        "mutual exclusion and progress but not bounded waiting",
+        "progress and bounded waiting but not mutual exclusion",
+        "mutual exclusion only"
+       ],
+       "a": 0,
+       "w": "Peterson's solution meets all three requirements of the critical-section problem for two processes using only software, provided reads and writes of the shared variables are atomic and not reordered."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(1 mark)* A disadvantage of spinlocks implemented with a test-and-set instruction is that",
+       "o": [
+        "they cannot provide mutual exclusion",
+        "they need a special operating system call",
+        "waiting processes busy-wait and consume CPU cycles",
+        "they can only be used with one process"
+       ],
+       "a": 2,
+       "w": "A spinlock keeps testing the lock in a loop. It gives mutual exclusion, but the waiting CPU does no useful work, which makes it suitable only for very short critical sections."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(1 mark)* In the bounded-buffer producer–consumer solution using semaphores with a buffer of N slots, the initial values of the semaphores empty and full are respectively",
+       "o": [
+        "N and N",
+        "0 and N",
+        "N and 0",
+        "1 and 1"
+       ],
+       "a": 2,
+       "w": "Initially all N slots are empty, so empty = N, and none is full, so full = 0. (The mutex semaphore starts at 1.)"
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(2 marks)* Five philosophers share five forks, and each philosopher picks up the left fork and then the right fork. Which of the following changes prevents deadlock?",
+       "o": [
+        "Make every philosopher eat for a shorter time",
+        "Allow at most four philosophers to sit at the table at the same time",
+        "Make each philosopher put down a fork immediately after picking it up",
+        "Give each fork a counting semaphore initialised to 5"
+       ],
+       "a": 1,
+       "w": "Deadlock needs all five to hold their left fork. With at most four philosophers competing, at least one can always obtain both forks and finish. The other options do not remove the circular wait."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(2 marks)* Two processes share binary semaphores S and T, both initialised to 1. P1 executes wait(S); wait(T); … signal(T); signal(S). P2 executes wait(T); wait(S); … signal(S); signal(T). Which outcome is possible?",
+       "o": [
+        "deadlock",
+        "a race condition on S only",
+        "no problem, the code is correct",
+        "starvation of P1 only"
+       ],
+       "a": 0,
+       "w": "If P1 acquires S and P2 acquires T, then each waits for the semaphore the other holds. This is a circular wait, i.e. deadlock."
+      },
+      {
+       "t": "Synchronisation",
+       "q": "*(2 marks)* In the readers–writers problem solved with readers having priority (the first readers–writers problem), a problem that can arise is",
+       "o": [
+        "priority inversion between readers",
+        "deadlock between readers",
+        "starvation of writers",
+        "starvation of readers"
+       ],
+       "a": 2,
+       "w": "While at least one reader is active, new readers can keep entering, so a waiting writer may never get access."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(1 mark)* Which of the following is NOT a necessary condition for deadlock?",
+       "o": [
+        "resources can be preempted",
+        "hold and wait",
+        "circular wait",
+        "mutual exclusion"
+       ],
+       "a": 0,
+       "w": "The conditions are mutual exclusion, hold and wait, no preemption, and circular wait. If resources could be preempted, a waiting process's resources could be taken away, so deadlock could not persist."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(2 marks)* A system has 4 processes, each of which may need at most 3 units of the same type of resource. The minimum number of units that must exist to guarantee that deadlock can never occur is",
+       "o": [
+        "9",
+        "10",
+        "12",
+        "8"
+       ],
+       "a": 0,
+       "w": "In the worst case each process holds 2 units, 4 × 2 = 8 in total, and all wait for a third. With 9 units, one unit is left over and some process can complete: n(m − 1) + 1 = 4 × 2 + 1 = 9."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(2 marks)* The Banker's algorithm is used with Available = (2, 1) and four processes: Allocation P0 (1,1), P1 (3,1), P2 (2,3), P3 (2,1); Max P0 (3,1), P1 (6,2), P2 (4,6), P3 (2,5). Which of the following is a safe sequence?",
+       "o": [
+        "P2, P0, P1, P3",
+        "P1, P0, P2, P3",
+        "P0, P1, P2, P3",
+        "P3, P2, P1, P0"
+       ],
+       "a": 2,
+       "w": "Need = Max − Allocation: P0 (2,0), P1 (3,1), P2 (2,3), P3 (0,4). With (2,1) only P0 can start. Then Work = (3,2) lets only P1 finish, giving (6,3), then P2 (8,6), then P3. Hence P0, P1, P2, P3 is the unique safe sequence."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(2 marks)* In the same system (Max P0 (3,1), P1 (6,2), P2 (4,6), P3 (2,5) and Allocation P0 (1,1), P1 (3,1), P2 (2,3), P3 (2,1)), suppose Available were (1, 1) instead of (2, 1). The state would then be",
+       "o": [
+        "safe, with any order of processes",
+        "deadlocked already",
+        "unsafe",
+        "safe, with the sequence P0, P1, P2, P3"
+       ],
+       "a": 2,
+       "w": "The needs are (2,0), (3,1), (2,3) and (0,4). With Work = (1,1) no process has a need that fits, so no process can be guaranteed to finish. The state is unsafe (not necessarily deadlocked yet)."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(2 marks)* In a resource-allocation graph where every resource type has exactly one instance, a cycle in the graph",
+       "o": [
+        "implies only that the system is unsafe",
+        "implies that the processes in the cycle are deadlocked",
+        "can be removed by compaction",
+        "is harmless"
+       ],
+       "a": 1,
+       "w": "With single-instance resources each request in the cycle can be satisfied only by a process that is itself waiting inside the cycle, so none can proceed: deadlock. With multiple instances a cycle is necessary but not sufficient."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(1 mark)* Requiring that all processes request resource types in a fixed increasing order prevents deadlock by breaking which condition?",
+       "o": [
+        "no preemption",
+        "mutual exclusion",
+        "hold and wait",
+        "circular wait"
+       ],
+       "a": 3,
+       "w": "If requests follow a global order, a cycle of waiting would need some process to request a lower-numbered resource while holding a higher-numbered one, which is forbidden."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(1 mark)* The time complexity of the Banker's safety algorithm for n processes and m resource types is",
+       "o": [
+        "O(n log m)",
+        "O(2ⁿ)",
+        "O(m + n)",
+        "O(m · n²)"
+       ],
+       "a": 3,
+       "w": "The algorithm repeats at most n times a scan of up to n processes, comparing m resource counts each time: O(m n²)."
+      },
+      {
+       "t": "Deadlock",
+       "q": "*(1 mark)* The Banker's algorithm is an example of",
+       "o": [
+        "deadlock recovery",
+        "deadlock detection",
+        "deadlock prevention",
+        "deadlock avoidance"
+       ],
+       "a": 3,
+       "w": "It grants a request only if the resulting state is safe, so the system never enters an unsafe state. Prevention removes one of the four conditions in advance."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A system uses 32-bit logical addresses and a page size of 4 KB with a single-level page table. The number of entries in the page table is",
+       "o": [
+        "2¹²",
+        "2²²",
+        "2³²",
+        "2²⁰"
+       ],
+       "a": 3,
+       "w": "The offset needs 12 bits, so the page number has 32 − 12 = 20 bits, giving 2²⁰ pages and hence 2²⁰ entries."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* With 32-bit logical addresses, 4 KB pages and 4-byte page-table entries, the size of a single-level page table is",
+       "o": [
+        "4 GB",
+        "1 MB",
+        "4 MB",
+        "16 MB"
+       ],
+       "a": 2,
+       "w": "2²⁰ entries × 4 bytes = 4 MB."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A system has 32-bit logical addresses, 4 KB pages and 4-byte page-table entries. A multi-level page table is used so that each piece of the table fits exactly in one page. The number of levels needed is",
+       "o": [
+        "3",
+        "1",
+        "4",
+        "2"
+       ],
+       "a": 3,
+       "w": "A page holds 4096 / 4 = 1024 entries, so each level resolves 10 bits. The page number has 20 bits, requiring ⌈20 / 10⌉ = 2 levels."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A machine has 48-bit virtual addresses, 4 KB pages and 8-byte page-table entries, and every level of the page table occupies exactly one page. The number of levels required is",
+       "o": [
+        "5",
+        "4",
+        "2",
+        "3"
+       ],
+       "a": 1,
+       "w": "A page holds 4096 / 8 = 512 entries, which is 9 bits per level. The page number has 48 − 12 = 36 bits, so 36 / 9 = 4 levels."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A paging system has a TLB access time of 10 ns and a memory access time of 100 ns, with a single-level page table. The TLB hit ratio is 90%. The effective memory access time is",
+       "o": [
+        "200 ns",
+        "120 ns",
+        "130 ns",
+        "110 ns"
+       ],
+       "a": 1,
+       "w": "A hit costs 10 + 100 = 110 ns. A miss costs 10 + 100 (page table) + 100 (data) = 210 ns. EAT = 0.9 × 110 + 0.1 × 210 = 99 + 21 = 120 ns."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* The free memory holes, in address order, are 150K, 400K, 250K and 600K. Four requests arrive in this order: 200K, 120K, 350K and 500K. Which placement strategy can satisfy all four requests?",
+       "o": [
+        "best fit",
+        "first fit",
+        "none of them",
+        "worst fit"
+       ],
+       "a": 0,
+       "w": "Best fit puts 200K in the 250K hole, 120K in the 150K hole, 350K in the 400K hole and 500K in the 600K hole. First fit wastes the 400K and 600K holes on the first requests, leaving nothing big enough for 500K."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A process of 50 000 bytes is loaded using 4096-byte pages. The internal fragmentation in its last page is",
+       "o": [
+        "2048 bytes",
+        "1000 bytes",
+        "4096 bytes",
+        "3248 bytes"
+       ],
+       "a": 3,
+       "w": "The process needs ⌈50000 / 4096⌉ = 13 pages = 53 248 bytes. The waste is 53 248 − 50 000 = 3248 bytes."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(2 marks)* A segment has base 1200 and limit 400. A process generates the logical address (segment offset) 500 in this segment. What happens?",
+       "o": [
+        "the segment is automatically extended",
+        "the hardware traps with an addressing error",
+        "the physical address 1700 is accessed",
+        "the physical address 700 is accessed"
+       ],
+       "a": 1,
+       "w": "The offset 500 is not less than the limit 400, so the access is outside the segment and the hardware raises an addressing error (trap) rather than translating it."
+      },
+      {
+       "t": "Memory management",
+       "q": "*(1 mark)* An inverted page table has one entry for each",
+       "o": [
+        "TLB line",
+        "page of each process",
+        "segment",
+        "physical frame"
+       ],
+       "a": 3,
+       "w": "Instead of one table per process, a single table is indexed by physical frame and records which process and page occupies it. The table size depends on physical memory, not on the logical address space."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* A process references the pages 4, 1, 2, 4, 5, 1, 3, 4, 2, 5, 1, 2 in this order. With 3 frames, all initially empty and FIFO replacement, the number of page faults is",
+       "o": [
+        "9",
+        "7",
+        "12",
+        "10"
+       ],
+       "a": 0,
+       "w": "Faults on 4, 1, 2; the next 4 hits. 5 replaces 4, then 1 hits. 3 replaces 1; 4, 2, 5 and 1 fault in turn (each replacing the oldest page); the last 2 hits. That is 9 faults and 3 hits."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* For the same reference string (4, 1, 2, 4, 5, 1, 3, 4, 2, 5, 1, 2) and 3 empty frames, the number of page faults with LRU replacement is",
+       "o": [
+        "10",
+        "9",
+        "12",
+        "7"
+       ],
+       "a": 0,
+       "w": "LRU hits only on the second 4 and the final 2. The other 10 references fault, which is one more than FIFO. LRU is not always better than FIFO on a specific string."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* For the same reference string (4, 1, 2, 4, 5, 1, 3, 4, 2, 5, 1, 2) and 3 empty frames, the optimal replacement policy gives how many page faults?",
+       "o": [
+        "10",
+        "7",
+        "8",
+        "9"
+       ],
+       "a": 1,
+       "w": "The optimal policy always evicts the page whose next use is furthest in the future. The faults are on 4, 1, 2, 5 (evicting 2), 3 (evicting 1), 2 and 1, so 7 faults, the minimum possible. It cannot be implemented because it needs knowledge of the future."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(1 mark)* Belady's anomaly, where giving a process more frames increases its page faults, can occur with",
+       "o": [
+        "every stack-based algorithm",
+        "LRU replacement",
+        "FIFO replacement",
+        "optimal replacement"
+       ],
+       "a": 2,
+       "w": "FIFO is not a stack algorithm: with the string 1 2 3 4 1 2 5 1 2 3 4 5 it has 9 faults with 3 frames and 10 with 4. LRU and OPT are stack algorithms and cannot show the anomaly."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* The memory access time is 200 ns and a page fault takes 8 ms to service. Page faults occur on one access in 10 000. The effective access time is approximately",
+       "o": [
+        "200 ns",
+        "8000 ns",
+        "1200 ns",
+        "1000 ns"
+       ],
+       "a": 3,
+       "w": "EAT = (1 − p)·200 ns + p·8 000 000 ns = 0.9999 × 200 + 0.0001 × 8 000 000 ≈ 200 + 800 = 1000 ns. Even a rare fault makes memory five times slower."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* A process makes the page references 1, 2, 1, 3, 2, 4, 4, 2, 3 in order. The working-set window is the last Δ = 4 references. The size of the working set after the last reference is",
+       "o": [
+        "3",
+        "5",
+        "2",
+        "4"
+       ],
+       "a": 0,
+       "w": "The last four references are 4, 4, 2, 3, which involve the distinct pages {4, 2, 3}, so the working set has 3 pages."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* A process loops over the 5 pages 1, 2, 3, 4, 5 repeatedly (1 2 3 4 5 1 2 3 4 5 …) for 20 references. It has 4 frames and LRU replacement. The number of page faults is",
+       "o": [
+        "20",
+        "5",
+        "16",
+        "10"
+       ],
+       "a": 0,
+       "w": "Whenever a page is needed, it is the one that was least recently used and was just evicted to make room. Every reference faults: 20 faults."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(2 marks)* Increasing the page size of a system generally",
+       "o": [
+        "increases both the page-table size and internal fragmentation",
+        "increases the page-table size but reduces internal fragmentation",
+        "reduces both the page-table size and internal fragmentation",
+        "reduces the size of the page tables but increases internal fragmentation"
+       ],
+       "a": 3,
+       "w": "Fewer, larger pages mean fewer page-table entries. On average half a page is wasted per region, so larger pages waste more space."
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* A file system has 1 KB blocks and 4-byte block pointers. An inode has 10 direct pointers, 1 single-indirect and 1 double-indirect pointer. The maximum file size is",
+       "o": [
+        "16 843 018 KB",
+        "65 802 KB",
+        "10 KB",
+        "266 KB"
+       ],
+       "a": 1,
+       "w": "A block holds 1024 / 4 = 256 pointers. Blocks reachable: 10 + 256 + 256² = 10 + 256 + 65 536 = 65 802 blocks, which is 65 802 KB. (The last option would include the triple-indirect pointer.)"
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* A disk rotates at 7200 RPM, the average seek time is 8 ms and the transfer time of a block is 0.1 ms. The average time to access a block is approximately",
+       "o": [
+        "12.3 ms",
+        "20.0 ms",
+        "8.3 ms",
+        "16.7 ms"
+       ],
+       "a": 0,
+       "w": "One revolution takes 60 / 7200 s = 8.33 ms, so the average rotational latency is 4.17 ms. Total = 8 + 4.17 + 0.1 ≈ 12.3 ms."
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* The disk head is at cylinder 50, and the requests are for cylinders 82, 170, 43, 140, 24, 16, 190 (queued in this order). The total head movement with FCFS scheduling is",
+       "o": [
+        "332",
+        "208",
+        "314",
+        "642"
+       ],
+       "a": 3,
+       "w": "FCFS visits 82, 170, 43, 140, 24, 16, 190: the movements are 32 + 88 + 127 + 97 + 116 + 8 + 174 = 642 cylinders."
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* For the same requests (head at cylinder 50; 82, 170, 43, 140, 24, 16, 190), the total head movement with shortest-seek-time-first (SSTF) scheduling is",
+       "o": [
+        "332",
+        "208",
+        "642",
+        "314"
+       ],
+       "a": 1,
+       "w": "SSTF visits 43 (7), 24 (19), 16 (8), 82 (66), 140 (58), 170 (30), 190 (20): 7 + 19 + 8 + 66 + 58 + 30 + 20 = 208."
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* For the same requests (head at cylinder 50, moving upward; 82, 170, 43, 140, 24, 16, 190), the total head movement with LOOK scheduling is",
+       "o": [
+        "314",
+        "332",
+        "208",
+        "642"
+       ],
+       "a": 0,
+       "w": "LOOK goes up to the highest request, 190 (140 cylinders), then reverses to the lowest request, 16 (174 cylinders): 140 + 174 = 314. (SCAN would go on to cylinder 199 first and total 332.)"
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(1 mark)* Which file-allocation method suffers from external fragmentation?",
+       "o": [
+        "contiguous allocation",
+        "indexed allocation",
+        "linked allocation",
+        "FAT-based allocation"
+       ],
+       "a": 0,
+       "w": "Files of different sizes allocated and freed in contiguous runs leave scattered free gaps. Linked, indexed and FAT allocation can use any free block."
+      },
+      {
+       "t": "File systems and disks",
+       "q": "*(2 marks)* A disk of 8 GB has 4 KB blocks and uses a FAT with one entry per block. The number of FAT entries is",
+       "o": [
+        "2²¹",
+        "2¹⁹",
+        "2³³",
+        "2²³"
+       ],
+       "a": 0,
+       "w": "8 GB = 2³³ bytes and each block is 2¹² bytes, so there are 2³³ / 2¹² = 2²¹ blocks and hence 2²¹ FAT entries."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Cheat sheet: Operating Systems on one page"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a blocking system call in a user-level thread block all other threads of the process?",
+       "answer": "The kernel schedules only the process, not the individual user threads. When one thread blocks in the kernel, the kernel sees the whole process blocked and cannot run the other threads."
+      },
+      {
+       "question": "A system has 4 processes and each may need up to 3 units of the same resource. What is the least number of units that guarantees no deadlock?",
+       "answer": "Even if every process holds 2 units (8 in total), one more unit lets some process get its third unit, finish, and release resources. So 4 × 2 + 1 = 9."
+      },
+      {
+       "question": "What is Belady's anomaly and why does LRU not suffer from it?",
+       "answer": "With some policies (FIFO) giving a process more frames can increase the number of page faults. LRU is a stack algorithm: the set of pages in memory with n frames is always a subset of the set with n + 1 frames, so more frames can never add faults."
+      },
+      {
+       "question": "Why must the disk-scheduling total for SCAN include a trip to the last cylinder, but LOOK does not?",
+       "answer": "SCAN always runs to the physical end of the disk before reversing, even if no request is there. LOOK reverses at the last pending request, so it travels less."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -82,8 +82,9 @@ function Home({ roadmap, progress, trees, allProgress }) {
           Start as a fresher. Learn like an experienced developer.
         </p>
         <p className="mt-3 max-w-2xl text-muted">
-          Four trees: the full Java stack in depth, AI and cloud skills, aptitude practice with thousands of
-          questions, and DSA topic by topic. Then practise what you learn, with SQL you can run in the browser.
+          Five trees: the full Java stack in depth, AI and cloud skills, aptitude practice with thousands of
+          questions, DSA topic by topic, and the GATE CSE syllabus with cheat codes and exam-style questions.
+          Then practise what you learn, with SQL you can run in the browser.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-3">

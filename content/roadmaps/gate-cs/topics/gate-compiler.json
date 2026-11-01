@@ -1,0 +1,962 @@
+{
+ "source": {
+  "document": "Written for this site against the official GATE 2027 CS syllabus (IIT Madras)",
+  "questions": 60
+ },
+ "sections": [
+  {
+   "id": "ch-11-1",
+   "type": "concept",
+   "title": "Phases of a compiler and lexical analysis",
+   "subtopicId": "11-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site against the official GATE 2027 CS syllabus from IIT Madras. The questions are original and in the style of GATE: they drill the concepts GATE repeats, they are not copies of past papers. If the official syllabus changes, the official PDF wins."
+    },
+    {
+     "type": "markdown",
+     "text": "A compiler translates source code into target code in phases:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  A[Source code] --> B[Lexical analysis]\n  B -->|tokens| C[Syntax analysis]\n  C -->|parse tree| D[Semantic analysis]\n  D --> E[Intermediate code generation]\n  E --> F[Code optimisation]\n  F --> G[Code generation]\n  G --> H[Target code]",
+     "title": "Compiler phases"
+    },
+    {
+     "type": "markdown",
+     "text": "The **symbol table** (names, types, scopes) and the **error handler** are used by all phases. The first three phases form the **front end** (machine independent), and optimisation plus code generation the **back end**.\n\n### Lexical analysis\n\nThe lexer reads characters and produces **tokens**. A **lexeme** is the actual text, such as `count`, a **token** is its class (identifier), and a **pattern** is the rule that describes the class, written as a regular expression. It also removes white space and comments and tracks line numbers.\n\n- **Maximal munch:** the lexer takes the longest prefix that matches a pattern. The input `a>>=b` gives the three tokens `a`, `>>=`, `b` when `>`, `>=`, `>>` and `>>=` are all operators.\n- **Priority:** when two patterns match the same lexeme, the one listed first wins. This is how keywords such as `if` beat the identifier pattern.\n- Tokens are specified with **regular expressions** and recognised by finite automata. Balanced parentheses are **not** checked here, that needs a context-free grammar and so is the parser's job.\n- **Counting tokens** treats each identifier, keyword, constant, string, operator and punctuation mark as one token. `x = y + 3 * (z - 4);` has 12 tokens, and `if (a >= b) max = a; else max = b;` has 15."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Token counting:** scan left to right, take the longest valid token each time, and ignore spaces and comments. A string literal is one token whatever it contains.\n- **Which phase finds the error?** Illegal character → lexer. Missing semicolon, unbalanced parentheses → parser. Undeclared variable or type mismatch → semantic analysis.\n- **Regular expressions describe tokens; context-free grammars describe syntax.**",
+     "title": "Lexical cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-2",
+   "type": "concept",
+   "title": "Syntax analysis: top-down parsing",
+   "subtopicId": "11-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A parser checks that the token stream follows the grammar and builds the parse tree. **Top-down** parsers build the tree from the root, expanding non-terminals by leftmost derivation.\n\n### FIRST and FOLLOW\n\n- FIRST(α) is the set of terminals that can begin a string derived from α (plus ε if α can derive ε).\n- FOLLOW(A) is the set of terminals that can appear immediately after A in some sentential form. $ (end of input) is in FOLLOW of the start symbol.\n\nFor the grammar E → T X, X → + T X | ε, T → F Y, Y → * F Y | ε, F → ( E ) | i:\n\n| Symbol | FIRST | FOLLOW |\n|---|---|---|\n| E, T, F | { ( , i } | E: { ), $ }, T: { +, ), $ }, F: { *, +, ), $ } |\n| X | { +, ε } | { ), $ } |\n| Y | { *, ε } | { +, ), $ } |\n\nRules for computing FOLLOW: for A → α B β, add FIRST(β) − {ε} to FOLLOW(B). If β can derive ε (or is empty), add FOLLOW(A) to FOLLOW(B).\n\n### LL(1) grammars\n\nLL(1) means: read the input **L**eft to right, build a **L**eftmost derivation, using **1** token of lookahead. In the LL(1) table, A → α goes into M[A, a] for every a in FIRST(α), and, if ε is in FIRST(α), also for every a in FOLLOW(A).\n\nA grammar is LL(1) exactly when no table cell has two productions. This needs, for every pair A → α | β:\n\n1. FIRST(α) ∩ FIRST(β) = ∅.\n2. At most one of α, β derives ε, and if β derives ε then FIRST(α) ∩ FOLLOW(A) = ∅.\n\nSo an LL(1) grammar must be **unambiguous**, **not left-recursive** and **left-factored**.\n\n| Grammar | LL(1)? | Why |\n|---|---|---|\n| S → a S \\| a | no | both alternatives start with a: left factoring needed |\n| S → a S \\| b | yes | different first symbols |\n| S → S a \\| b | no | left recursion: a recursive-descent parser would loop forever |\n| S → A \\| B, A → a, B → a | no | ambiguous: both start with a |\n\n### Fixing a grammar\n\n- **Left recursion** A → Aα | β becomes A → β A′, A′ → α A′ | ε. So E → E + T | T becomes E → T E′, E′ → + T E′ | ε.\n- **Left factoring** A → αβ₁ | αβ₂ becomes A → α A′, A′ → β₁ | β₂.\n\nFor S → a S b | ε the table has three filled cells: M[S, a] = aSb, and M[S, b], M[S, $] = ε (FOLLOW(S) = {b, $})."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Compute FIRST bottom-up and FOLLOW top-down.** Build FIRST for every non-terminal first, then FOLLOW.\n- **ε productions put FOLLOW into the table.** That is where beginners forget entries.\n- **LL(1) test in 10 seconds:** look for a left recursion, a common prefix or a shared first terminal.\n- **Table entries** = Σ over productions of |FIRST(α)| (plus FOLLOW(A) for ε-productions).\n- **Recursive descent** does not work on a left-recursive grammar.",
+     "title": "Top-down cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-3",
+   "type": "concept",
+   "title": "Bottom-up parsing: LR parsers",
+   "subtopicId": "11-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A bottom-up parser builds the tree from the leaves and traces a **rightmost derivation in reverse**. A **shift–reduce** parser keeps a stack and either **shifts** the next token onto it or **reduces** a **handle** (a right-hand side at the top of the stack) to its left-hand side.\n\n### LR(0) items and the automaton\n\nAn **LR(0) item** is a production with a dot marking how much has been seen: A → X • Y Z. A production with k symbols on its right side has **k + 1 items**, and A → ε has exactly one (A → •). Build states with the **closure** and **goto** operations, starting from the augmented grammar S′ → S.\n\n| Parser | Reduce on | Notes |\n|---|---|---|\n| LR(0) | any input | conflict if a state has a complete item and any other item |\n| **SLR(1)** | the terminals in FOLLOW(A) | simple, but FOLLOW is too coarse sometimes |\n| **LALR(1)** | the lookaheads that actually occur, merged for states with the same core | used by yacc and bison |\n| **CLR(1) = LR(1)** | exact lookaheads | most powerful, many more states |\n\n- **Power:** LR(0) ⊂ SLR(1) ⊂ LALR(1) ⊂ CLR(1), as classes of grammars. Every LL(1) grammar is also LR(1).\n- **Number of states:** LR(0), SLR(1) and LALR(1) all have the **same states** (the LR(0) automaton), while CLR(1) has at least as many. For S → AA, A → aA | b: 7 states for LR(0), SLR and LALR, and 10 for CLR(1). The expression grammar E → E+T | T, T → T*F | F, F → (E) | i has 12 LR(0) states.\n- **Conflicts:** *shift/reduce* (the parser cannot tell whether to shift or reduce) and *reduce/reduce* (two different reductions are possible). yacc resolves shift/reduce by shifting and reduce/reduce by choosing the production listed first.\n\n### Grammars that separate the classes\n\n| Grammar | Classification |\n|---|---|\n| S → a S \\| b | LR(0) |\n| E → E + T \\| T, T → T * F \\| F, F → ( E ) \\| i | SLR(1), but not LR(0) (a state with E → T • and T → T • * F) |\n| S → L = R \\| R, L → * R \\| i, R → L | LALR(1) and CLR(1), but not SLR(1) |\n| S → a A d \\| b B d \\| a B e \\| b A e, A → c, B → c | CLR(1), but not LALR(1) (merging adds a reduce/reduce conflict) |\n\n**Dangling else:** S → i E t S | i E t S e S | a is ambiguous. Compilers resolve it by matching each `else` with the nearest unmatched `if`.\n\n### Counting reductions\n\nEach reduction corresponds to one internal node of the parse tree. For `i + i * i` with the usual expression grammar there are 8: F → i (three times), T → F (twice), T → T * F, E → T and E → E + T."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Item count:** a production with k symbols gives k + 1 items. An ε-production gives 1.\n- **Same number of states:** SLR = LALR = LR(0). Only CLR can be bigger.\n- **To spot SLR failure,** look for a state with a reduction A → α • where a terminal in FOLLOW(A) is also shifted.\n- **Reductions = internal nodes** of the parse tree (non-terminal nodes), excluding the augmented start.\n- **Handle** = the substring that matches a right-hand side whose reduction is one step of the reverse rightmost derivation.\n- **yacc/bison = LALR(1).** Default conflict resolution: shift over reduce, earlier rule over later.",
+     "title": "LR cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-4",
+   "type": "concept",
+   "title": "Syntax-directed translation",
+   "subtopicId": "11-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "An **SDD** attaches attributes to grammar symbols and rules to compute them. In a **syntax-directed translation scheme** semantic actions are embedded in the productions at the position where they run.\n\n| Attribute kind | Computed from | Example |\n|---|---|---|\n| **Synthesized** | the node's children (and itself) | E.val = E₁.val + T.val |\n| **Inherited** | the node's parent and its siblings | the type passed to a list of identifiers |\n\n- An **S-attributed** SDD uses only synthesized attributes. It can be evaluated during a bottom-up (LR) parse, at each reduction.\n- An **L-attributed** SDD allows inherited attributes that depend only on the parent's attributes and the attributes of **siblings to the left**. It can be evaluated in a depth-first left-to-right walk, so it suits top-down (LL) parsing. Every S-attributed definition is L-attributed.\n- The dependency graph of the attributes must be **acyclic** to be evaluable.\n\nExamples:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "E -> E1 # T   { E.val = E1.val * 2 + T.val }\nE -> T        { E.val = T.val }\nT -> num      { T.val = num.value }\n\nInput 1 # 2 # 3 is left-associative: ((1 # 2) # 3)\n(1 # 2) -> 1*2 + 2 = 4\n(4 # 3) -> 4*2 + 3 = 11",
+     "title": "Evaluating a non-standard rule"
+    },
+    {
+     "type": "markdown",
+     "text": "A translation scheme for infix to postfix: `E → E + T { print('+') } | T`, `T → num { print(num) }`. For `4 + 5 + 6` the printed output is `4 5 + 6 +`."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Draw the parse tree, then compute bottom-up** for synthesized attributes. Respect the associativity of the grammar.\n- **Action position matters:** actions at the end of a production run after the children have been processed.\n- **LR parsers + S-attributed = easy.** Inherited attributes need marker non-terminals or an L-attributed top-down design.\n- **Postfix output** from a left-recursive expression grammar: print operands as they are reduced, and print the operator after the right operand.",
+     "title": "SDT cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-5",
+   "type": "concept",
+   "title": "Runtime environments",
+   "subtopicId": "11-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Storage organisation\n\nA running program's memory holds the **code**, **static data**, the **heap** (dynamic data such as `malloc`) and the **stack** (activation records). The heap and stack grow toward each other.\n\n### Activation records\n\nEach procedure call pushes an **activation record** (stack frame):\n\n| Field | Purpose |\n|---|---|\n| Actual parameters | values or addresses passed in |\n| Returned value | space for the result |\n| Control link (dynamic link) | the caller's record |\n| **Access link (static link)** | the record of the lexically enclosing procedure, to reach non-local variables |\n| Saved machine status | return address, saved registers |\n| Local data and temporaries | the procedure's variables |\n\nThe source code is **not** stored in an activation record. Recursion works because each call has its own record on the stack, and the maximum stack space is (depth + 1) × (record size). A function recursing to depth 100 with 32-byte records uses 101 × 32 = 3232 bytes.\n\n### Accessing non-local names\n\nWith nested procedures, a procedure at nesting depth d accessing a variable declared at depth k follows **d − k access links**. A **display** array holds a pointer to the latest record at each depth, giving constant-time access instead.\n\n### Parameter passing\n\n| Mechanism | What is passed | Effect of assigning to the formal |\n|---|---|---|\n| Call by value | a copy of the value | caller unaffected |\n| **Call by reference** | the address | the actual changes (aliasing) |\n| Copy-restore (value-result) | copy in, copy out at return | actual updated at the end |\n| Call by name | the expression, re-evaluated at every use | like a macro |\n\nExample. `f(x, y) { x = x + 1; y = y + x; }` with a = 1 and b = 2, called as `f(a, b)`: by value leaves a = 1, b = 2. By reference x aliases a and y aliases b, so x becomes 2 and y becomes 2 + 2 = 4: a = 2, b = 4.\n\n### Memory management\n\nThe stack frees memory automatically when a call returns, while the heap needs explicit freeing or **garbage collection**. **Reference counting** cannot reclaim cyclic garbage. **Mark-and-sweep** can."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Stack = locals and calls. Heap = memory that outlives the call** (`malloc`, `new`).\n- **Nesting-depth difference = number of access links to follow.**\n- **For parameter-passing output questions,** draw a box for each variable and let the formal point to the same box for by-reference.\n- **Recursion needs a stack,** so a language without a stack (static allocation only) cannot support it.",
+     "title": "Runtime cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-6",
+   "type": "concept",
+   "title": "Intermediate code generation",
+   "subtopicId": "11-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Common forms are the **syntax tree**, the **DAG**, **postfix notation** and **three-address code** (at most one operator on the right-hand side). For a = b * c + d * e:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "t1 = b * c\nt2 = d * e\na  = t1 + t2        // 3 instructions (4 if the sum is first put in a temporary)",
+     "title": "Three-address code"
+    },
+    {
+     "type": "markdown",
+     "text": "| Representation | Fields | Notes |\n|---|---|---|\n| Quadruples | op, arg1, arg2, result | easy to reorder, uses temporaries |\n| Triples | op, arg1, arg2 | results referred to by position, so reordering is awkward |\n| **Indirect triples** | a list of pointers to triples | reordering instructions only changes the list |\n\n((a + b) * (c + d)) - (e + f) needs 5 instructions: three additions, one multiplication and one subtraction.\n\n### Basic blocks and flow graphs\n\nA **basic block** is a maximal sequence of instructions with a single entry (the first) and a single exit (the last). The **leaders** that begin blocks are:\n\n1. the first instruction;\n2. the target of any jump (conditional or unconditional);\n3. the instruction immediately after a jump."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "1: i = 0\n2: if i >= 10 goto 8\n3: t = i * 2\n4: if t > 6 goto 6\n5: s = s + t\n6: i = i + 1\n7: goto 2\n8: halt\n// leaders: 1 (first), 2 (target of 7), 3 (after 2), 5 (after 4), 6 (target of 4), 8 (target of 2, after 7)\n// six leaders, so six basic blocks",
+     "title": "Counting basic blocks"
+    },
+    {
+     "type": "markdown",
+     "text": "**Backpatching** generates jump instructions with unfilled targets and fills them in once the target is known, which lets conditional and loop code be produced in a single pass."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Three-address count:** one instruction per operator, plus an assignment only if the final result needs a copy.\n- **Leaders:** first instruction, jump targets, instructions after jumps. The number of leaders equals the number of basic blocks.\n- **DAG nodes** = distinct leaves (initial variable values) + distinct operations (same operator on the same operands counted once).\n- **Prefer indirect triples** when the optimiser moves code.",
+     "title": "ICG cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-7",
+   "type": "concept",
+   "title": "Code optimisation and data-flow analysis",
+   "subtopicId": "11-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Local and peephole optimisations\n\n| Technique | Example |\n|---|---|\n| Constant folding | `x = 3 + 4 * 2` becomes `x = 11` |\n| Constant propagation | `a = 5; b = a + 2` becomes `b = 7` |\n| Algebraic simplification | `x + 0`, `x * 1` → `x` |\n| **Strength reduction** | `x * 2` → `x + x` or `x << 1` |\n| Common subexpression elimination | the second `a + b` reuses the first value |\n| Dead-code elimination | removing an assignment whose result is never used |\n| Copy propagation | replace `y` by `x` after `y = x` |\n| Peephole | redundant load/store, jump over jump, unreachable code |\n\nWithin a block, a **DAG** finds common subexpressions: the block `p = a + b; q = p * c; r = a + b; s = r * c; t = q + s` has the DAG nodes + (a,b), × (p,c), and + (q,q). After CSE only 3 arithmetic operations remain instead of 5. A DAG with leaves a, b and operators + and × for `t1 = a + b; t2 = a + b; t3 = t1 * t2` has 4 nodes.\n\n**Loop optimisations:** *code motion* moves loop-invariant computations (such as `x = y + z` when neither y nor z changes in the loop) out of the loop; *induction-variable* strength reduction replaces `i * 4` by a running sum `t = t + 4`; *loop unrolling* reduces loop overhead.\n\n### Data-flow analysis\n\nA data-flow problem is solved by iterating transfer equations around the flow graph until nothing changes.\n\n| Analysis | Direction | Meet | Equations |\n|---|---|---|---|\n| **Reaching definitions** | forward | union | OUT = gen ∪ (IN − kill) |\n| **Available expressions** | forward | **intersection** | OUT = gen ∪ (IN − kill) |\n| **Live variables** | **backward** | union | IN = use ∪ (OUT − def) |\n| Very busy expressions | backward | intersection | IN = use ∪ (OUT − kill) |\n| Constant propagation | forward | lattice meet (≠ constant if values differ) | substitute known constants |\n\n- \"May\" analyses (union) ask whether something holds on **some** path. \"Must\" analyses (intersection) ask whether it holds on **all** paths.\n- A variable is **live** at a point if its current value may be used later before being redefined. Liveness decides **dead code** and register allocation.\n- An expression is **available** at a point if it has been computed on every path to it and none of its operands has been redefined since.\n\nWorked liveness example. B1 defines x and y; B2 uses x and defines z; B3 uses y and defines z; B4 uses z; B1 branches to B2 and B3, both reach B4. Live-in(B4) = {z}. Live-in(B2) = {x} (z is redefined) and live-in(B3) = {y}. So live-out(B1) = {x, y}.\n\nWorked reaching-definitions example. B1 has d1: x = 1 and d2: y = 2; B2 has d3: x = 3; edges B1 → B2, B1 → B3, B2 → B3. OUT[B1] = {d1, d2}, OUT[B2] = {d3, d2} (d3 kills d1), so IN[B3] = {d1, d2, d3}.\n\nWorked availability example. B1 computes a + b; B2 assigns a; B3 recomputes nothing, with edges B1 → B3 and B1 → B2 → B3. At the entry of B3 the expression a + b arrives on the path through B1 but is killed on the path through B2. With intersection it is **not** available."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Memorise the four rows:** forward-union (reaching defs), forward-intersection (available expr), backward-union (liveness), backward-intersection (very busy).\n- **Liveness works from the end:** start at the last block, add uses, remove definitions, move up.\n- **Initial values:** may problems start with empty sets, available expressions starts with the universal set (except at the entry).\n- **After CSE,** count operators in the DAG, not the number of original statements.\n- **Constant folding then dead-code elimination** often cascade: folding makes variables unused, and removing them exposes more.",
+     "title": "Data-flow cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-8",
+   "type": "concept",
+   "title": "Cheat sheet: Compiler Design on one page",
+   "subtopicId": "11-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Topic | Fact |\n|---|---|\n| Lexer | maximal munch; tokens via regular expressions |\n| Left recursion | A → Aα \\| β ⟹ A → βA′, A′ → αA′ \\| ε |\n| LL(1) table | FIRST(α), and FOLLOW(A) when α derives ε |\n| LL(1) grammar | unambiguous, no left recursion, left-factored |\n| Items | k + 1 for a production with k symbols |\n| Power | LR(0) ⊂ SLR(1) ⊂ LALR(1) ⊂ CLR(1) |\n| States | LR(0) = SLR = LALR ≤ CLR |\n| yacc | LALR(1), shift beats reduce |\n| S-attributed / L-attributed | synthesized only (bottom-up) / left-sibling inherited (top-down) |\n| Access links | follow (depth of use − depth of declaration) links |\n| Basic block leaders | first, jump targets, after jumps |\n| Reaching defs / available expr / liveness | forward ∪ / forward ∩ / backward ∪ |\n| Liveness equation | IN = use ∪ (OUT − def) |\n| DAG | shares common subexpressions |"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (60 questions)",
+   "subtopicId": "11-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "60 original GATE-style questions on 7 areas. Pick an answer to see why it is right and which trap catches people. The marks shown are what a question like this would carry in GATE; in the real exam a wrong 1-mark MCQ costs 1/3 mark and a wrong 2-mark MCQ costs 2/3."
+    },
+    {
+     "type": "mcq",
+     "id": "gate-compiler",
+     "items": [
+      {
+       "t": "Lexical analysis",
+       "q": "*(1 mark)* The output of the lexical analyser phase is",
+       "o": [
+        "a parse tree",
+        "target machine code",
+        "a stream of tokens",
+        "intermediate code"
+       ],
+       "a": 2,
+       "w": "The lexer groups characters into tokens (identifier, keyword, number, operator…) and passes them to the parser, which builds the parse tree."
+      },
+      {
+       "t": "Lexical analysis",
+       "q": "*(2 marks)* The number of tokens in the following C statement is\n```c\nx = y + 3 * (z - 4);\n```",
+       "o": [
+        "12",
+        "10",
+        "11",
+        "13"
+       ],
+       "a": 0,
+       "w": "The tokens are x, =, y, +, 3, *, (, z, -, 4, ) and ;, which makes 12."
+      },
+      {
+       "t": "Lexical analysis",
+       "q": "*(2 marks)* The number of tokens in the following C fragment is\n```c\nif (a >= b) max = a; else max = b;\n```",
+       "o": [
+        "15",
+        "16",
+        "14",
+        "13"
+       ],
+       "a": 0,
+       "w": "if ( a >= b ) max = a ; else max = b ; — keywords, identifiers, the two-character operator >= (one token), the symbols and the semicolons give 15 tokens."
+      },
+      {
+       "t": "Lexical analysis",
+       "q": "*(2 marks)* The operators >, >=, >> and >>= are all valid in a language, and the lexer follows the longest-match rule. The number of tokens the lexer produces for the input a>>=b is",
+       "o": [
+        "5",
+        "2",
+        "3",
+        "4"
+       ],
+       "a": 2,
+       "w": "Maximal munch takes the longest operator at each point: a, then >>= (not > or >> or >=), then b. That is 3 tokens."
+      },
+      {
+       "t": "Lexical analysis",
+       "q": "*(1 mark)* The tokens of a programming language are specified using",
+       "o": [
+        "regular expressions",
+        "Turing machines",
+        "pushdown automata",
+        "context-free grammars"
+       ],
+       "a": 0,
+       "w": "Token patterns such as identifiers and numbers are regular, so they are specified by regular expressions and recognised by finite automata."
+      },
+      {
+       "t": "Lexical analysis",
+       "q": "*(1 mark)* Which of the following tasks is NOT performed by the lexical analyser?",
+       "o": [
+        "removing comments and white space",
+        "checking that parentheses are balanced",
+        "keeping track of line numbers",
+        "recognising identifiers and keywords"
+       ],
+       "a": 1,
+       "w": "Balanced parentheses need a context-free grammar (a stack), so this is checked by the parser. The lexer is limited to regular patterns."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* Consider the grammar E → T X, X → + T X | ε, T → F Y, Y → * F Y | ε, F → ( E ) | i. FIRST(E) is",
+       "o": [
+        "{ ( , i }",
+        "{ i }",
+        "{ + , * }",
+        "{ ) , $ }"
+       ],
+       "a": 0,
+       "w": "E derives T X, T derives F Y, and F begins with ( or i. Neither T nor F derives ε, so FIRST(E) = { ( , i }."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* For the same grammar (E → T X, X → + T X | ε, T → F Y, Y → * F Y | ε, F → ( E ) | i), FOLLOW(X) is",
+       "o": [
+        "{ + }",
+        "{ ) , $ }",
+        "{ * , + }",
+        "{ ε }"
+       ],
+       "a": 1,
+       "w": "X appears at the end of the productions for E and X, so FOLLOW(X) = FOLLOW(E) = { ) , $ } ($ for the start symbol, ) from F → ( E ))."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* For the same grammar, the number of terminals in FOLLOW(F) is",
+       "o": [
+        "4",
+        "3",
+        "2",
+        "5"
+       ],
+       "a": 0,
+       "w": "F is followed by FIRST(Y) − ε = { * }. Since Y can derive ε, FOLLOW(T) = { + , ) , $ } also follows F. So FOLLOW(F) = { * , + , ) , $ }, which has 4 terminals."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* Which of the following grammars is LL(1)?",
+       "o": [
+        "S → a S | b",
+        "S → A | B, A → a, B → a",
+        "S → a S | a",
+        "S → S a | b"
+       ],
+       "a": 0,
+       "w": "In (b) the two alternatives start with different terminals. (a) has a common prefix, (c) is left-recursive, and (d) is ambiguous (both A and B derive a), so each of those puts two productions in the same table cell."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* Eliminating the left recursion from E → E + T | T gives",
+       "o": [
+        "E → T E′, E′ → E′ + T | ε",
+        "E → T + E | T",
+        "E → T E′, E′ → + T E′ | ε",
+        "E → E′ T, E′ → + T E′ | ε"
+       ],
+       "a": 2,
+       "w": "A → Aα | β becomes A → β A′, A′ → α A′ | ε. Here α = + T and β = T. Option (b) is still left-recursive, and (d) changes the associativity and still has a common prefix."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* For the grammar S → a S b | ε, the number of non-blank entries in the LL(1) parsing table is",
+       "o": [
+        "5",
+        "3",
+        "2",
+        "4"
+       ],
+       "a": 1,
+       "w": "S → aSb goes in M[S, a], since FIRST(aSb) = { a }. S → ε goes in M[S, b] and M[S, $], because FOLLOW(S) = { b , $ }. That is 3 entries."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(2 marks)* For the grammar S → A B, A → a | ε, B → b | ε, the number of elements in FOLLOW(A) is",
+       "o": [
+        "4",
+        "3",
+        "1",
+        "2"
+       ],
+       "a": 3,
+       "w": "FOLLOW(A) contains FIRST(B) − ε = { b }. B can derive ε, so FOLLOW(S) = { $ } is added too. FOLLOW(A) = { b , $ }."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(1 mark)* Which transformation is needed to make a grammar with the productions A → a b c | a b d suitable for predictive parsing?",
+       "o": [
+        "left factoring",
+        "conversion to Chomsky normal form",
+        "removal of ambiguity",
+        "elimination of left recursion"
+       ],
+       "a": 0,
+       "w": "Both alternatives start with the same prefix ab, so one token of lookahead cannot choose between them. Left factoring gives A → a b A′, A′ → c | d."
+      },
+      {
+       "t": "Top-down parsing",
+       "q": "*(1 mark)* A recursive-descent parser written directly from a left-recursive grammar",
+       "o": [
+        "accepts a larger class of languages",
+        "always runs in linear time",
+        "may recurse forever without consuming any input",
+        "cannot be written in a high-level language"
+       ],
+       "a": 2,
+       "w": "The procedure for A calls itself immediately on the production A → A α, before reading any token, so it never terminates."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* The number of states in the LR(0) automaton (canonical collection of LR(0) item sets) for the augmented grammar S′ → S, S → A A, A → a A | b is",
+       "o": [
+        "6",
+        "10",
+        "5",
+        "7"
+       ],
+       "a": 3,
+       "w": "The sets are I0, goto(I0, S), goto(I0, A), goto(I0, a), goto(I0, b), goto(I2, A) (the item S → A A •) and goto(A, A) in the closure for A → a A •. That is 7 states."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* The grammar S → L = R | R, L → * R | i, R → L is",
+       "o": [
+        "SLR(1) but not LR(0)",
+        "LALR(1) but not SLR(1)",
+        "LR(0)",
+        "not LR(1)"
+       ],
+       "a": 1,
+       "w": "After L, the state contains S → L • = R and R → L •. FOLLOW(R) contains =, so SLR(1) sees a shift/reduce conflict on =. The true lookahead for that reduction is only $, so LALR(1) and CLR(1) have no conflict."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* The grammar S → a A d | b B d | a B e | b A e, A → c, B → c is",
+       "o": [
+        "SLR(1)",
+        "not LR(1)",
+        "CLR(1) (canonical LR(1)) but not LALR(1)",
+        "LALR(1) but not SLR(1)"
+       ],
+       "a": 2,
+       "w": "After a c the lookahead d means reduce c to A and e means reduce c to B (and the reverse after b c). Canonical LR(1) keeps the two states apart. LALR(1) merges them, because they have the same core, and the merged state has a reduce/reduce conflict."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* The grammar E → E + T | T, T → T * F | F, F → ( E ) | i is",
+       "o": [
+        "LALR(1) but not SLR(1)",
+        "SLR(1) but not LR(0)",
+        "LR(0)",
+        "CLR(1) but not LALR(1)"
+       ],
+       "a": 1,
+       "w": "The state containing E → T • and T → T • * F has a shift (on *) and a complete item. That is a conflict in LR(0). In SLR(1) the reduction applies only on FOLLOW(E) = { + , ) , $ }, which does not contain *, so SLR(1) resolves it."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* Which of the following statements about LR parsers is FALSE?",
+       "o": [
+        "Every LL(1) grammar is LR(1)",
+        "A CLR(1) parser can have more states than an LALR(1) parser for the same grammar",
+        "Every SLR(1) grammar is LALR(1)",
+        "An LALR(1) parser has more states than an SLR(1) parser for the same grammar"
+       ],
+       "a": 3,
+       "w": "SLR(1), LR(0) and LALR(1) are all built on the LR(0) automaton, so they have the same number of states. The CLR(1) automaton may have more. The other statements are true."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(1 mark)* In a shift-reduce parser, a handle is",
+       "o": [
+        "the symbol on top of the stack",
+        "the left-hand side of the last production used",
+        "the first token of the input",
+        "a substring matching the right side of a production whose reduction is one step of the reverse rightmost derivation"
+       ],
+       "a": 3,
+       "w": "Reducing the handle at each step traces out a rightmost derivation backwards, ending at the start symbol."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(1 mark)* The parser generators yacc and bison produce",
+       "o": [
+        "SLR(1) parsers",
+        "recursive-descent parsers",
+        "LALR(1) parsers",
+        "LL(1) parsers"
+       ],
+       "a": 2,
+       "w": "They build LALR(1) tables, which handle almost all programming-language grammars with far fewer states than canonical LR(1)."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(2 marks)* Using the grammar E → E + T | T, T → T * F | F, F → i, a bottom-up (SLR) parser parses i + i * i. The number of reduce actions it performs (not counting accept) is",
+       "o": [
+        "8",
+        "7",
+        "9",
+        "6"
+       ],
+       "a": 0,
+       "w": "There is one reduction per internal node of the parse tree: F → i three times, T → F twice (for the first and second i), T → T * F, E → T, and E → E + T. That is 8."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(1 mark)* The production A → X Y Z gives rise to how many LR(0) items?",
+       "o": [
+        "5",
+        "4",
+        "6",
+        "3"
+       ],
+       "a": 1,
+       "w": "The dot can be in front of X, Y, Z or after Z: a production with k symbols has k + 1 items."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(1 mark)* A syntax-directed definition that uses only synthesized attributes is called",
+       "o": [
+        "inherited",
+        "S-attributed",
+        "T-attributed",
+        "L-attributed"
+       ],
+       "a": 1,
+       "w": "Every attribute of an S-attributed definition is computed from the attributes of the node's children, so it can be evaluated in one bottom-up pass."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(2 marks)* Consider the rules E → E₁ # T { E.val = E₁.val × 2 + T.val }, E → T { E.val = T.val }, T → num { T.val = num.value }, with # left-associative. The value of E.val for the input 1 # 2 # 3 is",
+       "o": [
+        "9",
+        "13",
+        "11",
+        "7"
+       ],
+       "a": 2,
+       "w": "(1 # 2) = 1 × 2 + 2 = 4. Then (4 # 3) = 4 × 2 + 3 = 11."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(2 marks)* The translation scheme E → E + T { print('+') } | T, T → num { print(num.value) } is used on the input 4 + 5 + 6. The output printed is",
+       "o": [
+        "+ + 4 5 6",
+        "4 5 + 6 +",
+        "4 5 6 + +",
+        "4 + 5 + 6"
+       ],
+       "a": 1,
+       "w": "The left-recursive grammar groups the sum as (4 + 5) + 6. Numbers are printed when T is reduced, and each '+' is printed after its right operand: 4, 5, +, 6, +."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(2 marks)* In an L-attributed definition, an inherited attribute of a symbol on the right side of a production may depend on",
+       "o": [
+        "only the attributes of its children",
+        "the attributes of the symbols to its right",
+        "any attribute in the parse tree",
+        "the inherited attributes of the parent and the attributes of the symbols to its left"
+       ],
+       "a": 3,
+       "w": "The restriction guarantees that attributes can be computed in one left-to-right depth-first traversal, which fits top-down parsing."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(1 mark)* S-attributed definitions can be evaluated conveniently",
+       "o": [
+        "only after the entire program has been parsed twice",
+        "only by a recursive-descent parser",
+        "only by a lexical analyser",
+        "during bottom-up (LR) parsing, at each reduction"
+       ],
+       "a": 3,
+       "w": "Each reduction pops the children's attribute values from the parser stack and pushes the synthesized value of the parent."
+      },
+      {
+       "t": "Syntax-directed translation",
+       "q": "*(1 mark)* If the attribute dependency graph of an annotated parse tree contains a cycle, then",
+       "o": [
+        "the attributes cannot be evaluated in any order",
+        "the attributes are evaluated in reverse order",
+        "the grammar is LR(0)",
+        "all attributes are synthesized"
+       ],
+       "a": 0,
+       "w": "A cycle means each attribute in it depends (directly or indirectly) on itself, so no evaluation order exists. Valid definitions must have an acyclic dependency graph."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(1 mark)* Which of the following is NOT stored in an activation record?",
+       "o": [
+        "actual parameters",
+        "the source code of the procedure",
+        "the return address",
+        "local variables"
+       ],
+       "a": 1,
+       "w": "Activation records hold run-time data of one call: parameters, return address, control and access links, locals and temporaries. The code itself is in the code segment."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(1 mark)* Which storage-allocation strategy is required to support recursive procedures?",
+       "o": [
+        "register allocation only",
+        "static allocation",
+        "stack allocation",
+        "read-only allocation"
+       ],
+       "a": 2,
+       "w": "Each active call of a recursive procedure needs its own copy of the locals and the return address, which a stack of activation records provides."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(2 marks)* The following function is called as f(a, b) with a = 1 and b = 2. If parameters are passed by reference, the values of a and b after the call are\n```c\nvoid f(int x, int y) { x = x + 1; y = y + x; }\n```",
+       "o": [
+        "2 and 3",
+        "2 and 4",
+        "1 and 2",
+        "1 and 4"
+       ],
+       "a": 1,
+       "w": "x aliases a and y aliases b. x = x + 1 makes a = 2, then y = y + x = 2 + 2 = 4, so b = 4. (With call by value, a and b would stay 1 and 2.)"
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(2 marks)* A procedure at nesting depth 4 accesses a variable declared in an enclosing procedure at nesting depth 2, using access links (static links). The number of access links it must follow is",
+       "o": [
+        "4",
+        "3",
+        "2",
+        "1"
+       ],
+       "a": 2,
+       "w": "The number of links to follow is the difference of the nesting depths: 4 − 2 = 2."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(1 mark)* Memory allocated at run time with malloc is taken from",
+       "o": [
+        "the stack",
+        "the static data area",
+        "the heap",
+        "the code segment"
+       ],
+       "a": 2,
+       "w": "Dynamically allocated memory has a lifetime independent of procedure calls, so it comes from the heap and is freed explicitly or by a garbage collector."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(2 marks)* A function f(n) calls f(n − 1) until n = 0, and each activation record uses 32 bytes. The stack space needed while f(100) is running at its deepest point is",
+       "o": [
+        "6400 bytes",
+        "3264 bytes",
+        "3232 bytes",
+        "3200 bytes"
+       ],
+       "a": 2,
+       "w": "The calls are f(100), f(99), …, f(0): 101 activation records of 32 bytes, so 101 × 32 = 3232 bytes."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(2 marks)* A well-known drawback of reference-counting garbage collection is that it",
+       "o": [
+        "must stop the whole program for a long time",
+        "needs a copying phase",
+        "cannot handle objects with more than one reference",
+        "cannot reclaim cyclic structures that are no longer reachable"
+       ],
+       "a": 3,
+       "w": "Objects in a cycle keep each other's counts above zero even if nothing else points to them, so they are never freed. Tracing collectors such as mark-and-sweep reclaim them."
+      },
+      {
+       "t": "Runtime environments",
+       "q": "*(2 marks)* Accessing a non-local variable declared k nesting levels up costs O(k) steps when access links are used. If a display is used instead, the cost is",
+       "o": [
+        "O(1)",
+        "O(k)",
+        "O(log k)",
+        "O(k²)"
+       ],
+       "a": 0,
+       "w": "The display is an array indexed by nesting depth that points directly to the latest activation record at each depth, so a non-local access is one array lookup."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(2 marks)* The minimum number of three-address instructions needed to compute a = b * c + d * e is",
+       "o": [
+        "2",
+        "5",
+        "4",
+        "3"
+       ],
+       "a": 3,
+       "w": "t1 = b * c; t2 = d * e; a = t1 + t2. The final addition can write directly into a, so no further copy is needed."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(2 marks)* The number of three-address instructions (one operator per instruction, no copies) needed to evaluate ((a + b) * (c + d)) − (e + f) is",
+       "o": [
+        "4",
+        "3",
+        "5",
+        "6"
+       ],
+       "a": 2,
+       "w": "There are five operators: three additions, one multiplication and one subtraction. Each needs its own three-address instruction."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(2 marks)* The following three-address code is divided into basic blocks. The number of basic blocks is\n```text\n1: i = 0\n2: if i >= 10 goto 8\n3: t = i * 2\n4: if t > 6 goto 6\n5: s = s + t\n6: i = i + 1\n7: goto 2\n8: halt\n```",
+       "o": [
+        "4",
+        "6",
+        "7",
+        "5"
+       ],
+       "a": 1,
+       "w": "The leaders are 1 (first instruction), 2 (target of the jump at 7), 3 (after the jump at 2), 5 (after the jump at 4), 6 (target of the jump at 4) and 8 (target of the jump at 2 and after the jump at 7). Six leaders give six basic blocks."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(1 mark)* Compared with plain triples, indirect triples make it easier to",
+       "o": [
+        "reorder instructions during optimisation",
+        "save memory in the symbol table",
+        "evaluate expressions in postfix form",
+        "detect syntax errors"
+       ],
+       "a": 0,
+       "w": "In triples, operands refer to other triples by position, so moving an instruction invalidates references. Indirect triples keep a separate list of pointers, so reordering changes only that list."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(2 marks)* A DAG is built for the basic block t1 = a + b; t2 = a + b; t3 = t1 * t2. The number of nodes in the DAG (leaves and interior nodes together) is",
+       "o": [
+        "3",
+        "4",
+        "5",
+        "6"
+       ],
+       "a": 1,
+       "w": "The leaves are a and b. Both a + b computations share one interior node, and the multiplication is a second interior node. Total 2 + 2 = 4."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(2 marks)* A DAG is built for the basic block x = a + b; y = x * c; z = a + b; w = y + z. The number of nodes in the DAG is",
+       "o": [
+        "6",
+        "8",
+        "5",
+        "7"
+       ],
+       "a": 0,
+       "w": "Leaves: a, b, c (3). Interior nodes: a + b (shared by x and z), x * c, and y + z. That is 3 + 3 = 6."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(1 mark)* Strength reduction is the replacement of",
+       "o": [
+        "a variable by its definition",
+        "a loop by straight-line code",
+        "a constant expression by its value",
+        "an expensive operation by an equivalent cheaper one, for example x * 2 by x + x"
+       ],
+       "a": 3,
+       "w": "Strength reduction substitutes cheaper operations (additions or shifts for multiplications). Replacing constant expressions by values is constant folding."
+      },
+      {
+       "t": "Intermediate code and basic blocks",
+       "q": "*(1 mark)* Backpatching is used in code generation to",
+       "o": [
+        "check type compatibility",
+        "fill in the targets of jumps that were unknown when the jump was generated",
+        "rename registers",
+        "remove dead code"
+       ],
+       "a": 1,
+       "w": "The compiler leaves the jump target blank, remembers the instruction in a list, and fills it in when the target label becomes known. This allows one-pass translation of control flow."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* Live-variable analysis is a data-flow problem that is",
+       "o": [
+        "forward, with intersection as the meet operator",
+        "backward, with union as the meet operator",
+        "forward, with union as the meet operator",
+        "backward, with intersection as the meet operator"
+       ],
+       "a": 1,
+       "w": "Whether a variable is live at a point depends on what happens after it (a later use), so information flows backward. A variable is live if it is live along some path, which is a union."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(1 mark)* The meet operator used in the data-flow analysis of available expressions is",
+       "o": [
+        "set difference",
+        "concatenation",
+        "intersection",
+        "union"
+       ],
+       "a": 2,
+       "w": "An expression is available only if it has been computed on every path to the point, so the sets from the predecessors are intersected."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* The flow graph has blocks B1 (defines x and y), B2 (uses x, defines z), B3 (uses y, defines z) and B4 (uses z). B1 has edges to B2 and B3, and both B2 and B3 have edges to B4. The number of variables live at the end of B1 is",
+       "o": [
+        "2",
+        "4",
+        "3",
+        "1"
+       ],
+       "a": 0,
+       "w": "Live-in of B4 is { z }. Live-in of B2 = { x } because z is redefined there, and live-in of B3 = { y }. Live-out of B1 is the union { x , y }: 2 variables."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* Block B1 contains the definitions d1: x = 1 and d2: y = 2. Block B2 contains d3: x = 3. The edges are B1 → B2, B1 → B3 and B2 → B3. The number of definitions that reach the entry of B3 is",
+       "o": [
+        "4",
+        "3",
+        "1",
+        "2"
+       ],
+       "a": 1,
+       "w": "OUT[B1] = { d1, d2 }. OUT[B2] = { d3, d2 } (d3 kills d1). IN[B3] = OUT[B1] ∪ OUT[B2] = { d1, d2, d3 }, which has 3 definitions."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* After constant propagation and folding on the code below, how many of the variables a, b, c, d have a known constant value at the end of the program?\n```text\na = 5\nb = a + 2\nc = b * 2\nif (x > 0) a = 3\nd = a + c\n```",
+       "o": [
+        "2",
+        "4",
+        "1",
+        "3"
+       ],
+       "a": 0,
+       "w": "b = 7 and c = 14 are constants. After the if, a is 5 on one path and 3 on the other, so a is not constant, and therefore d = a + 14 is not either. Two constants (b and c)."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* Common subexpression elimination is applied to the block p = a + b; q = p * c; r = a + b; s = r * c; t = q + s. How many arithmetic operations remain?",
+       "o": [
+        "5",
+        "4",
+        "3",
+        "2"
+       ],
+       "a": 2,
+       "w": "r equals p, so s = p * c equals q. Then t = q + q. Only p = a + b, q = p * c and t = q + q remain: 3 operations (down from 5)."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* In the following code, assume that only c is used later. How many assignments are dead (their values are never used)?\n```text\na = 1\nb = 2\nc = a + b\nd = c * 2\nprint(c)\n```",
+       "o": [
+        "3",
+        "0",
+        "1",
+        "2"
+       ],
+       "a": 2,
+       "w": "a and b are used to compute c, and c is printed. d = c * 2 is never used, so it is the only dead assignment."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(1 mark)* In the loop below, assuming y and z are not changed inside the loop, which statement can be moved out of the loop by loop-invariant code motion?\n```text\nfor (i = 0; i < n; i++) {\n    x = y + z;\n    a[i] = x * i;\n}\n```",
+       "o": [
+        "i < n",
+        "i++",
+        "a[i] = x * i",
+        "x = y + z"
+       ],
+       "a": 3,
+       "w": "y + z has the same value in every iteration, so it can be computed once before the loop. The other statements depend on i."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(1 mark)* Replacing the multiplication i * 4 inside a loop by a variable that is increased by 4 each iteration is an example of",
+       "o": [
+        "induction-variable strength reduction",
+        "dead-code elimination",
+        "loop unrolling",
+        "constant folding"
+       ],
+       "a": 0,
+       "w": "i is an induction variable, so i * 4 changes by a constant in each iteration. A running addition replaces the multiplication."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(1 mark)* The statement x = 3 + 4 * 2 is optimised by constant folding. The value assigned to x in the generated code is",
+       "o": [
+        "10",
+        "14",
+        "24",
+        "11"
+       ],
+       "a": 3,
+       "w": "Multiplication binds tighter: 4 * 2 = 8, then 3 + 8 = 11. The compiler computes this at compile time."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* Which of the following correctly lists the direction and meet operator of very busy (anticipable) expressions analysis?",
+       "o": [
+        "backward, union",
+        "forward, intersection",
+        "forward, union",
+        "backward, intersection"
+       ],
+       "a": 3,
+       "w": "An expression is very busy at a point if it is evaluated on every path leaving that point before any operand changes, a \"must\" property (intersection) that looks forward in the program, hence a backward analysis."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(1 mark)* The standard data-flow equation for reaching definitions is",
+       "o": [
+        "OUT[B] = gen[B] ∩ (IN[B] ∪ kill[B])",
+        "IN[B] = gen[B] − kill[B]",
+        "IN[B] = use[B] ∪ (OUT[B] − def[B])",
+        "OUT[B] = gen[B] ∪ (IN[B] − kill[B])"
+       ],
+       "a": 3,
+       "w": "Definitions that reach the end of a block are those generated in the block, plus those that entered and were not killed. (b) is the liveness equation."
+      },
+      {
+       "t": "Optimisation and data-flow analysis",
+       "q": "*(2 marks)* Block B1 computes a + b. Block B2 contains the assignment a = 1. Block B3 follows. The edges are B1 → B3 and B1 → B2 → B3. Is the expression a + b available at the entry of B3?",
+       "o": [
+        "Yes, because B1 computes it",
+        "Yes, because it is computed on at least one path",
+        "It cannot be determined",
+        "No, because it is killed along the path through B2"
+       ],
+       "a": 3,
+       "w": "Availability requires the expression to be computed and not killed on every path. On the path through B2, a is redefined, so a + b is not available there. The intersection over both predecessors is empty."
+      },
+      {
+       "t": "Bottom-up parsing",
+       "q": "*(1 mark)* When yacc finds a shift/reduce conflict that has no precedence rule to settle it, it resolves the conflict by default in favour of",
+       "o": [
+        "reducing",
+        "reporting an error and stopping",
+        "choosing at random",
+        "shifting"
+       ],
+       "a": 3,
+       "w": "The default is to shift, which matches each else with the nearest unmatched if in the dangling-else grammar. For a reduce/reduce conflict, yacc chooses the production that appears first in the grammar."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Cheat sheet: Compiler Design on one page"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is E → E + T | T unsuitable for a recursive-descent parser, and what is the fix?",
+       "answer": "It is left-recursive: the parser for E would call itself without consuming input and recurse forever. Rewrite as E → T E′, E′ → + T E′ | ε."
+      },
+      {
+       "question": "Why do SLR(1), LALR(1) and LR(0) parsers have the same number of states for a grammar?",
+       "answer": "All three use the LR(0) item-set automaton. They differ only in how they pick the lookahead set for reductions. CLR(1) items carry lookaheads, so it can split LR(0) states and have more."
+      },
+      {
+       "question": "What is the difference between synthesized and inherited attributes?",
+       "answer": "A synthesized attribute is computed from the attributes of the node's children, so information flows up the parse tree. An inherited attribute is computed from the parent and the siblings, so information flows down or sideways."
+      },
+      {
+       "question": "Why does available-expressions analysis use intersection while reaching definitions uses union?",
+       "answer": "An expression may be reused only if it is computed on every path to the point, which is a \"must\" property and so needs intersection. A definition reaches a point if it reaches along some path, a \"may\" property, so union."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

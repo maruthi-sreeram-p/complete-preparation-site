@@ -1,0 +1,904 @@
+{
+ "source": {
+  "document": "Written for this site against the official GATE 2027 CS syllabus (IIT Madras)",
+  "questions": 60
+ },
+ "sections": [
+  {
+   "id": "ch-14-1",
+   "type": "concept",
+   "title": "Layering, switching and performance",
+   "subtopicId": "14-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site against the official GATE 2027 CS syllabus from IIT Madras. The questions are original and in the style of GATE: they drill the concepts GATE repeats, they are not copies of past papers. If the official syllabus changes, the official PDF wins."
+    },
+    {
+     "type": "markdown",
+     "text": "### Layered models\n\nLayering splits a complex job into layers, each offering a service to the layer above and using the service of the layer below. Each layer adds its own **header** (encapsulation) and the receiver removes them in reverse order.\n\n| TCP/IP layer | OSI layers | Unit | Examples |\n|---|---|---|---|\n| Application | application, presentation, session | message | HTTP, DNS |\n| **Transport** | transport | segment (TCP) / datagram (UDP) | TCP, UDP: **process-to-process** delivery |\n| **Network (Internet)** | network | packet / datagram | IP, routing: host-to-host delivery |\n| **Link** | data link, physical | frame | Ethernet, switches: hop-to-hop delivery |\n\n### Switching\n\n| Technique | Setup | Resources | Remarks |\n|---|---|---|---|\n| **Circuit switching** | call setup | bandwidth reserved for the whole call | constant delay, wasteful for bursty data |\n| **Packet switching (datagram)** | none | shared, statistical multiplexing | each packet routed independently by full destination address |\n| **Virtual circuit** | setup phase | per-connection state in routers | packets carry a short **VC identifier**, follow one path |\n\nStatistical multiplexing is why packet switching wins for bursty traffic. A 1 Mbps link and users needing 100 kbps each: circuit switching supports 10 users, while packet switching can support many more whose peaks rarely coincide.\n\n### Delays and metrics\n\n- **Transmission delay = L / R** (packet size over link rate). A 1500-byte packet on 100 Mbps: 12 000 / 10⁸ = 120 µs.\n- **Propagation delay = d / s** (distance over signal speed, about 2 × 10⁸ m/s).\n- Plus **processing** and **queuing** delays. Total per hop is the sum.\n- **Store and forward:** a router receives a whole packet before forwarding. A message of M bits over k links of rate R takes k·M/R if sent as one packet. Split into n equal packets it takes **(k + n − 1)·(M/n)/R**. A 12 000-bit message over 3 links at 1 Mbps in 3 packets of 4000 bits: (3 + 3 − 1) × 4 ms = **20 ms** (36 ms as one packet).\n- **Bandwidth–delay product** = R × RTT, the number of bits \"in flight\" on the pipe. 100 Mbps and RTT 40 ms give 4 Mbit = 500 000 bytes.\n- **Throughput** is the achieved rate. **Utilisation** is the fraction of time the sender is busy."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Pipeline formula:** n packets over k store-and-forward hops = (k + n − 1) packet times.\n- **Per-hop delay** = L/R + propagation. Do not add propagation for each packet more than once per link in a pipelined stream.\n- **Which layer?** Process-to-process = transport, host-to-host = network, hop-to-hop = link.\n- **BDP** tells you how large a window must be to keep a link full: window ≥ R × RTT.",
+     "title": "Layering and delay cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-2",
+   "type": "concept",
+   "title": "Data link layer",
+   "subtopicId": "14-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Framing\n\nFrames are delimited by a flag. With the flag 01111110, **bit stuffing** makes sure the flag cannot appear inside the data: the sender inserts a 0 after every **five consecutive 1s**, and the receiver removes it. The data 0111111011111011 becomes 011111010111110011 on the wire.\n\n### Error detection and correction\n\n| Method | Idea |\n|---|---|\n| Parity | one extra bit; detects any odd number of bit errors |\n| **Internet checksum** | 16-bit one's-complement sum of the words, then complemented. For 0x1234 and 0xEDCB the sum is 0xFFFF, so the checksum is 0x0000 |\n| **CRC** | the data, followed by r zeros, is divided modulo 2 by a generator polynomial of degree r; the remainder (r bits) is appended |\n| Hamming code | check bits at the power-of-2 positions; r check bits are needed when 2^r ≥ m + r + 1 |\n\n- **CRC example:** data 110101, generator 1011 (degree 3). Divide 110101000 by 1011 modulo 2; the remainder is **111**, so the frame sent is 110101111.\n- A CRC with generator of degree r detects all burst errors of length ≤ r and all single- and double-bit errors for a suitable generator.\n- **Hamming distance d** between code words: the code **detects d − 1** errors and **corrects ⌊(d − 1)/2⌋**. Distance 5 detects 4 and corrects 2. For 11 data bits you need 4 check bits (16 ≥ 11 + 4 + 1).\n\n### Flow control and sliding window\n\nLet Tt be the frame transmission time and Tp the one-way propagation time, with **a = Tp / Tt**.\n\n| Protocol | Efficiency or window rule |\n|---|---|\n| **Stop-and-wait** | efficiency = 1 / (1 + 2a). With Tt = 1 ms, Tp = 4 ms (a = 4): 1/9 ≈ 11.1% |\n| **Sliding window** (window N) | utilisation = min(1, N / (1 + 2a)). N = 5, a = 4: 5/9 ≈ 55.6% |\n| **Go-Back-N** | window ≤ 2ᵏ − 1 with k-bit sequence numbers; on a loss the sender retransmits that frame and every later one |\n| **Selective repeat** | window ≤ 2^(k−1); only the lost frame is retransmitted |\n\nWith 3-bit sequence numbers: Go-Back-N window ≤ 7, selective repeat ≤ 4. If frames 0 to 6 are sent and frame 3 is lost, Go-Back-N retransmits frames 3, 4, 5, 6 (four frames) while selective repeat resends only frame 3.\n\n### Medium access and Ethernet\n\n| Protocol | Maximum efficiency or note |\n|---|---|\n| Pure ALOHA | 1/(2e) ≈ **18.4%** |\n| Slotted ALOHA | 1/e ≈ **36.8%** |\n| CSMA/CD (Ethernet) | listen before sending, detect collisions while sending, back off |\n| CSMA/CA (Wi-Fi) | avoids collisions using acknowledgements and waiting |\n\n- **CSMA/CD minimum frame size:** a sender must still be transmitting when a collision signal returns, so **minimum frame time ≥ 2 × Tp**: minimum frame length ≥ 2 × Tp × R. With R = 100 Mbps and Tp = 5 µs: 2 × 5 µs × 100 Mbps = 1000 bits = **125 bytes**.\n- **Binary exponential backoff:** after the n-th collision a station waits K slot times with K chosen uniformly from {0, 1, …, 2ⁿ − 1} (n capped at 10). After the 4th collision K ∈ {0, …, 15}.\n- **Ethernet frame:** preamble 8 bytes, destination 6, source 6, type 2, **payload 46–1500**, FCS 4. The minimum frame (excluding preamble) is **64 bytes**, the maximum 1518.\n- **Devices:** a hub repeats bits to all ports (one collision domain). A **switch** learns addresses, forwards frames only to the right port, and gives **each port its own collision domain** while all ports stay in one broadcast domain (unless VLANs are used). A router separates broadcast domains."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **a = Tp / Tt:** stop-and-wait efficiency 1/(1 + 2a). A sliding window of N frames fills the pipe when N ≥ 1 + 2a.\n- **Window limits:** GBN 2ᵏ − 1, SR 2^(k−1).\n- **CRC by hand:** XOR the generator under each leading 1, shift, and repeat. The remainder has r bits.\n- **Hamming distance rule:** detect d − 1, correct ⌊(d − 1)/2⌋.\n- **Collision domains:** one per switch port. Broadcast domains: one per router interface (or VLAN).\n- **Bit stuffing:** after 11111 insert 0. Count the extra zeros to get the frame length.",
+     "title": "Data-link cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-3",
+   "type": "concept",
+   "title": "Routing",
+   "subtopicId": "14-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Routers build tables that map a destination to an outgoing link. Two main families:\n\n| | Distance vector | Link state |\n|---|---|---|\n| What a router sends | its whole table (distance to every destination) | the state of its own links |\n| To whom | neighbours only | all routers (flooding) |\n| Algorithm | Bellman–Ford | Dijkstra on the complete topology |\n| Examples | RIP | OSPF |\n| Problems | slow convergence, **count to infinity** | more messages and memory |\n\n- **Distance-vector update:** cost(X → D) = min over neighbours N of [cost(X, N) + dist(N, D)]. If A has neighbours B (cost 2) and C (cost 5), and B advertises 4 to D while C advertises 1, then A's cost to D is min(2 + 4, 5 + 1) = **6** via B.\n- **Count-to-infinity:** after a link failure, routers keep raising the distance to an unreachable destination in small steps. **Split horizon** (do not advertise a route back to the neighbour it was learned from) and **poison reverse** reduce it. RIP treats a distance of **16** as infinity.\n- **Link-state:** each router floods link-state advertisements, then every router runs Dijkstra. For the network A–B 1, A–C 4, B–C 2, B–D 5, C–D 1, the distances from A are B 1, C 3 (via B), D 4 (via B, then C). The next hop from A towards D is B.\n- **Autonomous systems:** inside an AS an interior protocol (RIP, OSPF) is used. Between ASes BGP (a path-vector protocol) is used."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Distance vector by hand:** for every destination take the minimum of (link cost to neighbour + the neighbour's advertised cost).\n- **Link state by hand:** run Dijkstra from the router and record the first hop on each shortest path.\n- **Count to infinity:** a distance-vector problem, not link-state.\n- **Message complexity:** DV talks to neighbours only; LS floods everyone.",
+     "title": "Routing cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-4",
+   "type": "concept",
+   "title": "IPv4 addressing, fragmentation and NAT",
+   "subtopicId": "14-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Addresses and CIDR\n\nAn IPv4 address has 32 bits. **CIDR notation** a.b.c.d/n means the first n bits are the network prefix. The remaining 32 − n bits are the host part.\n\n- **Addresses per subnet = 2^(32−n)**, usable hosts = 2^(32−n) − 2 (the network and broadcast addresses are reserved). A /26 has 62 hosts; a /20 has the mask 255.255.240.0.\n- **Network address = IP AND mask.** For 192.168.37.130/26: the block size is 64, 130 lies in 128–191, so the network is 192.168.37.128. The **broadcast address** is the last address in the block: for 172.16.5.77/27 (block 32, range 64–95) it is 172.16.5.95.\n- **Subnetting** splits a block: 192.168.1.0/24 into /27 subnets gives 2³ = 8 subnets.\n- **Aggregation (supernetting):** the eight blocks 200.1.16.0/24 to 200.1.23.0/24 combine into 200.1.16.0/21.\n- **Longest prefix match:** a router picks the matching table entry with the **longest prefix**. With 10.0.0.0/8 → R1, 10.1.0.0/16 → R2, 10.1.2.0/24 → R3 and a default route → R4, the destination 10.1.9.5 goes to R2, 10.1.2.77 to R3 and 11.0.0.1 to R4.\n- **Classful ranges** (historical): A 1–126 (/8), B 128–191 (/16), C 192–223 (/24). **Private ranges:** 10.0.0.0/8, 172.16.0.0/12 (172.16–172.31) and 192.168.0.0/16. So 172.20.5.9 is private but 172.32.1.1 is not.\n\n### The IPv4 header and fragmentation\n\nThe header is 20 bytes without options; the **IHL** field gives the header length in **32-bit words** (IHL = 8 means 32 bytes). Important fields are the total length (16 bits), identification, flags (DF, MF), **fragment offset** (in units of 8 bytes), TTL (decremented by each router; the packet is dropped at 0) and the header checksum.\n\nIf a datagram is larger than a link's **MTU**, a router fragments it. Each fragment's data length (except the last) must be a multiple of 8, with its own header.\n\nExample: a datagram of 4000 bytes (20-byte header, 3980 bytes data) and MTU 1500: the largest data size per fragment is ⌊(1500 − 20)/8⌋ × 8 = 1480. Fragments carry 1480, 1480 and 1020 bytes of data: **3 fragments**, with fragment offsets 0, 185 and 370 (2960 / 8 = 370 for the last), and MF = 1 on all but the last.\n\n### NAT\n\n**Network address translation** lets many hosts with private addresses share one public address. The NAT box rewrites the source address and port of outgoing packets and keeps a table mapping (private IP, port) to (public IP, new port), then reverses the mapping for replies."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Block size = 2^(32−n)** within the interesting octet. Network = the largest multiple of the block size not above the address.\n- **Hosts = 2^(32−n) − 2.**\n- **Aggregation test:** blocks aggregate if they are contiguous, of equal size, and the first starts on a boundary of the combined size.\n- **Fragments:** per-fragment data = ⌊(MTU − header)/8⌋ × 8. Offset = bytes before it ÷ 8.\n- **Longest prefix wins,** not the first match in the table.\n- **IHL × 4 = header bytes.**",
+     "title": "IPv4 cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-5",
+   "type": "concept",
+   "title": "Transport layer: TCP, UDP and sockets",
+   "subtopicId": "14-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**UDP** is connectionless and unreliable, with an 8-byte header (source port, destination port, length, checksum). It suits real-time traffic such as video calls, where a late packet is useless. **TCP** is connection-oriented, reliable, ordered, with flow and congestion control. Its header is at least 20 bytes (the data offset field counts 32-bit words, so offset 8 means 32 bytes).\n\n### Connection management and numbering\n\n- **Three-way handshake:** SYN → SYN-ACK → ACK. A SYN consumes one sequence number, so if the client's initial sequence number is 2000 the server's acknowledgement number is 2001.\n- **Sequence numbers count bytes.** A segment whose first byte has number 1000 and carries 500 bytes is acknowledged by ACK 1500, the number of the next byte expected.\n- Closing uses FIN and ACK exchanges in each direction.\n- **Wrap-around:** 32-bit sequence numbers cover 2³² bytes. At 1 Gbps they wrap in 2³² × 8 / 10⁹ ≈ **34.4 s**.\n\n### Flow control\n\nThe receiver advertises a **window** (rwnd) of free buffer space. The sender may have at most **min(cwnd, rwnd)** unacknowledged bytes in flight. The maximum throughput of a window W and round-trip time RTT is **W / RTT**: 64 KB and 100 ms give 64 × 1024 × 8 / 0.1 ≈ 5.24 Mbps.\n\n### Congestion control\n\n| Phase | Behaviour |\n|---|---|\n| **Slow start** | cwnd starts at 1 MSS and **doubles every RTT** (+1 MSS per ACK) until cwnd reaches ssthresh |\n| **Congestion avoidance** | additive increase: **+1 MSS per RTT** |\n| Timeout | ssthresh = cwnd / 2, cwnd = 1 MSS, back to slow start |\n| Three duplicate ACKs (fast retransmit and recovery) | ssthresh = cwnd / 2, cwnd = ssthresh (then linear growth) |\n\nWith ssthresh = 16 MSS and no loss, the cwnd at the start of RTT 1, 2, 3, … is 1, 2, 4, 8, 16, 17, 18 … If the timeout happens at cwnd = 20, then ssthresh = 10 and cwnd restarts at 1.\n\n**RTT estimation:** EstimatedRTT = (1 − α)·EstimatedRTT + α·SampleRTT with α = 1/8, so Estimated 100 ms and Sample 180 ms give 0.875 × 100 + 0.125 × 180 = 110 ms. The timeout is EstimatedRTT + 4 × DevRTT.\n\n### The socket API\n\n| Role | Call order (TCP) |\n|---|---|\n| Server | `socket()` → `bind()` → `listen()` → `accept()` → `recv()` / `send()` → `close()` |\n| Client | `socket()` → `connect()` → `send()` / `recv()` → `close()` |\n\n`accept()` blocks until a client connects and returns a **new socket** for that connection, while the listening socket keeps accepting. For UDP there is no `listen`, `accept` or `connect`: the server does `socket()`, `bind()`, then `recvfrom()` / `sendto()`."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Throughput limit = window / RTT.** To fill a link you need window ≥ bandwidth × RTT.\n- **cwnd sequence:** write it out per RTT: 1, 2, 4, … up to ssthresh, then +1 per RTT. After a loss, halve ssthresh.\n- **ACK number = last byte received + 1.** SYN and FIN each take one sequence number.\n- **Timeout vs duplicate ACKs:** timeout is the severe signal (cwnd to 1), triple duplicate ACK is mild (cwnd to ssthresh).\n- **Server calls:** socket, bind, listen, accept. Client calls: socket, connect.",
+     "title": "Transport cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-6",
+   "type": "concept",
+   "title": "Application layer: DNS and HTTP",
+   "subtopicId": "14-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### DNS\n\nDNS maps names to addresses using a hierarchical, distributed database: the **root** servers, **top-level domain** (TLD) servers (.com, .in…) and **authoritative** servers. Queries and answers use **UDP port 53**.\n\n- A client asks its **local resolver**, which in **iterative** resolution contacts the servers itself. With an empty cache, resolving www.example.com contacts **3 servers**: a root server, a .com TLD server and the authoritative server for example.com. Caching shortens later lookups.\n- Common records: **A** (name → IPv4 address), AAAA (IPv6), NS (name server), **CNAME** (alias), MX (mail exchanger).\n\n### HTTP\n\nHTTP is a request–response protocol over TCP (port 80, HTTPS 443). A request has a method (GET, POST, PUT, DELETE, HEAD), a path, headers and an optional body. The response has a status code: 200 OK, 301 moved permanently, **404 not found**, 500 server error. **GET, PUT and DELETE are idempotent; POST is not.** HTTP is stateless; cookies add state; caches use conditional GET.\n\nTime to fetch a page with a base HTML file and 4 objects (RTT = 50 ms, transmission time ignored):\n\n| Mode | RTTs | Time |\n|---|---|---|\n| **Non-persistent**, one object at a time | 2 per object (TCP setup + request) × 5 | 10 RTT = 500 ms |\n| **Persistent, no pipelining** | 1 (setup) + 1 per object × 5 | 6 RTT = 300 ms |\n| **Persistent with pipelining** | 1 (setup) + 1 (base file) + 1 (all objects together) | 3 RTT = 150 ms |"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **HTTP RTT counting:** non-persistent = 2 RTT per object, persistent = 1 RTT per object after one setup, pipelined = objects fetched together.\n- **Iterative resolution with an empty cache:** root, then TLD, then authoritative.\n- **HTTP 404 = not found, 200 = OK, 301 = moved.**\n- **POST is the one standard method that is not idempotent.**\n- **A record = name to IPv4 address.**",
+     "title": "DNS and HTTP cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-7",
+   "type": "concept",
+   "title": "Cheat sheet: Computer Networks on one page",
+   "subtopicId": "14-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Topic | Fact |\n|---|---|\n| Transmission delay | L / R |\n| Pipelined store-and-forward | (k + n − 1) packet times |\n| Bandwidth–delay product | R × RTT |\n| Bit stuffing | 0 after five 1s |\n| CRC | a generator of degree r appends an r-bit remainder |\n| Hamming distance d | detect d − 1, correct ⌊(d − 1)/2⌋ |\n| Stop-and-wait | 1 / (1 + 2a) |\n| Sliding window | N / (1 + 2a) |\n| GBN / SR window | 2ᵏ − 1 / 2^(k−1) |\n| Pure / slotted ALOHA | 18.4% / 36.8% |\n| CSMA/CD minimum frame | 2 × Tp × R |\n| Ethernet frame | 64 to 1518 bytes |\n| DV update | min(link + advertised) |\n| /n hosts | 2^(32−n) − 2 |\n| Longest prefix | most specific route wins |\n| Fragment | data multiple of 8, offset in 8-byte units |\n| TCP throughput | window / RTT |\n| Slow start / avoidance | doubles per RTT / +1 per RTT |\n| Timeout | ssthresh = cwnd / 2, cwnd = 1 |\n| Server sockets | socket, bind, listen, accept |\n| HTTP RTTs | non-persistent 2 per object; persistent 1 |"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (60 questions)",
+   "subtopicId": "14-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "60 original GATE-style questions on 6 areas. Pick an answer to see why it is right and which trap catches people. The marks shown are what a question like this would carry in GATE; in the real exam a wrong 1-mark MCQ costs 1/3 mark and a wrong 2-mark MCQ costs 2/3."
+    },
+    {
+     "type": "mcq",
+     "id": "gate-networks",
+     "items": [
+      {
+       "t": "Layering and switching",
+       "q": "*(1 mark)* Which layer of the TCP/IP model is responsible for process-to-process delivery?",
+       "o": [
+        "application layer",
+        "network layer",
+        "link layer",
+        "transport layer"
+       ],
+       "a": 3,
+       "w": "The network layer delivers packets between hosts, and the transport layer uses port numbers to deliver data to a particular process on the host."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(1 mark)* In the TCP/IP model, the unit of data handled at the transport layer by TCP is called a",
+       "o": [
+        "segment",
+        "packet",
+        "bit stream",
+        "frame"
+       ],
+       "a": 0,
+       "w": "TCP data units are segments, IP data units are packets (datagrams), and link-layer units are frames."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(2 marks)* A 1500-byte packet is sent over a link of rate 100 Mbps. The transmission delay is",
+       "o": [
+        "15 µs",
+        "120 µs",
+        "12 µs",
+        "1.2 ms"
+       ],
+       "a": 1,
+       "w": "Transmission delay = L / R = (1500 × 8) bits / 10⁸ bits per second = 12 000 / 10⁸ s = 120 µs."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(2 marks)* A message of 12 000 bits is sent over 3 store-and-forward links in series, each of rate 1 Mbps. Ignoring propagation and queuing delays, the message is split into 3 equal packets of 4000 bits. The time until the destination has received the whole message is",
+       "o": [
+        "12 ms",
+        "20 ms",
+        "24 ms",
+        "36 ms"
+       ],
+       "a": 1,
+       "w": "Each packet takes 4 ms on a link. With pipelining the last packet leaves the source after 3 packet times and then crosses the remaining 2 links: (3 + 3 − 1) × 4 ms = 20 ms. (Sent as a single packet it would take 3 × 12 = 36 ms.)"
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(2 marks)* A link has a bandwidth of 100 Mbps and a round-trip time of 40 ms. The bandwidth–delay product is",
+       "o": [
+        "40 000 bytes",
+        "100 000 bytes",
+        "500 000 bytes",
+        "4 000 000 bytes"
+       ],
+       "a": 2,
+       "w": "BDP = 100 × 10⁶ bit/s × 0.04 s = 4 × 10⁶ bits = 500 000 bytes."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(1 mark)* Which switching technique sets up a connection and reserves bandwidth for the whole duration of a call?",
+       "o": [
+        "datagram packet switching",
+        "statistical multiplexing",
+        "message switching without setup",
+        "circuit switching"
+       ],
+       "a": 3,
+       "w": "Circuit switching dedicates resources to each call from setup to teardown. Packet switching shares the links on demand."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(1 mark)* A 1 Mbps link is shared by users who each need 100 kbps while active. With circuit switching, the maximum number of users that can be supported is",
+       "o": [
+        "1",
+        "10",
+        "100",
+        "35"
+       ],
+       "a": 1,
+       "w": "Each user reserves 100 kbps for the call, so 1 Mbps / 100 kbps = 10 users. Packet switching can support more users if they are rarely all active at once."
+      },
+      {
+       "t": "Layering and switching",
+       "q": "*(2 marks)* In a virtual-circuit packet-switched network, each data packet carries",
+       "o": [
+        "a short virtual-circuit identifier instead of the full destination address",
+        "no addressing information at all",
+        "only the destination MAC address",
+        "the complete route as a list of routers"
+       ],
+       "a": 0,
+       "w": "Routers hold per-connection state set up during connection establishment, and each packet's identifier is looked up in that table (and often rewritten at each hop)."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A link layer uses the flag 01111110 and bit stuffing (insert a 0 after every five consecutive 1s). The data bits 0111111011111011 are sent. The bit string placed on the line (not counting the flags) is",
+       "o": [
+        "011111010111111011",
+        "0111110101111110011",
+        "011111010111110011",
+        "01111110111110011"
+       ],
+       "a": 2,
+       "w": "After the first five 1s insert a 0: 011111 0 1 0 ... The second run of five 1s (11111) also gets a 0 after it. The result is 011111010111110011, two bits longer than the data."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* The data 110101 is protected with a CRC using the generator polynomial x³ + x + 1 (bits 1011). The CRC bits appended to the data are",
+       "o": [
+        "101",
+        "111",
+        "100",
+        "010"
+       ],
+       "a": 1,
+       "w": "Append three zeros: 110101000. Dividing by 1011 using modulo-2 arithmetic leaves the remainder 111. The transmitted frame is 110101111."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A code has a minimum Hamming distance of 5. The maximum number of bit errors that it is guaranteed to correct is",
+       "o": [
+        "4",
+        "1",
+        "3",
+        "2"
+       ],
+       "a": 3,
+       "w": "A code with minimum distance d can correct ⌊(d − 1)/2⌋ errors and detect d − 1. For d = 5 it corrects 2 errors (and detects up to 4)."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A Hamming code is to protect 11 data bits so that any single-bit error can be corrected. The minimum number of check bits needed is",
+       "o": [
+        "6",
+        "5",
+        "4",
+        "3"
+       ],
+       "a": 2,
+       "w": "We need 2^r ≥ m + r + 1 with m = 11. For r = 3: 8 < 15. For r = 4: 16 ≥ 16. So 4 check bits."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* The Internet checksum of the two 16-bit words 0x1234 and 0xEDCB is",
+       "o": [
+        "0x0000",
+        "0x0001",
+        "0xFFFF",
+        "0xFFFE"
+       ],
+       "a": 0,
+       "w": "The one's-complement sum is 0x1234 + 0xEDCB = 0xFFFF. The checksum is the complement of the sum: 0x0000."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A sender uses stop-and-wait. The frame transmission time is 1 ms and the one-way propagation delay is 4 ms (ignore acknowledgement transmission time). The link efficiency is approximately",
+       "o": [
+        "25%",
+        "20%",
+        "11.1%",
+        "50%"
+       ],
+       "a": 2,
+       "w": "With a = Tp / Tt = 4, efficiency = 1 / (1 + 2a) = 1/9 ≈ 11.1%."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A sliding-window protocol uses a window of 5 frames. The frame transmission time is 1 ms and the one-way propagation delay is 4 ms. The link utilisation is approximately",
+       "o": [
+        "100%",
+        "55.6%",
+        "50%",
+        "11.1%"
+       ],
+       "a": 1,
+       "w": "One cycle takes 1 + 2a = 9 frame times, and the sender can send 5 frames in that time (window 5 < 9). Utilisation = 5/9 ≈ 55.6%."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A protocol uses 3-bit sequence numbers. The maximum window sizes for Go-Back-N and for selective repeat are respectively",
+       "o": [
+        "4 and 7",
+        "8 and 8",
+        "7 and 7",
+        "7 and 4"
+       ],
+       "a": 3,
+       "w": "Go-Back-N allows a window of 2ᵏ − 1 = 7. Selective repeat requires the window to be at most half the sequence space, 2^(k−1) = 4."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A Go-Back-N sender with a window of 7 sends frames 0 to 6 and frame 3 is lost, while the others arrive. After the timeout, the number of frames retransmitted is",
+       "o": [
+        "1",
+        "7",
+        "3",
+        "4"
+       ],
+       "a": 3,
+       "w": "The receiver discards frames 4, 5 and 6 because they are out of order. The sender goes back to frame 3 and resends 3, 4, 5, 6: four frames. (Selective repeat would resend only frame 3.)"
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(1 mark)* The maximum efficiency (throughput as a fraction of channel capacity) of pure ALOHA is",
+       "o": [
+        "50%",
+        "about 18.4%",
+        "100%",
+        "about 36.8%"
+       ],
+       "a": 1,
+       "w": "Pure ALOHA peaks at 1/(2e) ≈ 18.4%, and slotted ALOHA doubles it to 1/e ≈ 36.8%."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* A CSMA/CD network runs at 100 Mbps, and the worst-case one-way propagation delay between two stations is 5 µs. The minimum frame size needed to detect all collisions is",
+       "o": [
+        "64 bytes",
+        "250 bytes",
+        "512 bytes",
+        "125 bytes"
+       ],
+       "a": 3,
+       "w": "The frame must last at least 2 × Tp = 10 µs. At 100 Mbps this is 10 µs × 10⁸ bit/s = 1000 bits = 125 bytes."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(1 mark)* The minimum size of an Ethernet frame (excluding the preamble) is",
+       "o": [
+        "72 bytes",
+        "46 bytes",
+        "512 bytes",
+        "64 bytes"
+       ],
+       "a": 3,
+       "w": "The header and trailer take 18 bytes (6 + 6 + 2 + 4), and the payload is at least 46 bytes, so the frame is at least 64 bytes."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* In Ethernet's binary exponential backoff, after the 4th successive collision a station waits for K slot times, where K is chosen at random from",
+       "o": [
+        "{0, 1, 2, 3}",
+        "{0, 1, …, 15}",
+        "{0, 1, …, 7}",
+        "{0, 1, …, 31}"
+       ],
+       "a": 1,
+       "w": "After the n-th collision K is chosen from {0, 1, …, 2ⁿ − 1}. For n = 4 that is 0 to 15."
+      },
+      {
+       "t": "Data link layer",
+       "q": "*(2 marks)* Eight hosts are connected to the ports of one 8-port Ethernet switch (no VLANs). The number of collision domains and the number of broadcast domains are respectively",
+       "o": [
+        "8 and 8",
+        "1 and 8",
+        "1 and 1",
+        "8 and 1"
+       ],
+       "a": 3,
+       "w": "A switch gives each port its own collision domain, but it forwards broadcast frames to every port, so all hosts share a single broadcast domain."
+      },
+      {
+       "t": "Routing",
+       "q": "*(2 marks)* Router A is connected to neighbours B (link cost 2) and C (link cost 5). B advertises a distance of 4 to destination D, and C advertises a distance of 1. Using the distance-vector algorithm, A's cost to D is",
+       "o": [
+        "4",
+        "1",
+        "7",
+        "6"
+       ],
+       "a": 3,
+       "w": "A computes min(2 + 4, 5 + 1) = min(6, 6) = 6. Both routes cost 6 (the minimum is 6 either way)."
+      },
+      {
+       "t": "Routing",
+       "q": "*(1 mark)* Which technique reduces (but does not completely cure) the count-to-infinity problem in distance-vector routing?",
+       "o": [
+        "larger routing tables",
+        "split horizon with poison reverse",
+        "running Dijkstra's algorithm at each router",
+        "flooding of link-state packets"
+       ],
+       "a": 1,
+       "w": "Split horizon stops a router advertising a route back to the neighbour it learned it from. Flooding and Dijkstra are features of link-state routing, which does not have the problem."
+      },
+      {
+       "t": "Routing",
+       "q": "*(1 mark)* Link-state routing computes the routes at each router using",
+       "o": [
+        "the Bellman–Ford algorithm on neighbours' tables",
+        "a spanning tree protocol only",
+        "random walks",
+        "Dijkstra's algorithm on a map of the whole topology"
+       ],
+       "a": 3,
+       "w": "Each router floods its link states to all routers, builds the complete topology map, and runs Dijkstra's shortest-path algorithm."
+      },
+      {
+       "t": "Routing",
+       "q": "*(2 marks)* In link-state routing, a router sends to all other routers",
+       "o": [
+        "its entire routing table, but only to neighbours",
+        "the list of its neighbours and the costs of the links to them",
+        "a copy of the forwarding table of each neighbour",
+        "nothing, it only listens"
+       ],
+       "a": 1,
+       "w": "Link-state advertisements describe a router's own links. They are flooded to every router. (Sending the whole table to neighbours is distance-vector.)"
+      },
+      {
+       "t": "Routing",
+       "q": "*(2 marks)* A network has links A–B (cost 1), A–C (cost 4), B–C (cost 2), B–D (cost 5) and C–D (cost 1). The cost of the shortest path from A to D is",
+       "o": [
+        "4",
+        "3",
+        "5",
+        "6"
+       ],
+       "a": 0,
+       "w": "The path A → B → C → D costs 1 + 2 + 1 = 4. A → C → D costs 5 and A → B → D costs 6."
+      },
+      {
+       "t": "Routing",
+       "q": "*(1 mark)* RIP treats a hop count of what value as infinity (unreachable)?",
+       "o": [
+        "32",
+        "16",
+        "255",
+        "15"
+       ],
+       "a": 1,
+       "w": "RIP's maximum valid distance is 15 hops, and 16 means the destination is unreachable. This limits the count-to-infinity problem."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The number of usable host addresses in a subnet with the prefix /26 is",
+       "o": [
+        "62",
+        "30",
+        "126",
+        "64"
+       ],
+       "a": 0,
+       "w": "A /26 has 32 − 26 = 6 host bits, so 64 addresses. The network and broadcast addresses cannot be assigned to hosts: 62."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The subnet mask for the prefix /20 is",
+       "o": [
+        "255.255.240.0",
+        "255.255.248.0",
+        "255.255.252.0",
+        "255.255.224.0"
+       ],
+       "a": 0,
+       "w": "/20 means 20 one-bits: 255.255 for 16 bits, then 4 more one-bits in the third octet, 11110000 = 240. So 255.255.240.0."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The network address of the host 192.168.37.130/26 is",
+       "o": [
+        "192.168.37.64",
+        "192.168.37.128",
+        "192.168.37.192",
+        "192.168.37.0"
+       ],
+       "a": 1,
+       "w": "A /26 has blocks of 64 addresses: 0–63, 64–127, 128–191, 192–255. The address .130 is in the block starting at 128."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The broadcast address of the subnet containing 172.16.5.77/27 is",
+       "o": [
+        "172.16.5.63",
+        "172.16.5.79",
+        "172.16.5.95",
+        "172.16.5.127"
+       ],
+       "a": 2,
+       "w": "A /27 has blocks of 32 addresses. 77 lies in 64–95, so the broadcast address (the last address) is 172.16.5.95."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* A router has the forwarding entries 10.0.0.0/8 → R1, 10.1.0.0/16 → R2, 10.1.2.0/24 → R3 and a default route 0.0.0.0/0 → R4. A packet destined to 10.1.9.5 is forwarded to",
+       "o": [
+        "R1",
+        "R4",
+        "R3",
+        "R2"
+       ],
+       "a": 3,
+       "w": "The address matches 10.0.0.0/8 and 10.1.0.0/16 (but not 10.1.2.0/24). The longest matching prefix is /16, so the packet goes to R2."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The block 192.168.1.0/24 is divided into subnets of prefix length /27. The number of subnets obtained is",
+       "o": [
+        "16",
+        "4",
+        "8",
+        "32"
+       ],
+       "a": 2,
+       "w": "The prefix grows by 27 − 24 = 3 bits, giving 2³ = 8 subnets of 32 addresses each."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* The eight contiguous blocks 200.1.16.0/24 through 200.1.23.0/24 are aggregated into a single route. The resulting prefix is",
+       "o": [
+        "200.1.16.0/20",
+        "200.1.16.0/21",
+        "200.1.16.0/23",
+        "200.1.16.0/22"
+       ],
+       "a": 1,
+       "w": "Eight /24 blocks span 2³ = 8 × 256 addresses, so 3 bits move from the prefix: /21. The first block 200.1.16.0 starts on an 8-block boundary (16 is a multiple of 8), so the aggregation is valid."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* An IP datagram of total length 4000 bytes (20-byte header) is sent over a link with MTU 1500 bytes. The number of fragments produced is",
+       "o": [
+        "5",
+        "3",
+        "2",
+        "4"
+       ],
+       "a": 1,
+       "w": "The data is 3980 bytes. Each fragment can carry ⌊(1500 − 20) / 8⌋ × 8 = 1480 bytes of data. So the fragments carry 1480, 1480 and 1020 bytes: 3 fragments."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* For the same datagram (4000 bytes, 20-byte header, MTU 1500), the fragment offset field of the last fragment contains",
+       "o": [
+        "370",
+        "185",
+        "1480",
+        "296"
+       ],
+       "a": 0,
+       "w": "The last fragment starts after 1480 + 1480 = 2960 bytes of data. The offset is in units of 8 bytes: 2960 / 8 = 370."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(1 mark)* The IHL field of an IPv4 header contains the value 8. The length of the header is",
+       "o": [
+        "32 bytes",
+        "8 bytes",
+        "64 bytes",
+        "20 bytes"
+       ],
+       "a": 0,
+       "w": "IHL counts 32-bit words, so the header is 8 × 4 = 32 bytes (the minimum IHL is 5, i.e. 20 bytes)."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* A network address translation (NAT) box connects a private network to the Internet. For an outgoing packet it",
+       "o": [
+        "changes the destination address to the private network's gateway",
+        "splits the packet into smaller fragments",
+        "encrypts the packet payload",
+        "replaces the private source address and port by a public address and port, and records the mapping"
+       ],
+       "a": 3,
+       "w": "The translation table maps (private IP, port) to (public IP, translated port), and replies are mapped back so that many private hosts can share one public address."
+      },
+      {
+       "t": "IPv4 addressing",
+       "q": "*(2 marks)* Which of the following is a private IPv4 address?",
+       "o": [
+        "172.20.5.9",
+        "192.169.1.1",
+        "172.32.1.1",
+        "11.0.0.1"
+       ],
+       "a": 0,
+       "w": "The private blocks are 10.0.0.0/8, 172.16.0.0/12 (172.16.0.0–172.31.255.255) and 192.168.0.0/16. Only 172.20.5.9 falls in one of them."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* The TCP connection establishment uses the three-way handshake, with the segments in this order:",
+       "o": [
+        "ACK, SYN, FIN",
+        "SYN, SYN-ACK, ACK",
+        "SYN, FIN, ACK",
+        "SYN, ACK, SYN-ACK"
+       ],
+       "a": 1,
+       "w": "The client sends SYN, the server replies with SYN-ACK, and the client confirms with ACK."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* In which order does a TCP server call the socket functions to start accepting connections?",
+       "o": [
+        "socket(), connect(), listen(), accept()",
+        "bind(), socket(), accept(), listen()",
+        "socket(), listen(), bind(), connect()",
+        "socket(), bind(), listen(), accept()"
+       ],
+       "a": 3,
+       "w": "The server creates a socket, binds it to a local address and port, marks it as a listening socket, and then calls accept() to wait for clients. Clients call connect()."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* The UDP header is how many bytes long?",
+       "o": [
+        "8",
+        "4",
+        "16",
+        "20"
+       ],
+       "a": 0,
+       "w": "The UDP header has four 16-bit fields: source port, destination port, length and checksum: 8 bytes."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* A TCP sender can have at most 64 KB of unacknowledged data in flight, and the round-trip time is 100 ms. The maximum throughput is approximately",
+       "o": [
+        "524 Mbps",
+        "52.4 Mbps",
+        "5.24 Mbps",
+        "0.5 Mbps"
+       ],
+       "a": 2,
+       "w": "Throughput ≤ W / RTT = (64 × 1024 × 8 bits) / 0.1 s = 5.24 × 10⁶ bit/s."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* A TCP connection starts in slow start with cwnd = 1 MSS and ssthresh = 16 MSS. No loss occurs. Assuming cwnd doubles every RTT during slow start and grows by 1 MSS per RTT afterwards, the value of cwnd (in MSS) at the start of the 6th RTT is",
+       "o": [
+        "18",
+        "17",
+        "32",
+        "16"
+       ],
+       "a": 1,
+       "w": "At the start of RTT 1 to 5, cwnd is 1, 2, 4, 8, 16. At 16 the threshold is reached, and congestion avoidance adds 1 MSS per RTT, so the 6th RTT starts with 17."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* A TCP sender times out when cwnd = 20 MSS. The new value of ssthresh is",
+       "o": [
+        "20 MSS",
+        "40 MSS",
+        "10 MSS",
+        "1 MSS"
+       ],
+       "a": 2,
+       "w": "On a timeout, ssthresh is set to half the current cwnd (10 MSS) and cwnd falls to 1 MSS, restarting slow start."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* A TCP Reno sender with cwnd = 20 MSS receives three duplicate ACKs. After fast retransmit and fast recovery, cwnd (before further growth) is",
+       "o": [
+        "40 MSS",
+        "1 MSS",
+        "10 MSS",
+        "20 MSS"
+       ],
+       "a": 2,
+       "w": "Three duplicate ACKs signal mild congestion. ssthresh becomes cwnd / 2 = 10 and cwnd is set to ssthresh, so the sender continues in congestion avoidance rather than restarting slow start."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* The number of unacknowledged bytes that a TCP sender may have in the network is limited by",
+       "o": [
+        "the sum of the two windows",
+        "the maximum of the two windows",
+        "the minimum of the congestion window and the receiver's advertised window",
+        "the MSS only"
+       ],
+       "a": 2,
+       "w": "The sender must respect both the receiver's capacity (flow control) and the network's capacity (congestion control), so it uses the smaller window."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* A TCP segment carries 500 bytes of data, and the sequence number of its first byte is 1000. The acknowledgement number sent by the receiver for this segment is",
+       "o": [
+        "1501",
+        "1000",
+        "1500",
+        "1499"
+       ],
+       "a": 2,
+       "w": "The acknowledgement number is the sequence number of the next byte expected: 1000 + 500 = 1500."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* A client opens a TCP connection with the initial sequence number 2000. The server's SYN-ACK carries the acknowledgement number",
+       "o": [
+        "2001",
+        "2500",
+        "2002",
+        "2000"
+       ],
+       "a": 0,
+       "w": "A SYN consumes one sequence number, so the server acknowledges the next expected sequence number, 2001."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* TCP's estimated RTT is updated with EstimatedRTT = 0.875 × EstimatedRTT + 0.125 × SampleRTT. The current estimate is 100 ms and a new sample is 180 ms. The new estimate is",
+       "o": [
+        "105 ms",
+        "140 ms",
+        "110 ms",
+        "100 ms"
+       ],
+       "a": 2,
+       "w": "0.875 × 100 + 0.125 × 180 = 87.5 + 22.5 = 110 ms."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* The data offset field of a TCP header holds the value 8. The header length is",
+       "o": [
+        "32 bytes",
+        "20 bytes",
+        "8 bytes",
+        "64 bytes"
+       ],
+       "a": 0,
+       "w": "Like IHL, the TCP data offset counts 32-bit words: 8 × 4 = 32 bytes (the minimum is 5, i.e. 20 bytes)."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(1 mark)* For a live video call where a packet that arrives late is of no use, the better transport protocol is generally",
+       "o": [
+        "UDP",
+        "TCP",
+        "neither can be used",
+        "both are equally suitable"
+       ],
+       "a": 0,
+       "w": "UDP does not retransmit or reorder, so it avoids the delays of TCP's reliability mechanisms. The application tolerates some loss."
+      },
+      {
+       "t": "TCP, UDP and sockets",
+       "q": "*(2 marks)* TCP sequence numbers are 32 bits long and count bytes. On a 1 Gbps link sending at full speed, the time for the sequence numbers to wrap around is approximately",
+       "o": [
+        "344 s",
+        "3.4 s",
+        "34 s",
+        "8.6 s"
+       ],
+       "a": 2,
+       "w": "2³² bytes = 3.44 × 10¹⁰ bits. At 10⁹ bit/s that takes about 34.4 s."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(2 marks)* A web page consists of a base HTML file and 4 embedded objects, all on the same server, and the RTT is 50 ms. Using non-persistent HTTP, one object after another and ignoring transmission times, the total time to fetch everything is",
+       "o": [
+        "600 ms",
+        "300 ms",
+        "500 ms",
+        "250 ms"
+       ],
+       "a": 2,
+       "w": "Each of the 5 objects needs one RTT for the TCP handshake and one RTT for the request and response: 2 × 5 = 10 RTT = 500 ms."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(2 marks)* For the same page (base file plus 4 objects, RTT 50 ms), HTTP with a persistent connection and pipelining takes about",
+       "o": [
+        "150 ms",
+        "250 ms",
+        "100 ms",
+        "300 ms"
+       ],
+       "a": 0,
+       "w": "One RTT sets up the TCP connection and one fetches the base file. All 4 objects can then be requested together in one more RTT: 3 RTT = 150 ms. (Persistent without pipelining would need 6 RTT = 300 ms.)"
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(1 mark)* The HTTP status code 404 means",
+       "o": [
+        "the request succeeded",
+        "a server error occurred",
+        "the requested resource was not found",
+        "the resource has moved permanently"
+       ],
+       "a": 2,
+       "w": "200 is success, 301 is \"moved permanently\", 404 is \"not found\" and 500 is \"internal server error\"."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(2 marks)* A local DNS resolver, with an empty cache, uses iterative queries to resolve www.example.com. The number of DNS servers it must contact (root, TLD and authoritative) is",
+       "o": [
+        "3",
+        "5",
+        "2",
+        "4"
+       ],
+       "a": 0,
+       "w": "It asks a root server (which points to the .com servers), then a .com TLD server (which points to example.com's name server), and finally the authoritative server, which returns the address: 3 servers."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(1 mark)* Which DNS resource record maps a host name to an IPv4 address?",
+       "o": [
+        "CNAME",
+        "MX",
+        "NS",
+        "A"
+       ],
+       "a": 3,
+       "w": "An A record holds an IPv4 address (AAAA for IPv6). NS names a name server, MX a mail exchanger and CNAME an alias."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(2 marks)* Which of the following HTTP methods is NOT idempotent?",
+       "o": [
+        "PUT",
+        "DELETE",
+        "GET",
+        "POST"
+       ],
+       "a": 3,
+       "w": "Repeating a GET, PUT or DELETE leaves the server in the same state as doing it once. POST typically creates a new resource each time, so repeating it has extra effects."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Cheat sheet: Computer Networks on one page"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a switch give every port its own collision domain, but a hub does not?",
+       "answer": "A hub repeats every bit to all ports, so all stations share one medium and collide. A switch stores each frame and forwards it only to the port of the destination, with a separate link per port, so collisions can happen only on that single link."
+      },
+      {
+       "question": "A link has bandwidth 100 Mbps and RTT 40 ms. What is the smallest window that keeps the link fully used?",
+       "answer": "The bandwidth–delay product: 100 × 10⁶ × 0.04 = 4 × 10⁶ bits = 500 000 bytes. A window of at least that many bytes is needed."
+      },
+      {
+       "question": "What is the difference between TCP flow control and congestion control?",
+       "answer": "Flow control protects the receiver: the sender never has more unacknowledged data than the receiver's advertised window. Congestion control protects the network: the sender limits cwnd based on signs of loss. The sender uses the minimum of the two."
+      },
+      {
+       "question": "Why does the IPv4 fragment offset use units of 8 bytes?",
+       "answer": "The offset field has only 13 bits, but datagrams can be up to 65 535 bytes. Counting in 8-byte units lets 13 bits cover the whole range, so every fragment except the last must carry a multiple of 8 data bytes."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

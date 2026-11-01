@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, Globe, Info, Lightbulb, ListChecks, MessageSquareQuote, Star, TriangleAlert } from 'lucide-react'
+import { ArrowUpRight, Globe, Info, Lightbulb, ListChecks, MessageSquareQuote, Star, TriangleAlert, Zap } from 'lucide-react'
 import { useRoadmapScope } from '@/features/roadmap/RoadmapScope.jsx'
 import StatusIcon from '@/components/ui/StatusIcon.jsx'
 import { cn, paths } from '@/lib/util.js'
@@ -48,6 +48,7 @@ const CALLOUTS = {
   interview: { Icon: MessageSquareQuote, box: 'border-accent/35 bg-accent/5', icon: 'text-accent' },
   realworld: { Icon: Globe, box: 'border-accent-2/30 bg-accent-2/5', icon: 'text-accent-2' },
   keypoints: { Icon: ListChecks, box: 'border-line-strong bg-panel-2/60', icon: 'text-muted' },
+  cheat: { Icon: Zap, box: 'border-accent/60 bg-accent/10', icon: 'text-accent' },
 }
 
 export function CalloutBlock({ variant = 'note', title, text }) {
