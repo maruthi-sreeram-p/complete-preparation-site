@@ -11,6 +11,12 @@ const load = (id) => {
   const raw = JSON.parse(readFileSync(join(ROOT, id, 'roadmap.json'), 'utf8'))
   const topicsDir = join(ROOT, id, 'topics')
   const contentIds = new Set(existsSync(topicsDir) ? readdirSync(topicsDir).map((f) => f.replace(/\.json$/, '')) : [])
+  // a topic can show a page of another tree: contentId "<roadmapId>/<topicId>"
+  for (const t of raw.topics ?? []) {
+    if (t.contentId?.includes('/') && existsSync(join(ROOT, ...t.contentId.split('/').slice(0, 1), 'topics', `${t.contentId.split('/')[1]}.json`))) {
+      contentIds.add(t.contentId)
+    }
+  }
   return { raw, roadmap: buildRoadmap(raw, { id, contentIds }) }
 }
 
