@@ -14,7 +14,7 @@ Question format (one block per question, blank line between blocks):
   (d) another wrong option
   => Why it is right, and the trap in the others. May continue on the next lines.
   !fixed                           optional: keep the written order of the options (statements I/II, "both")
-  !py assert num(ans) == 128      optional check run at build time; `ans` is the correct option, `opts` all four.
+  !py assert num(ans) == 128      optional check run at build time; `ans` is the correct option, `opts` all four, `stem` the question text.
                                    Lines after "!py" continue the code until the next blank line.
 
 ?1 / ?2 is the marks the question would carry in GATE. [Label] groups questions under a chip in the page.
@@ -156,7 +156,7 @@ def parse_questions(path, names=helpers, tag_for=lambda marks: f"*({marks} mark{
             fail(path, where, "no explanation (=>)")
         right_text = q["opts"][q["right"]]
         if q["py"]:
-            namespace = dict(vars(names), ans=right_text, opts=list(q["opts"]))
+            namespace = dict(vars(names), ans=right_text, opts=list(q["opts"]), stem="\n".join(q["stem"]))
             try:
                 exec("\n".join(q["py"]), namespace)
             except Exception as error:  # noqa: BLE001 - report which question failed

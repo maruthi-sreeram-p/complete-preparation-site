@@ -154,3 +154,73 @@ def minterms(function, variables):
 def ripple_delay(bits, carry_ns, sum_ns=0):
     """Worst-case delay of a ripple-carry adder: the carry passes through every stage, the last stage also produces a sum."""
     return bits * carry_ns + sum_ns
+
+
+# ---------------------------------------------------------------- running Java and Python snippets
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+
+_CACHE = Path(tempfile.gettempdir()) / "prep-site-java-cache"
+
+
+def _tool(name):
+    found = shutil.which(name)
+    if found:
+        return found
+    home = os.environ.get("JAVA_HOME")
+    if home and (Path(home) / "bin" / f"{name}.exe").exists():
+        return str(Path(home) / "bin" / f"{name}.exe")
+    raise RuntimeError(f"{name} not found: install a JDK or set JAVA_HOME")
+
+
+def run_java(source, main_class="Main", timeout=60):
+    """Compile `source` (all classes in one file, the entry class named `main_class`) and return what it prints.
+
+    Results are cached by content, so rebuilding does not recompile unchanged snippets."""
+    key = hashlib.sha1((main_class + "\n" + source).encode()).hexdigest()
+    cached = _CACHE / f"{key}.txt"
+    if cached.exists():
+        return cached.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / f"{main_class}.java").write_text(source, encoding="utf-8")
+        compiled = subprocess.run([_tool("javac"), "-encoding", "UTF-8", "-d", tmp, str(Path(tmp) / f"{main_class}.java")],
+                                  capture_output=True, text=True, timeout=timeout)
+        if compiled.returncode:
+            raise AssertionError("the snippet does not compile:\n" + compiled.stderr)
+        ran = subprocess.run([_tool("java"), "-cp", tmp, main_class], capture_output=True, text=True, timeout=timeout)
+        out = ran.stdout.replace("\r\n", "\n").strip() + (("\n" + ran.stderr.strip()) if ran.returncode else "")
+    _CACHE.mkdir(exist_ok=True)
+    cached.write_text(out, encoding="utf-8")
+    return out
+
+
+def java_compiles(source, main_class="Main"):
+    """True if the snippet compiles (used for questions whose right answer is 'compile-time error')."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / f"{main_class}.java").write_text(source, encoding="utf-8")
+        result = subprocess.run([_tool("javac"), "-d", tmp, str(Path(tmp) / f"{main_class}.java")], capture_output=True, text=True, timeout=60)
+        return result.returncode == 0
+
+
+def run_python(source, timeout=30):
+    """Run a Python snippet and return its printed output."""
+    result = subprocess.run([sys.executable, "-I", "-c", source], capture_output=True, text=True, timeout=timeout)
+    if result.returncode:
+        raise AssertionError("the snippet failed:\n" + result.stderr)
+    return result.stdout.replace("\r\n", "\n").strip()
+
+
+def code_in(stem, language="java"):
+    """The first fenced code block of a question stem (so a check can run the code the question shows)."""
+    import re
+    match = re.search(r"```" + language + r"\n(.*?)```", stem, re.S)
+    assert match, f"no ```{language} block in the question"
+    return match.group(1)
+
+
+def printed(stem, main_class="Main"):
+    """Words printed by the Java program in the stem, as a list (spacing and line breaks do not matter)."""
+    return run_java(code_in(stem), main_class).split()

@@ -1,0 +1,383 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)",
+  "questions": 15
+ },
+ "sections": [
+  {
+   "id": "ch-6-1",
+   "type": "concept",
+   "title": "Buses and I/O organisation",
+   "subtopicId": "6-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a computer science student, in the style of the other guides. Examples use Java, with Python and C++ where the languages differ. Worked numbers were checked by program. Where a vendor, a standard or a language version matters, check the official source before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "The CPU, memory and I/O devices are connected by **buses**: shared sets of wires with a protocol. A classic system bus has three groups of lines:\n\n| Lines | Carries | Direction |\n|---|---|---|\n| **Address bus** | the address of the memory location or device | CPU → others |\n| **Data bus** | the data being transferred | both ways |\n| **Control bus** | read/write, clock, interrupt request, bus grant and other signals | both ways |\n\n**Bus width** matters: a 32-bit address bus reaches 2³² = 4 GiB; a 64-bit data bus moves 8 bytes per transfer. **Bandwidth** = width × transfers per second: a 64-bit bus at 100 MHz transfers 8 B × 100 × 10⁶ = **800 MB/s**. Modern computers replace one shared bus with **point-to-point links** (PCIe lanes, memory channels, USB) because a long shared bus cannot run fast.\n\n### Bus arbitration\n\nWhen several devices (masters) want the bus at once, an **arbiter** decides who gets it:\n\n- **Daisy chain:** the grant signal passes from device to device; the nearest one has priority. Simple, but far devices can starve.\n- **Centralised parallel:** each device has its own request and grant lines going to a central arbiter. Flexible priorities, more wires.\n- **Distributed:** devices negotiate among themselves.\n\n### Talking to a device\n\nA device is attached through a **controller** with a few **registers**: a *status* register (is it ready, is there an error?), a *command* register and a *data* register. There are two ways to address them:\n\n| | Memory-mapped I/O | Isolated (port-mapped) I/O |\n|---|---|---|\n| Device registers appear as | **ordinary memory addresses** | a separate I/O address space |\n| Instructions used | normal LOAD and STORE | special IN and OUT instructions |\n| Address space | shares the memory address space | extra space, but fewer instructions to protect |\n| Used by | ARM, RISC-V, most modern designs | x86 (in addition to memory-mapped) |\n\nWith memory-mapped I/O, writing a byte to address 0xFFFF0000 might print a character. This is also why the compiler must not \"optimise away\" reads of such addresses: in C they are declared `volatile`."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Bus bandwidth = width (bytes) × transfers per second.\n- Address bits = log₂(number of addressable locations); a wider data bus moves more per transfer.\n- Daisy chaining: nearest device wins. Parallel arbitration: central arbiter, any priority order.\n- Memory-mapped I/O: no special instructions, devices share the address space. Isolated I/O: separate space, IN/OUT.\n- A controller has status, command and data registers.",
+     "title": "Bus and I/O facts"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A system bus has address, data and control lines\n- Bandwidth = width × transfers per second\n- The arbiter decides which master gets the bus: daisy chain, parallel or distributed\n- Memory-mapped I/O uses ordinary loads and stores; isolated I/O uses IN and OUT\n- Devices are driven through controller registers (status, command, data)"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-2",
+   "type": "concept",
+   "title": "Programmed I/O, interrupts and DMA",
+   "subtopicId": "6-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "How does the CPU know a key was pressed or a disk block has arrived? There are three methods.\n\n### 1. Programmed I/O (polling)\n\nThe CPU repeatedly reads the device's status register in a loop until it says \"ready\", then transfers the data. It is simple, but the CPU does nothing useful while it waits (**busy waiting**), which is unacceptable for slow devices.\n\n### 2. Interrupt-driven I/O\n\nThe CPU starts the operation and continues with other work. When the device is ready it raises an **interrupt request (IRQ)**. The CPU finishes the current instruction, saves its state, and runs an **interrupt service routine (ISR)**.\n\n**What happens on an interrupt:**\n\n1. The device asserts the interrupt line.\n2. The CPU completes the current instruction and checks for pending interrupts.\n3. It **saves the PC and the flags** (on the stack), and disables further interrupts if needed.\n4. It identifies the source and jumps to the ISR: through a **vector table** (the device supplies a vector number that indexes the table of ISR addresses) or by polling.\n5. The ISR handles the device, then executes **return from interrupt**, which restores the flags and the PC.\n\n| Term | Meaning |\n|---|---|\n| **Maskable interrupt** | can be ignored (disabled) by the CPU: devices |\n| **Non-maskable interrupt (NMI)** | cannot be disabled: hardware failures |\n| **Priority** | when two interrupts arrive, the higher priority is served first; a higher-priority interrupt may **nest** inside a running ISR |\n| **Exception (trap)** | raised *by the CPU* in response to an instruction: divide by zero, page fault, system call |\n\nA **system call** is deliberately a trap: your Java program asking the OS to read a file ends in an instruction that traps into the kernel.\n\n### 3. Direct memory access (DMA)\n\nInterrupting the CPU for every byte is wasteful when moving blocks of data. A **DMA controller** transfers data between the device and memory **by itself**, taking over the bus. The CPU only programs it (source, destination, count) and gets **one interrupt when the whole block is done**.\n\n- **Burst mode:** the DMA controller holds the bus for the whole block; the CPU is blocked meanwhile.\n- **Cycle stealing:** it takes the bus for one transfer at a time, between CPU accesses.\n\n**Numeric comparison.** A device delivers 4 MB/s in 4-byte words: 10⁶ words per second. A CPU at 1 GHz takes 500 cycles to run the ISR for one word: 10⁶ × 500 = 5 × 10⁸ cycles per second: **50% of the CPU**. With DMA moving 4 KB blocks (1,000 blocks per second) and 1,000 cycles per block interrupt: 10⁶ cycles per second: **0.1% of the CPU**."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Polling:** simplest, wastes the CPU, fine for fast devices that are almost always ready.\n- **Interrupts:** CPU free between events, but overhead per event (save state, ISR, restore).\n- **DMA:** best for bulk data: one interrupt per block, the CPU is only slowed by bus sharing.\n- Interrupt sequence: finish instruction → save PC and flags → find the ISR (vector) → run → return.\n- Traps and exceptions come from the CPU itself (system calls, page faults, divide by zero).",
+     "title": "I/O methods compared"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "With interrupts, every event costs a context save, the ISR and a restore. If a device produces events extremely often (a fast network card at high load), the interrupt overhead can swamp the CPU, so high-speed drivers use polling or a hybrid (interrupt once, then poll until empty, as Linux NAPI does). For slow or rare events interrupts are better because the CPU can do other work in between.",
+     "title": "Interview angle: Interrupts versus polling, when is polling better?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Polling wastes the CPU in a busy-wait loop\n- An interrupt saves the PC and flags, finds the ISR through a vector table, and returns\n- Exceptions and traps are raised by the CPU itself; a system call is a trap\n- DMA moves blocks without the CPU and interrupts once at the end\n- Burst mode blocks the CPU; cycle stealing interleaves with it"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-3",
+   "type": "concept",
+   "title": "Storage devices",
+   "subtopicId": "6-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Hard disks\n\nA hard disk has **platters** divided into **tracks** and **sectors** (typically 512 bytes or 4 KB). A head must **seek** to the right track, wait for the sector to **rotate** under it, and then **transfer** the data.\n\n**Access time = seek time + rotational latency + transfer time**\n\n- **Rotational latency** on average is **half a rotation**: at 7,200 rpm one rotation takes 60,000 / 7,200 = 8.33 ms, so the average latency is 4.17 ms.\n- **Transfer time** = (bytes to transfer / bytes per track) × time per rotation.\n\n**Example.** 7,200 rpm, average seek 4 ms, 512-byte sectors, 200 sectors per track, reading 4 KB: rotation 8.33 ms; half = 4.17 ms; the track holds 102,400 bytes so the transfer is 4,096 / 102,400 × 8.33 ≈ 0.33 ms. Access time ≈ 4 + 4.17 + 0.33 = **8.5 ms**. Seek and rotation dominate, which is why random access on a disk is so much slower than sequential, and why databases are designed around sequential I/O.\n\n### Solid-state drives (SSD)\n\nAn SSD stores bits in **NAND flash**: no moving parts, so random access takes tens of microseconds. Quirks that matter to software:\n\n- Data is **read and written in pages** (4 to 16 KB) but **erased in blocks** (many pages), and a page cannot be overwritten in place.\n- Each cell survives a limited number of erase cycles, so the controller does **wear levelling** and **garbage collection**; the **TRIM** command tells it which blocks are free.\n- Random reads are fast, small random writes are comparatively expensive (write amplification).\n\n### RAID: combining disks\n\n**RAID** (redundant array of independent disks) combines disks for speed, reliability or both. With N disks of capacity C:\n\n| Level | Idea | Usable capacity | Survives |\n|---|---|---|---|\n| **RAID 0** | striping, no redundancy | N × C | no disk failure |\n| **RAID 1** | mirroring | N × C / 2 | one disk per mirrored pair |\n| **RAID 5** | striping with one block of **distributed parity** | (N − 1) × C | **one** disk |\n| **RAID 6** | two parity blocks | (N − 2) × C | **two** disks |\n| **RAID 10** | stripe of mirrors | N × C / 2 | one disk per mirror (more in the best case) |\n\n**Example.** Eight 4 TB disks in RAID 5 give (8 − 1) × 4 = **28 TB** usable. RAID 5 recovers a lost block by XOR-ing the surviving blocks of the stripe, because parity = XOR of the data blocks. A small write costs four I/Os (read old data and parity, write new data and parity): the **small-write penalty**."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Disk access time = seek + ½ rotation + transfer. Rotation time = 60 / rpm seconds.\n- Average rotational latency = ½ × (60,000 / rpm) ms (7,200 rpm: 4.17 ms; 15,000 rpm: 2 ms).\n- Transfer time = (bytes / bytes per track) × rotation time.\n- RAID 0: N·C, RAID 1/10: N·C/2, RAID 5: (N−1)·C, RAID 6: (N−2)·C.\n- RAID 5 parity: P = D1 ⊕ D2 ⊕ ... ⊕ Dn; a lost block = XOR of the rest.\n- SSD: erase by block, write by page, wear levelling, TRIM.",
+     "title": "Storage formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Disk access time = seek + half a rotation + transfer; seek and rotation dominate\n- Sequential access is far faster than random on a hard disk\n- SSDs erase by block and write by page, with wear levelling\n- RAID 5 survives one disk failure with (N−1)·C capacity; RAID 6 survives two\n- Parity is the XOR of the data blocks, so a lost block is the XOR of the others"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-4",
+   "type": "concept",
+   "title": "Putting it all together",
+   "subtopicId": "6-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This chapter follows two everyday events through everything in Parts 1 to 6. Being able to narrate them is a strong interview answer.\n\n### What happens when your program executes `int v = a[i];`\n\n1. The compiler or JIT turns it into instructions: compute `address = base(a) + i × 4`, then a **load** (displacement addressing).\n2. The **fetch** stage reads the load instruction through the **L1 instruction cache**; the pipeline's **decode** stage reads the base register; the **ALU** adds the offset.\n3. The address is a **virtual address**. The **TLB** translates it to a physical address (a TLB miss means a page-table walk; a page fault means the OS reads the page from disk, millions of cycles).\n4. The **L1 data cache** is searched: the index selects the set, the tags are compared. A **hit** returns in about 1 ns; a miss goes to L2, then L3, then DRAM (50 to 100 ns), bringing a whole **64-byte block** so that `a[i+1]` is already there next time (spatial locality).\n5. The value is written back to a register in the write-back stage. If an instruction after it needs the register, **forwarding** or a **load-use stall** applies.\n\n### What happens when you press a key\n\n1. The keyboard controller raises an **interrupt**. The CPU finishes its current instruction, saves the PC and flags, and jumps through the **vector table** to the keyboard ISR.\n2. The ISR reads the **device's data register** (memory-mapped I/O), places the key code in a buffer and returns from the interrupt.\n3. The OS wakes the process waiting on the input; the scheduler runs it, and the program receives the character through a **system call** (a trap into the kernel).\n\n### Why performance advice follows from the hardware\n\n| Advice | Hardware reason |\n|---|---|\n| Use arrays and iterate sequentially | cache blocks, spatial locality, prefetching |\n| Avoid pointer chasing (linked lists, boxed objects) | every hop is a possible cache miss |\n| Keep hot data small | fits in L1/L2: capacity misses |\n| Avoid unpredictable branches in hot loops | branch misprediction flushes the pipeline |\n| Batch I/O and prefer sequential reads | seek and rotation dominate a disk; DMA works on blocks |\n| Do not share a hot variable between threads | cache coherence traffic (false sharing) |"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A load involves translation (TLB), the cache hierarchy, the pipeline and possibly the disk\n- A key press travels through an interrupt, a vector table, an ISR and a system call\n- Locality, predictable branches and sequential I/O are what hardware rewards\n- Cache coherence makes sharing hot variables between cores expensive"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (15 questions)",
+   "subtopicId": "6-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "15 original questions on 8 areas. *Recall* questions test a definition or a rule. *Problem* questions give you numbers or a short scenario to work out. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "core-coa-io",
+     "items": [
+      {
+       "t": "Buses",
+       "q": "*(Problem)* A system bus has a 64-bit data path and performs one transfer per clock cycle at 100 MHz. Its peak bandwidth is",
+       "o": [
+        "800 MB/s",
+        "400 MB/s",
+        "80 MB/s",
+        "6,400 MB/s"
+       ],
+       "a": 0,
+       "w": "Each transfer moves 64 bits = 8 bytes and there are 100 × 10⁶ transfers per second: 8 × 100 × 10⁶ = 800 MB/s."
+      },
+      {
+       "t": "Buses",
+       "q": "*(Problem)* A processor has 36 address lines and uses byte-addressable memory. The maximum memory it can address, in GiB, is",
+       "o": [
+        "16",
+        "64",
+        "128",
+        "32"
+       ],
+       "a": 1,
+       "w": "2³⁶ bytes = 2⁶ × 2³⁰ = 64 GiB."
+      },
+      {
+       "t": "I/O addressing",
+       "q": "*(Recall)* In memory-mapped I/O",
+       "o": [
+        "devices use a separate address space accessed with IN and OUT instructions",
+        "devices can only be accessed through DMA",
+        "the CPU needs no address bus to reach devices",
+        "device registers are accessed with ordinary load and store instructions"
+       ],
+       "a": 3,
+       "w": "Memory-mapped I/O assigns device registers addresses in the normal memory address space, so no special I/O instructions are needed. Isolated (port-mapped) I/O uses a separate space with IN and OUT."
+      },
+      {
+       "t": "Arbitration",
+       "q": "*(Recall)* In daisy-chain bus arbitration, priority is decided by",
+       "o": [
+        "a central arbiter with a priority table",
+        "the devices negotiating among themselves",
+        "the position of the device along the chain: the one nearest the arbiter wins",
+        "a random choice"
+       ],
+       "a": 2,
+       "w": "The grant signal travels along the chain, so the device closest to the arbiter sees it first. Devices at the end of the chain may starve."
+      },
+      {
+       "t": "Interrupts vs DMA",
+       "q": "*(Problem)* A device delivers data at 2,000,000 bytes per second in 4-byte words and interrupts the CPU once per word. Each interrupt service routine takes 600 cycles on a 1.5 GHz CPU. The fraction of CPU time spent in the ISR is",
+       "o": [
+        "20%",
+        "40%",
+        "2%",
+        "10%"
+       ],
+       "a": 0,
+       "w": "2,000,000 / 4 = 500,000 interrupts per second, each costing 600 cycles: 3 × 10⁸ cycles per second out of 1.5 × 10⁹ = 20%."
+      },
+      {
+       "t": "Interrupts vs DMA",
+       "q": "*(Problem)* The same device now uses DMA with 4,000-byte blocks and one interrupt per block, each interrupt costing 3,000 cycles on the 1.5 GHz CPU. The fraction of CPU time spent servicing interrupts is",
+       "o": [
+        "5%",
+        "1%",
+        "0.1%",
+        "20%"
+       ],
+       "a": 2,
+       "w": "2,000,000 / 4,000 = 500 interrupts per second, each costing 3,000 cycles: 1.5 × 10⁶ cycles per second out of 1.5 × 10⁹ = 0.1%."
+      },
+      {
+       "t": "Interrupts",
+       "q": "*(Recall)* When the CPU accepts an interrupt, the minimum state it must save automatically so that the interrupted program can resume is",
+       "o": [
+        "the program counter and the status flags",
+        "only the stack pointer",
+        "nothing, because the ISR always restarts the program",
+        "the contents of all memory"
+       ],
+       "a": 0,
+       "w": "To resume correctly the CPU must remember where it was (the PC) and the condition flags; the ISR saves any other registers it uses. A return-from-interrupt instruction restores them."
+      },
+      {
+       "t": "Interrupts",
+       "q": "*(Recall)* Which of the following is raised by the CPU itself during the execution of an instruction rather than by an external device?",
+       "o": [
+        "a keyboard interrupt",
+        "a timer interrupt",
+        "a disk completion interrupt",
+        "a divide-by-zero exception"
+       ],
+       "a": 3,
+       "w": "Exceptions (traps) such as divide by zero, page faults and system calls arise from the executing instruction. Keyboard, disk and timer interrupts come from outside the CPU."
+      },
+      {
+       "t": "Disks",
+       "q": "*(Problem)* The average rotational latency of a 10,000 rpm disk in milliseconds is",
+       "o": [
+        "6",
+        "1.5",
+        "8.3",
+        "3"
+       ],
+       "a": 3,
+       "w": "One rotation takes 60,000 / 10,000 = 6 ms. On average the wanted sector is half a rotation away: 3 ms."
+      },
+      {
+       "t": "Disks",
+       "q": "*(Problem)* A 7,200 rpm disk has an average seek time of 4 ms, 512-byte sectors and 200 sectors per track. The average time to read one 4 KB block (8 consecutive sectors on one track) is closest to",
+       "o": [
+        "8.5 ms",
+        "16.7 ms",
+        "12.3 ms",
+        "4.5 ms"
+       ],
+       "a": 0,
+       "w": "Average rotational latency = ½ × 8.33 ms = 4.17 ms. Transfer = 8/200 × 8.33 ms = 0.33 ms. Total = 4 + 4.17 + 0.33 ≈ 8.5 ms."
+      },
+      {
+       "t": "RAID",
+       "q": "*(Problem)* Eight 4 TB disks are configured as RAID 5. The usable capacity in TB is",
+       "o": [
+        "32",
+        "28",
+        "24",
+        "16"
+       ],
+       "a": 1,
+       "w": "RAID 5 stores one disk's worth of parity spread over the array, so usable capacity is (8 − 1) × 4 = 28 TB."
+      },
+      {
+       "t": "RAID",
+       "q": "*(Problem)* Six 2 TB disks are configured as RAID 10 (a stripe of mirrored pairs). The usable capacity in TB is",
+       "o": [
+        "10",
+        "6",
+        "4",
+        "8"
+       ],
+       "a": 1,
+       "w": "RAID 10 mirrors every disk, so half of the raw capacity is usable: 6 × 2 / 2 = 6 TB."
+      },
+      {
+       "t": "RAID",
+       "q": "*(Problem)* A RAID 5 stripe holds the data blocks D1 = 1011, D2 = 0110, D3 = 1100 and the parity block P = D1 ⊕ D2 ⊕ D3. The disk holding D2 fails. The reconstructed D2 is",
+       "o": [
+        "0001",
+        "1001",
+        "0110",
+        "1111"
+       ],
+       "a": 2,
+       "w": "P = 1011 ⊕ 0110 ⊕ 1100 = 0001. The lost block is the XOR of everything that remains: D2 = P ⊕ D1 ⊕ D3 = 0001 ⊕ 1011 ⊕ 1100 = 0110."
+      },
+      {
+       "t": "RAID",
+       "q": "*(Recall)* RAID 6 differs from RAID 5 in that it",
+       "o": [
+        "uses mirroring instead of parity",
+        "needs only two disks",
+        "keeps two independent parity blocks per stripe and survives two simultaneous disk failures",
+        "has no redundancy but faster reads"
+       ],
+       "a": 2,
+       "w": "RAID 6 stores two different parity blocks per stripe, giving usable capacity (N − 2) × C and tolerance for any two disk failures, at the cost of more write overhead."
+      },
+      {
+       "t": "SSD",
+       "q": "*(Recall)* In a NAND flash SSD, data is",
+       "o": [
+        "stored on spinning platters",
+        "written in pages but erased only in larger blocks, so a page cannot be overwritten in place",
+        "overwritten in place like a hard disk sector",
+        "erased one page at a time and written one block at a time"
+       ],
+       "a": 1,
+       "w": "Flash can be programmed page by page but must be erased block by block before it can be written again. The controller therefore remaps writes, wear-levels and garbage-collects; TRIM tells it which blocks are free."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Buses and I/O organisation"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the bandwidth of a 32-bit data bus that does one transfer per clock at 200 MHz?",
+       "answer": "4 bytes × 200 × 10⁶ = 800 MB/s."
+      },
+      {
+       "question": "What is the main difference between memory-mapped and isolated I/O?",
+       "answer": "In memory-mapped I/O the device registers share the memory address space and are accessed with normal load and store instructions. In isolated I/O the devices live in a separate address space accessed with dedicated IN and OUT instructions."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Programmed I/O, interrupts and DMA"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is DMA better than interrupt-driven I/O for disk transfers?",
+       "answer": "Interrupt-driven I/O interrupts the CPU for every word (or small unit), spending many cycles on state saving and the ISR. A DMA controller moves the whole block itself and interrupts the CPU once at the end, leaving the CPU free for other work."
+      },
+      {
+       "question": "What does the CPU do when it receives an interrupt?",
+       "answer": "It finishes the current instruction, saves the PC and flags, identifies the interrupting device (for example through the vector table), runs the interrupt service routine, and finally restores the saved state with a return-from-interrupt instruction."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Storage devices"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the average rotational latency of a 15,000 rpm disk?",
+       "answer": "One rotation takes 60,000 / 15,000 = 4 ms, so the average wait is half a rotation: 2 ms."
+      },
+      {
+       "question": "Why does RAID 5 survive one disk failure?",
+       "answer": "Each stripe stores a parity block equal to the XOR of its data blocks. If one disk fails, the missing block of every stripe equals the XOR of all the remaining blocks (data and parity), so it can be reconstructed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Putting it all together"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Describe what happens, in hardware terms, when a program reads an array element that is not in the cache.",
+       "answer": "The address is translated by the TLB (or a page walk), the L1 cache is searched and misses, the request goes to L2, L3 and finally DRAM. A whole cache block containing the element is brought back and stored in the cache, then the requested word is delivered to a register. Neighbouring elements are now cache hits."
+      },
+      {
+       "question": "Why are linked lists often slower than arrays for traversal even though both are O(n)?",
+       "answer": "An array's elements are contiguous, so each cache block loaded serves several elements and the hardware can prefetch. A linked list's nodes are scattered in memory and each next-pointer dereference is likely to be a cache miss."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
