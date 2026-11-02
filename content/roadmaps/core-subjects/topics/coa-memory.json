@@ -1,0 +1,425 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)",
+  "questions": 18
+ },
+ "sections": [
+  {
+   "id": "ch-5-1",
+   "type": "concept",
+   "title": "Why there is a hierarchy",
+   "subtopicId": "5-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a computer science student, in the style of the other guides. Examples use Java, with Python and C++ where the languages differ. Worked numbers were checked by program. Where a vendor, a standard or a language version matters, check the official source before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A CPU can execute an instruction in well under a nanosecond, but reading main memory takes around 50 to 100 ns: **a hundred times slower**. If every access went to main memory the CPU would spend almost all of its time waiting. We cannot make a large memory that is both fast and cheap, so we build a **hierarchy**: small, fast, expensive memories close to the CPU, large, slow, cheap ones further away, arranged so that most accesses are served by the fast levels.\n\n| Level | Typical size | Typical access time | Technology |\n|---|---|---|---|\n| Registers | a few hundred bytes | under 1 ns | flip-flops |\n| L1 cache | 32 to 64 KB per core | 1 ns | SRAM |\n| L2 cache | 256 KB to 2 MB | 3 to 5 ns | SRAM |\n| L3 cache (shared) | 8 to 64 MB | 10 to 20 ns | SRAM |\n| Main memory | 8 to 128 GB | 50 to 100 ns | DRAM |\n| SSD | hundreds of GB to TB | 50 to 150 µs | flash |\n| Hard disk | TB | 5 to 10 ms | magnetic |\n\nGoing down the table, **size and latency increase while cost per byte falls**.\n\n### Why it works: locality\n\nPrograms do not access memory at random. They show **locality of reference**:\n\n- **Temporal locality:** something used recently is likely to be used again soon (loop variables, the same function called repeatedly).\n- **Spatial locality:** things near a recently used address are likely to be used soon (walking through an array, sequential instructions).\n\nA cache keeps recently used data (temporal) and brings whole **blocks** of neighbouring bytes at a time (spatial). The Java loop `for (int i = 0; i < n; i++) sum += a[i];` has both: `sum` and `i` are reused, and `a[i+1]` is next to `a[i]`. Traversing a 2-D array **row by row** is much faster than column by column for exactly this reason: Java stores each row contiguously.\n\n### SRAM, DRAM and ROM\n\n| | SRAM | DRAM |\n|---|---|---|\n| Cell | 6 transistors (a flip-flop) | 1 transistor + 1 capacitor |\n| Speed | fast | slower |\n| Density and cost | low density, expensive | high density, cheap |\n| Refresh needed | no | **yes**: the capacitor leaks, so every row is refreshed every few ms |\n| Used for | caches | main memory |\n\n**ROM** keeps its contents without power (firmware, boot code): PROM, EPROM (UV erasable), EEPROM and **flash** (block-erasable, used in SSDs and USB drives).\n\n### Building memories from chips\n\nA memory of 64K × 16 (65,536 words of 16 bits) from 16K × 4 chips needs (64K / 16K) × (16 / 4) = 4 × 4 = **16 chips**: 4 chips side by side give the 16-bit width, and 4 such rows give the capacity. The 2 high-order address bits drive a **2-to-4 decoder** that selects the row (chip select). **Interleaving** spreads consecutive addresses over several banks so that they can be accessed in parallel."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Words × bits per word = capacity. Chips needed = (total capacity) / (chip capacity).\n- Address bits = log₂(number of addressable words).\n- Locality: temporal (reuse) and spatial (neighbours). Cache blocks exploit spatial locality.\n- SRAM is faster and costlier (caches); DRAM needs refresh (main memory).\n- Row-major traversal of an array is faster than column-major in Java and C.",
+     "title": "Memory quick facts"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The hierarchy gives the illusion of a large, fast memory using locality\n- Temporal locality: reuse; spatial locality: neighbours\n- SRAM (6 transistors, fast) for caches; DRAM (1T1C, refreshed) for main memory\n- Down the hierarchy: bigger, slower, cheaper\n- Chip count = capacity ratio; high address bits select the chip"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-2",
+   "type": "concept",
+   "title": "Cache memory",
+   "subtopicId": "5-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **cache** is a small, fast memory between the CPU and main memory that holds copies of recently used blocks. When the CPU asks for an address:\n\n- **Hit:** the block is in the cache; the data returns quickly.\n- **Miss:** the block is fetched from the next level (taking the **miss penalty**), stored in the cache and then delivered.\n\n**Hit rate** = hits / accesses; **miss rate** = 1 − hit rate. Memory is divided into **blocks** (lines) of, say, 64 bytes, and a whole block is transferred on a miss.\n\n### Mapping: where can a block go?\n\nThe address is split into three fields:\n\n**| Tag | Index | Block offset |**\n\n- **Offset** (log₂ block size bits) selects the byte inside the block.\n- **Index** selects the cache **set** (or line).\n- **Tag** is the rest; it is stored with the block and compared on each access to see whether *this* memory block is the one in the line.\n\n| Mapping | A block may go in | Index bits | Hardware |\n|---|---|---|---|\n| **Direct-mapped** | exactly one line: block number mod (number of lines) | log₂(lines) | simplest, fastest, but **conflict misses** |\n| **Fully associative** | any line | 0 (no index) | compare all tags in parallel: costly, only for small caches or TLBs |\n| **k-way set-associative** | any of the k lines in one set: block number mod (number of sets) | log₂(sets) | a compromise used by real CPUs (4-way, 8-way) |\n\n**Worked example.** A 32-bit address, 32 KB cache, 64-byte blocks.\n- Block offset: log₂ 64 = **6** bits. Number of blocks: 32 KB / 64 B = 512.\n- **Direct-mapped:** 512 sets, index = **9** bits, tag = 32 − 9 − 6 = **17** bits.\n- **4-way:** 512 / 4 = 128 sets, index = **7** bits, tag = 32 − 7 − 6 = **19** bits.\n- **Fully associative:** no index, tag = 32 − 6 = **26** bits.\n\nMore associativity means a longer tag and more comparators, but fewer conflict misses.\n\n**Conflict example.** Blocks 0, 4, 8, 16 are accessed repeatedly in a direct-mapped cache with 4 lines. All four map to line 0 (block mod 4 = 0), so every access evicts the previous one: a **miss every time**, although the cache has three empty lines. A fully associative cache of the same size misses only the first four times.\n\n### Replacement and write policies\n\nWhen a set is full, a **replacement policy** picks a victim: **LRU** (least recently used: best, costly to track), **FIFO**, or **random** (cheap, nearly as good for large caches).\n\nWhen the CPU **writes**, two questions arise:\n\n| Policy | What happens on a write hit | Notes |\n|---|---|---|\n| **Write-through** | update the cache **and** memory | simple, memory always current, but slow: a **write buffer** hides the cost |\n| **Write-back** | update only the cache and set a **dirty bit**; write the block to memory when it is evicted | far less memory traffic; needs the dirty bit |\n\nOn a write **miss**, **write-allocate** loads the block into the cache first (usual with write-back); **no-write-allocate** writes straight to memory (usual with write-through).\n\n### The three Cs of cache misses\n\n| Miss type | Cause | Reduced by |\n|---|---|---|\n| **Compulsory** (cold) | first access to a block | larger blocks, prefetching |\n| **Capacity** | the working set is bigger than the cache | a bigger cache |\n| **Conflict** | too many blocks map to the same set | more associativity |\n\nA fourth cause matters on multicore machines: **coherence misses**, when another core invalidated the block."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Offset bits = log₂(block size). Number of blocks = cache size / block size.\n- Number of sets = blocks / associativity. Index bits = log₂(sets).\n- Tag bits = address bits − index bits − offset bits.\n- Direct-mapped: sets = blocks. Fully associative: sets = 1, no index bits.\n- Total tag storage = number of blocks × tag bits (plus valid and dirty bits).",
+     "title": "Cache field formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Write-through keeps memory consistent at all times and is simple, but every store goes to memory, so a write buffer is needed. Write-back writes memory only when a dirty block is evicted, saving a great deal of bandwidth for data written repeatedly, which is why L1 and L2 caches in CPUs are write-back. The cost is the dirty bit and the more complex coherence in multiprocessors.",
+     "title": "Interview angle: Write-through or write-back?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- An address splits into tag, index and block offset\n- Direct-mapped: one possible line (conflicts); fully associative: any line (costly); set-associative: a compromise\n- Tag bits = address bits − index bits − offset bits\n- Write-back uses a dirty bit and saves memory traffic; write-through updates memory on every write\n- Misses are compulsory, capacity or conflict"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-3",
+   "type": "concept",
+   "title": "Cache performance",
+   "subtopicId": "5-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Average memory access time (AMAT)\n\n**AMAT = hit time + miss rate × miss penalty**\n\n**Example.** Hit time 1 ns, miss rate 5%, miss penalty 100 ns: AMAT = 1 + 0.05 × 100 = **6 ns**. Halving the miss rate to 2.5% gives 3.5 ns, so reducing misses matters far more than shaving the hit time.\n\n### Multilevel caches\n\nWith an L1 and an L2 cache, the L1 **miss penalty** is the L2 access time plus L2's own misses going to memory. Using **local** miss rates (misses divided by the accesses to *that* level):\n\n**AMAT = H₁ + m₁ × (H₂ + m₂ × T_memory)**\n\nWith L1 hit time 1 ns, L1 local miss rate 10%, L2 hit time 10 ns, L2 local miss rate 20% and memory time 100 ns: AMAT = 1 + 0.1 × (10 + 0.2 × 100) = 1 + 0.1 × 30 = **4 ns**.\n\n### Effect on CPI\n\nMemory stalls add to the base CPI:\n\n**CPI = base CPI + (memory accesses per instruction) × miss rate × miss penalty (in cycles)**\n\nWith base CPI 1.2, one instruction fetch plus 0.3 data accesses per instruction (1.3 accesses), a 2% miss rate and a 50-cycle penalty: CPI = 1.2 + 1.3 × 0.02 × 50 = **2.5**. The cache misses double the CPI, so a faster processor core helps little unless the memory system keeps up (the \"memory wall\").\n\n### Improving performance\n\n- **Larger blocks** reduce compulsory misses (spatial locality) but increase the miss penalty and can cause pollution.\n- **Higher associativity** reduces conflict misses but lengthens the hit time.\n- **Prefetching** loads blocks before they are asked for.\n- **Cache-friendly code:** access memory sequentially, keep the working set small, **loop blocking (tiling)** for matrices. In Java prefer an `int[]` to a `List<Integer>`: the array is contiguous and has far fewer cache misses than boxed objects scattered on the heap."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- AMAT = hit time + miss rate × miss penalty.\n- Two levels: AMAT = H₁ + m₁(H₂ + m₂ · T_mem) with local miss rates.\n- Effective CPI = base CPI + accesses per instruction × miss rate × miss penalty.\n- Global miss rate of L2 = m₁ × m₂ (local rates multiplied).",
+     "title": "Performance formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- AMAT = hit time + miss rate × miss penalty\n- With two levels the L1 miss penalty is itself an AMAT of the L2\n- Memory stalls add accesses per instruction × miss rate × penalty to the CPI\n- Contiguous, sequential access patterns are cache-friendly\n- Reducing the miss rate usually beats reducing the hit time"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-4",
+   "type": "concept",
+   "title": "Virtual memory",
+   "subtopicId": "5-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Virtual memory** gives each process the illusion of a large, private address space. The CPU issues **virtual addresses**; hardware (the **MMU**) translates them to **physical addresses** using a **page table**. Memory is divided into fixed-size **pages** (typically 4 KB); physical memory into **frames** of the same size. The operating system keeps only the active pages in RAM and the rest on disk. (Operating Systems Part 3 covers the OS side in depth.)\n\nA virtual address splits into **page number** and **offset**. For 32-bit virtual addresses and 4 KB pages the offset is 12 bits and the page number is 20 bits.\n\n### The page table\n\nEach process has a page table with one **page table entry (PTE)** per virtual page, holding the frame number plus **valid**, **dirty**, **reference** and **protection** bits.\n\n**Size example.** 32-bit addresses, 4 KB pages, 4-byte PTEs: 2²⁰ entries × 4 B = **4 MB per process**. A 64-bit space would be far too large for one flat table, so real systems use **multi-level** (and inverted) page tables, allocating only the parts in use.\n\n### The TLB\n\nEvery memory access would need two memory accesses (page table, then data). A **translation lookaside buffer (TLB)** is a small, fast cache of recent translations.\n\n**Effective access time with a TLB:** a TLB hit costs the TLB time plus one memory access; a miss costs the TLB time plus a page-table access plus the data access.\n\nWith a 90% TLB hit ratio, TLB time 10 ns and memory time 100 ns:\nEAT = 0.9 × (10 + 100) + 0.1 × (10 + 100 + 100) = 99 + 21 = **120 ns**.\n\n### Page faults\n\nA **page fault** occurs when the page is not in memory (valid bit 0). The OS loads it from disk (millions of cycles) and restarts the instruction. With a memory access time of 100 ns, a fault service time of 8 ms and a fault rate p: EAT = (1 − p) × 100 ns + p × 8,000,000 ns. To keep the slowdown below 10%, p must be below about **1.25 × 10⁻⁶**, one fault in 800,000 accesses. This is why **locality** and good page replacement matter so much, and why excessive paging (**thrashing**) is catastrophic.\n\n**Page replacement.** FIFO, LRU and the unrealistic optimal (OPT). For the reference string 1,2,3,4,1,2,5,1,2,3,4,5, FIFO with 3 frames faults 9 times and with 4 frames faults **10** times: more memory, more faults. This is **Belady's anomaly**; it affects FIFO but never LRU or OPT (stack algorithms)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Offset bits = log₂(page size); page number bits = address bits − offset bits.\n- Flat page table size = 2^(page number bits) × PTE size.\n- EAT (with TLB) = h(t_tlb + t_mem) + (1 − h)(t_tlb + 2·t_mem) for a one-level page table.\n- EAT with faults = (1 − p) t_mem + p × t_fault.\n- Belady's anomaly: FIFO can fault more with more frames; LRU and OPT cannot.",
+     "title": "Virtual memory formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Virtual addresses are translated to physical addresses by the MMU using page tables\n- A flat table for 32-bit addresses and 4 KB pages has 2²⁰ entries\n- The TLB caches translations; its hit ratio sets the effective access time\n- Page faults cost millions of cycles, so the fault rate must be tiny\n- Belady's anomaly: FIFO may fault more with more frames"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (18 questions)",
+   "subtopicId": "5-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "18 original questions on 14 areas. *Recall* questions test a definition or a rule. *Problem* questions give you numbers or a short scenario to work out. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "core-coa-memory",
+     "items": [
+      {
+       "t": "Memory chips",
+       "q": "*(Problem)* A memory of 64K × 16 bits is built from 16K × 4 bit chips. The number of chips required is",
+       "o": [
+        "32",
+        "16",
+        "4",
+        "8"
+       ],
+       "a": 1,
+       "w": "Width: 16 / 4 = 4 chips side by side. Depth: 64K / 16K = 4 rows. Total 4 × 4 = 16 chips, with the 2 high address bits selecting the row through a decoder."
+      },
+      {
+       "t": "Cache fields",
+       "q": "*(Problem)* A 32-bit address is used with a 16 KB direct-mapped cache with 16-byte blocks. The number of tag bits is",
+       "o": [
+        "16",
+        "18",
+        "14",
+        "22"
+       ],
+       "a": 1,
+       "w": "Offset = log₂ 16 = 4 bits. Blocks = 16 KB / 16 B = 1024, so index = 10 bits. Tag = 32 − 10 − 4 = 18 bits."
+      },
+      {
+       "t": "Cache fields",
+       "q": "*(Problem)* A 32-bit address is used with a 32 KB 4-way set-associative cache with 64-byte blocks. The number of tag bits is",
+       "o": [
+        "19",
+        "21",
+        "26",
+        "17"
+       ],
+       "a": 0,
+       "w": "Offset = 6 bits. Blocks = 32 KB / 64 B = 512 and sets = 512 / 4 = 128, so index = 7 bits. Tag = 32 − 7 − 6 = 19 bits."
+      },
+      {
+       "t": "Cache fields",
+       "q": "*(Problem)* A cache has 512 blocks. It is direct-mapped with a 17-bit tag, and each block also keeps one valid bit. The total size of the tag and valid-bit storage in bytes is",
+       "o": [
+        "1,024",
+        "1,216",
+        "1,088",
+        "1,152"
+       ],
+       "a": 3,
+       "w": "Each block needs 17 + 1 = 18 bits, so the store holds 512 × 18 = 9,216 bits = 1,152 bytes."
+      },
+      {
+       "t": "Conflict misses",
+       "q": "*(Problem)* The block numbers 0, 4, 8, 0, 4, 8, 16, 0, 4 are accessed in order in a direct-mapped cache with 4 lines (initially empty). The number of misses is",
+       "o": [
+        "8",
+        "4",
+        "9",
+        "6"
+       ],
+       "a": 2,
+       "w": "Blocks 0, 4, 8 and 16 all map to line 0 (block mod 4 = 0), so each access evicts the previous block and every one of the 9 accesses misses."
+      },
+      {
+       "t": "Associativity",
+       "q": "*(Problem)* The same access sequence 0, 4, 8, 0, 4, 8, 16, 0, 4 runs in a fully associative cache with 4 lines and LRU replacement. The number of misses is",
+       "o": [
+        "4",
+        "5",
+        "7",
+        "9"
+       ],
+       "a": 0,
+       "w": "Only four different blocks (0, 4, 8, 16) are used, and four lines can hold them all: the 4 compulsory misses are the only ones. Full associativity removes the conflict misses of the direct-mapped cache."
+      },
+      {
+       "t": "AMAT",
+       "q": "*(Problem)* A cache has a hit time of 2 ns, a miss rate of 4% and a miss penalty of 80 ns. The average memory access time in ns is",
+       "o": [
+        "5.2",
+        "3.2",
+        "5.0",
+        "82"
+       ],
+       "a": 0,
+       "w": "AMAT = hit time + miss rate × miss penalty = 2 + 0.04 × 80 = 5.2 ns."
+      },
+      {
+       "t": "AMAT",
+       "q": "*(Problem)* An L1 cache has a 1 ns hit time and a 10% local miss rate. The L2 cache has a 10 ns hit time and a 20% local miss rate. Main memory takes 100 ns. The average memory access time in ns is",
+       "o": [
+        "7",
+        "5",
+        "3",
+        "4"
+       ],
+       "a": 3,
+       "w": "AMAT = 1 + 0.1 × (10 + 0.2 × 100) = 1 + 0.1 × 30 = 4 ns."
+      },
+      {
+       "t": "CPI",
+       "q": "*(Problem)* A processor has a base CPI of 1.2. Each instruction makes 1 instruction fetch and, on average, 0.3 data accesses. The cache miss rate is 2% and the miss penalty is 50 cycles. The effective CPI is",
+       "o": [
+        "1.5",
+        "2.5",
+        "2.2",
+        "3.0"
+       ],
+       "a": 1,
+       "w": "Memory stall cycles per instruction = 1.3 × 0.02 × 50 = 1.3, so CPI = 1.2 + 1.3 = 2.5."
+      },
+      {
+       "t": "Write policy",
+       "q": "*(Recall)* In a write-back cache, the dirty bit of a block is used to",
+       "o": [
+        "choose which block to replace under LRU",
+        "record that the block was read more than once",
+        "mark a block that has never been accessed",
+        "record that the block was modified and must be written to memory on eviction"
+       ],
+       "a": 3,
+       "w": "A write-back cache updates only the cache on a write and sets the dirty bit. When the block is evicted, it is written back to memory only if the bit is set."
+      },
+      {
+       "t": "Miss types",
+       "q": "*(Recall)* A miss that occurs on the very first access to a block is a",
+       "o": [
+        "compulsory miss",
+        "conflict miss",
+        "capacity miss",
+        "coherence miss"
+       ],
+       "a": 0,
+       "w": "The block has never been in the cache, so the miss is unavoidable (compulsory, or cold). Capacity misses occur when the working set exceeds the cache, and conflict misses when blocks compete for the same set."
+      },
+      {
+       "t": "Cache design",
+       "q": "*(Recall)* Which change most directly reduces conflict misses?",
+       "o": [
+        "increasing the block size",
+        "increasing the associativity",
+        "decreasing the clock rate",
+        "using write-through instead of write-back"
+       ],
+       "a": 1,
+       "w": "Conflict misses occur because blocks that map to the same set evict each other. More ways per set let those blocks coexist."
+      },
+      {
+       "t": "Virtual memory",
+       "q": "*(Problem)* A system has 32-bit virtual addresses, 8 KB pages and 4-byte page table entries. The size of a single-level page table for one process is",
+       "o": [
+        "1 MB",
+        "4 MB",
+        "2 MB",
+        "8 MB"
+       ],
+       "a": 2,
+       "w": "8 KB = 2¹³, so the page number has 32 − 13 = 19 bits and there are 2¹⁹ entries. Table size = 2¹⁹ × 4 B = 2 MB."
+      },
+      {
+       "t": "TLB",
+       "q": "*(Problem)* The TLB hit ratio is 80%, a TLB lookup takes 5 ns and a memory access takes 50 ns. A single-level page table is used. The effective memory access time in ns is",
+       "o": [
+        "55",
+        "70",
+        "65",
+        "105"
+       ],
+       "a": 2,
+       "w": "Hit: 5 + 50 = 55 ns. Miss: 5 + 50 (page table) + 50 (data) = 105 ns. EAT = 0.8 × 55 + 0.2 × 105 = 44 + 21 = 65 ns."
+      },
+      {
+       "t": "Page replacement",
+       "q": "*(Problem)* A process uses 3 frames with FIFO replacement and references the pages 1,2,3,4,1,2,5,1,2,3,4,5. The number of page faults with 4 frames instead is",
+       "o": [
+        "12",
+        "10",
+        "6",
+        "8"
+       ],
+       "a": 1,
+       "w": "With 3 frames FIFO faults 9 times; with 4 frames it faults 10 times. More frames giving more faults is Belady's anomaly, which affects FIFO but not LRU or the optimal policy."
+      },
+      {
+       "t": "Page replacement",
+       "q": "*(Problem)* For the reference string 7,0,1,2,0,3,0,4,2,3,0,3,2 and 3 frames, the optimal replacement policy causes how many page faults?",
+       "o": [
+        "7",
+        "9",
+        "6",
+        "10"
+       ],
+       "a": 0,
+       "w": "The optimal policy evicts the page whose next use is farthest in the future. Simulating the string gives 7 faults, against 9 for LRU and 10 for FIFO."
+      },
+      {
+       "t": "Page faults",
+       "q": "*(Problem)* Memory access takes 100 ns and servicing a page fault takes 8 ms. To keep the effective access time within 10% of 100 ns, the page-fault rate must be below about",
+       "o": [
+        "1.25 × 10⁻⁵",
+        "1.25 × 10⁻⁴",
+        "1.25 × 10⁻⁶",
+        "1.25 × 10⁻⁷"
+       ],
+       "a": 2,
+       "w": "EAT = 100 + p × (8,000,000 − 100) ns must be at most 110 ns, so p ≤ 10 / 7,999,900 ≈ 1.25 × 10⁻⁶: fewer than one fault per 800,000 accesses."
+      },
+      {
+       "t": "Memory technology",
+       "q": "*(Recall)* Compared with SRAM, DRAM",
+       "o": [
+        "is used for CPU registers",
+        "is faster and more expensive per bit",
+        "needs no refresh because it uses flip-flops",
+        "is cheaper per bit and needs periodic refresh"
+       ],
+       "a": 3,
+       "w": "A DRAM cell is one transistor and one capacitor, so it is dense and cheap but its charge leaks and must be refreshed. SRAM cells are flip-flops: faster, larger and costlier, used for caches."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Why there is a hierarchy"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a hierarchy of memories work even though most of the memory is slow?",
+       "answer": "Programs show locality: they reuse recently accessed data and access nearby addresses. A small fast cache therefore satisfies most accesses, and only the occasional miss goes to the slower level, so the average access time is close to the speed of the fast level."
+      },
+      {
+       "question": "Why must DRAM be refreshed but SRAM need not be?",
+       "answer": "A DRAM cell stores its bit as charge on a capacitor, which leaks away within milliseconds, so each row must be read and rewritten periodically. An SRAM cell is a flip-flop that holds its state as long as power is applied."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Cache memory"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How many tag, index and offset bits does a 16 KB 2-way set-associative cache with 32-byte blocks use for a 32-bit address?",
+       "answer": "Offset = log₂ 32 = 5 bits. Blocks = 16 KB / 32 B = 512; sets = 512 / 2 = 256, so index = 8 bits. Tag = 32 − 8 − 5 = 19 bits."
+      },
+      {
+       "question": "Why can a direct-mapped cache have a high miss rate even when it is mostly empty?",
+       "answer": "Several frequently used blocks may map to the same line and keep evicting each other (conflict misses) while other lines are unused. Associativity lets such blocks share a set."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Cache performance"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A cache has a hit time of 2 ns, a miss rate of 4% and a miss penalty of 80 ns. What is the AMAT?",
+       "answer": "AMAT = 2 + 0.04 × 80 = 5.2 ns."
+      },
+      {
+       "question": "Why is looping over a 2-D array row by row faster than column by column in Java?",
+       "answer": "Each row is stored contiguously, so row-by-row access uses all the bytes of every cache block brought in (spatial locality). Column-by-column access jumps a whole row between accesses, touching a different block each time and wasting most of each block."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Virtual memory"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the size of a flat page table for a 32-bit address space with 4 KB pages and 4-byte entries?",
+       "answer": "There are 2³² / 2¹² = 2²⁰ pages, so 2²⁰ × 4 B = 4 MB per process."
+      },
+      {
+       "question": "Why is a TLB needed?",
+       "answer": "Without it every memory reference needs an extra memory access to read the page table entry, doubling the access time. The TLB caches recent translations so most references are translated in a single fast lookup."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
