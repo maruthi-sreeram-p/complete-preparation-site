@@ -1,0 +1,397 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)",
+  "questions": 15
+ },
+ "sections": [
+  {
+   "id": "ch-4-1",
+   "type": "concept",
+   "title": "Measuring performance",
+   "subtopicId": "4-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a computer science student, in the style of the other guides. Examples use Java, with Python and C++ where the languages differ. Worked numbers were checked by program. Where a vendor, a standard or a language version matters, check the official source before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "\"Faster\" is meaningless until you say what you measure. The two basic measures:\n\n- **Response (execution) time:** how long one task takes. Important for a user waiting for a page.\n- **Throughput:** how many tasks per unit time. Important for a server.\n\n### The CPU performance equation\n\n**CPU time = Instruction count × CPI × Clock cycle time = (Instruction count × CPI) / Clock rate**\n\n| Factor | Set by |\n|---|---|\n| **Instruction count (IC)** | the algorithm, the compiler and the ISA |\n| **CPI** (cycles per instruction) | the microarchitecture and the instruction mix |\n| **Clock cycle time** | the hardware technology and the design |\n\n**Example.** A program runs 2 × 10⁹ instructions at an average CPI of 1.5 on a 2 GHz CPU: time = (2 × 10⁹ × 1.5) / (2 × 10⁹) = **1.5 s**.\n\n**Weighted CPI.** If 50% of instructions take 1 cycle, 30% take 2 and 20% take 4: CPI = 0.5 × 1 + 0.3 × 2 + 0.2 × 4 = **1.9**.\n\n**MIPS** (millions of instructions per second) = clock rate / (CPI × 10⁶). A 3 GHz CPU with CPI 1.5 gives 2,000 MIPS. MIPS is a poor way to compare different ISAs, because one instruction does different amounts of work: a faster **MIPS** number can hide a slower machine. Compare **execution time** of the same program instead."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- CPU time = IC × CPI × T_clock = IC × CPI / f.\n- Speedup of A over B = Time_B / Time_A.\n- CPI = Σ (fraction of instruction class i × CPI of class i).\n- MIPS = f / (CPI × 10⁶). Clock rate alone does not decide speed.\n- Throughput = tasks / time. Latency = time for one task.",
+     "title": "Performance formulas"
+    },
+    {
+     "type": "markdown",
+     "text": "### Amdahl's law\n\nImproving only **part** of a program limits the total gain. If a fraction **f** of the execution time is sped up by a factor **s**:\n\n**Speedup = 1 / ((1 − f) + f / s)**\n\n**Example.** Speed up 80% of a program by 4×: 1 / (0.2 + 0.8 / 4) = 1 / 0.4 = **2.5×**, not 4×. Even with infinite speedup of that part, the limit is 1 / (1 − f) = 1 / 0.2 = 5×. The lesson: **optimise the common case**, and the serial part dominates sooner than you expect. This is also why adding cores gives diminishing returns for programs with sequential sections."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- CPU time = IC × CPI × clock cycle time\n- Weighted CPI averages the CPI of instruction classes by their frequency\n- MIPS and clock rate alone are misleading; compare execution time\n- Amdahl: speedup = 1 / ((1 − f) + f/s), limited by 1/(1 − f)\n- Latency is time per task, throughput is tasks per time"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-2",
+   "type": "concept",
+   "title": "The five-stage pipeline",
+   "subtopicId": "4-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **pipeline** overlaps the execution of several instructions, like an assembly line. Laundry analogy: while the first load is drying, the second is already washing. A single instruction takes no less time, but **throughput improves**: the machine finishes about one instruction per clock cycle.\n\nThe classic RISC pipeline has five stages:\n\n| Stage | Work |\n|---|---|\n| **IF** | Instruction fetch: read the instruction, increment the PC |\n| **ID** | Instruction decode and register read |\n| **EX** | Execute: ALU operation or address calculation |\n| **MEM** | Memory access (loads and stores) |\n| **WB** | Write the result back to a register |"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "gantt\n  title Cycles 1 to 8\n  dateFormat X\n  axisFormat %s\n  section I1\n  IF :0, 1\n  ID :1, 2\n  EX :2, 3\n  MEM :3, 4\n  WB :4, 5\n  section I2\n  IF :1, 2\n  ID :2, 3\n  EX :3, 4\n  MEM :4, 5\n  WB :5, 6\n  section I3\n  IF :2, 3\n  ID :3, 4\n  EX :4, 5\n  MEM :5, 6\n  WB :6, 7",
+     "title": "Instructions overlapping in a five-stage pipeline"
+    },
+    {
+     "type": "markdown",
+     "text": "### Pipeline timing\n\nFor a pipeline of **k stages** running **n instructions** with no stalls:\n\n- **Cycles = k + n − 1** (the first instruction needs k cycles to fill the pipeline, then one finishes every cycle).\n- **Non-pipelined time** = n × k cycles (if each instruction takes k cycles).\n- **Speedup = n·k / (k + n − 1)**, which approaches **k** as n grows.\n\n**Example.** 5 stages, 100 instructions: 5 + 99 = **104 cycles** against 500 without pipelining: speedup 500 / 104 ≈ **4.8**. With 1,000 instructions the speedup is 5000 / 1004 ≈ 4.98.\n\n### Unequal stages and register overhead\n\nThe clock must be as long as the **slowest stage** plus the latch (pipeline register) delay. With stage times 200, 150, 250, 200 and 100 ps:\n\n- Non-pipelined instruction time = 900 ps.\n- Pipelined clock period = 250 ps (the slowest stage) and **ideal speedup = 900 / 250 = 3.6**, not 5.\n- With 20 ps of latch overhead the clock is 270 ps and the speedup falls to about 3.3.\n\nBalancing the stages matters, and splitting a stage into more stages (a deeper pipeline) allows a faster clock but increases the cost of every stall and branch misprediction."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Cycles for n instructions in a k-stage pipeline = k + n − 1 (plus stall cycles).\n- Ideal speedup → k for large n; real speedup < k because of hazards and unbalanced stages.\n- Pipelined clock period = max stage delay + register overhead.\n- CPI of an ideal pipeline = 1. CPI with stalls = 1 + average stall cycles per instruction.\n- Pipelining improves throughput, not the latency of one instruction (it can even grow slightly).",
+     "title": "Pipeline formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A pipeline overlaps instructions: k stages give up to k times the throughput\n- Cycles = k + n − 1; speedup → k as n grows\n- The clock is set by the slowest stage plus pipeline register delay\n- Pipelining improves throughput, not single-instruction latency\n- Deeper pipelines allow faster clocks but make stalls more expensive"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-3",
+   "type": "concept",
+   "title": "Pipeline hazards",
+   "subtopicId": "4-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **hazard** is a situation that prevents the next instruction from executing in its clock cycle. The pipeline must **stall** (insert bubbles) or use a smarter trick.\n\n### 1. Structural hazards\n\nTwo instructions need the **same hardware** in the same cycle. The classic case: one memory shared by instruction fetch and data access, so a load's MEM stage conflicts with a later instruction's IF. Fix: separate instruction and data caches, or more ports.\n\n### 2. Data hazards\n\nAn instruction needs a result that an earlier instruction has not produced yet. Types, by what the **second** instruction does to a register the first uses:\n\n| Hazard | Meaning | Can it occur in an in-order 5-stage pipeline? |\n|---|---|---|\n| **RAW** (read after write) | true dependence: the second reads what the first writes | **Yes**, the common one |\n| **WAR** (write after read) | the second writes a register the first reads (anti-dependence) | only in out-of-order designs |\n| **WAW** (write after write) | both write the same register (output dependence) | only when instructions can finish out of order |\n\n```\nADD R1, R2, R3     ; writes R1 in WB (cycle 5)\nSUB R4, R1, R5     ; needs R1 in ID (cycle 3)  -> RAW hazard\n```\n\n**Remedies:**\n\n1. **Stall (bubbles).** Without any trick the SUB must wait. If the register file writes in the first half-cycle and reads in the second half, two bubbles are needed for adjacent instructions.\n2. **Forwarding (bypassing).** Send the ALU result straight from the end of EX (or MEM) to the input of the next instruction's EX, without waiting for WB. This removes the stall for ALU-to-ALU dependences.\n3. **Load-use hazard.** A load produces its data only at the end of MEM, so even with forwarding an instruction that uses it **immediately** needs **one stall cycle**. The compiler can often fill that slot with an independent instruction (**instruction scheduling**).\n\n### 3. Control hazards\n\nAfter a **branch**, the pipeline does not yet know which instruction to fetch next. Options:\n\n| Technique | Idea | Cost |\n|---|---|---|\n| Stall | wait until the branch is resolved | every branch costs the full penalty |\n| **Predict not taken** | keep fetching in sequence; flush if wrong | penalty only when the branch is taken |\n| **Delayed branch** | the instruction after the branch always executes; the compiler fills the **delay slot** | needs compiler support |\n| **Dynamic prediction** | the hardware remembers branch history | small penalty when predictions are good |\n\nA **1-bit predictor** remembers the last outcome and mispredicts twice per loop run (at the exit and at the next entry). A **2-bit saturating counter** needs two wrong guesses in a row to change its prediction, so a loop mispredicts only **once** at its exit. A **branch target buffer (BTB)** also remembers the target address so fetching can continue at once.\n\n**Effect on CPI.** CPI = 1 + (branch frequency × misprediction rate × penalty cycles). With 20% branches, 10% of them mispredicted, and a 3-cycle penalty: CPI = 1 + 0.2 × 0.1 × 3 = **1.06**. With 20% branches, 50% mispredicted and a 2-cycle penalty: 1 + 0.2 × 0.5 × 2 = **1.2**."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Structural: same resource twice → separate I and D memories, or stall.\n- Data: RAW is the real problem. Forwarding fixes ALU-to-ALU; **load-use still costs 1 stall**.\n- Control: branch penalty = cycles lost when the guess is wrong. CPI = 1 + f_branch × p_mispredict × penalty.\n- 2-bit counters beat 1-bit predictors on loops: one mispredict per loop exit instead of two.\n- WAR and WAW appear only with out-of-order execution (fixed by register renaming).",
+     "title": "Hazard cheat sheet"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Forwarding (bypassing) routes a result from a pipeline register straight to the ALU input of a following instruction so it need not wait for the write-back stage. A load's value is only available at the end of the MEM stage, which is after the next instruction's EX stage has already begun, so an immediately following instruction that uses the loaded register must wait one cycle even with forwarding.",
+     "title": "Interview angle: What is forwarding and why does a load still cause a stall?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Hazards: structural (resource), data (dependence), control (branches)\n- RAW is the main data hazard in order; WAR and WAW arise with out-of-order execution\n- Forwarding removes ALU-to-ALU stalls, but a load-use pair still stalls one cycle\n- Branch penalty adds f × p × penalty to CPI\n- 2-bit predictors mispredict a loop once per run, 1-bit predictors twice"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-4",
+   "type": "concept",
+   "title": "Beyond the simple pipeline",
+   "subtopicId": "4-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Instruction-level parallelism\n\nOnce a pipeline reaches CPI ≈ 1, the next step is to complete **more than one instruction per cycle**.\n\n- **Superscalar:** several pipelines (and execution units) fetch and issue 2, 4 or more instructions per cycle, CPI < 1. Hardware checks dependences at run time.\n- **Out-of-order execution:** instructions wait in a buffer and execute as soon as their operands are ready, not in program order, then are **committed in order** so the program still looks sequential. **Register renaming** removes false WAR and WAW dependences.\n- **VLIW** (very long instruction word): the compiler packs independent operations into one wide instruction, simplifying the hardware.\n- **Speculation:** guess a branch or a load and execute ahead, undoing the work if wrong. (The Spectre and Meltdown vulnerabilities came from side effects of speculation.)\n\n### Flynn's taxonomy\n\n| | Single data stream | Multiple data streams |\n|---|---|---|\n| **Single instruction stream** | **SISD**: a classic uniprocessor | **SIMD**: vector units, GPUs, AVX instructions |\n| **Multiple instruction streams** | MISD: rare (fault-tolerant systems) | **MIMD**: multicore CPUs, clusters |\n\n### Why multicore\n\nRaising the clock rate ran into a **power wall**: power grows with frequency and voltage, and chips cannot shed the heat. Since the mid-2000s the extra transistors go into **more cores** instead. **Simultaneous multithreading (hyper-threading)** lets one core run several threads by filling its idle units. To use many cores a program must be **parallel**, and Amdahl's law limits the gain by its serial fraction: with 90% parallel code, 10 cores give 1 / (0.1 + 0.9/10) ≈ 5.3×, and even infinite cores cap at 10×."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Superscalar issues several instructions per cycle; out-of-order execution runs them when operands are ready and commits in order\n- Register renaming removes false dependences\n- Flynn: SISD, SIMD (vectors, GPUs), MISD, MIMD (multicore)\n- The power wall pushed designers from faster clocks to more cores\n- Amdahl's law limits multicore speedup by the serial fraction"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (15 questions)",
+   "subtopicId": "4-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "15 original questions on 8 areas. *Recall* questions test a definition or a rule. *Problem* questions give you numbers or a short scenario to work out. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "core-coa-pipeline",
+     "items": [
+      {
+       "t": "CPU time",
+       "q": "*(Problem)* A program executes 4 × 10⁹ instructions with an average CPI of 2 on a 4 GHz processor. Its execution time is",
+       "o": [
+        "0.5 s",
+        "2 s",
+        "8 s",
+        "1 s"
+       ],
+       "a": 1,
+       "w": "Time = IC × CPI / f = (4 × 10⁹ × 2) / (4 × 10⁹ Hz) = 2 seconds."
+      },
+      {
+       "t": "CPI",
+       "q": "*(Problem)* A processor's instruction mix is 50% ALU instructions with CPI 1, 30% loads and stores with CPI 2, and 20% branches with CPI 4. The average CPI is",
+       "o": [
+        "2.3",
+        "1.5",
+        "2.33",
+        "1.9"
+       ],
+       "a": 3,
+       "w": "CPI = 0.5 × 1 + 0.3 × 2 + 0.2 × 4 = 0.5 + 0.6 + 0.8 = 1.9. The unweighted mean (1 + 2 + 4)/3 ≈ 2.33 ignores how often each class occurs."
+      },
+      {
+       "t": "MIPS",
+       "q": "*(Problem)* A 3 GHz processor has an average CPI of 1.5. Its native MIPS rating is",
+       "o": [
+        "1,000",
+        "2,000",
+        "450",
+        "4,500"
+       ],
+       "a": 1,
+       "w": "MIPS = clock rate / (CPI × 10⁶) = 3 × 10⁹ / (1.5 × 10⁶) = 2,000."
+      },
+      {
+       "t": "Amdahl's law",
+       "q": "*(Problem)* 80% of a program's execution time is made 4 times faster, and the rest is unchanged. The overall speedup is",
+       "o": [
+        "4",
+        "1.8",
+        "2.5",
+        "3.2"
+       ],
+       "a": 2,
+       "w": "Speedup = 1 / ((1 − 0.8) + 0.8/4) = 1 / (0.2 + 0.2) = 2.5. Even an infinite speedup of that part would give at most 1 / 0.2 = 5."
+      },
+      {
+       "t": "Amdahl's law",
+       "q": "*(Problem)* 90% of a program can run in parallel. The maximum possible speedup on any number of processors is",
+       "o": [
+        "9",
+        "90",
+        "unbounded",
+        "10"
+       ],
+       "a": 3,
+       "w": "As the number of processors grows, the parallel part's time vanishes and only the serial 10% remains, so the speedup tends to 1 / 0.1 = 10."
+      },
+      {
+       "t": "Pipeline timing",
+       "q": "*(Problem)* An ideal 5-stage pipeline executes 200 instructions with no stalls. The number of clock cycles needed is",
+       "o": [
+        "205",
+        "1,000",
+        "200",
+        "204"
+       ],
+       "a": 3,
+       "w": "The first instruction needs 5 cycles to complete, and then one instruction completes each cycle: 5 + 200 − 1 = 204."
+      },
+      {
+       "t": "Pipeline timing",
+       "q": "*(Problem)* An unpipelined processor takes 10 ns per instruction. It is split into a 5-stage pipeline with balanced stages of 2 ns plus 0.4 ns of pipeline-register delay per stage. For a long program the speedup from pipelining is closest to",
+       "o": [
+        "5.0",
+        "4.2",
+        "3.5",
+        "2.4"
+       ],
+       "a": 1,
+       "w": "The pipelined clock period is 2 + 0.4 = 2.4 ns, and one instruction completes per period in the steady state, so the speedup is 10 / 2.4 ≈ 4.17."
+      },
+      {
+       "t": "Pipeline timing",
+       "q": "*(Problem)* The stage delays of a 5-stage pipeline are 200, 150, 250, 200 and 100 ps. Ignoring pipeline-register overhead, the clock period of the pipelined design and the ideal steady-state speedup over a non-pipelined design (whose instruction time is the sum of the stages) are",
+       "o": [
+        "200 ps and 4.5",
+        "250 ps and 5",
+        "250 ps and 3.6",
+        "900 ps and 1"
+       ],
+       "a": 2,
+       "w": "The clock follows the slowest stage, 250 ps. The non-pipelined time is 200 + 150 + 250 + 200 + 100 = 900 ps, so the speedup is 900 / 250 = 3.6, less than the 5 stages because the stages are unbalanced."
+      },
+      {
+       "t": "Hazards",
+       "q": "*(Recall)* A hazard that arises because two instructions need the same hardware unit in the same clock cycle is called a",
+       "o": [
+        "structural hazard",
+        "control hazard",
+        "memory hazard",
+        "data hazard"
+       ],
+       "a": 0,
+       "w": "That is the definition of a structural hazard, for example a single memory port serving both instruction fetch and a load. Separate instruction and data caches remove it."
+      },
+      {
+       "t": "Hazards",
+       "q": "*(Problem)* Consider the sequence: ADD R1,R2,R3 followed by SUB R4,R1,R5. The dependence between them is",
+       "o": [
+        "a structural hazard",
+        "RAW, a true data dependence",
+        "WAW, an output dependence",
+        "WAR, an anti-dependence"
+       ],
+       "a": 1,
+       "w": "SUB reads R1, which ADD writes, so SUB must read after ADD writes: read after write (RAW). It is the only kind of data hazard that occurs in a simple in-order pipeline."
+      },
+      {
+       "t": "Hazards",
+       "q": "*(Problem)* In a 5-stage pipeline with full forwarding, the instruction pair LW R1, 0(R2) immediately followed by ADD R3, R1, R4 causes",
+       "o": [
+        "one stall cycle",
+        "three stall cycles",
+        "no stall",
+        "two stall cycles"
+       ],
+       "a": 0,
+       "w": "The loaded value is available only at the end of the MEM stage, too late to forward into the ADD's EX stage in the next cycle, so one bubble is required even with forwarding. ALU-to-ALU dependences need none."
+      },
+      {
+       "t": "Branches",
+       "q": "*(Problem)* 20% of the instructions are branches, 10% of the branches are mispredicted, and each misprediction costs 3 cycles. The pipeline otherwise has a CPI of 1. The effective CPI is",
+       "o": [
+        "1.06",
+        "1.2",
+        "1.6",
+        "1.03"
+       ],
+       "a": 0,
+       "w": "CPI = 1 + 0.2 × 0.1 × 3 = 1.06."
+      },
+      {
+       "t": "Branches",
+       "q": "*(Recall)* A loop's closing branch is taken 9 times and then not taken once, and the loop is run repeatedly. Compared with a 1-bit predictor, a 2-bit saturating counter predictor on this branch",
+       "o": [
+        "mispredicts exactly as often",
+        "never mispredicts",
+        "mispredicts about half as often: once per loop run instead of twice",
+        "mispredicts more often"
+       ],
+       "a": 2,
+       "w": "A 1-bit predictor is wrong at the loop exit and again on the first iteration of the next run, 2 per run. A 2-bit counter stays in a \"taken\" state after the single not-taken exit, so only the exit is mispredicted: 1 per run."
+      },
+      {
+       "t": "Parallelism",
+       "q": "*(Recall)* Which of Flynn's categories describes a GPU executing the same instruction on many data elements at once?",
+       "o": [
+        "MIMD",
+        "MISD",
+        "SIMD",
+        "SISD"
+       ],
+       "a": 2,
+       "w": "Single instruction, multiple data: one instruction stream operates on many data streams in lockstep. Multicore CPUs running different threads are MIMD."
+      },
+      {
+       "t": "Parallelism",
+       "q": "*(Problem)* 90% of a program is parallelisable. By Amdahl's law, the speedup on 10 processors is closest to",
+       "o": [
+        "5.3",
+        "1.9",
+        "10",
+        "9.0"
+       ],
+       "a": 0,
+       "w": "Speedup = 1 / (0.1 + 0.9/10) = 1 / 0.19 ≈ 5.26. The serial 10% limits the gain well below 10."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Measuring performance"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A program executes 4 × 10⁹ instructions with an average CPI of 2 on a 4 GHz processor. What is its execution time?",
+       "answer": "Time = IC × CPI / f = (4 × 10⁹ × 2) / (4 × 10⁹) = 2 seconds."
+      },
+      {
+       "question": "Why can't a machine with a higher clock rate always run a program faster?",
+       "answer": "Execution time also depends on the instruction count and CPI. A CPU with a slower clock but lower CPI or fewer instructions for the same work can finish sooner."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### The five-stage pipeline"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How many cycles does an ideal 5-stage pipeline need to execute 200 instructions?",
+       "answer": "k + n − 1 = 5 + 200 − 1 = 204 cycles."
+      },
+      {
+       "question": "Why is the real speedup of a pipeline smaller than the number of stages?",
+       "answer": "The pipeline needs time to fill, stages are rarely perfectly balanced (the clock follows the slowest), pipeline registers add delay, and hazards force stalls, so on average fewer than one instruction completes per cycle."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Pipeline hazards"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a stall and forwarding?",
+       "answer": "A stall inserts a bubble so the dependent instruction waits for the result to be written back. Forwarding sends the result directly from a later pipeline stage to where the dependent instruction needs it, avoiding the wait."
+      },
+      {
+       "question": "Why does a 2-bit branch predictor do better than a 1-bit predictor on loops?",
+       "answer": "A 1-bit predictor flips its prediction after every wrong guess, so at a loop exit it mispredicts and then mispredicts again when the loop is entered again. A 2-bit counter needs two consecutive mistakes to change its prediction, so only the exit is mispredicted."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Beyond the simple pipeline"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why did processor designers move from higher clock rates to multicore?",
+       "answer": "Power and heat grow quickly with clock frequency and voltage, so clock rates stopped rising. More cores deliver more total throughput at acceptable power, provided software can run in parallel."
+      },
+      {
+       "question": "With 90% of a program parallelisable, what is the maximum speedup on 10 cores, and on infinitely many?",
+       "answer": "On 10 cores: 1 / (0.1 + 0.9/10) ≈ 5.26×. With infinitely many cores the limit is 1 / 0.1 = 10×, set by the serial 10%."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
