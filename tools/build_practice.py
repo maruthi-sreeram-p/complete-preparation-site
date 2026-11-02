@@ -12,13 +12,20 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "practice"))
+import core_coa  # noqa: E402
+import core_cn  # noqa: E402
+import core_dbms  # noqa: E402
 import core_java  # noqa: E402
+import core_oop  # noqa: E402
+import core_os  # noqa: E402
 import databases  # noqa: E402
 import kafka_design  # noqa: E402
 import spring_boot  # noqa: E402
 
 OUT = HERE.parent / "content" / "practice"
-SUBJECTS = [databases.SUBJECT, core_java.SUBJECT, spring_boot.SUBJECT, *kafka_design.SUBJECTS]
+databases.SUBJECT["questions"] = databases.SUBJECT["questions"] + core_dbms.QUESTIONS   # extra DBMS theory
+SUBJECTS = [databases.SUBJECT, core_java.SUBJECT, spring_boot.SUBJECT, *kafka_design.SUBJECTS,
+            core_os.SUBJECT, core_cn.SUBJECT, core_coa.SUBJECT, core_oop.SUBJECT]
 
 
 def main():

@@ -133,3 +133,51 @@ describe('Cybersecurity tree', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 })
+
+describe('Core Subjects tree', () => {
+  const { roadmap } = load('core-subjects')
+  const java = load('interview-prep').roadmap
+  const topicFile = (id) => JSON.parse(readFileSync(join(ROOT, 'core-subjects', 'topics', `${id}.json`), 'utf8'))
+  const written = roadmap.topics.filter((t) => !t.contentId.includes('/'))
+  const questionsOf = (id) => topicFile(id).sections.flatMap((s) => s.blocks).filter((b) => b.type === 'mcq').flatMap((b) => b.items)
+
+  it('has the five subjects in the order they were asked for', () => {
+    expect(roadmap.topics).toHaveLength(24)
+    const stages = roadmap.sequence.map((id) => roadmap.topicsById[id].categoryId)
+    expect([...new Set(stages)]).toEqual(['os', 'dbms', 'cn', 'coa', 'oop'])
+  })
+
+  it('shows the Java Full Stack guides for Operating Systems, Databases and Networks without copying them', () => {
+    const reused = roadmap.topics.filter((t) => t.contentId.includes('/'))
+    expect(reused).toHaveLength(14)
+    for (const t of reused) {
+      const [owner, source] = t.contentId.split('/')
+      expect(owner).toBe('interview-prep')
+      const original = java.topicsById[source]
+      expect(original, `${t.id} -> ${t.contentId}`).toBeTruthy()
+      expect(t.subtopics.map((s) => s.id)).toEqual(original.subtopics.map((s) => s.id))
+      expect(existsSync(join(ROOT, 'core-subjects', 'topics', `${t.id}.json`)), `${t.id} must not be a copy`).toBe(false)
+    }
+  })
+
+  it('writes Computer Organisation (6 parts) and OOP (4 parts) with well-formed questions', () => {
+    expect(written.map((t) => t.categoryId).sort()).toEqual([...Array(6).fill('coa'), ...Array(4).fill('oop')].sort())
+    for (const t of written) {
+      const items = questionsOf(t.id)
+      expect(items.length, `${t.id}: number of questions`).toBeGreaterThanOrEqual(15)
+      for (const [i, q] of items.entries()) {
+        const where = `${t.id} question ${i + 1}`
+        expect(q.o, `${where}: options`).toHaveLength(4)
+        expect(new Set(q.o).size, `${where}: distinct options`).toBe(4)
+        expect(Number.isInteger(q.a) && q.a >= 0 && q.a < 4, `${where}: answer index`).toBe(true)
+        expect(q.w?.length, `${where}: explanation`).toBeGreaterThan(10)
+      }
+    }
+  })
+
+  it('has unique question-set ids, so saved answers cannot collide with other trees', () => {
+    const ids = written.map((t) => topicFile(t.id).sections.flatMap((s) => s.blocks).find((b) => b.type === 'mcq').id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids.every((id) => id.startsWith('core-'))).toBe(true)
+  })
+})

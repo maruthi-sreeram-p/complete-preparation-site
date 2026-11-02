@@ -156,3 +156,16 @@ python -I tools/build_cyber.py     writes content/roadmaps/cybersecurity/ and ch
 ```
 
 The content is written for defence and learning, and every practical exercise points to a target you are allowed to attack (OWASP Juice Shop, DVWA, WebGoat, PortSwigger labs, TryHackMe). Standards move (OWASP Top 10 editions, TLS versions, certificate exams), so each page says which official source to check. The study order is the `ROWS` list in `tools/build_cyber.py`, with the same one-stage-per-row rule as the GATE tree.
+
+## Core Subjects
+
+`roadmaps/core-subjects/` covers Operating Systems, DBMS, Computer Networks, Computer Organisation and OOP. Run `python -I tools/build_core.py` after editing it.
+
+- **Operating Systems, Databases and Networks** are the deep guides of the Java Full Stack tree, shown here **without copying them**: a topic's `contentId` can be
+  `"<roadmapId>/<topicId>"` (here `interview-prep/operating-systems-part-1`), and the app loads that tree's page. Progress is still kept per tree.
+  The list of reused parts is `REUSED` in `tools/build_core.py`.
+- **Computer Organisation** (6 parts) and **OOP** (4 parts) are written for this tree: notes in `tools/core/NN-<part>.md` and MCQs in `tools/core/mcq/NN-<part>.txt`
+  (the format of `tools/build_gate.py`). Each MCQ can carry a `!py` check that runs at build time (`tools/core/core_helpers.py`): numbers are computed, and the Java and
+  Python programs shown in a question are compiled or run (`stem` is the question text, `printed(stem)` runs its Java), so a wrong answer key fails the build.
+- The Practice page has matching subjects (`core-os`, `core-cn`, `core-coa`, `core-oop`, and extra DBMS questions in `databases`), written by `tools/build_practice.py`;
+  their calculations are done in `tools/practice/core_*.py`.

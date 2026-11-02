@@ -1,0 +1,426 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)",
+  "questions": 15
+ },
+ "sections": [
+  {
+   "id": "ch-10-1",
+   "type": "concept",
+   "title": "OOP in Java, C++, Python and C#",
+   "subtopicId": "10-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a computer science student, in the style of the other guides. Examples use Java, with Python and C++ where the languages differ. Worked numbers were checked by program. Where a vendor, a standard or a language version matters, check the official source before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "The ideas are the same everywhere; the **defaults and the machinery** differ. Many interview questions (\"why does Java not have multiple inheritance?\", \"what is a virtual destructor?\") are really questions about those differences.\n\n| Feature | Java | C++ | Python | C# |\n|---|---|---|---|---|\n| Typing | static, compiled to bytecode | static, compiled to machine code | **dynamic**, interpreted | static, compiled to IL |\n| Memory management | **garbage collector** | **manual** (RAII, smart pointers) | garbage collector (reference counting + cycle detector) | garbage collector |\n| Multiple class inheritance | **no** (interfaces only) | **yes** (virtual inheritance for the diamond) | **yes** (MRO) | no (interfaces only) |\n| Method overriding by default | **every instance method is virtual** | only if declared `virtual` | every method can be replaced | only with `virtual` / `override` |\n| Constructors / destructors | constructors; no destructor (use try-with-resources) | constructors **and destructors** | `__init__`; `__del__` rarely used | constructors; finalisers; `IDisposable` |\n| Access control | `private`, package, `protected`, `public` | `private`, `protected`, `public` | **by convention** (`_x`, `__x` name mangling) | like Java, plus `internal` |\n| Interfaces | `interface` | abstract class with pure virtual functions | abstract base classes, protocols (duck typing) | `interface` |\n| Generics | **type erasure** | **templates** (instantiated per type) | not needed (dynamic) | reified generics |\n| Operator overloading | no (except `+` on String) | **yes** | **yes** (dunder methods) | yes |\n| Everything is an object | no (primitives exist) | no | **yes** (even ints and functions) | no |\n| Parameter passing | by value (references are values) | by value, by reference (`&`), by pointer | object references (like Java) | by value, `ref`, `out` |"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Java: single class inheritance + interfaces, GC, all instance methods virtual.\n- C++: multiple inheritance, manual memory, `virtual` is opt-in, destructors, templates.\n- Python: duck typing, dunder methods, no real `private`, multiple inheritance with the MRO.\n- C#: Java-like, plus properties, delegates and events, `struct` value types.\n- Java generics are erased at run time; C++ templates generate code per type.",
+     "title": "One-line differences that get asked"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Java: GC, single inheritance, virtual by default\n- C++: manual memory, destructors, multiple inheritance, virtual is opt-in\n- Python: dynamic typing, duck typing, convention-based privacy, MRO for multiple inheritance\n- Generics: Java erases them, C++ instantiates templates"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-2",
+   "type": "concept",
+   "title": "C++ and Python specifics",
+   "subtopicId": "10-2",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "text": "The C++ code in this chapter is standard C++17 written to be short and was checked by reading, not compiled here. Compile it yourself with `g++ -std=c++17 file.cpp` to see the output. The Python and Java snippets were run.",
+     "title": "About the C++ snippets"
+    },
+    {
+     "type": "markdown",
+     "text": "### C++: the object lifetime is yours\n\nIn C++ objects can live on the **stack** (destroyed automatically at the end of the scope) or the **heap** (`new`, destroyed with `delete`). Because there is no garbage collector, a class releases its resources in its **destructor**, and the idiom **RAII** (resource acquisition is initialisation) ties a resource (memory, file, lock) to an object's lifetime: the resource is acquired in the constructor and released in the destructor, even when an exception is thrown. Modern C++ uses `std::unique_ptr` and `std::shared_ptr` instead of raw `new` and `delete`."
+    },
+    {
+     "type": "code",
+     "language": "cpp",
+     "code": "#include <iostream>\n#include <memory>\n\nstruct Base {\n    virtual ~Base() { std::cout << \"~Base\\n\"; }       // virtual destructor\n    virtual void hello() { std::cout << \"Base\\n\"; }\n};\n\nstruct Derived : Base {\n    ~Derived() override { std::cout << \"~Derived\\n\"; }\n    void hello() override { std::cout << \"Derived\\n\"; }\n};\n\nint main() {\n    std::unique_ptr<Base> p = std::make_unique<Derived>();  // freed automatically\n    p->hello();                                              // prints Derived (virtual dispatch)\n}   // prints ~Derived then ~Base"
+    },
+    {
+     "type": "markdown",
+     "text": "Without `virtual` on `~Base`, deleting a `Derived` through a `Base*` is **undefined behaviour**: the `Derived` destructor would not run. A class meant to be a base class needs a virtual destructor.\n\n**Object slicing.** Copying a `Derived` object into a variable of type `Base` (by value) copies only the `Base` part and loses the derived data and behaviour. Pass polymorphic objects by pointer or reference.\n\n**Rule of three/five.** If a class manages a resource and needs a custom destructor, copy constructor or copy assignment, it probably needs all three (and move operations, the rule of five). Otherwise two copies would both free the same resource: a double free. The **rule of zero** says to use members that manage themselves (`std::string`, `std::vector`, smart pointers) so you write none of them.\n\n| C++ term | Meaning | Java counterpart |\n|---|---|---|\n| `virtual` function | dispatched at run time | every instance method |\n| pure virtual (`= 0`) | abstract method | `abstract` method |\n| class with only pure virtuals | interface | `interface` |\n| copy constructor | how a copy is made | `clone()` or a copy constructor |\n| reference `T&` | alias, cannot be null or reseated | none |\n| `const` member function | does not modify the object | `final` fields / immutable class |\n\n### Python: everything is dynamic"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "class Account:\n    interest = 0.04                    # class attribute: shared by all instances\n\n    def __init__(self, owner, balance=0):\n        self.owner = owner             # instance attributes are created on assignment\n        self._balance = balance        # single underscore: \"internal\", a convention only\n\n    @property\n    def balance(self):                 # read-only property: the Python way to encapsulate\n        return self._balance\n\n    def deposit(self, amount):\n        if amount <= 0:\n            raise ValueError(\"deposit must be positive\")\n        self._balance += amount\n\n    def __repr__(self):                # dunder (special) method: how the object prints\n        return f\"Account({self.owner!r}, {self._balance})\"\n\n    def __eq__(self, other):           # operator overloading: ==\n        return isinstance(other, Account) and (self.owner, self._balance) == (other.owner, other._balance)\n\na = Account(\"Asha\", 100)\na.deposit(50)\nprint(a, a.balance, a == Account(\"Asha\", 150))\nprint(Account.interest, a.interest)"
+    },
+    {
+     "type": "markdown",
+     "text": "That prints `Account('Asha', 150) 150 True` and then `0.04 0.04`.\n\n**Key Python points:**\n\n- **Duck typing and the MRO.** There is no `implements`. For multiple inheritance Python linearises the parents with the **C3 algorithm**; `ClassName.__mro__` shows the order and `super()` follows it, which solves the diamond problem predictably.\n- **No true private members.** `_x` is a hint, `__x` triggers **name mangling** (renamed to `_Class__x`), but nothing is enforced: \"we are all consenting adults\".\n- **Dunder methods** (`__init__`, `__str__`, `__repr__`, `__eq__`, `__len__`, `__iter__`, `__enter__`/`__exit__`) let your objects work with built-in syntax.\n- **Mutable default arguments** are shared between calls:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def add(item, bucket=[]):          # the list is created ONCE, when the function is defined\n    bucket.append(item)\n    return bucket\n\nprint(add(1), add(2))              # [1, 2] [1, 2]  not [1] [2]"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "By convention and by tools: prefix internal names with an underscore, expose controlled access with `@property`, and validate in setters or methods. Double underscores trigger name mangling to avoid accidental clashes in subclasses, not real privacy. Python relies on programmer discipline and documentation instead of enforcement.",
+     "title": "Interview angle: Python has no private keyword. How do you encapsulate?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- C++: stack or heap objects, destructors, RAII, virtual destructors for base classes\n- Slicing copies only the base part: pass polymorphic objects by pointer or reference\n- Rule of three/five/zero: manage resources with smart pointers and standard containers\n- Python: duck typing, @property, dunder methods, convention-based privacy\n- Beware Python's shared mutable default arguments"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-3",
+   "type": "concept",
+   "title": "Low-level design: a parking lot",
+   "subtopicId": "10-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Low-level design (LLD)** interviews ask you to turn a short problem statement into classes. A reliable method:\n\n1. **Clarify requirements** (vehicle types, floors, payment, how tickets work). Write down what is in and out of scope.\n2. **Find the nouns** (candidate classes: Vehicle, ParkingSpot, ParkingLot, Ticket) and the **verbs** (candidate methods: park, unpark, calculateFee).\n3. **Decide relationships:** is-a (inheritance), has-a (composition), uses (dependency).\n4. **Apply principles and patterns where they pay off:** Strategy for pricing, Factory for vehicles, no pattern if none is needed.\n5. **Walk through scenarios** (a car enters, the lot is full, a vehicle leaves) and handle the edge cases."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "import java.util.*;\n\npublic class ParkingLot {\n\n    enum Size { SMALL, MEDIUM, LARGE }\n\n    enum VehicleType {\n        BIKE(Size.SMALL), CAR(Size.MEDIUM), TRUCK(Size.LARGE);\n        final Size needs;\n        VehicleType(Size needs) { this.needs = needs; }\n    }\n\n    record Vehicle(String plate, VehicleType type) { }\n    record Ticket(int id, String plate, int spotNumber, long enteredAtMinute) { }\n\n    static class Spot {\n        final int number; final Size size; private Vehicle parked;\n        Spot(int number, Size size) { this.number = number; this.size = size; }\n        boolean fits(Vehicle v) { return parked == null && size.compareTo(v.type().needs) >= 0; }   // a bigger spot may hold a smaller vehicle\n        void park(Vehicle v) { parked = v; }\n        void free() { parked = null; }\n    }\n\n    interface PricingStrategy { long fee(Vehicle v, long minutes); }          // Strategy pattern: the rule can change\n\n    static class HourlyPricing implements PricingStrategy {\n        public long fee(Vehicle v, long minutes) {\n            long hours = Math.max(1, (minutes + 59) / 60);                    // round up to whole hours\n            long rate = switch (v.type()) { case BIKE -> 10; case CAR -> 30; case TRUCK -> 60; };\n            return hours * rate;\n        }\n    }\n\n    private final List<Spot> spots = new ArrayList<>();\n    private final Map<Integer, Ticket> active = new HashMap<>();\n    private final Map<Integer, Vehicle> vehicles = new HashMap<>();\n    private final PricingStrategy pricing;\n    private int nextTicket = 1;\n\n    ParkingLot(List<Size> layout, PricingStrategy pricing) {\n        for (int i = 0; i < layout.size(); i++) spots.add(new Spot(i + 1, layout.get(i)));\n        this.pricing = pricing;\n    }\n\n    Optional<Ticket> park(Vehicle v, long nowMinute) {\n        Optional<Spot> spot = spots.stream().filter(s -> s.fits(v)).min(Comparator.comparing((Spot s) -> s.size));   // smallest spot that fits\n        if (spot.isEmpty()) return Optional.empty();                         // the lot is full for this vehicle\n        spot.get().park(v);\n        Ticket t = new Ticket(nextTicket++, v.plate(), spot.get().number, nowMinute);\n        active.put(t.id(), t);\n        vehicles.put(t.id(), v);\n        return Optional.of(t);\n    }\n\n    long unpark(int ticketId, long nowMinute) {\n        Ticket t = active.remove(ticketId);\n        if (t == null) throw new IllegalArgumentException(\"unknown ticket \" + ticketId);\n        spots.get(t.spotNumber() - 1).free();\n        return pricing.fee(vehicles.remove(ticketId), nowMinute - t.enteredAtMinute());\n    }\n\n    public static void main(String[] args) {\n        ParkingLot lot = new ParkingLot(List.of(Size.SMALL, Size.MEDIUM, Size.LARGE), new HourlyPricing());\n        Ticket car = lot.park(new Vehicle(\"KA01AB1234\", VehicleType.CAR), 0).orElseThrow();\n        System.out.println(\"car in spot \" + car.spotNumber());                              // car in spot 2\n        System.out.println(lot.park(new Vehicle(\"KA02CD5678\", VehicleType.TRUCK), 10).isPresent());   // true (spot 3)\n        System.out.println(lot.park(new Vehicle(\"KA03EF9012\", VehicleType.TRUCK), 20).isPresent());   // false: full for trucks\n        System.out.println(\"fee \" + lot.unpark(car.id(), 130));                             // fee 90  (3 hours x 30)\n    }\n}",
+     "title": "ParkingLot.java"
+    },
+    {
+     "type": "markdown",
+     "text": "**Design notes an interviewer will ask about.** *Why a `Strategy` for pricing?* Rates change without touching the lot (open/closed). *Why records for `Vehicle` and `Ticket`?* They are immutable values. *Where would you add concurrency?* `park` must be made atomic (a lock or a concurrent structure), otherwise two cars can take the same spot. *How would it scale?* Index free spots by size (a queue per size) instead of scanning all spots."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- LLD method: requirements, nouns and verbs, relationships, principles and patterns, scenarios\n- Use enums and records for fixed sets and value objects\n- Strategy keeps changeable rules (pricing) out of the core class\n- State the concurrency story: make the critical operation atomic\n- Say how the design would change for scale"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-4",
+   "type": "concept",
+   "title": "Interview traps and answers",
+   "subtopicId": "10-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "These are the OOP questions asked most often, with the short answer that scores.\n\n| Question | Answer in one breath |\n|---|---|\n| Overloading vs overriding | Overloading: same name, different parameters, chosen at compile time by declared types. Overriding: same signature in a subclass, chosen at run time by the object's class. |\n| Abstract class vs interface | Abstract class: state, constructors, partial implementation, single inheritance. Interface: a contract (plus default methods), no instance state, many per class. |\n| Can a constructor be overridden / inherited? | No: constructors are not inherited, so they cannot be overridden; they can be overloaded and chained with `this(...)` and `super(...)`. |\n| Can a class have a private constructor? | Yes: for singletons, utility classes and factory-only construction. |\n| `this` vs `super` | `this` is the current object; `super` refers to the parent part, used to call its constructor or an overridden method. |\n| `final` / `finally` / `finalize` | `final`: constant, no override, no subclass. `finally`: block that always runs after try. `finalize`: deprecated pre-GC hook: do not use it. |\n| Can you override a static method? | No: it is hidden. Static methods are bound to the class at compile time. |\n| What is the `Object` class? | The root of every class: `equals`, `hashCode`, `toString`, `getClass`, `clone`, `wait`, `notify`. |\n| Shallow vs deep copy | Shallow copies references; deep copies the whole object graph. |\n| Aggregation vs composition | Both has-a; in composition the part cannot outlive the whole. |\n| Is Java 100% object-oriented? | No: it has primitives (`int`, `double`) and static members. Wrapper classes box primitives. |\n| Why are Strings immutable? | Security, thread safety, string pool sharing, cached hash code, safe as map keys. |\n| What does polymorphism need? | Inheritance or an interface, overriding, and a superclass reference to a subclass object. |\n\n### Output puzzles\n\nWork out what each program prints, then check yourself against the answers below."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public class Puzzles {\n\n    static class A {\n        static { System.out.print(\"A-static \"); }\n        { System.out.print(\"A-init \"); }\n        A() { System.out.print(\"A() \"); }\n    }\n\n    static class B extends A {\n        static { System.out.print(\"B-static \"); }\n        { System.out.print(\"B-init \"); }\n        B() { System.out.print(\"B() \"); }\n    }\n\n    static int f() {\n        try { return 1; } finally { System.out.print(\"finally \"); }\n    }\n\n    static String g(Object o) { return \"Object\"; }\n    static String g(Integer i) { return \"Integer\"; }\n    static String g(long l) { return \"long\"; }\n\n    public static void main(String[] args) {\n        new B();                                   // 1\n        System.out.println();\n        new B();                                   // 2\n        System.out.println();\n        System.out.println(f());                   // 3\n        System.out.println(g(5));                  // 4\n        Integer x = 127, y = 127, p = 128, q = 128;\n        System.out.println((x == y) + \" \" + (p == q) + \" \" + p.equals(q));   // 5\n        System.out.println(\"a\" + 1 + 2 + \" \" + (1 + 2 + \"a\"));              // 6\n    }\n}",
+     "title": "Puzzles.java"
+    },
+    {
+     "type": "markdown",
+     "text": "Answers: **1** `A-static B-static A-init A() B-init B()` (static blocks run once when the class loads, parent first; then for each object: parent instance initialisers and constructor, then the child's). **2** `A-init A() B-init B()` (the static blocks do not run again). **3** `finally ` then `1` (the `finally` block runs before the method returns). **4** `long`: with the argument `5` (an `int`), the compiler prefers **widening** (`int` to `long`) over **boxing** (`Integer`) over the `Object` overload. **5** `true false true`: `Integer` objects between −128 and 127 are cached, so `==` happens to work for 127 but not for 128, which is why you use `equals`. **6** `a12 3a`: strings concatenate left to right, but `1 + 2` evaluated first gives 3."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Pick a real one (a `PaymentMethod` interface with card, UPI and wallet implementations, or a `Notifier` with email and SMS). Say what the interface promises, how the caller depends only on the interface, how a new implementation is added without editing the caller (open/closed), and how you tested it by passing a fake. Concrete beats textbook.",
+     "title": "Interview angle: Explain a polymorphism example from your own project."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Know the one-breath answers: overloading versus overriding, abstract class versus interface, shallow versus deep copy\n- Static blocks run once per class load; instance initialisers and constructors run per object\n- Overload resolution prefers widening, then boxing, then varargs\n- Integer caching makes == unreliable above 127: use equals\n- A strong answer ties a concept to something you built"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (15 questions)",
+   "subtopicId": "10-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "15 original questions on 10 areas. *Recall* questions test a definition or a rule. *Problem* questions give you numbers or a short scenario to work out. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "core-oop-languages",
+     "items": [
+      {
+       "t": "Initialisation order",
+       "q": "*(Problem)* What does this program print?\n```java\npublic class Main {\n    static class A {\n        static { System.out.print(\"A-static \"); }\n        A() { System.out.print(\"A() \"); }\n    }\n    static class B extends A {\n        static { System.out.print(\"B-static \"); }\n        B() { System.out.print(\"B() \"); }\n    }\n    public static void main(String[] args) {\n        new B();\n        new B();\n    }\n}\n```",
+       "o": [
+        "A-static B-static A() B() A() B()",
+        "A-static B-static A() B() A-static B-static A() B()",
+        "B-static A-static B() A()",
+        "A() B() A() B() A-static B-static"
+       ],
+       "a": 0,
+       "w": "Static initialisers run once, when the class is first initialised, and a parent is initialised before its child. Constructors run for every object, parent first, so the second `new B()` prints only \"A() B()\"."
+      },
+      {
+       "t": "try-finally",
+       "q": "*(Problem)* What does this program print?\n```java\npublic class Main {\n    static int f() {\n        try {\n            return 1;\n        } finally {\n            System.out.print(\"finally \");\n        }\n    }\n    public static void main(String[] args) {\n        System.out.println(f());\n    }\n}\n```",
+       "o": [
+        "1 finally",
+        "finally",
+        "finally 1",
+        "1"
+       ],
+       "a": 2,
+       "w": "The return value 1 is computed, then the finally block runs (printing \"finally \"), and only then does the method return, so main prints 1 afterwards."
+      },
+      {
+       "t": "Overload resolution",
+       "q": "*(Problem)* What does this program print?\n```java\npublic class Main {\n    static String g(Object o)  { return \"Object\"; }\n    static String g(Integer i) { return \"Integer\"; }\n    static String g(long l)    { return \"long\"; }\n    public static void main(String[] args) {\n        System.out.println(g(5));\n    }\n}\n```",
+       "o": [
+        "long",
+        "Integer",
+        "it does not compile because the call is ambiguous",
+        "Object"
+       ],
+       "a": 0,
+       "w": "The argument 5 is an int. Overload resolution tries, in order: exact match or widening primitive conversion (int to long), then boxing (Integer), then boxing with widening reference conversion (Object). The first phase finds g(long)."
+      },
+      {
+       "t": "Integer cache",
+       "q": "*(Problem)* What does this program print?\n```java\npublic class Main {\n    public static void main(String[] args) {\n        Integer a = 127, b = 127, c = 128, d = 128;\n        System.out.println((a == b) + \" \" + (c == d) + \" \" + c.equals(d));\n    }\n}\n```",
+       "o": [
+        "true true true",
+        "true false true",
+        "true true false",
+        "false false true"
+       ],
+       "a": 1,
+       "w": "`Integer.valueOf` caches values from −128 to 127, so a and b are the same object. 128 is outside the cache, so c and d are two different objects, but `equals` compares the values."
+      },
+      {
+       "t": "Strings",
+       "q": "*(Problem)* What does this program print?\n```java\npublic class Main {\n    public static void main(String[] args) {\n        System.out.println(1 + 2 + \"a\" + 1 + 2);\n    }\n}\n```",
+       "o": [
+        "12a12",
+        "1a12",
+        "3a12",
+        "3a3"
+       ],
+       "a": 2,
+       "w": "Evaluation goes left to right: 1 + 2 is integer addition giving 3, then + \"a\" starts string concatenation (\"3a\"), and the remaining 1 and 2 are appended as text: \"3a12\"."
+      },
+      {
+       "t": "Static context",
+       "q": "*(Problem)* What is the result of compiling this code?\n```java\npublic class Main {\n    int count = 0;\n    void inc() { count++; }\n    public static void main(String[] args) {\n        inc();\n    }\n}\n```",
+       "o": [
+        "a compile-time error: a non-static method cannot be called from a static context",
+        "it prints 1",
+        "a run-time NullPointerException",
+        "it compiles and runs"
+       ],
+       "a": 0,
+       "w": "`main` is static, so there is no `this` object. An instance method needs an object to run on, so you must write `new Main().inc()` or make the method static."
+      },
+      {
+       "t": "Python",
+       "q": "*(Problem)* What does this program print?\n```python\ndef add(item, bucket=[]):\n    bucket.append(item)\n    return bucket\nprint(add(1), add(2))\n```",
+       "o": [
+        "[1] [2]",
+        "[1, 2] [1, 2]",
+        "[1, 2] [2]",
+        "it raises an error"
+       ],
+       "a": 1,
+       "w": "The default list is created once, when the function is defined, and shared by every call that does not pass its own. Both calls append to the same list, and both results refer to it. Use `None` as the default and create the list inside the function."
+      },
+      {
+       "t": "Python",
+       "q": "*(Problem)* What does this program print?\n```python\nclass C:\n    items = []\na = C()\nb = C()\na.items.append(1)\nprint(b.items)\n```",
+       "o": [
+        "[1]",
+        "[]",
+        "None",
+        "an AttributeError"
+       ],
+       "a": 0,
+       "w": "`items` is a class attribute, so a and b share the same list. Appending through `a` changes the shared object. Assigning `a.items = []` instead would create a separate instance attribute."
+      },
+      {
+       "t": "Python",
+       "q": "*(Problem)* What does this program print?\n```python\nclass A:\n    def f(self): return \"A\"\nclass B(A):\n    def f(self): return \"B\" + super().f()\nclass C(A):\n    def f(self): return \"C\" + super().f()\nclass D(B, C):\n    pass\nprint(D().f())\n```",
+       "o": [
+        "BAC",
+        "BA",
+        "DBCA",
+        "BCA"
+       ],
+       "a": 3,
+       "w": "The method resolution order of D is D, B, C, A. `super()` in B calls the next class in D's MRO, which is C (not A), and C's `super()` then reaches A, giving \"B\" + \"C\" + \"A\". Each class is visited once, which solves the diamond problem."
+      },
+      {
+       "t": "Python",
+       "q": "*(Problem)* What does this program print?\n```python\nclass P:\n    def __init__(self, x):\n        self.x = x\n    def __eq__(self, other):\n        return self.x == other.x\ntry:\n    print(len({P(1), P(1)}))\nexcept TypeError:\n    print(\"unhashable\")\n```",
+       "o": [
+        "0",
+        "unhashable",
+        "2",
+        "1"
+       ],
+       "a": 1,
+       "w": "A class that defines `__eq__` without `__hash__` gets `__hash__` set to None, so its instances are unhashable and cannot go in a set. Defining both (consistently) fixes it, just as in Java's equals and hashCode contract."
+      },
+      {
+       "t": "Python",
+       "q": "*(Problem)* What does this program print?\n```python\nclass Account:\n    def __init__(self, b):\n        self._b = b\n    @property\n    def balance(self):\n        return self._b\na = Account(10)\ntry:\n    a.balance = 99\nexcept AttributeError:\n    print(\"read-only\")\nprint(a.balance)\n```",
+       "o": [
+        "99",
+        "10",
+        "read-only 10",
+        "read-only 99"
+       ],
+       "a": 2,
+       "w": "A property defined with only a getter is read-only. Assigning to it raises AttributeError, which is caught, and the stored value is unchanged."
+      },
+      {
+       "t": "C++",
+       "q": "*(Recall)* In C++, deleting an object of a derived class through a pointer to a base class whose destructor is not virtual results in",
+       "o": [
+        "a Java-style garbage collection",
+        "a compile-time error",
+        "the derived destructor running normally",
+        "undefined behaviour, typically skipping the derived class's destructor"
+       ],
+       "a": 3,
+       "w": "Without a virtual destructor the call is bound statically to the base destructor, so the derived part is not cleaned up properly. Classes meant to be used polymorphically need a virtual destructor."
+      },
+      {
+       "t": "C++",
+       "q": "*(Recall)* Object slicing occurs when",
+       "o": [
+        "a class has too many virtual functions",
+        "a derived object is copied into a base-class variable by value, losing the derived part",
+        "a pointer is cast to void*",
+        "an array is partially initialised"
+       ],
+       "a": 1,
+       "w": "Copying a Derived into a Base variable by value copies only the Base subobject, so the extra data and the overridden behaviour of Derived are lost. Passing by pointer or reference avoids it."
+      },
+      {
+       "t": "Generics",
+       "q": "*(Recall)* A key difference between Java generics and C++ templates is that",
+       "o": [
+        "Java generics can be used with primitive types directly",
+        "C++ templates are checked only at run time",
+        "Java generics are faster than templates",
+        "Java erases type arguments at run time, while C++ generates separate code for each instantiation"
+       ],
+       "a": 3,
+       "w": "Java generics use type erasure: a `List<String>` and a `List<Integer>` are the same class at run time, which is why you cannot create `new T()`. C++ templates are instantiated per type at compile time. Java generics cannot hold primitives directly (use `Integer`)."
+      },
+      {
+       "t": "Design interviews",
+       "q": "*(Recall)* At the start of a low-level design interview, the best first step is to",
+       "o": [
+        "draw the database schema",
+        "write the class definitions immediately",
+        "clarify the requirements and scope, then identify the main entities and actions",
+        "choose the design patterns to use"
+       ],
+       "a": 2,
+       "w": "Clarifying requirements and scope prevents designing the wrong thing. Entities (nouns) and actions (verbs) then give candidate classes and methods; patterns are applied only where they solve a real problem."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### OOP in Java, C++, Python and C#"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is every instance method virtual in Java but not in C++?",
+       "answer": "Java chose safety and simplicity: overriding always works, and the JIT removes the cost when only one implementation exists. C++ follows the principle of not paying for what you do not use, so a method is dispatched dynamically only if it is declared `virtual`."
+      },
+      {
+       "question": "How does Python get polymorphism without declaring interfaces?",
+       "answer": "Through duck typing: if an object has the method the caller uses, it works (\"if it walks like a duck...\"). The type is checked only when the call is made at run time, so unrelated classes with the same method name are interchangeable."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### C++ and Python specifics"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why must a base class intended for polymorphic use have a virtual destructor in C++?",
+       "answer": "Deleting a derived object through a base-class pointer calls only the base destructor if it is not virtual (undefined behaviour), so derived resources are never released. A virtual destructor makes the call dispatch to the derived destructor first."
+      },
+      {
+       "question": "What does `__mro__` give you in Python?",
+       "answer": "The method resolution order: the linear sequence of classes searched when looking up a method or attribute, computed with the C3 algorithm. `super()` follows it, which makes multiple inheritance and the diamond problem predictable."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Low-level design: a parking lot"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What are the first things you should do in a low-level design interview?",
+       "answer": "Clarify the requirements and scope (actors, features, constraints), then identify the main entities (nouns) and actions (verbs) before drawing classes. Starting to code immediately usually leads to a design that misses requirements."
+      },
+      {
+       "question": "Why is the parking lot's pricing a Strategy instead of an if/else on vehicle type inside the lot class?",
+       "answer": "Pricing is a rule that changes independently of parking logic. Behind a Strategy interface a new pricing scheme is a new class, and the lot never changes: the open/closed principle, plus easy testing of each scheme alone."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Interview traps and answers"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What happens if both the `try` block and the `finally` block contain a return statement?",
+       "answer": "The value returned by the `finally` block overrides the one from `try` (and discards any exception), which is why returning from `finally` is considered bad practice. The compiler warns about it."
+      },
+      {
+       "question": "In what order do static blocks, instance initialisers and constructors run for `new B()` where B extends A?",
+       "answer": "When class B is first used: A's static initialisers, then B's static initialisers (once only). For each new object: A's instance initialisers and A's constructor, then B's instance initialisers and B's constructor."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

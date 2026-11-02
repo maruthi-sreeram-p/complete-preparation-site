@@ -82,9 +82,9 @@ function Home({ roadmap, progress, trees, allProgress }) {
           Start as a fresher. Learn like an experienced developer.
         </p>
         <p className="mt-3 max-w-2xl text-muted">
-          Six trees: the full Java stack in depth, AI and cloud skills, aptitude practice with thousands of
-          questions, DSA topic by topic, the GATE CSE syllabus with cheat codes and exam-style questions, and
-          cybersecurity for freshers.
+          Seven trees: the full Java stack in depth, AI and cloud skills, aptitude practice with thousands of
+          questions, DSA topic by topic, the GATE CSE syllabus with cheat codes and exam-style questions,
+          cybersecurity for freshers, and the five core subjects (OS, DBMS, networks, computer organisation and OOP).
           Then practise what you learn, with SQL you can run in the browser.
         </p>
 

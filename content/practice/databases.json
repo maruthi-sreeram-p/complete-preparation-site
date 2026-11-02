@@ -245,6 +245,63 @@
    "level": "Easy",
    "prompt": "What is the difference between WHERE and HAVING, and in which order does a SELECT logically run?",
    "answer": "`WHERE` filters individual rows **before** grouping, so it cannot use aggregate functions. `HAVING` filters groups **after** `GROUP BY`, so it can (`HAVING COUNT(*) > 5`). Where possible, filter with `WHERE`: it reduces the rows that have to be grouped.\n\nThe logical order is: `FROM` and `JOIN`, then `WHERE`, `GROUP BY`, `HAVING`, `SELECT` (computing expressions and aliases), `DISTINCT`, `ORDER BY`, and finally `LIMIT`. That is why a column alias defined in `SELECT` cannot be used in `WHERE` in standard SQL (some databases allow it in `HAVING` or `ORDER BY`)."
+  },
+  {
+   "id": "db-theory-keys",
+   "type": "written",
+   "title": "Candidate keys from functional dependencies",
+   "level": "Hard",
+   "prompt": "R(A, B, C, D, E) has the functional dependencies A → B, BC → D, D → E and E → B. Find the closure of A, the closure of BC and all candidate keys.",
+   "answer": "- **A⁺** = {A, B} (A → B, and nothing else starts from A or B alone).\n- **(BC)⁺** = {B, C, D, E} (BC → D, D → E).\n- Attributes that appear on no right-hand side must be in every key: **A** and **C** (nothing determines them). **(AC)⁺** = A, C, B (from A), D (from BC), E (from D) = all attributes, so the only candidate key is **AC**.\n\nTo find keys: start from the attributes that are never on a right-hand side, compute the closure, and add attributes only if the closure is still incomplete. A relation is in **3NF** if every dependency's left side is a superkey or its right side is part of a candidate key; here BC → D violates it (BC is not a superkey and D is not prime), so R is not even in 3NF.",
+   "hint": "Which attributes never appear on a right-hand side?"
+  },
+  {
+   "id": "db-theory-bcnf",
+   "type": "written",
+   "title": "BCNF and 3NF",
+   "level": "Hard",
+   "prompt": "What is the difference between 3NF and BCNF? Why is BCNF decomposition not always dependency-preserving?",
+   "answer": "A relation is in **BCNF** if for every non-trivial dependency X → Y, **X is a superkey**. **3NF** relaxes this: X → Y is also allowed if **Y is part of some candidate key** (a prime attribute). Every BCNF relation is in 3NF, not vice versa.\n\nDecomposing into BCNF always gives a **lossless join** but cannot always preserve every functional dependency (the classic example is R(Street, City, Zip) with {Street, City} → Zip and Zip → City: decomposing on Zip → City loses the ability to enforce the first dependency within one table). 3NF decomposition can always be both lossless and dependency-preserving, which is why 3NF is the practical target and BCNF is applied when no dependency is lost."
+  },
+  {
+   "id": "db-theory-serializability",
+   "type": "written",
+   "title": "Conflict serializability",
+   "level": "Hard",
+   "prompt": "Are the schedules S1 = R1(A) W1(A) R2(A) W2(A) R1(B) W1(B) R2(B) W2(B) and S2 = R1(A) R2(A) W1(A) W2(A) conflict serializable? Show how you decide.",
+   "answer": "Build the **precedence graph**: add an edge Ti → Tj when an operation of Ti conflicts with a **later** operation of Tj (same item, different transactions, at least one write). A schedule is conflict serializable **iff the graph has no cycle**; a topological order gives an equivalent serial schedule.\n\n- **S1:** every conflict goes from T1 to T2 (R1(A) before W2(A), W1(A) before R2(A) and W2(A), and the same for B): edges [(1, 2)], **no cycle**, so it is serializable and equivalent to T1 then T2.\n- **S2:** R2(A) precedes W1(A) (T2 → T1) and R1(A) precedes W2(A) (T1 → T2): edges [(1, 2), (2, 1)] form a **cycle**, so it is **not** conflict serializable (it is the classic lost-update pattern).\n\n**Two-phase locking** guarantees conflict-serializable schedules: a transaction acquires all its locks before releasing any."
+  },
+  {
+   "id": "db-theory-bplus",
+   "type": "written",
+   "title": "B+ tree height",
+   "level": "Hard",
+   "prompt": "A B+ tree index has 4096-byte blocks, 8-byte keys and 8-byte pointers. How many keys fit in an internal node, and how many levels does the tree need for 100,000,000 records? Why are B+ trees used instead of binary trees on disk?",
+   "answer": "An internal node with n pointers has n − 1 keys: n × 8 + (n − 1) × 8 ≤ 4096 gives a **fan-out of 256**. A leaf holds about (4096 − 8) / (8 + 8) = **255** entries. 100,000,000 records need ⌈100,000,000 / 255⌉ = 392,157 leaves; each level above divides by 256: 392,157 → 1,532 → 6 → 1 nodes per level, so the tree has **4 levels**: a lookup reads about 4 blocks even for 100 million rows.\n\nB+ trees are wide and shallow because **each node is one disk block**, minimising disk reads (a binary tree on 100 million keys would need about 27 levels). All data pointers are in the **linked leaves**, so range scans and `ORDER BY` just follow the leaf chain, and internal nodes hold only keys, giving a higher fan-out than a plain B-tree."
+  },
+  {
+   "id": "db-theory-joins-algos",
+   "type": "written",
+   "title": "Join algorithms",
+   "level": "Hard",
+   "prompt": "Describe nested loop, hash and sort-merge joins. When does the optimiser choose each?",
+   "answer": "- **Nested loop:** for each row of the outer table, look for matches in the inner table. O(n·m) without an index; with an **index on the inner join column** each probe is O(log m), the best choice when the outer side is small.\n- **Hash join:** build an in-memory **hash table** on the smaller input and probe it with each row of the larger. About O(n + m); best for large, unsorted inputs with an **equality** condition and enough memory (it spills to disk otherwise).\n- **Sort-merge join:** sort both inputs on the join key (or read them sorted from an index) and merge in one pass. Good when the inputs are **already sorted** or the result must be ordered, and it handles range conditions.\n\nThe optimiser estimates the cost of each from **table statistics** (row counts, value distributions); stale statistics are a common cause of a bad plan. `EXPLAIN` shows the choice."
+  },
+  {
+   "id": "db-theory-wal",
+   "type": "written",
+   "title": "Write-ahead logging and recovery",
+   "level": "Hard",
+   "prompt": "How does a database guarantee durability and atomicity after a crash? Explain write-ahead logging.",
+   "answer": "**Write-ahead logging (WAL):** before a changed data page may be written to disk, the log record describing the change must be **flushed to the log on disk**, and a transaction is committed only after its commit record is in the durable log. Data pages themselves can be written lazily, because the log is sequential and cheap to force.\n\nAfter a crash, **recovery** reads the log: **redo** the changes of committed transactions that never reached the data files (durability) and **undo** the changes of uncommitted transactions that did (atomicity). **Checkpoints** record a point from which recovery can start, so the log does not need to be replayed from the beginning. This is the ARIES approach used by most relational databases; PostgreSQL's WAL also feeds replication and point-in-time recovery."
+  },
+  {
+   "id": "db-theory-view-mv",
+   "type": "written",
+   "title": "View, materialized view, trigger, stored procedure",
+   "level": "Medium",
+   "prompt": "Differentiate a view, a materialized view, a trigger and a stored procedure.",
+   "answer": "- **View:** a **saved query** presented as a virtual table; no data stored, it runs each time. It simplifies queries and restricts access to columns.\n- **Materialized view:** the query result is **stored** and refreshed on demand or on a schedule: fast reads for expensive aggregations, but possibly stale.\n- **Trigger:** code that runs **automatically** on an `INSERT`, `UPDATE` or `DELETE` (audit logs, derived columns, enforcing a rule). Hidden side effects make triggers hard to debug and test.\n- **Stored procedure:** named, reusable code stored in the database that you **call explicitly** with parameters, running close to the data (fewer round trips) but harder to version, test and port than application code."
   }
  ]
 }
