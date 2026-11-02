@@ -1,0 +1,411 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)",
+  "questions": 16
+ },
+ "sections": [
+  {
+   "id": "ch-3-1",
+   "type": "concept",
+   "title": "The CPU and the instruction cycle",
+   "subtopicId": "3-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a computer science student, in the style of the other guides. Examples use Java, with Python and C++ where the languages differ. Worked numbers were checked by program. Where a vendor, a standard or a language version matters, check the official source before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A computer has three main parts: the **CPU** that executes instructions, the **memory** that holds instructions and data, and the **I/O devices**. In the **stored-program (von Neumann) model** instructions and data live in the same memory, which is why a program is just data that another program (a compiler, a loader) can create. A **Harvard architecture** keeps separate instruction and data memories; most modern CPUs look von Neumann to software but use split instruction and data **caches** inside, which is Harvard-like where it helps speed.\n\n### Inside the CPU\n\n| Part | Purpose |\n|---|---|\n| **ALU** (arithmetic logic unit) | adds, subtracts, ANDs, ORs, shifts, compares |\n| **Registers** | a few fast storage locations inside the CPU |\n| **Control unit** | decodes instructions and generates the control signals |\n| **PC** (program counter) | address of the next instruction |\n| **IR** (instruction register) | the instruction being executed |\n| **MAR / MDR** | memory address register / memory data register: the CPU's connection to memory |\n| **Status (flags) register** | Zero, Carry, Sign (Negative) and Overflow flags set by the ALU |\n| **SP** (stack pointer) | top of the stack |\n\n### Fetch, decode, execute\n\nEvery instruction goes through the same cycle, repeated billions of times per second:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  F[\"Fetch: IR = Memory[PC], then PC = PC + 4\"] --> D[\"Decode: the control unit reads the opcode\"]\n  D --> E[\"Execute: the ALU computes, or memory is read or written\"]\n  E --> W[\"Write back: the result goes to a register\"]\n  W --> F",
+     "title": "The instruction cycle"
+    },
+    {
+     "type": "markdown",
+     "text": "1. **Fetch:** MAR ← PC; read memory; IR ← MDR; PC ← PC + instruction size.\n2. **Decode:** the control unit works out what to do and which registers are involved.\n3. **Execute:** the ALU operates, or a load/store accesses memory, or a branch changes the PC.\n4. **Write back:** the result is stored in a register.\n5. **Interrupts** are checked at the end of an instruction (covered in the I/O part).\n\nA **branch** or **jump** simply overwrites the PC with a new address: that is all a `for` loop, an `if` or a method call is at machine level."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Word:** the natural data size of the CPU (32 or 64 bits). **Byte-addressable** memory gives every byte its own address.\n- Address bits = log₂(memory size in addressable units): 4 GiB byte-addressable needs 32 bits.\n- **Clock cycle:** one tick of the clock. Clock rate 3 GHz means a 1/3 ns cycle.\n- **Instruction cycle** (fetch → execute) can take one or many clock cycles depending on the design.\n- **MAR** holds an address; **MDR** holds the data being read or written. The PC is *not* the MAR.",
+     "title": "Terms people mix up"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The stored-program idea: instructions and data share memory\n- The cycle is fetch, decode, execute, write back, repeated\n- PC points to the next instruction; a branch overwrites it\n- MAR and MDR connect the CPU to memory; flags record the ALU's result\n- Byte-addressable memory with n address bits holds 2ⁿ bytes"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-2",
+   "type": "concept",
+   "title": "Instruction set architecture",
+   "subtopicId": "3-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The **instruction set architecture (ISA)** is the contract between hardware and software: the instructions, registers, addressing modes and data types a program can use. x86-64, ARM and RISC-V are ISAs. A particular chip that implements an ISA is a **microarchitecture**; many chips share one ISA.\n\n### Instruction formats\n\nAn instruction has an **opcode** (what to do) and **operands** (on what). The number of explicit addresses classifies a machine:\n\n| Type | Example for X = (A + B) × (C + D) | Instructions |\n|---|---|---|\n| 3-address | ADD T1,A,B / ADD T2,C,D / MUL X,T1,T2 | 3 |\n| 2-address | MOV T,A / ADD T,B / MOV U,C / ADD U,D / MUL T,U / MOV X,T | 6 |\n| 1-address (accumulator) | LOAD A / ADD B / STORE T / LOAD C / ADD D / MUL T / STORE X | 7 |\n| 0-address (stack) | PUSH A, PUSH B, ADD, PUSH C, PUSH D, ADD, MUL, POP X | 8 |\n\nThe **minimum instruction length** is the opcode bits plus all operand bits. With 64 opcodes (6 bits) and three register operands out of 32 registers (5 bits each), it is 6 + 15 = 21 bits.\n\n### Expanding opcodes\n\nA fixed-length instruction can reuse operand bits as opcode bits when it has fewer operands. For a 16-bit instruction with 4-bit address fields: the first 4 bits give 16 codes. Suppose 15 are used for 3-address instructions. The 1 unused code is **expanded** with the next 4 bits into 16 two-address opcodes. If 14 are used, 2 remain and expand into 2 × 16 = 32 one-address opcodes. If 30 are used, 2 remain and expand into 2 × 16 = **32 zero-address** instructions. The rule: *unused codes at a level × 2^(width of the next field) = the slots at the next level*; subtract the slots you use to get the unused codes for the level after.\n\n### Addressing modes\n\nThe **effective address (EA)** is where the operand really is. Modes trade instruction size, flexibility and speed.\n\n| Mode | Operand or EA | Memory accesses for the operand | Typical use |\n|---|---|---|---|\n| Immediate | the operand is in the instruction | 0 | constants: `ADD R1, #5` |\n| Register | operand is in a register | 0 | fast arithmetic |\n| Direct (absolute) | EA = address field | 1 | global variables |\n| Register indirect | EA = contents of a register | 1 | pointers |\n| Memory indirect | EA = M[address field] | 2 | pointers to pointers |\n| Indexed / displacement | EA = register + offset | 1 | arrays, struct fields |\n| Base register | EA = base register + offset | 1 | relocation, locals relative to a frame |\n| PC-relative | EA = PC + offset (PC already points to the *next* instruction) | 1 | branches, position-independent code |\n| Auto-increment / decrement | EA = register, then register ± size | 1 | stack, array walks |\n\n**Examples.**\n- `LOAD R1, 100(R2)` with R2 = 2000 uses the effective address 2000 + 100 = **2100**.\n- A 4-byte branch at address 1000 with PC-relative offset +20 goes to (1000 + 4) + 20 = **1024**.\n- A memory-indirect load of a one-word instruction costs 1 (instruction fetch) + 2 (indirection) = **3** memory accesses.\n- **Little-endian** machines (x86, most ARM setups) store the least significant byte at the lowest address: 0x12345678 at address 100 places 78, 56, 34, 12 at 100, 101, 102, 103. **Big-endian** stores 12 first (network byte order). Java hides this inside the JVM but you meet it in file formats and sockets.\n\n### RISC and CISC\n\n| | RISC (ARM, RISC-V, MIPS) | CISC (x86) |\n|---|---|---|\n| Instruction length | fixed (simple to decode) | variable |\n| ALU operands | registers only: a **load/store architecture** | memory operands allowed |\n| Addressing modes | few | many |\n| Registers | many | fewer |\n| Control | usually hardwired | often microprogrammed |\n| Pipelining | easy | harder (modern x86 translates to RISC-like micro-ops) |\n| Code size | larger | smaller |"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Minimum instruction bits = opcode bits + operand bits (⌈log₂ #opcodes⌉ + n × ⌈log₂ #registers⌉).\n- Memory-indirect operand access: 2 memory references (+1 for the fetch).\n- PC-relative target = (address of the branch + its size) + offset.\n- Expanding opcodes: slots at the next level = (free codes at this level) × 2^(next field width).\n- Little-endian: LSB at the lowest address.",
+     "title": "ISA formulas"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "The x86 ISA is CISC: variable-length instructions with memory operands. Inside, modern x86 cores decode each instruction into one or more RISC-like micro-operations and run those on a pipelined, out-of-order core. So the distinction now lives mostly at the ISA level, and ARM's fixed-length instructions make decoding cheaper, which is one reason it is power-efficient.",
+     "title": "Interview angle: Is x86 CISC or RISC today?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The ISA is the hardware/software contract; many chips implement one ISA\n- Instruction length = opcode bits + operand bits\n- Expanding opcodes reuse operand bits as opcode bits\n- Know the addressing modes and how many memory accesses each needs\n- RISC: fixed length, load/store, many registers; CISC: variable length, memory operands"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-3",
+   "type": "concept",
+   "title": "Datapath and control unit",
+   "subtopicId": "3-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The **datapath** is the set of registers, the ALU, multiplexers and buses that carry and transform data. The **control unit** tells the datapath what to do in each step, by producing **control signals** (register write enable, ALU operation, memory read/write, multiplexer selects).\n\n### A single-cycle datapath\n\nFor a simple RISC machine the datapath contains: an instruction memory, a register file with two read ports and one write port, an ALU, a data memory, a sign-extension unit, and an adder for the PC. For each instruction class:\n\n| Instruction | Path |\n|---|---|\n| **R-type** (`add R1, R2, R3`) | read two registers → ALU → write the result to a register |\n| **Load** (`lw R1, 8(R2)`) | read R2 → ALU adds the offset → read data memory → write R1 |\n| **Store** (`sw R1, 8(R2)`) | read R1 and R2 → ALU computes the address → write data memory |\n| **Branch** (`beq R1, R2, L`) | read two registers → ALU subtracts → if zero, PC ← PC + offset |\n\nIn a **single-cycle** design every instruction takes one clock cycle, and the clock period must be long enough for the **slowest** instruction (the load). That wastes time on fast instructions, which is why real CPUs use **multi-cycle** or **pipelined** designs (next part).\n\n**Example.** If the instruction fetch, register read, ALU, memory access and register write take 200, 100, 200, 200 and 100 ps, a load needs 800 ps, an R-type instruction needs 600 ps, so the single-cycle clock must be 800 ps for all of them.\n\n### Hardwired and microprogrammed control\n\n| | Hardwired control | Microprogrammed control |\n|---|---|---|\n| Implementation | gates and flip-flops generate the signals directly | a **control store** (ROM) holds microinstructions that generate the signals |\n| Speed | **faster** | slower (extra ROM lookup) |\n| Flexibility | hard to change | easy to change or fix by editing the microcode |\n| Design effort | complex for large ISAs | simple and systematic |\n| Used in | RISC processors | CISC processors |\n\nA **microprogram** is a sequence of **microinstructions**, each specifying which control signals to assert for one clock cycle. A **horizontal** microinstruction has one bit per control signal (wide, fast, can do several things at once). A **vertical** microinstruction encodes the signals in fields (narrow, needs decoding, slower). A control store of 256 words × 40 bits = 10,240 bits = 1,280 bytes. The **microprogram counter** and the **next-address field** or branch conditions choose the next microinstruction."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Hardwired = fast and rigid (RISC). Microprogrammed = flexible and slower (CISC).\n- Horizontal microcode: wide, little decoding, more parallelism. Vertical: narrow, encoded, more decoding.\n- Single-cycle clock period = the time of the slowest instruction. CPI = 1 but the clock is slow.\n- Control store size = number of microinstructions × microinstruction width.\n- Control signals for an R-type instruction: RegWrite = 1, ALU source = register, MemRead = MemWrite = 0.",
+     "title": "Control unit quick answers"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The datapath moves and transforms data; the control unit generates the control signals\n- In a single-cycle design the clock period is set by the slowest instruction (the load)\n- Hardwired control is faster; microprogrammed control is easier to modify\n- Horizontal microinstructions are wide and parallel; vertical ones are narrow and encoded"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-4",
+   "type": "concept",
+   "title": "Procedures, the stack and what compilers produce",
+   "subtopicId": "3-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Understanding what your code becomes explains stack overflows, calling conventions and many interview questions.\n\n### Registers and memory\n\nA program's memory is laid out in regions: **code** (the instructions), **static data**, the **heap** (dynamic allocation, grows up) and the **stack** (calls and local variables, grows down). The **stack pointer (SP)** marks the top of the stack.\n\n### A function call at machine level\n\nA call is a jump that remembers where to come back to.\n\n1. The caller puts the arguments in registers (or on the stack) and executes **CALL**: it pushes the **return address** (the address of the next instruction) and jumps to the function.\n2. The callee **allocates its frame**: it decrements SP to make room for locals and saved registers.\n3. It runs. Local variables live in the frame at fixed offsets from SP or the **frame pointer (FP)**.\n4. It places the result in a register, **frees the frame** (SP back up), and executes **RET**, which pops the return address into the PC.\n\nEach call adds a frame, so deep or infinite recursion exhausts the stack: `StackOverflowError` in Java, a segmentation fault in C. A **calling convention** says which registers carry arguments and the result and which registers the callee must preserve, so separately compiled code can call each other.\n\n### One statement, many instructions\n\nThe Java statement `a[i] = a[i] + b;` becomes, on a load/store machine, roughly: compute the address of `a[i]` (base + i × 4), **load** the element into a register, **add** `b`, **store** the result back. Four or five instructions, two of them memory accesses. Counting instructions and memory accesses like this is how you estimate performance.\n\n### Program execution trace\n\nFor `x = y + z` on a 1-address (accumulator) machine: `LOAD y` (fetch the instruction, then read memory), `ADD z` (fetch, read), `STORE x` (fetch, write). That is **3 instruction fetches and 3 data accesses = 6 memory references** (every instruction word here takes one memory word)."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Every call pushes a stack frame (return address, saved registers, locals) and the stack has a fixed size, typically 512 KiB to a few MiB per thread. Infinite recursion keeps pushing frames until the stack is exhausted: Java throws `StackOverflowError` and a C program is killed by a segmentation fault. A base case stops the recursion so frames are popped as the calls return.",
+     "title": "Interview angle: Why does recursion without a base case crash the program?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- A call pushes the return address and creates a stack frame; RET pops the return address into the PC\n- Locals live in the frame and disappear on return\n- Deep recursion exhausts the fixed-size stack\n- A calling convention fixes which registers carry arguments, results and preserved values\n- Count instructions and memory references to estimate cost"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (16 questions)",
+   "subtopicId": "3-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "16 original questions on 11 areas. *Recall* questions test a definition or a rule. *Problem* questions give you numbers or a short scenario to work out. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "core-coa-cpu",
+     "items": [
+      {
+       "t": "Instruction formats",
+       "q": "*(Problem)* An ISA has 100 different opcodes, and every ALU instruction names three registers out of 64. Using fixed-width fields, the minimum number of bits in such an instruction is",
+       "o": [
+        "27",
+        "24",
+        "25",
+        "22"
+       ],
+       "a": 2,
+       "w": "100 opcodes need ⌈log₂ 100⌉ = 7 bits, and each of the three register fields needs log₂ 64 = 6 bits: 7 + 18 = 25 bits."
+      },
+      {
+       "t": "Expanding opcodes",
+       "q": "*(Problem)* A 16-bit instruction has 4-bit address fields. The encoding uses 15 three-address instructions, 14 two-address instructions and 30 one-address instructions. With expanding opcodes, the maximum number of zero-address instructions that can still be encoded is",
+       "o": [
+        "64",
+        "16",
+        "48",
+        "32"
+       ],
+       "a": 3,
+       "w": "The first 4 bits give 16 codes; 15 are used, leaving 1, which expands into 1 × 16 = 16 two-address codes. 14 are used, leaving 2, which expand into 2 × 16 = 32 one-address codes. 30 are used, leaving 2, which expand into 2 × 16 = 32 zero-address codes."
+      },
+      {
+       "t": "Addressing modes",
+       "q": "*(Recall)* The addressing mode in which the operand is part of the instruction itself is",
+       "o": [
+        "direct",
+        "register indirect",
+        "indexed",
+        "immediate"
+       ],
+       "a": 3,
+       "w": "In immediate addressing the instruction contains the operand value, so no memory access is needed for it. Direct mode holds the operand's address, and the others compute an address."
+      },
+      {
+       "t": "Addressing modes",
+       "q": "*(Problem)* An indexed load uses register R5 containing 5000 and a displacement of −40. The effective address is",
+       "o": [
+        "5000",
+        "4040",
+        "5040",
+        "4960"
+       ],
+       "a": 3,
+       "w": "The effective address of displacement addressing is the register contents plus the displacement: 5000 + (−40) = 4960."
+      },
+      {
+       "t": "Addressing modes",
+       "q": "*(Problem)* A 4-byte branch instruction is at address 2000. It uses PC-relative addressing with an offset of −16 and the PC has already been advanced past the branch. The target address is",
+       "o": [
+        "1988",
+        "2004",
+        "1984",
+        "2020"
+       ],
+       "a": 0,
+       "w": "The PC holds 2000 + 4 = 2004 when the offset is added: 2004 − 16 = 1988."
+      },
+      {
+       "t": "Addressing modes",
+       "q": "*(Problem)* A one-word instruction uses memory indirect addressing for its operand. Counting the instruction fetch, the number of memory references needed to get the operand value is",
+       "o": [
+        "4",
+        "2",
+        "3",
+        "1"
+       ],
+       "a": 2,
+       "w": "One reference fetches the instruction, one reads the pointer stored at the address field, and one reads the operand at the address the pointer holds: 3 in total."
+      },
+      {
+       "t": "Endianness",
+       "q": "*(Problem)* The 32-bit value 0xA1B2C3D4 is stored at byte address 1000 on a little-endian machine. The byte stored at address 1002 is",
+       "o": [
+        "0xC3",
+        "0xB2",
+        "0xD4",
+        "0xA1"
+       ],
+       "a": 1,
+       "w": "A little-endian machine stores the least significant byte at the lowest address: 1000 holds D4, 1001 holds C3, 1002 holds B2 and 1003 holds A1."
+      },
+      {
+       "t": "Datapath",
+       "q": "*(Problem)* In a single-cycle processor the stage times are: instruction fetch 220 ps, register read 90 ps, ALU 190 ps, data memory 240 ps and register write 80 ps. A load uses all five stages. The minimum clock period for the processor is",
+       "o": [
+        "580 ps",
+        "820 ps",
+        "500 ps",
+        "740 ps"
+       ],
+       "a": 1,
+       "w": "The period must accommodate the slowest instruction, the load: 220 + 90 + 190 + 240 + 80 = 820 ps. An R-type instruction (no memory stage) would need only 580 ps, but it still gets a full 820 ps cycle."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(Recall)* Compared with microprogrammed control, hardwired control is generally",
+       "o": [
+        "faster but harder to modify",
+        "slower and harder to modify",
+        "faster and easier to modify",
+        "slower but easier to modify"
+       ],
+       "a": 0,
+       "w": "Hardwired control generates signals directly with logic gates, so there is no control-store lookup and it is faster, but changing it means redesigning the circuit. Microprogrammed control trades speed for flexibility."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(Problem)* A microprogrammed control unit has a control store of 512 microinstructions, each 36 bits wide. The size of the control store in bytes is",
+       "o": [
+        "2,304",
+        "1,152",
+        "18,432",
+        "4,608"
+       ],
+       "a": 0,
+       "w": "512 × 36 = 18,432 bits, and dividing by 8 gives 2,304 bytes. Option (d) is the size in bits."
+      },
+      {
+       "t": "Control unit",
+       "q": "*(Recall)* Compared with a vertical microinstruction format, a horizontal format",
+       "o": [
+        "has more bits per microinstruction and can specify several control signals at once",
+        "needs more decoding hardware",
+        "uses narrower words",
+        "can only issue one control signal per cycle"
+       ],
+       "a": 0,
+       "w": "A horizontal microinstruction dedicates roughly one bit to each control signal, so it is wide, needs little decoding and allows parallel micro-operations. A vertical format encodes signals into fields: narrower, but it needs decoders and is slower."
+      },
+      {
+       "t": "Memory references",
+       "q": "*(Problem)* On a 1-address (accumulator) machine where every instruction occupies one memory word, the code for x = y + z is LOAD y, ADD z, STORE x. The total number of memory references to execute it is",
+       "o": [
+        "9",
+        "3",
+        "6",
+        "4"
+       ],
+       "a": 2,
+       "w": "Each of the 3 instructions is fetched from memory (3 references) and each accesses one data word (3 references): 6 in total."
+      },
+      {
+       "t": "Instruction counts",
+       "q": "*(Problem)* The expression X = (A + B) × (C + D) is evaluated on a stack (0-address) machine using PUSH, POP, ADD and MUL. The minimum number of instructions required is",
+       "o": [
+        "9",
+        "8",
+        "6",
+        "7"
+       ],
+       "a": 1,
+       "w": "PUSH A, PUSH B, ADD, PUSH C, PUSH D, ADD, MUL, POP X: 8 instructions (4 pushes, 2 adds, 1 multiply, 1 pop)."
+      },
+      {
+       "t": "Procedures",
+       "q": "*(Recall)* The effect of the RET instruction at the end of a function is to",
+       "o": [
+        "clear the stack pointer",
+        "jump to the start of the function",
+        "pop the return address from the stack into the program counter",
+        "push the return address onto the stack"
+       ],
+       "a": 2,
+       "w": "CALL pushes the return address and jumps to the callee; RET pops that address into the PC, so execution continues after the call."
+      },
+      {
+       "t": "Address bits",
+       "q": "*(Problem)* A byte-addressable memory of 16 GiB needs how many address bits?",
+       "o": [
+        "33",
+        "34",
+        "32",
+        "36"
+       ],
+       "a": 1,
+       "w": "16 GiB = 16 × 2³⁰ = 2³⁴ bytes, so 34 address bits are needed."
+      },
+      {
+       "t": "Registers",
+       "q": "*(Recall)* The register that holds the address of the memory location to be read or written is the",
+       "o": [
+        "SP",
+        "MDR",
+        "IR",
+        "MAR"
+       ],
+       "a": 3,
+       "w": "The MAR (memory address register) holds the address; the MDR (memory data register) holds the data transferred. The IR holds the current instruction and the SP the stack top."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### The CPU and the instruction cycle"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does the program counter hold, and how does a jump change execution?",
+       "answer": "The PC holds the address of the next instruction to fetch. After each fetch it is advanced by the instruction size. A jump or taken branch loads a new address into the PC, so the next fetch comes from there."
+      },
+      {
+       "question": "What is the difference between the MAR and the MDR?",
+       "answer": "The MAR holds the memory address being accessed and the MDR holds the data read from or to be written to that address. Together they are the CPU's interface to memory."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Instruction set architecture"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the effective address in indexed (displacement) addressing?",
+       "answer": "The sum of the contents of the index or base register and the displacement in the instruction. It is used for array elements and structure fields."
+      },
+      {
+       "question": "Why does PC-relative addressing help position-independent code?",
+       "answer": "The target is computed relative to the current PC, so the code works wherever it is loaded in memory, and the instruction needs only a small offset instead of a full address."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Datapath and control unit"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a single-cycle CPU inefficient?",
+       "answer": "Every instruction must fit in one clock cycle, so the cycle must be as long as the slowest instruction (usually a load using all five stages). Faster instructions waste the rest of the cycle."
+      },
+      {
+       "question": "What are the trade-offs between hardwired and microprogrammed control?",
+       "answer": "Hardwired control produces signals with logic gates, so it is faster but hard to design and change. Microprogrammed control reads microinstructions from a control store: slower because of the extra lookup, but systematic and easy to modify, which suits complex instruction sets."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Procedures, the stack and what compilers produce"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What happens on the stack when a function is called and when it returns?",
+       "answer": "The call pushes the return address and the callee reserves a frame for its locals and saved registers by moving the stack pointer. On return the frame is released and the return address is loaded into the PC, so execution continues after the call."
+      },
+      {
+       "question": "How many memory references does `x = y + z` need on a 1-address machine?",
+       "answer": "Three instructions (LOAD, ADD, STORE) are each fetched from memory (3 references) and each touches one data word (3 references), so 6 memory references in total."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
