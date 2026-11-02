@@ -1,0 +1,868 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 53
+ },
+ "sections": [
+  {
+   "id": "ch-6-1",
+   "type": "concept",
+   "title": "Security belongs in the whole lifecycle",
+   "subtopicId": "6-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "Fixing a flaw in design costs a whiteboard conversation. Fixing it in production costs an incident. A **secure software development lifecycle (SSDLC)** moves security checks **left**, toward the beginning.\n\n| Phase | Security activity | Example output |\n|---|---|---|\n| Requirements | decide what must be protected and which rules apply | \"passwords must be hashed\", \"audit every admin action\" |\n| Design | threat model (STRIDE), pick safe patterns | data flow diagram, trust boundaries |\n| Coding | secure coding standard, code review, IDE and pre-commit checks | review checklist, secret scanner |\n| Build and test | SAST, dependency scan, security unit tests, DAST | scan reports as pipeline gates |\n| Release and operate | hardening, secrets management, logging, patching | monitored, patched production |\n\nA developer's three habits that prevent most bugs: **never trust input, keep data and code separate, and deny by default.**"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-2",
+   "type": "concept",
+   "title": "Validate input at the boundary",
+   "subtopicId": "6-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Input validation** checks that data is the type, size, range and format you expect **before** your logic uses it. It is a defence in depth layer. It does not replace parameterised queries or output encoding.\n\n- **Allow-list over block-list:** accept the characters and values you expect (`^[A-Za-z0-9_]{3,30}$`), not \"everything except `<`\".\n- **Validate on the server.** Client-side checks are only for convenience.\n- **Check type, length, range and format, and business rules** (quantity between 1 and 100, end date after start date).\n- **Canonicalise first, then validate** (decode, normalise paths and Unicode), otherwise `%2e%2e/` slips past a check for `../`.\n- **Limit sizes:** request bodies, upload sizes, page sizes, JSON depth, number of items. Unbounded input is a denial-of-service risk.\n- **Use DTOs, not entities,** for request bodies so clients cannot set fields such as `role` or `id` (mass assignment)."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "public record RegisterRequest(\n        @NotBlank @Pattern(regexp = \"^[A-Za-z0-9_]{3,30}$\") String username,\n        @NotBlank @Email @Size(max = 254) String email,\n        @NotBlank @Size(min = 12, max = 128) String password) {}\n\n@PostMapping(\"/register\")\nResponseEntity<Void> register(@Valid @RequestBody RegisterRequest request) { /* ... */ }",
+     "title": "Bean Validation on a DTO"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A pattern such as `(a+)+$` can take exponential time on an input like `aaaaaaaaaaaaaaaaaaaaaaaa!`. One request can pin a CPU core. Keep patterns simple, avoid nested quantifiers, bound the input length first, and consider a library with linear-time matching.",
+     "title": "Regex denial of service (ReDoS)"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Allow-list, server-side, at every trust boundary.**\n- **Reject, do not \"fix\".** Silently stripping bad characters invites bypasses (`....//`).\n- **Canonicalise before checking.** Decode once, normalise paths, then validate.\n- **Bound everything:** length, size, count, depth, rate.\n- **Validation is not encoding.** Still parameterise queries and encode output.",
+     "title": "Validation cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-3",
+   "type": "concept",
+   "title": "Handle errors and output safely",
+   "subtopicId": "6-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- **Never return stack traces, SQL or internal paths to clients.** Return a generic message plus a correlation ID, and log the details privately.\n- **Fail closed:** an exception in a permission check must end in \"denied\".\n- Return the **right `Content-Type`** (`application/json`), and set `X-Content-Type-Options: nosniff`."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@RestControllerAdvice\nclass ApiErrors {\n    private static final Logger log = LoggerFactory.getLogger(ApiErrors.class);\n\n    @ExceptionHandler(AccessDeniedException.class)\n    ProblemDetail denied(AccessDeniedException e) {\n        return ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, \"Not allowed\");\n    }\n\n    @ExceptionHandler(Exception.class)\n    ProblemDetail unexpected(Exception e) {\n        String id = UUID.randomUUID().toString();\n        log.error(\"Unhandled error {}\", id, e);                       // details stay in the log\n        return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, \"Something went wrong. Reference \" + id);\n    }\n}",
+     "title": "One central error handler"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-4",
+   "type": "concept",
+   "title": "Secrets: passwords, keys and tokens",
+   "subtopicId": "6-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **secret** is anything that grants access: database passwords, API keys, signing keys, tokens. The rules:\n\n1. **Never commit secrets to Git.** Git history is forever, so deleting the file later does not help. If one leaks, **rotate it immediately** (issue a new one and revoke the old one), then clean up.\n2. **Load secrets at runtime** from environment variables or a secret manager (AWS Secrets Manager, HashiCorp Vault, Kubernetes secrets with encryption), not from `application.properties` in the repository.\n3. **Use different secrets per environment** and give each the minimum permissions.\n4. **Rotate regularly** and support rotation without a redeploy where possible.\n5. **Add scanning:** a pre-commit hook and a pipeline step with a tool such as gitleaks or trufflehog, and enable your Git host's secret scanning."
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "spring:\n  datasource:\n    url: ${DB_URL}\n    username: ${DB_USER}\n    password: ${DB_PASSWORD}\nserver:\n  servlet:\n    session:\n      cookie:\n        http-only: true\n        secure: true\n        same-site: lax",
+     "title": "application.yml: placeholders only, values come from the environment"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Treat it as public the moment it was pushed, even if the repository is private and even if you deleted the commit. Rotate first, investigate access logs second, rewrite history third (history rewriting does not un-leak anything).",
+     "title": "After a leaked key"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-5",
+   "type": "concept",
+   "title": "Dependencies and the supply chain",
+   "subtopicId": "6-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A typical Spring Boot application is 80 to 90 percent other people's code. Your risk includes every library.\n\n- **Software composition analysis (SCA):** OWASP Dependency-Check, GitHub Dependabot, Snyk, `mvn versions:display-dependency-updates`. They compare your dependency tree against CVE databases.\n- **Keep an inventory (SBOM):** a bill of materials in CycloneDX or SPDX format lists every component, so when the next Log4Shell appears you can answer \"are we affected?\" in minutes.\n- **Use the Spring Boot BOM** so versions are consistent, and update regularly. Small frequent upgrades are safer than one huge one.\n- **Remove unused dependencies**, pin versions, use only trusted repositories, and verify checksums or signatures where the tooling supports it.\n- **Watch for typosquatting** (a package with a name one letter off) and abandoned libraries.\n- **Build integrity:** reproducible builds, signed artifacts and a locked-down CI system, because an attacker who controls the build controls what you ship."
+    }
+   ]
+  },
+  {
+   "id": "ch-6-6",
+   "type": "concept",
+   "title": "Java pitfalls that become vulnerabilities",
+   "subtopicId": "6-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Pitfall | Why it matters | Safer approach |\n|---|---|---|\n| `java.util.Random` / `Math.random()` for tokens | predictable | `SecureRandom` |\n| `String.equals` on secrets or MACs | timing leak | `MessageDigest.isEqual` (constant time) |\n| `ObjectInputStream.readObject` on input | remote code execution gadgets | JSON with DTOs, allow-list filters |\n| XML parsers with default settings | XXE | disable DTDs and external entities |\n| `Runtime.exec(\"cmd \" + input)` | command injection | `ProcessBuilder` with a fixed argument list, or no shell at all |\n| `int total = qty * priceCents` | integer overflow wraps negative | `Math.multiplyExact`, `long`, `BigDecimal` for money |\n| Jackson default typing enabled | deserialisation to attacker-chosen classes | do not enable it for untrusted input |\n| Spring Expression Language built from input | expression injection | never evaluate user data as SpEL |\n| Logging raw user input | log forging with `\\r\\n`, secrets in logs | sanitise newlines, never log passwords or tokens |\n| Catching and swallowing exceptions | hides attacks and leaves half-finished state | log, and fail closed |\n| Reflection and `setAccessible(true)` on untrusted names | bypasses access rules | allow-list of classes and methods |\n| Time-of-check to time-of-use (TOCTOU) | the state changes between check and action | atomic operations, DB constraints, transactions |\n| Public Actuator or H2 console in production | secrets and database access | disable or protect, expose only `health` |\n\n**Spring4Shell (CVE-2022-22965)** is a good case study: data binding that could reach class loader properties on certain JDK and server combinations allowed remote code execution. The lessons: bind to DTOs, patch quickly, and know your dependencies."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Why not use `double` for prices? Floating point cannot represent most decimals exactly, so totals drift. I store money as integer cents in a `long`, or use `BigDecimal` with explicit scale and rounding, and use `Math.addExact` and `multiplyExact` so an overflow throws instead of wrapping. I also take prices from the server, never from the request.\"",
+     "title": "Money and integers"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-7",
+   "type": "concept",
+   "title": "Logging and monitoring in the application",
+   "subtopicId": "6-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- Log **security events**: logins (success and failure), logouts, password changes, MFA events, permission denials, input validation failures, admin actions, and changes to sensitive data. Include time, user id, source IP, action and outcome.\n- **Never log** passwords, tokens, full card numbers, secrets or sensitive personal data. Mask what you must keep.\n- **Neutralise log injection**: a username like `bob\\nINFO admin logged in` can forge a line. Encode or strip CR and LF before logging, or use structured JSON logging.\n- Send logs off the machine to a central store (an attacker who owns the host can erase local logs) and **alert** on patterns such as many failures, impossible travel or a new admin."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "log.warn(\"event=login_failed user={} ip={} reason={}\", clean(username), request.getRemoteAddr(), \"bad_credentials\");\n\nstatic String clean(String s) { return s == null ? \"\" : s.replaceAll(\"[\\\\r\\\\n\\\\t]\", \"_\"); }",
+     "title": "Structured, safe security logging"
+    }
+   ]
+  },
+  {
+   "id": "ch-6-8",
+   "type": "concept",
+   "title": "Static analysis, testing and review",
+   "subtopicId": "6-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Tool type | What it does | Examples |\n|---|---|---|\n| **SAST** (static application security testing) | scans source or bytecode for dangerous patterns | SpotBugs with the FindSecBugs plugin, SonarQube, CodeQL, Semgrep |\n| **SCA** | known vulnerable dependencies | OWASP Dependency-Check, Dependabot, Snyk |\n| **Secret scanning** | keys committed to Git | gitleaks, trufflehog |\n| **DAST** (dynamic) | attacks the running app from outside | OWASP ZAP, Burp Suite |\n| **IAST / RASP** | instrumentation inside the running app | commercial agents |\n| **Fuzzing** | random and malformed inputs | Jazzer for Java |\n\nScanners produce **false positives** (reports that are not real) and **false negatives** (misses). Always triage: reproduce, trace the code path, then fix or document why it is not exploitable.\n\n### A review checklist you can paste into pull requests\n\n1. Does any user input reach a query, command, file path, URL, template or log? How is it bound or validated?\n2. Is every endpoint authenticated, and does it check **who owns the object**?\n3. Are secrets absent from code, config and logs?\n4. Are errors generic to the client and detailed only in logs?\n5. Are new dependencies needed, maintained and free of known CVEs?\n6. Does any new data need encryption, retention limits or masking?\n7. Are there tests for the unhappy paths (anonymous, wrong user, bad input)?\n\n### Find the bugs"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@GetMapping(\"/files\")\npublic byte[] get(@RequestParam String name) throws IOException {\n    return Files.readAllBytes(Path.of(\"/data/uploads/\" + name));         // (1)\n}\n\n@PostMapping(\"/users/{id}\")\npublic User update(@PathVariable long id, @RequestBody User u) {        // (2)\n    return repo.save(u);\n}\n\n@GetMapping(\"/search\")\npublic List<Item> search(@RequestParam String q) {\n    return jdbc.query(\"select * from items where title like '%\" + q + \"%'\", mapper);   // (3)\n}\n\nlog.info(\"Login attempt: \" + username + \" password=\" + password);       // (4)\nString token = Long.toHexString(new Random().nextLong());               // (5)",
+     "title": "Review this controller"
+    },
+    {
+     "type": "markdown",
+     "text": "1. **Path traversal:** `name=../../etc/passwd`. Resolve, normalise and check `startsWith(base)`.\n2. **Mass assignment and missing ownership check:** the body may contain `role` or another user's `id`. Use a DTO and verify `id` belongs to the caller.\n3. **SQL injection:** use `like ?` with `\"%\" + q + \"%\"` as the bound parameter.\n4. **Secret in the log:** never log the password.\n5. **Predictable token:** use `SecureRandom` and at least 128 bits."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Validate with allow-lists on the server and bound every size\n- Never return stack traces, and fail closed\n- Keep secrets out of Git and rotate any that leak\n- Scan dependencies and keep an SBOM\n- Use SecureRandom, constant-time comparison and exact arithmetic\n- Log security events, never secrets, and neutralise log injection"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (53 questions)",
+   "subtopicId": "6-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "53 original questions on 9 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-secure-java",
+     "items": [
+      {
+       "t": "Secure SDLC",
+       "q": "*(Recall)* \"Shifting left\" in security means",
+       "o": [
+        "doing security activities such as threat modelling and scanning earlier in the lifecycle",
+        "hiring security staff on the left side of the office",
+        "testing only after release",
+        "removing logging"
+       ],
+       "a": 0,
+       "w": "Defects found in design or coding are far cheaper to fix than those found in production."
+      },
+      {
+       "t": "Secure SDLC",
+       "q": "*(Recall)* Threat modelling is most valuable during which phase?",
+       "o": [
+        "production monitoring only",
+        "retirement",
+        "design",
+        "after a breach"
+       ],
+       "a": 2,
+       "w": "It finds flaws before any code exists. It also helps decide which tests to write later."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Recall)* Which approach to validating a username is the strongest?",
+       "o": [
+        "validate in JavaScript only",
+        "reject strings that contain a < or a quote",
+        "remove characters that look dangerous",
+        "accept only the pattern ^[A-Za-z0-9_]{3,30}$"
+       ],
+       "a": 3,
+       "w": "An allow-list says exactly what is acceptable. Block lists and stripping can be bypassed, and client-side checks are optional for an attacker."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Recall)* Validation must be performed",
+       "o": [
+        "only on the database",
+        "on the server, because anything from the client can be altered",
+        "only in the browser",
+        "once a month"
+       ],
+       "a": 1,
+       "w": "Client-side validation is for user convenience. The server is the only place that attackers cannot skip."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Scenario)* A filter removes \"../\" from filenames once and then opens the file. An attacker sends \"....//....//etc/passwd\". The better defence is to",
+       "o": [
+        "remove \"../\" twice",
+        "reject files with dots",
+        "resolve the path, normalise it, and verify it still starts with the base directory",
+        "lowercase the string"
+       ],
+       "a": 2,
+       "w": "Deleting patterns creates new patterns. Comparing the final canonical path to the base directory is robust."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Scenario)* The regex `(a+)+$` is applied to a long string of a's ending in \"!\". The risk is",
+       "o": [
+        "ReDoS: catastrophic backtracking that burns CPU",
+        "XSS",
+        "path traversal",
+        "SQL injection"
+       ],
+       "a": 0,
+       "w": "Nested quantifiers make the number of paths grow exponentially when the match fails. Use simple patterns and bound input length."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Recall)* Which annotation set belongs on a request DTO field that must be a non-empty e-mail of at most 254 characters?",
+       "o": [
+        "@Autowired @Value",
+        "@NotBlank @Email @Size(max = 254)",
+        "@Id @Column",
+        "@Transactional"
+       ],
+       "a": 1,
+       "w": "These are Bean Validation constraints, enforced when the controller parameter carries @Valid."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Recall)* Binding a request body straight into a JPA entity is risky because",
+       "o": [
+        "entities cannot be serialised",
+        "it needs HTTPS",
+        "the client can set fields it should not control, such as role or id (mass assignment)",
+        "entities are slow"
+       ],
+       "a": 2,
+       "w": "Use request DTOs that contain only the allowed fields and map them to entities explicitly."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Recall)* Why limit request body, upload and page sizes?",
+       "o": [
+        "to make the code shorter",
+        "unbounded input enables denial of service and memory exhaustion",
+        "to improve colours",
+        "to hide errors"
+       ],
+       "a": 1,
+       "w": "Size limits are a cheap and effective control. Set limits for JSON depth, array length and file size."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Scenario)* The client sends `price=1` for a product that costs 5000. The server stores that price in the order. The flaw is",
+       "o": [
+        "XSS",
+        "weak TLS",
+        "missing CORS",
+        "trusting client-supplied data for a value the server owns; look the price up on the server"
+       ],
+       "a": 3,
+       "w": "Anything the user can edit must be revalidated. Prices, roles and totals come from the server."
+      },
+      {
+       "t": "Error handling",
+       "q": "*(Recall)* A production API returns the full Java stack trace on error. This",
+       "o": [
+        "discloses internals such as class names, library versions and queries",
+        "is required by Spring",
+        "improves performance",
+        "helps users"
+       ],
+       "a": 0,
+       "w": "Return a generic message with a correlation ID, and keep the detail in the log."
+      },
+      {
+       "t": "Error handling",
+       "q": "*(Recall)* \"Fail closed\" means that when a security check throws an exception, the request is",
+       "o": [
+        "denied",
+        "retried forever",
+        "allowed",
+        "redirected to the admin"
+       ],
+       "a": 0,
+       "w": "A broken check must not become an open door."
+      },
+      {
+       "t": "Error handling",
+       "q": "*(Scenario)* A try/catch around an authorisation call logs nothing and continues execution when an exception occurs. The risk is",
+       "o": [
+        "none",
+        "the action proceeds without authorisation and the failure is invisible",
+        "a smaller log file",
+        "faster responses"
+       ],
+       "a": 1,
+       "w": "Swallowed exceptions in security code lead to bypasses. Deny and log."
+      },
+      {
+       "t": "Secrets",
+       "q": "*(Recall)* A database password found in application.properties committed to GitHub should be",
+       "o": [
+        "rotated immediately and moved to a secret manager or environment variable",
+        "kept, because the repository is private",
+        "encoded in Base64",
+        "deleted from the next commit only"
+       ],
+       "a": 0,
+       "w": "The old value remains in Git history and may already have been copied. Rotation is the only reliable fix."
+      },
+      {
+       "t": "Secrets",
+       "q": "*(Recall)* Which tool category finds API keys committed to Git?",
+       "o": [
+        "secret scanning (for example gitleaks or trufflehog)",
+        "code formatting",
+        "DAST",
+        "load testing"
+       ],
+       "a": 0,
+       "w": "Run it as a pre-commit hook and in CI."
+      },
+      {
+       "t": "Secrets",
+       "q": "*(Scenario)* In Spring Boot, which is the safest way to supply a database password to the running container?",
+       "o": [
+        "print it in the logs for the operator",
+        "hard-code it in the source",
+        "put it in the Dockerfile with ENV",
+        "inject it at runtime from a secret manager or an orchestrator secret, referenced as ${DB_PASSWORD}"
+       ],
+       "a": 3,
+       "w": "Anything baked into the image or repository is available to everyone who can pull it. Runtime injection plus rotation is the pattern."
+      },
+      {
+       "t": "Secrets",
+       "q": "*(Scenario)* Which cookie settings are correct for a Spring Boot session cookie?",
+       "o": [
+        "http-only: false, same-site: none",
+        "http-only: false, secure: false",
+        "secure: false, same-site: none",
+        "http-only: true, secure: true, same-site: lax"
+       ],
+       "a": 3,
+       "w": "HttpOnly blocks script access, Secure forces HTTPS, and SameSite=Lax limits cross-site sending."
+      },
+      {
+       "t": "Dependencies",
+       "q": "*(Recall)* SCA (software composition analysis) tools look for",
+       "o": [
+        "typing mistakes in your code",
+        "slow SQL queries",
+        "known vulnerabilities in third-party libraries",
+        "open ports"
+       ],
+       "a": 2,
+       "w": "Examples: OWASP Dependency-Check, Dependabot, Snyk."
+      },
+      {
+       "t": "Dependencies",
+       "q": "*(Recall)* An SBOM is",
+       "o": [
+        "a database backup",
+        "a build error",
+        "a list of all components and versions in your software, which lets you find affected systems quickly",
+        "a type of firewall"
+       ],
+       "a": 2,
+       "w": "When a new critical CVE appears, an SBOM answers \"which services use that library?\"."
+      },
+      {
+       "t": "Dependencies",
+       "q": "*(Scenario)* A critical CVE is published for a library used by 40 services. What lets a team respond fastest?",
+       "o": [
+        "a bigger firewall",
+        "asking each developer from memory",
+        "disabling logging",
+        "an up-to-date SBOM and automated dependency scanning in CI"
+       ],
+       "a": 3,
+       "w": "Inventory plus automation turns a week of searching into a query."
+      },
+      {
+       "t": "Dependencies",
+       "q": "*(Recall)* A package named `reqeusts` (a one-letter misspelling) is added to a project by mistake. This risk is",
+       "o": [
+        "typosquatting",
+        "a race condition",
+        "dependency injection",
+        "SQL injection"
+       ],
+       "a": 0,
+       "w": "Attackers publish look-alike names carrying malware. Review additions and use trusted registries."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* For generating a password reset token you should use",
+       "o": [
+        "the current time",
+        "java.util.Random",
+        "java.security.SecureRandom",
+        "Math.random()"
+       ],
+       "a": 2,
+       "w": "Only SecureRandom is designed for unpredictable values."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* To compare two MAC values or tokens safely you should use",
+       "o": [
+        "String.compareToIgnoreCase",
+        "MessageDigest.isEqual (constant-time comparison)",
+        "==",
+        "String.equals"
+       ],
+       "a": 1,
+       "w": "Early-exit comparisons leak timing information that can reveal a valid value byte by byte."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* In Java, `int total = 50000 * 50000;` gives",
+       "o": [
+        "0",
+        "-1794967296",
+        "an exception",
+        "2500000000"
+       ],
+       "a": 1,
+       "w": "int overflows silently and wraps around to a negative number. Use Math.multiplyExact or long."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* A shop computes `int total = quantity * unitPriceCents` and the attacker orders a huge quantity so the total becomes negative or small. The fix is",
+       "o": [
+        "a longer variable name",
+        "use double",
+        "use long or BigDecimal with Math.multiplyExact and cap the quantity",
+        "lowercase the input"
+       ],
+       "a": 2,
+       "w": "Exact arithmetic throws on overflow, and business rules should cap quantities."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* Why is `0.1 + 0.2 == 0.3` false in Java, and what does it mean for prices?",
+       "o": [
+        "the compiler optimises it",
+        "binary floating point cannot represent the numbers exactly, so store money as integer cents or BigDecimal",
+        "it is true in Java",
+        "Java has a bug"
+       ],
+       "a": 1,
+       "w": "The sum is 0.30000000000000004."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* What is the main danger of calling ObjectInputStream.readObject on data from the network?",
+       "o": [
+        "it needs a licence",
+        "it is slow",
+        "an attacker can trigger gadget chains in classes on the classpath, leading to remote code execution",
+        "it cannot read bytes"
+       ],
+       "a": 2,
+       "w": "Prefer JSON and DTOs. If native serialisation is unavoidable, use an allow-list ObjectInputFilter."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* Which setting reduces XXE risk in an XML parser?",
+       "o": [
+        "switching to HTTP",
+        "using larger files",
+        "disabling DOCTYPE declarations and external entity resolution",
+        "enabling external entities for convenience"
+       ],
+       "a": 2,
+       "w": "Features such as disallow-doctype-decl turn the dangerous capabilities off."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* Building a SpEL expression from user input and evaluating it can lead to",
+       "o": [
+        "faster startup",
+        "expression injection and code execution",
+        "log rotation",
+        "stronger encryption"
+       ],
+       "a": 1,
+       "w": "Never evaluate user data as an expression. Treat it as plain data."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Recall)* Public /actuator/env and /actuator/heapdump endpoints in production are",
+       "o": [
+        "only a performance issue",
+        "required by Spring",
+        "fine",
+        "a serious information disclosure risk"
+       ],
+       "a": 3,
+       "w": "They can expose configuration, secrets in memory and internal details. Expose only health or protect them."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* Spring4Shell (CVE-2022-22965) is mostly a lesson about",
+       "o": [
+        "patching quickly and binding requests to DTOs instead of arbitrary objects",
+        "DNS",
+        "password length",
+        "physical security"
+       ],
+       "a": 0,
+       "w": "Data binding to a rich object graph reached properties it should not have. Fixed in later Spring versions, and DTO binding limits exposure."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* A booking system checks that a seat is free and then, in a separate statement, reserves it. Two simultaneous requests both reserve the same seat. This is a",
+       "o": [
+        "time-of-check to time-of-use race, fixed with a transaction, lock or unique constraint",
+        "misconfiguration",
+        "XSS",
+        "SQL injection"
+       ],
+       "a": 0,
+       "w": "Make check and update atomic, for example UPDATE ... WHERE status='FREE' and check the affected row count."
+      },
+      {
+       "t": "Logging",
+       "q": "*(Recall)* Which should never be written to application logs?",
+       "o": [
+        "a request ID",
+        "a login failure event",
+        "passwords, tokens and full card numbers",
+        "the HTTP status code"
+       ],
+       "a": 2,
+       "w": "Logs are widely accessible and kept for long. Mask or omit sensitive data."
+      },
+      {
+       "t": "Logging",
+       "q": "*(Scenario)* An attacker registers the username \"bob\\nINFO user admin logged in successfully\". The log now contains a forged line. This is",
+       "o": [
+        "SQL injection",
+        "log injection (log forging), prevented by removing CR/LF or using structured logging",
+        "CSRF",
+        "clickjacking"
+       ],
+       "a": 1,
+       "w": "Newline characters from user data can create fake entries and mislead investigations."
+      },
+      {
+       "t": "Logging",
+       "q": "*(Recall)* Which events are worth logging for security?",
+       "o": [
+        "the contents of every request body",
+        "only server start times",
+        "nothing, to protect privacy",
+        "logins and failures, permission denials, password changes and admin actions"
+       ],
+       "a": 3,
+       "w": "These events support detection and investigation. Include who, what, when, from where and outcome, without secrets."
+      },
+      {
+       "t": "Logging",
+       "q": "*(Recall)* Why send logs to a central, separate system?",
+       "o": [
+        "to speed up the application",
+        "an attacker who compromises a host cannot easily erase the evidence, and teams can correlate events",
+        "because logs are public",
+        "to use more disk"
+       ],
+       "a": 1,
+       "w": "Centralised, append-only logging preserves evidence and enables alerting."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Recall)* SpotBugs with the FindSecBugs plugin is an example of",
+       "o": [
+        "SCA",
+        "DAST",
+        "SAST",
+        "fuzzing"
+       ],
+       "a": 2,
+       "w": "It analyses bytecode for insecure patterns without running the application."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Recall)* OWASP ZAP and Burp Suite scanners are examples of",
+       "o": [
+        "linters",
+        "DAST",
+        "SAST",
+        "SBOM generators"
+       ],
+       "a": 1,
+       "w": "They probe a running application like an attacker would."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Recall)* Dependabot raising a pull request for a vulnerable library is which activity?",
+       "o": [
+        "SAST",
+        "fuzzing",
+        "code signing",
+        "software composition analysis"
+       ],
+       "a": 3,
+       "w": "It matches your dependency versions against advisories and proposes the update."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Scenario)* A SAST report flags a SQL injection in a method, but the value is a hard-coded constant. The correct reaction is to",
+       "o": [
+        "triage it: confirm no user input reaches the query, mark it a false positive with a note, and tune the rule",
+        "rewrite the application",
+        "ignore all scanner reports",
+        "disable the scanner"
+       ],
+       "a": 0,
+       "w": "Triage is part of the work. Keep a record so that others do not repeat the analysis."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Recall)* Fuzzing means",
+       "o": [
+        "feeding large numbers of malformed or random inputs to find crashes and unexpected behaviour",
+        "writing documentation",
+        "checking colours",
+        "reading the code line by line"
+       ],
+       "a": 0,
+       "w": "Fuzzing finds parsing bugs, crashes and sometimes security flaws that normal tests never hit."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* In this snippet: `Files.readAllBytes(Path.of(\"/data/uploads/\" + name))` with `name` from a request. What is the vulnerability?",
+       "o": [
+        "weak hashing",
+        "CSRF",
+        "path traversal",
+        "SQL injection"
+       ],
+       "a": 2,
+       "w": "name = ../../etc/passwd reads files outside the uploads folder. Resolve and verify the canonical path."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* `@PostMapping(\"/users/{id}\") User update(@PathVariable long id, @RequestBody User u) { return repo.save(u); }` has which issues?",
+       "o": [
+        "only a naming problem",
+        "none",
+        "it needs a stronger hash",
+        "mass assignment of the entity and no check that the caller may edit this user"
+       ],
+       "a": 3,
+       "w": "Use a DTO and verify that the id belongs to the authenticated user or that they have a suitable role."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* `jdbc.query(\"select * from items where title like '%\" + q + \"%'\", mapper)` should be changed to",
+       "o": [
+        "use a longer pattern",
+        "wrap it in try/catch",
+        "escape q with replaceAll",
+        "\"... like ?\" with the argument \"%\" + q + \"%\""
+       ],
+       "a": 3,
+       "w": "The wildcard characters belong in the bound value, not in the SQL text."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* `String token = Long.toHexString(new Random().nextLong());` used as a password-reset token is weak because",
+       "o": [
+        "java.util.Random is predictable and the token has only 64 bits",
+        "it is too long",
+        "hex is not allowed",
+        "tokens must be numeric"
+       ],
+       "a": 0,
+       "w": "Use SecureRandom with at least 128 bits and store only a hash of the token."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* A pull request adds `.csrf(c -> c.disable())` to a cookie-session web app \"to fix a 403 on POST\". The reviewer should",
+       "o": [
+        "reject and send the CSRF token with the request instead",
+        "approve, it fixes the bug",
+        "change the HTTP method to GET",
+        "remove authentication"
+       ],
+       "a": 0,
+       "w": "The 403 is the protection working. The client must include the token (or use the framework's helpers)."
+      },
+      {
+       "t": "Code review",
+       "q": "*(Scenario)* Which review question catches broken access control the best?",
+       "o": [
+        "for every endpoint, who may call it and does the code verify that this user owns the object?",
+        "is there a README?",
+        "are the variable names short?",
+        "does the code compile?"
+       ],
+       "a": 0,
+       "w": "Access control flaws are about missing checks, so you must look for the check, not just the happy path."
+      },
+      {
+       "t": "Input validation",
+       "q": "*(Scenario)* A filter rejects any parameter containing \"../\" but the application URL-decodes the value afterwards. The attacker sends \"%2e%2e%2f\". What went wrong?",
+       "o": [
+        "the filter was too strict",
+        "HTTPS removes encodings",
+        "nothing, the filter worked",
+        "validation ran before canonicalisation, so the encoded form passed the check and was decoded later"
+       ],
+       "a": 3,
+       "w": "Decode and normalise first, then validate the canonical value, and use the same value for the check and the use."
+      },
+      {
+       "t": "Secrets",
+       "q": "*(Recall)* A .env file with local credentials should be handled by",
+       "o": [
+        "committing it to help the team",
+        "listing it in .gitignore and sharing values through a secret manager or a template file without real values",
+        "renaming it to .env.txt",
+        "e-mailing it to new developers"
+       ],
+       "a": 1,
+       "w": "Commit an example file such as .env.example with placeholder values only."
+      },
+      {
+       "t": "Java pitfalls",
+       "q": "*(Scenario)* A Spring Boot app in production has the H2 database console enabled at /h2-console. The risk is",
+       "o": [
+        "missing indexes",
+        "attackers can reach a web console to run SQL, so it must be disabled outside local development",
+        "slower startup",
+        "none, H2 is an in-memory database"
+       ],
+       "a": 1,
+       "w": "Development conveniences such as the H2 console, debug flags and sample users must not reach production."
+      },
+      {
+       "t": "Error handling",
+       "q": "*(Recall)* A correlation ID returned in an error message lets support staff",
+       "o": [
+        "reproduce the SQL query",
+        "bypass authentication",
+        "read the stack trace in the browser",
+        "find the matching detailed log entry without exposing internals to the user"
+       ],
+       "a": 3,
+       "w": "The user sees only a reference. The details stay in the log where only staff can read them."
+      },
+      {
+       "t": "Dependencies",
+       "q": "*(Recall)* Why use the Spring Boot BOM (dependency management) rather than choosing each library version yourself?",
+       "o": [
+        "it is required by Java",
+        "it encrypts the jars",
+        "it removes the need for updates",
+        "versions are tested together, and upgrading one Boot version updates many libraries consistently"
+       ],
+       "a": 3,
+       "w": "Consistent, regularly updated versions make patching a single step instead of dozens."
+      },
+      {
+       "t": "Testing tools",
+       "q": "*(Scenario)* Which pipeline setup gives the earliest warning about a committed secret?",
+       "o": [
+        "a monthly manual audit",
+        "a firewall rule",
+        "a pre-commit hook plus a CI secret-scanning step",
+        "a log review next year"
+       ],
+       "a": 2,
+       "w": "The earlier a secret is caught, the smaller the window in which it can be abused. Scanning in CI is the safety net for developers who skip hooks."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Static analysis, testing and review"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a block list of dangerous characters a weak validation strategy?",
+       "answer": "Attackers find encodings and alternative syntax that the list missed. An allow-list defines exactly what is acceptable, so everything else is rejected."
+      },
+      {
+       "question": "You accidentally pushed an AWS access key to a private repository and removed it in the next commit. What do you do?",
+       "answer": "Treat it as compromised: deactivate and rotate the key at once, review access logs for misuse, then remove it from history and add secret scanning so it cannot happen again."
+      },
+      {
+       "question": "Why should money not be stored in a double?",
+       "answer": "Binary floating point cannot represent most decimal fractions exactly, so sums drift. Use integer minor units (cents) or BigDecimal."
+      },
+      {
+       "question": "Give two ways to find vulnerable dependencies in a Maven project.",
+       "answer": "OWASP Dependency-Check (or a pipeline SCA tool such as Snyk), and GitHub Dependabot alerts. An SBOM helps answer which services contain an affected library."
+      },
+      {
+       "question": "What is log injection and how do you prevent it?",
+       "answer": "Attacker-controlled text with line breaks creates fake log entries. Strip or encode CR and LF before writing, or use structured logging."
+      },
+      {
+       "question": "What is the difference between SAST and DAST?",
+       "answer": "SAST analyses source or bytecode without running the app. DAST attacks a running instance from the outside, as an attacker would."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

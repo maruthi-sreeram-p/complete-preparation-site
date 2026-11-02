@@ -1,0 +1,374 @@
+# Linux and networking for security: 52 original questions. Format: see tools/build_gate.py (?1 recall, ?2 scenario)
+
+?1 [Linux permissions] The permission string rwxr-x--- written as an octal number is
+(a) 755
+(b)* 750
+(c) 740
+(d) 570
+=> Owner rwx = 4+2+1 = 7, group r-x = 4+0+1 = 5, others --- = 0.
+!py assert chmod_octal('rwxr-x---') == ans
+
+?1 [Linux permissions] chmod 640 gives the file the symbolic permissions
+(a) rw-rw----
+(b) rwxr-----
+(c)* rw-r-----
+(d) r--r-----
+=> 6 = rw-, 4 = r--, 0 = ---. The owner may read and write, the group may read, others have no access.
+!py assert chmod_symbolic('640') == ans
+
+?2 [Linux permissions] A config file holds a database password. Which mode is the most appropriate if only the owner and the application group need access, and only the owner should edit it?
+(a) 666
+(b) 777
+(c)* 640
+(d) 604
+=> 640 gives the owner read and write, the group read only, and others nothing. 666 and 777 expose the password to everyone, and 604 gives access to others but not to the group.
+
+?1 [Linux permissions] With a umask of 022, a newly created file has the mode
+(a) 755
+(b)* 644
+(c) 666
+(d) 600
+=> Files start at 666 and the umask clears bits: 666 − 022 = 644. Directories start at 777 and become 755.
+!py assert umask_mode('022') == ans
+
+?2 [Linux permissions] A hardening guide sets umask 027. New directories will have the mode
+(a) 755
+(b) 777
+(c)* 750
+(d) 640
+=> 777 minus 027 gives 750: rwx for the owner, r-x for the group, nothing for others.
+!py assert umask_mode('027', 0o777) == ans
+
+?1 [Linux permissions] On a directory, the execute (x) bit means
+(a) files inside may be run
+(b)* the directory may be entered and its entries accessed by name
+(c) its names can be listed
+(d) it can be deleted
+=> x allows traversal, r allows listing the names, and w allows creating or removing entries.
+
+?1 [Linux permissions] Why is a setuid-root program with a vulnerability particularly dangerous?
+(a) it runs slower than other programs
+(b)* an attacker who exploits it gains the rights of the owner, usually root
+(c) it cannot be logged
+(d) it ignores file permissions of its own directory
+=> setuid makes the program run with its owner's privileges. A bug can therefore hand a normal user root access. That is why setuid files are audited.
+
+?1 [Linux permissions] The sticky bit on /tmp ensures that
+(a) files in it are never deleted
+(b) only root can create files there
+(c)* users can delete only their own files in the directory
+(d) files are encrypted
+=> Without it, anyone with write access to the directory could delete everyone else's files.
+
+?1 [Linux basics] Password hashes of local accounts are stored in
+(a) /etc/passwd, readable by all
+(b)* /etc/shadow, readable only by root
+(c) /var/log/auth.log
+(d) /home/user/.ssh
+=> Splitting the hash into /etc/shadow stops ordinary users from running offline guessing attacks on it.
+
+?1 [Linux basics] Which command lists listening TCP and UDP ports together with the owning process?
+(a) ls -l
+(b) ps -e
+(c)* ss -tulpn
+(d) chmod -R
+=> ss (or the older netstat) shows sockets. An unexpected listener is a lead for investigation.
+
+?1 [Linux basics] Failed SSH logins on a Debian or Ubuntu server are usually recorded in
+(a) /etc/ssh/ssh_config
+(b) /proc/net
+(c)* /var/log/auth.log
+(d) /tmp/ssh.log
+=> Authentication events go to auth.log (secure on Red Hat family systems). journalctl -u ssh shows the same events on systemd systems.
+
+?2 [Linux basics] Which pipeline shows the five IP addresses with the most "Failed password" lines, assuming the IP is the third field from the end?
+(a) grep "Failed password" auth.log | head -5
+(b) cat auth.log | sort | uniq
+(c)* grep "Failed password" auth.log | awk '{print $(NF-3)}' | sort | uniq -c | sort -nr | head -5
+(d) awk '{print $1}' auth.log | wc -l
+=> Filter the lines, extract the IP column, count duplicates with sort | uniq -c, then rank with sort -nr and keep the top five.
+
+?1 [Linux basics] In /etc/ssh/sshd_config, which settings do the most to harden SSH?
+(a) PermitRootLogin yes and PasswordAuthentication yes
+(b)* PermitRootLogin no and PasswordAuthentication no, with key-based login
+(c) Port 22 and Protocol 1
+(d) X11Forwarding yes
+=> Disabling root login and passwords removes the two things brute-force bots try. Keys cannot be guessed over the network.
+
+?2 [Linux basics] find / -perm -4000 -type f 2>/dev/null is typically used to
+(a) find world-writable files
+(b) delete temporary files
+(c)* list setuid files that might allow privilege escalation
+(d) show the largest files
+=> Mode bit 4000 is setuid. Auditing the list for unexpected binaries is part of hardening and of privilege-escalation hunting.
+
+?1 [IP addressing] How many usable host addresses does a /26 network have?
+(a) 64
+(b)* 62
+(c) 30
+(d) 126
+=> 2^(32−26) = 64 addresses, minus the network address and the broadcast address leaves 62.
+!py assert usable_hosts('10.0.0.0/26') == num(ans)
+
+?1 [IP addressing] How many usable host addresses does 192.168.10.0/28 provide?
+(a) 16
+(b) 15
+(c)* 14
+(d) 30
+=> A /28 has 16 addresses. Two are reserved, so 14 can be assigned to hosts.
+!py assert usable_hosts('192.168.10.0/28') == num(ans)
+
+?2 [IP addressing] A department needs 100 hosts. What is the smallest prefix that fits them?
+(a) /24
+(b)* /25
+(c) /26
+(d) /27
+=> A /25 has 128 addresses and 126 usable. A /26 has only 62 usable.
+!py assert usable_hosts('10.0.0.0' + ans) >= 100 and usable_hosts('10.0.0.0/26') < 100
+
+?2 [IP addressing] Which address belongs to the network 172.16.4.0/22?
+(a) 172.16.8.1
+(b) 172.16.3.255
+(c)* 172.16.7.200
+(d) 172.17.4.9
+=> A /22 spans four /24 blocks: 172.16.4.0 to 172.16.7.255. 172.16.7.200 is inside; .8.1 and .3.255 are just outside.
+!py assert in_net(ans, '172.16.4.0/22') and sum(in_net(o, '172.16.4.0/22') for o in opts) == 1
+
+?1 [IP addressing] Which of these is a private (RFC 1918) address?
+(a) 172.32.0.1
+(b) 11.0.0.5
+(c) 192.169.1.1
+(d)* 172.20.5.9
+=> 172.16.0.0/12 covers 172.16 to 172.31. 172.32.x.x, 11.x.x.x and 192.169.x.x are public.
+!py assert is_private(ans) and sum(is_private(o) for o in opts) == 1
+
+?1 [IP addressing] The address 169.254.12.7 on a laptop most likely means
+(a) the laptop is connected to the internet through NAT
+(b)* DHCP failed and the machine assigned itself a link-local address
+(c) the laptop is a DNS server
+(d) the address is a public address from the ISP
+=> 169.254.0.0/16 is link-local (APIPA). It appears when no DHCP server answers.
+
+?1 [IP addressing] Network address translation (NAT) is best described as
+(a) a replacement for a firewall
+(b) an encryption method
+(c)* mapping private addresses to a public address, which also blocks unsolicited inbound connections as a side effect
+(d) a way to speed up DNS
+=> NAT is not a security product, but without a mapping, unsolicited inbound packets have nowhere to go.
+
+?1 [TCP and UDP] The TCP three-way handshake is
+(a) SYN, ACK, FIN
+(b)* SYN, SYN/ACK, ACK
+(c) ACK, SYN, SYN/ACK
+(d) SYN, RST, ACK
+=> The client sends SYN, the server answers SYN/ACK, and the client confirms with ACK.
+
+?1 [TCP and UDP] A SYN flood works by
+(a) sending huge UDP packets
+(b)* starting many connections and never completing the handshake, filling the half-open table
+(c) forging DNS replies
+(d) guessing session IDs
+=> The server keeps state for every half-open connection until it times out. SYN cookies avoid holding that state.
+
+?2 [TCP and UDP] During a SYN scan, one port returns RST and another returns nothing at all. This means
+(a) the first is filtered and the second is open
+(b)* the first is closed and the second is probably filtered by a firewall
+(c) both are open
+(d) both are closed
+=> RST is the host's answer for a closed port. Silence usually means a firewall dropped the probe, so the port is reported as filtered.
+
+?1 [TCP and UDP] Which protocol is the more natural choice for spoofed-source amplification attacks?
+(a) TCP, because of its handshake
+(b)* UDP, because it needs no handshake
+(c) SSH
+(d) HTTPS
+=> With no handshake, a forged source address is not detected, so the reply is sent to the victim. DNS and NTP are classic examples.
+
+?1 [Ports and protocols] SSH uses TCP port
+(a) 21
+(b)* 22
+(c) 23
+(d) 25
+=> 21 is FTP, 23 is Telnet and 25 is SMTP.
+
+?1 [Ports and protocols] Which port and protocol pair sends credentials in clear text?
+(a) 22 SSH
+(b) 443 HTTPS
+(c)* 23 Telnet
+(d) 993 IMAPS
+=> Telnet has no encryption. SSH, HTTPS and IMAP over TLS do.
+
+?1 [Ports and protocols] DNS queries normally use
+(a) TCP 22
+(b)* UDP 53, with TCP 53 for zone transfers and large answers
+(c) UDP 80
+(d) TCP 25 only
+=> Most lookups are small UDP packets. TCP 53 is used for big responses and zone transfers.
+
+?1 [Ports and protocols] A database port such as 3306 or 5432 should be
+(a) open to the internet for convenience
+(b)* reachable only from the application servers
+(c) moved to port 80
+(d) left on the default and unfiltered
+=> Databases should never face the internet. Restrict by firewall or security group to the application tier.
+
+?1 [Ports and protocols] Which port is the default for RDP, one of the most attacked services when exposed?
+(a) 22
+(b) 445
+(c)* 3389
+(d) 5900
+=> 445 is SMB. 3389 is Windows remote desktop. If remote access is needed, put it behind a VPN or gateway with MFA.
+
+?2 [Ports and protocols] A scan of a public server shows 21, 23, 80, 443 and 3306 open. Which finding is most urgent?
+(a) 443 is open
+(b) 80 is open
+(c)* 3306 (a database) and 21/23 (clear-text protocols) are exposed
+(d) none, a server should have many open ports
+=> A database, FTP and Telnet on the internet are serious. 80 and 443 are expected for a web server (80 should redirect to HTTPS).
+
+?1 [DNS and HTTP] DNS cache poisoning means
+(a) a resolver is too slow
+(b)* a resolver is tricked into storing a false answer, sending users to the attacker's address
+(c) a name server has too many records
+(d) a certificate has expired
+=> Users who trust the resolver follow the forged record. DNSSEC and randomised ports and IDs reduce the risk.
+
+?1 [DNS and HTTP] DNSSEC provides
+(a) encryption of DNS queries
+(b)* digital signatures that prove DNS records are authentic and unmodified
+(c) faster lookups
+(d) blocking of malicious sites
+=> It authenticates the data but does not encrypt it. DNS over HTTPS or TLS encrypts the lookup.
+
+?2 [DNS and HTTP] A host sends hundreds of DNS queries a minute for very long random-looking names under one domain. This most likely indicates
+(a) a misconfigured printer
+(b) a software update
+(c)* DNS tunnelling used to smuggle data out
+(d) normal browsing
+=> Data encoded into subdomain labels travels out through the resolver. Query length, volume and entropy are the usual detection signals.
+
+?1 [DNS and HTTP] An HTTP response with status 403 means
+(a) the page was not found
+(b) the user is not authenticated
+(c)* the server understood the request but refuses to allow it
+(d) the server crashed
+=> 401 means authentication is required or failed, 403 means forbidden, 404 not found and 500 server error.
+
+?1 [Local network attacks] ARP spoofing allows an attacker on the same LAN to
+(a) crack Wi-Fi passwords
+(b)* position themselves between a victim and the gateway
+(c) resolve DNS names faster
+(d) escape a VLAN
+=> By answering ARP requests with their own MAC address, the attacker receives traffic meant for another host. Encryption (TLS) protects the content.
+
+?2 [Local network attacks] A security team sees the same IP address mapped to two different MAC addresses in rapid alternation in the ARP table. The most likely cause is
+(a) DHCP lease renewal
+(b)* ARP spoofing
+(c) a DNS misconfiguration
+(d) a failed switch port
+=> Two devices claiming one IP, especially flip-flopping, is the classic ARP spoofing signature. Dynamic ARP inspection on the switch blocks it.
+
+?1 [Local network attacks] An evil twin is
+(a) a duplicate database
+(b) a clone of a server certificate
+(c)* a rogue Wi-Fi access point that imitates a legitimate network name
+(d) a second admin account
+=> Victims connect to the attacker's access point, who can then intercept traffic. HTTPS and certificate checks limit the damage.
+
+?1 [Local network attacks] Which defence limits the damage of a DDoS amplification attack that uses open DNS resolvers?
+(a) longer passwords
+(b)* closing open resolvers and filtering spoofed source addresses
+(c) using IPv6 only
+(d) disabling HTTPS
+=> Amplification needs open resolvers and the ability to spoof the victim's address. Fixing either breaks the attack.
+
+?1 [Firewalls and monitoring] A stateful firewall differs from a stateless packet filter because it
+(a) inspects only the MAC address
+(b)* remembers established connections and lets return traffic through automatically
+(c) cannot block ports
+(d) works only on UDP
+=> State tracking means one rule for outbound traffic is enough, and unsolicited inbound packets that match no connection are dropped.
+
+?2 [Firewalls and monitoring] A firewall rule list reads: 1) deny all 2) allow TCP 443 to the web server. Users cannot reach the website. Why?
+(a) HTTPS is blocked by default
+(b)* rules are processed in order and the first match wins, so rule 1 drops everything
+(c) the firewall needs a reboot
+(d) rule 2 uses the wrong protocol
+=> The specific allow rules must come before the final deny all.
+
+?1 [Firewalls and monitoring] A WAF is mainly designed to protect
+(a) email servers
+(b) wireless clients
+(c)* web applications, by inspecting HTTP requests for attacks such as SQL injection
+(d) file shares
+=> A web application firewall understands HTTP. It is a helpful extra layer, not a substitute for fixing the code.
+
+?1 [Firewalls and monitoring] The difference between an IDS and an IPS is that an IPS
+(a) only logs events
+(b)* sits inline and can block traffic, while an IDS only alerts
+(c) works only on hosts
+(d) cannot use signatures
+=> An IPS can drop malicious packets in real time. A false positive on an IPS can block legitimate users.
+
+?1 [Firewalls and monitoring] Anomaly-based intrusion detection compared with signature-based detection
+(a) never produces false alarms
+(b)* can spot unknown attacks but usually raises more false positives
+(c) needs no baseline
+(d) only detects known malware
+=> It flags deviations from normal behaviour, so it can catch new attacks and also unusual but harmless activity.
+
+?1 [Network design] A DMZ is used to
+(a) store backups
+(b)* place public-facing servers in a segment separated from the internal network
+(c) encrypt emails
+(d) hold user passwords
+=> If a DMZ server is compromised, the attacker still faces another firewall before the internal network.
+
+?2 [Network design] Why should a printer VLAN not be able to reach the database subnet?
+(a) printers use a different protocol
+(b)* segmentation limits lateral movement if the printer is compromised
+(c) databases cannot be reached from VLANs
+(d) it reduces ink costs
+=> Segmentation applies least privilege to the network, so a weak device cannot become a stepping stone to valuable systems.
+
+?1 [Network design] A VPN primarily provides
+(a) an anonymous identity
+(b)* an encrypted tunnel for traffic across an untrusted network
+(c) protection from malware on the endpoint
+(d) a stronger password
+=> It protects traffic in transit. It does not make an infected laptop safe.
+
+?1 [Network design] A reverse proxy placed in front of web servers can
+(a) only cache images
+(b)* terminate TLS, hide the real servers and filter requests
+(c) replace the operating system
+(d) block all outbound traffic
+=> Clients talk to the proxy, which forwards to backends. It is a convenient place to add TLS, rate limiting and a WAF.
+
+?1 [Scanning] The nmap option that detects service versions is
+(a) -sn
+(b) -p-
+(c)* -sV
+(d) -Pn
+=> -sV probes open ports to identify the service and version. -sn is a ping sweep and -p- selects all ports.
+
+?2 [Scanning] A tester is told in the scope document to scan 10.1.1.0/24 only. A host at 10.1.2.15 responds during a broader sweep. What should they do?
+(a) include it, since it responded
+(b)* leave it out and note that it exists, because it is outside the authorised scope
+(c) scan it quickly to see
+(d) shut it down
+=> Only systems named in the written scope may be tested. Mention the discovery to the client so they can extend the scope if they wish.
+
+?1 [Scanning] Which Wireshark display filter shows only DNS traffic?
+(a) tcp.port == 80
+(b)* dns
+(c) http.request
+(d) arp
+=> `dns` matches DNS packets. The others select HTTP traffic, a TCP port or ARP.
+
+?1 [Scanning] Banner grabbing is
+(a) breaking a login screen
+(b)* reading the software name and version a service announces
+(c) disabling a firewall
+(d) decrypting TLS
+=> Banners help attackers pick exploits. Production services should reveal as little as possible.

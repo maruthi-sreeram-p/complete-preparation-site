@@ -89,3 +89,41 @@ describe('GATE CSE tree', () => {
     expect(new Set(ids).size).toBe(ids.length)
   })
 })
+
+describe('Cybersecurity tree', () => {
+  const { roadmap } = load('cybersecurity')
+  const topicFile = (id) => JSON.parse(readFileSync(join(ROOT, 'cybersecurity', 'topics', `${id}.json`), 'utf8'))
+  const questionsOf = (id) => topicFile(id).sections.flatMap((s) => s.blocks).filter((b) => b.type === 'mcq').flatMap((b) => b.items)
+
+  it('has the 10 parts, starting from the foundations', () => {
+    expect(roadmap.topics).toHaveLength(10)
+    expect(roadmap.sequence[0]).toBe('cyber-start')
+    expect(roadmap.sequence.at(-1)).toBe('cyber-career')
+  })
+
+  it('gives every part at least 50 well-formed questions', () => {
+    for (const t of roadmap.topics) {
+      const items = questionsOf(t.id)
+      expect(items.length, `${t.id}: number of questions`).toBeGreaterThanOrEqual(50)
+      for (const [i, q] of items.entries()) {
+        const where = `${t.id} question ${i + 1}`
+        expect(q.o, `${where}: options`).toHaveLength(4)
+        expect(new Set(q.o).size, `${where}: distinct options`).toBe(4)
+        expect(Number.isInteger(q.a) && q.a >= 0 && q.a < 4, `${where}: answer index`).toBe(true)
+        expect(q.w?.length, `${where}: explanation`).toBeGreaterThan(10)
+      }
+    }
+  })
+
+  it('does not always put the right answer in the same place', () => {
+    for (const t of roadmap.topics) {
+      const counts = [0, 1, 2, 3].map((k) => questionsOf(t.id).filter((q) => q.a === k).length)
+      expect(Math.max(...counts) - Math.min(...counts), `${t.id}: answers per position ${counts}`).toBeLessThanOrEqual(2)
+    }
+  })
+
+  it('has unique question-set ids so saved answers cannot collide', () => {
+    const ids = roadmap.topics.map((t) => topicFile(t.id).sections.flatMap((s) => s.blocks).find((b) => b.type === 'mcq').id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})

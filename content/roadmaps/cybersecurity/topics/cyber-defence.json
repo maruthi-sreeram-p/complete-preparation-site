@@ -1,0 +1,778 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 50
+ },
+ "sections": [
+  {
+   "id": "ch-7-1",
+   "type": "concept",
+   "title": "The blue team and the security operations centre",
+   "subtopicId": "7-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "The **blue team** defends: it prevents what it can, detects what gets through and responds when something goes wrong. Most entry-level jobs are on this side. A **SOC (security operations centre)** is the team and the tooling that watch systems around the clock.\n\n| Level | Typical work |\n|---|---|\n| **Tier 1 analyst** | watch the alert queue, triage (is it real?), close false positives, escalate real ones |\n| **Tier 2 analyst** | investigate escalated incidents, scope the damage, contain, write the report |\n| **Tier 3 / threat hunter** | proactively search for attackers that alerts missed, build detections, analyse malware |\n| **SOC engineer / detection engineer** | build and tune the pipelines and rules |\n| **Incident commander** | coordinates a major incident across teams |\n\nTwo numbers every SOC reports: **MTTD** (mean time to detect) and **MTTR** (mean time to respond or recover). Attackers who stay hidden for weeks are far more costly than ones caught in hours."
+    }
+   ]
+  },
+  {
+   "id": "ch-7-2",
+   "type": "concept",
+   "title": "Logs: the raw material",
+   "subtopicId": "7-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "You cannot defend what you cannot see. Useful sources:\n\n| Source | Tells you |\n|---|---|\n| **Authentication logs** (Linux `auth.log`, Windows Security log, identity provider) | who logged in, from where, how often they failed |\n| **Web server and application logs** | requests, status codes, user agents, errors |\n| **Firewall and network flow logs** | which hosts talk to which, on which ports, how much data |\n| **DNS logs** | which names were looked up (malware beaconing, tunnelling) |\n| **Endpoint (EDR) telemetry** | processes started, files written, registry changes |\n| **Cloud audit logs** (AWS CloudTrail, GuardDuty) | who called which API, who changed an IAM policy |\n| **Email gateway** | phishing attempts, attachments, sender checks |\n\nA good log line has **time (with time zone), source, user, action, object and outcome**. Clocks must be synchronised (NTP) or events cannot be ordered. Logs should be **shipped to a central store** and protected from tampering.\n\n### Windows event IDs you should recognise\n\n| ID | Meaning |\n|---|---|\n| **4624** | successful logon |\n| **4625** | failed logon |\n| **4672** | special privileges assigned to a new logon (an administrator logged in) |\n| **4688** | a new process was created |\n| **4720** | a user account was created |\n| **4732** | a member was added to a security-enabled local group |\n| **1102** | the Security audit log was cleared (very suspicious) |\n| **7045** | a new service was installed |\n\n### Reading a web access log"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "203.0.113.9 - - [01/Nov/2026:10:15:32 +0530] \"GET /products?id=5%20UNION%20SELECT%20name,pass%20FROM%20users HTTP/1.1\" 200 1843 \"-\" \"sqlmap/1.7\"",
+     "title": "One line of an access log (Common Log Format)"
+    },
+    {
+     "type": "markdown",
+     "text": "Clues: a `UNION SELECT` inside the query, the user agent `sqlmap`, and a **200** response (the request worked, which is worse than a 400 or 500). Typical triage commands:"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "awk '{print $1}' access.log | sort | uniq -c | sort -nr | head          # top client IPs\nawk '$9 ~ /^(401|403)/ {print $1}' access.log | sort | uniq -c | sort -nr   # who gets denied most\ngrep -iE \"union(%20|\\+| )select|<script|\\.\\./\" access.log | head          # obvious attack strings",
+     "title": "Find the noisiest sources and the failures"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **401/403 floods from one IP** → brute force or forced browsing. **404 floods** → scanning. **500s after odd input** → injection attempts.\n- **200 on a suspicious request** is the one to escalate, because it may have succeeded.\n- **Windows:** 4625 many times then 4624 for the same account = a brute force that worked.\n- **Linux:** `Failed password` lines followed by `Accepted password` from the same IP = the same story.\n- **4688 plus an unusual parent** (Word starting PowerShell) = classic malicious macro.\n- **Event 1102 / log cleared** = the attacker is covering tracks.",
+     "title": "Log analysis cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-3",
+   "type": "concept",
+   "title": "Detection: SIEM, rules and alert quality",
+   "subtopicId": "7-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **SIEM** (security information and event management: Splunk, Microsoft Sentinel, Elastic Security, Wazuh) collects logs from everywhere, normalises them, stores them and runs **correlation rules** that turn raw events into alerts.\n\nExamples of useful detections:\n\n| Detection | Logic |\n|---|---|\n| **Brute force** | more than 10 failed logins for one account or from one IP in 5 minutes |\n| **Successful login after many failures** | 4625 × N followed by 4624 for the same user |\n| **Impossible travel** | the same user logs in from two countries within minutes |\n| **New administrator** | a user is added to a privileged group outside change windows |\n| **Mass download / exfiltration** | one account reads far more data than its baseline |\n| **Beaconing** | an internal host contacts one external address at fixed intervals |\n| **Persistence** | a new scheduled task, service or autorun entry |\n\nRules can be written in a portable format called **Sigma** and translated to each SIEM's query language.\n\n### Alert outcomes and quality\n\n| | The activity is really malicious | The activity is benign |\n|---|---|---|\n| **Alert fires** | **True positive (TP)** | **False positive (FP)** |\n| **No alert** | **False negative (FN)**: the dangerous miss | **True negative (TN)** |\n\n- **Precision** = TP / (TP + FP): of the alerts, how many were real. **Recall** (detection rate) = TP / (TP + FN): of the real attacks, how many were caught.\n- Too many false positives cause **alert fatigue**: analysts start ignoring alerts, and the real one gets missed. Tune rules, add context (asset criticality, user role), and automate the routine triage (**SOAR**).\n- **Baselines** (what is normal for this user and host) make anomaly detection possible but need care.\n\nOther detection tools: **IDS/IPS** (Snort, Suricata) on the network, **EDR** (endpoint detection and response) on hosts, **honeypots** and **canary tokens** (a fake credential or file that alerts when touched), and **threat hunting** (a human searching a hypothesis such as \"has any server beaconed to a rare domain?\").\n\n### Threat intelligence\n\n**Indicators of compromise (IOCs)** are artefacts of an attack: IP addresses, domains, file hashes, URLs. They are easy to share but attackers change them quickly. **TTPs** (tactics, techniques and procedures, as in MITRE ATT&CK) describe behaviour and are much harder to change, so they are more valuable. Sources: MISP, AlienVault OTX, VirusTotal, CISA advisories, vendor reports. Look up a suspicious file by its **hash**, not by uploading sensitive files to public services."
+    }
+   ]
+  },
+  {
+   "id": "ch-7-4",
+   "type": "concept",
+   "title": "Phishing and malware triage",
+   "subtopicId": "7-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Analysing a suspicious email\n\n1. Look at the **headers**, not just the display name: `From`, `Return-Path`, `Reply-To`, `Received` chain.\n2. Check authentication results:\n\n| Mechanism | What it does |\n|---|---|\n| **SPF** | a DNS record listing the servers allowed to send mail for a domain |\n| **DKIM** | the sending server signs the message; the receiver verifies it with a key published in DNS |\n| **DMARC** | a policy (`none`, `quarantine`, `reject`) telling receivers what to do when SPF or DKIM fail to align with the visible From domain, and where to send reports |\n\n3. Hover over links (do not click). Look for look-alike domains (`rn` instead of `m`), URL shorteners, mismatched display text.\n4. Detonate attachments and links **only** in a sandbox, never on your own machine.\n5. Search the mail system for other recipients and remove the message from all inboxes. If anyone clicked, treat their account as compromised: reset credentials, revoke sessions, check for mailbox rules.\n\n### Static and dynamic malware analysis\n\n- **Static analysis** inspects the file without running it: hash it, read strings, check imports and file type.\n- **Dynamic analysis** runs it in an isolated **sandbox** and watches processes, files, registry and network traffic.\n- Never analyse live malware on a machine connected to your network or your accounts."
+    }
+   ]
+  },
+  {
+   "id": "ch-7-5",
+   "type": "concept",
+   "title": "Incident response",
+   "subtopicId": "7-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "An **incident** is an event that harms or threatens confidentiality, integrity or availability. NIST SP 800-61 and the SANS model describe the same lifecycle:\n\n| Phase | What happens |\n|---|---|\n| **1. Preparation** | policies, contact lists, playbooks, tools, backups, training, tabletop exercises |\n| **2. Detection and analysis** (identification) | decide whether it is an incident, scope it, rate severity, start a timeline |\n| **3. Containment** | stop the spread: isolate hosts, disable accounts, block IPs. Short-term first, then long-term |\n| **4. Eradication** | remove the cause: malware, backdoors, the vulnerability that let them in |\n| **5. Recovery** | restore from clean backups, monitor closely, return to normal |\n| **6. Lessons learned** | a blameless review within days: what worked, what failed, what to change |\n\nPrinciples during an incident:\n\n- **Contain before you clean.** Isolating a machine (network, not power) keeps evidence in memory.\n- **Preserve evidence** following the **order of volatility** (most volatile first): CPU registers and cache → **memory (RAM)** → network connections and running processes → disk → remote logs and backups → archives. Record who handled what and when (**chain of custody**) and work on copies.\n- **Keep a timeline and write things down.** Decisions made at 3 a.m. need to be explained at 10 a.m.\n- **Communicate:** a named incident lead, a separate channel for the response team, careful statements for management, legal and customers. Know your legal reporting duties (for example, CERT-In reporting in India).\n- **Do not pay** a ransom without legal and executive involvement. Restoration from tested backups is the plan.\n\n### Three mini playbooks\n\n| Incident | First steps |\n|---|---|\n| **Compromised account** | reset the password, revoke sessions and tokens, require MFA, review the sign-in history and mailbox rules, find what the account accessed |\n| **Ransomware** | isolate affected hosts and shares, protect backups, identify the strain and the entry point, notify, restore from clean backups, patch the entry |\n| **Web application attack** | preserve logs, block the source, find the vulnerable endpoint, patch, rotate secrets that may have been read, check for web shells |"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-6",
+   "type": "concept",
+   "title": "Vulnerability management and resilience",
+   "subtopicId": "7-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "- **CVE** gives a vulnerability a public ID (CVE-2021-44228). **CWE** classifies the weakness type (CWE-89 SQL injection). **CVSS** scores severity from 0 to 10 (Low, Medium, High, Critical). **EPSS** estimates the probability that a CVE will be exploited soon. CISA's **KEV catalogue** lists vulnerabilities known to be exploited in the wild.\n- **Prioritise** by exploitability (is there a public exploit? is it in KEV?), **exposure** (internet-facing?) and **asset value**. A medium-scored flaw on an exposed, exploited system can outrank a critical one on an isolated test box.\n- **Patch cadence:** critical and exploited issues in days, others on a regular cycle. If you cannot patch, use compensating controls (segmentation, a WAF rule, disabling the feature).\n- **Scanners** (Nessus, OpenVAS, Qualys, Trivy for containers) find known issues. They miss logic flaws and they report false positives, so verify.\n\n**Backups** are the last line of defence against ransomware. Follow **3-2-1**: three copies of the data, on two different media, with one offsite. Add an **immutable** or offline copy and **test restores** regularly. **RPO** (recovery point objective) is how much data loss is acceptable, **RTO** (recovery time objective) is how long recovery may take. A **business continuity plan** keeps the business running and a **disaster recovery plan** restores IT.\n\n### Frameworks you will hear about\n\n| Framework | Use |\n|---|---|\n| **NIST Cybersecurity Framework 2.0** | six functions: Govern, Identify, Protect, Detect, Respond, Recover |\n| **CIS Controls** | a prioritised list of practical safeguards |\n| **ISO/IEC 27001** | a certifiable information security management system |\n| **PCI DSS** | rules for organisations that handle payment card data |\n| **MITRE ATT&CK** | a library of attacker behaviour for detection and testing |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"First check the context: which account, which source, how many, over what time, and what the system is. Then look for a success afterwards for the same account or source. If there is none, check whether the source is a known scanner or user error. If there is a success, treat the account as compromised: reset credentials, kill sessions, look at what it did, escalate. Document the steps, and tune the rule or add the source to a watchlist if it was benign.\"",
+     "title": "Walk me through an alert about many failed logins"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Logs from authentication, web, network, DNS, endpoint and cloud are what detection is built from\n- A false negative is the dangerous miss and too many false positives cause alert fatigue\n- Incident response runs prepare, detect and analyse, contain, eradicate, recover, learn\n- Contain before you clean and preserve volatile evidence first\n- Prioritise patching by exploitability, exposure and asset value, not CVSS alone\n- Backups need three copies, two media, one offsite and tested restores"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (50 questions)",
+   "subtopicId": "7-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "50 original questions on 11 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-defence",
+     "items": [
+      {
+       "t": "SOC basics",
+       "q": "*(Recall)* A Tier 1 SOC analyst's main job is to",
+       "o": [
+        "write malware",
+        "design the corporate network",
+        "negotiate with attackers",
+        "triage alerts, close false positives and escalate real incidents"
+       ],
+       "a": 3,
+       "w": "Tier 1 watches the queue, decides what is real and hands real incidents to deeper investigation."
+      },
+      {
+       "t": "SOC basics",
+       "q": "*(Recall)* MTTD stands for",
+       "o": [
+        "managed threat data",
+        "mean time to deploy",
+        "maximum time to disable",
+        "mean time to detect"
+       ],
+       "a": 3,
+       "w": "It measures how long attackers go unnoticed. Shorter is better, as is MTTR (time to respond or recover)."
+      },
+      {
+       "t": "SOC basics",
+       "q": "*(Recall)* Why must the clocks of all servers be synchronised (NTP) for incident investigation?",
+       "o": [
+        "to compress logs",
+        "events from different systems can only be ordered into a timeline if their timestamps agree",
+        "to speed up logins",
+        "to save battery"
+       ],
+       "a": 1,
+       "w": "Without consistent time, correlating a firewall event with a login event is guesswork."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Recall)* Windows Security event ID 4625 means",
+       "o": [
+        "the audit log was cleared",
+        "a new service installed",
+        "a failed logon",
+        "a successful logon"
+       ],
+       "a": 2,
+       "w": "4624 is success, 4625 is failure, 7045 is a new service, 1102 is a cleared audit log."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Recall)* Windows Security event ID 1102 (audit log cleared) is suspicious because",
+       "o": [
+        "it means the disk is full",
+        "it is a normal daily event",
+        "attackers clear logs to cover their tracks",
+        "it only happens during updates"
+       ],
+       "a": 2,
+       "w": "Log clearing outside planned maintenance is a strong sign of intrusion."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Recall)* Event ID 4688 records",
+       "o": [
+        "a user logoff",
+        "the creation of a new process",
+        "a password change",
+        "a firewall rule change"
+       ],
+       "a": 1,
+       "w": "Process creation logs, with the command line enabled, are one of the best sources for detecting malicious activity."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Scenario)* Which sequence in an authentication log most strongly suggests a successful brute force?",
+       "o": [
+        "many 4625 events for an account from one IP, followed by a 4624 for the same account from that IP",
+        "a 4625 followed by a logoff",
+        "one 4624 for each user",
+        "4688 events at night"
+       ],
+       "a": 0,
+       "w": "Failures followed by a success from the same source mean the guess eventually worked."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Scenario)* You see `Failed password for root from 198.51.100.7` 400 times, then `Accepted password for root from 198.51.100.7`. The first action is to",
+       "o": [
+        "restart SSH",
+        "treat the host as compromised: isolate it, preserve evidence and investigate what root did afterwards",
+        "delete the log lines",
+        "ignore it because root exists on every server"
+       ],
+       "a": 1,
+       "w": "A success after a flood of failures means the attacker got in. Containment and evidence come first."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Scenario)* A web access log shows a request containing UNION SELECT and a 200 status with a large response size, from user agent sqlmap. What is the most important observation?",
+       "o": [
+        "the 200 and large response suggest the injection may have succeeded and data may have been returned",
+        "the request was a GET",
+        "the URL is long",
+        "the user agent is old"
+       ],
+       "a": 0,
+       "w": "Attempts that return errors are noise. A 200 with unusual size on an injection attempt needs urgent investigation."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Scenario)* Given this log excerpt, which IP made the most requests?\n```text\n10.0.0.5 GET /\n10.0.0.9 GET /login\n10.0.0.9 POST /login\n10.0.0.9 POST /login\n10.0.0.5 GET /about\n10.0.0.9 POST /login\n```",
+       "o": [
+        "both equally",
+        "10.0.0.1",
+        "10.0.0.5",
+        "10.0.0.9"
+       ],
+       "a": 3,
+       "w": "10.0.0.9 appears four times (one GET and three POSTs to /login), against twice for 10.0.0.5. Repeated POSTs to /login from one address suggest password guessing."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Scenario)* How many POST /login requests are in the excerpt above?",
+       "o": [
+        "2",
+        "3",
+        "4",
+        "6"
+       ],
+       "a": 1,
+       "w": "Lines 3, 4 and 6 are POST /login."
+      },
+      {
+       "t": "Logs",
+       "q": "*(Recall)* A burst of HTTP 404 responses to many different paths from a single IP most likely indicates",
+       "o": [
+        "a successful login",
+        "automated scanning or forced browsing",
+        "a database backup",
+        "a certificate renewal"
+       ],
+       "a": 1,
+       "w": "Scanners probe many URLs looking for hidden files and admin pages."
+      },
+      {
+       "t": "SIEM",
+       "q": "*(Recall)* A SIEM is used to",
+       "o": [
+        "block spam e-mail only",
+        "hash passwords",
+        "collect, normalise and correlate logs from many sources and raise alerts",
+        "host the company website"
+       ],
+       "a": 2,
+       "w": "Examples: Splunk, Microsoft Sentinel, Elastic Security, Wazuh."
+      },
+      {
+       "t": "SIEM",
+       "q": "*(Recall)* Sigma is",
+       "o": [
+        "a vendor-neutral format for writing detection rules",
+        "a vulnerability scanner",
+        "an encryption algorithm",
+        "a type of firewall"
+       ],
+       "a": 0,
+       "w": "A Sigma rule can be converted to the query language of different SIEMs."
+      },
+      {
+       "t": "SIEM",
+       "q": "*(Recall)* \"Impossible travel\" detection raises an alert when",
+       "o": [
+        "the VPN is down",
+        "a password is changed",
+        "a user logs in at night",
+        "the same account signs in from two distant locations too quickly for physical travel"
+       ],
+       "a": 3,
+       "w": "It may indicate stolen credentials, though VPNs can cause false positives."
+      },
+      {
+       "t": "SIEM",
+       "q": "*(Scenario)* An organisation has an alert rule for \"failed logins > 3 in 10 minutes\" and receives 500 alerts a day, mostly users who mistyped passwords. The best improvement is",
+       "o": [
+        "tune it: raise the threshold, add context such as source reputation and success afterwards, and automate the routine triage",
+        "switch the SIEM off",
+        "ignore the alerts",
+        "lock all accounts"
+       ],
+       "a": 0,
+       "w": "Alert fatigue hides real attacks. Better rules and automation raise the signal-to-noise ratio."
+      },
+      {
+       "t": "Alert quality",
+       "q": "*(Recall)* A real attack that produces no alert is a",
+       "o": [
+        "true negative",
+        "false negative",
+        "false positive",
+        "true positive"
+       ],
+       "a": 1,
+       "w": "False negatives are the most dangerous failures of a detection system."
+      },
+      {
+       "t": "Alert quality",
+       "q": "*(Scenario)* A rule fired 100 times: 80 were real attacks and 20 were benign. The precision is",
+       "o": [
+        "20%",
+        "80%",
+        "120%",
+        "100%"
+       ],
+       "a": 1,
+       "w": "Precision = TP / (TP + FP) = 80 / 100 = 80%."
+      },
+      {
+       "t": "Alert quality",
+       "q": "*(Scenario)* During a month there were 50 real attacks. The rule caught 40 of them. The recall (detection rate) is",
+       "o": [
+        "80%",
+        "125%",
+        "40%",
+        "90%"
+       ],
+       "a": 0,
+       "w": "Recall = TP / (TP + FN) = 40 / 50 = 80%. Ten attacks were missed."
+      },
+      {
+       "t": "Alert quality",
+       "q": "*(Scenario)* Tuning a rule to remove all false positives made it miss several real attacks. Which statement describes the trade-off?",
+       "o": [
+        "false negatives cannot happen",
+        "precision and recall are unrelated",
+        "alerts should never be tuned",
+        "making a rule stricter tends to raise precision but can reduce recall"
+       ],
+       "a": 3,
+       "w": "Detection engineering balances noisy alerts against missed attacks. Measure both."
+      },
+      {
+       "t": "Threat intelligence",
+       "q": "*(Recall)* Which indicator is hardest for an attacker to change?",
+       "o": [
+        "behaviour (tactics and techniques)",
+        "an IP address",
+        "a domain name",
+        "a file hash"
+       ],
+       "a": 0,
+       "w": "Changing a hash or IP is trivial. Changing how the attack works is expensive, which is why ATT&CK techniques are valuable detection targets."
+      },
+      {
+       "t": "Threat intelligence",
+       "q": "*(Recall)* An IOC (indicator of compromise) is",
+       "o": [
+        "a security policy",
+        "an artefact such as an IP, domain or file hash associated with malicious activity",
+        "an employee badge",
+        "a firewall vendor"
+       ],
+       "a": 1,
+       "w": "IOCs are shared quickly but become stale quickly."
+      },
+      {
+       "t": "Threat intelligence",
+       "q": "*(Recall)* A canary token is",
+       "o": [
+        "a TLS certificate",
+        "a password manager",
+        "a decoy credential, file or URL that raises an alert when someone touches it",
+        "a type of firewall rule"
+       ],
+       "a": 2,
+       "w": "It is cheap and has a very low false-positive rate: legitimate users never touch it."
+      },
+      {
+       "t": "Email security",
+       "q": "*(Recall)* An SPF record lists",
+       "o": [
+        "the recipient list",
+        "the sender's private key",
+        "the servers allowed to send e-mail for the domain",
+        "the user's password"
+       ],
+       "a": 2,
+       "w": "The receiving server compares the sending IP with the domain's SPF record."
+      },
+      {
+       "t": "Email security",
+       "q": "*(Recall)* DKIM provides",
+       "o": [
+        "a digital signature on the message that the receiver verifies with a public key in DNS",
+        "attachment scanning",
+        "spam filtering",
+        "encryption of the mailbox"
+       ],
+       "a": 0,
+       "w": "It shows the message was authorised by the signing domain and was not altered."
+      },
+      {
+       "t": "Email security",
+       "q": "*(Recall)* A DMARC policy of p=reject tells receivers to",
+       "o": [
+        "deliver all mail",
+        "delete the domain",
+        "reject messages that fail the aligned SPF/DKIM checks",
+        "quarantine suspicious mail"
+       ],
+       "a": 2,
+       "w": "It protects the domain from being spoofed in the From header. p=none only reports."
+      },
+      {
+       "t": "Email security",
+       "q": "*(Scenario)* A message claims to be from \"IT Support\" but the Return-Path domain is a look-alike (examp1e.com) and SPF fails. The best action is to",
+       "o": [
+        "reply asking if it is real",
+        "click the link to test it",
+        "forward it to colleagues",
+        "report it, search for and remove the same message from other mailboxes, and block the domain"
+       ],
+       "a": 3,
+       "w": "Triage by headers, contain the campaign by removing copies, and check whether anyone clicked."
+      },
+      {
+       "t": "Email security",
+       "q": "*(Scenario)* A user clicked a link in a phishing email and typed their password. What should be done?",
+       "o": [
+        "only warn the user",
+        "delete the e-mail",
+        "nothing, passwords are strong",
+        "reset the password, revoke sessions and tokens, review sign-in logs and mailbox rules, and check for lateral activity"
+       ],
+       "a": 3,
+       "w": "Assume the credentials are in the attacker's hands. Mailbox forwarding rules are a common persistence trick."
+      },
+      {
+       "t": "Malware analysis",
+       "q": "*(Recall)* Static malware analysis means",
+       "o": [
+        "examining the file without executing it, for example hashes, strings and imports",
+        "restoring backups",
+        "watching its network traffic live",
+        "running the sample in production"
+       ],
+       "a": 0,
+       "w": "Dynamic analysis runs it in a sandbox and observes behaviour."
+      },
+      {
+       "t": "Malware analysis",
+       "q": "*(Scenario)* A suspicious attachment arrives. The safest way to learn what it does is to",
+       "o": [
+        "rename the extension",
+        "open it on your laptop",
+        "analyse it in an isolated sandbox with no connection to your network",
+        "e-mail it to a friend"
+       ],
+       "a": 2,
+       "w": "Live malware must be contained. Hash lookups on reputation services are the safe first step."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* The first phase of the incident response lifecycle is",
+       "o": [
+        "lessons learned",
+        "containment",
+        "eradication",
+        "preparation"
+       ],
+       "a": 3,
+       "w": "Playbooks, tools, contacts and training must exist before the incident."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* After detecting that a workstation is infected, the first priority is usually",
+       "o": [
+        "contain it by isolating it from the network while preserving evidence",
+        "turn off the whole data centre",
+        "reformat it immediately",
+        "post about it"
+       ],
+       "a": 0,
+       "w": "Containment stops the spread. Cleaning too early destroys evidence and leaves the root cause unknown."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Scenario)* Why isolate a suspected compromised host from the network instead of powering it off?",
+       "o": [
+        "powering off loses volatile evidence in memory, such as running processes and connections",
+        "isolation is faster",
+        "servers cannot be powered off",
+        "to save electricity"
+       ],
+       "a": 0,
+       "w": "RAM contents disappear at shutdown. Isolation stops the attacker's access while keeping evidence."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Scenario)* Which list is in the correct order of volatility, most volatile first?",
+       "o": [
+        "network state, backups, disk, RAM",
+        "registers and cache, RAM, network connections and processes, disk, remote logs and backups",
+        "disk, RAM, network state, backups",
+        "backups, disk, RAM, cache"
+       ],
+       "a": 1,
+       "w": "Collect the data that disappears fastest first."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* Chain of custody documents",
+       "o": [
+        "the firewall rules",
+        "the password policy",
+        "the network topology",
+        "who handled evidence, when and what they did, so it stays trustworthy"
+       ],
+       "a": 3,
+       "w": "Without it, evidence may be challenged in disciplinary or legal proceedings."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* The purpose of a blameless post-incident review is to",
+       "o": [
+        "find someone to fire",
+        "learn what happened and improve controls and processes",
+        "hide the incident",
+        "update the logo"
+       ],
+       "a": 1,
+       "w": "Blame discourages people from reporting problems early."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Scenario)* Ransomware encrypts file servers. Backups exist on a share that is mounted on the same servers. What is the likely problem?",
+       "o": [
+        "the backups were reachable and may also be encrypted; keep an offline or immutable copy",
+        "too many backups",
+        "none",
+        "backups cannot be restored"
+       ],
+       "a": 0,
+       "w": "That is why the 3-2-1 rule includes an offsite or offline copy, and why restore tests matter."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* An RPO of 4 hours means",
+       "o": [
+        "the incident lasts 4 hours",
+        "up to 4 hours of data may be lost",
+        "recovery must complete within 4 hours",
+        "backups are kept for 4 hours"
+       ],
+       "a": 1,
+       "w": "RPO is about data loss. RTO is about recovery time."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Scenario)* A business requires that after a failure the system is back within 2 hours with at most 15 minutes of data lost. Which is correct?",
+       "o": [
+        "RTO 15 minutes, RPO 15 minutes",
+        "RTO 15 minutes, RPO 2 hours",
+        "RTO 2 hours, RPO 2 hours",
+        "RTO 2 hours, RPO 15 minutes"
+       ],
+       "a": 3,
+       "w": "Time to restore is RTO, tolerable data loss is RPO."
+      },
+      {
+       "t": "Incident response",
+       "q": "*(Recall)* The 3-2-1 backup rule is",
+       "o": [
+        "3 days, 2 weeks, 1 month",
+        "3 servers, 2 disks, 1 tape",
+        "3 copies, 2 different media, 1 offsite",
+        "3 users, 2 admins, 1 owner"
+       ],
+       "a": 2,
+       "w": "Add an immutable or offline copy and test restores regularly."
+      },
+      {
+       "t": "Vulnerability management",
+       "q": "*(Recall)* CWE-89 refers to",
+       "o": [
+        "a CVSS vector",
+        "a firewall setting",
+        "the weakness class SQL injection",
+        "a specific CVE"
+       ],
+       "a": 2,
+       "w": "CWE classifies weakness types. A CVE identifies one specific vulnerability in a product."
+      },
+      {
+       "t": "Vulnerability management",
+       "q": "*(Recall)* CISA's KEV catalogue lists",
+       "o": [
+        "security vendors",
+        "approved patches",
+        "all possible vulnerabilities",
+        "vulnerabilities known to be exploited in the wild"
+       ],
+       "a": 3,
+       "w": "Presence in KEV is a strong signal to patch urgently."
+      },
+      {
+       "t": "Vulnerability management",
+       "q": "*(Scenario)* Which vulnerability should usually be fixed first?",
+       "o": [
+        "CVSS 3.1 on a printer",
+        "CVSS 9.0 in an unused library function",
+        "CVSS 7.5 on an internet-facing server with a public exploit being used in attacks",
+        "CVSS 9.8 on an isolated, offline test machine"
+       ],
+       "a": 2,
+       "w": "Prioritise by exploitation, exposure and asset value, using CVSS as one input."
+      },
+      {
+       "t": "Vulnerability management",
+       "q": "*(Scenario)* A scanner reports a critical flaw on a legacy device that cannot be patched. A good response is",
+       "o": [
+        "rename the device",
+        "apply compensating controls such as network isolation, access restrictions and monitoring, and record the risk acceptance",
+        "turn off the scanner",
+        "ignore it"
+       ],
+       "a": 1,
+       "w": "When patching is impossible, reduce exposure and document the decision."
+      },
+      {
+       "t": "Vulnerability management",
+       "q": "*(Recall)* EPSS is a score that estimates",
+       "o": [
+        "the probability that a vulnerability will be exploited in the near future",
+        "the cost of a patch",
+        "the severity of the impact",
+        "the age of the software"
+       ],
+       "a": 0,
+       "w": "It complements CVSS, which measures severity rather than likelihood."
+      },
+      {
+       "t": "Frameworks",
+       "q": "*(Recall)* The NIST Cybersecurity Framework 2.0 added which function to the original five?",
+       "o": [
+        "Detect",
+        "Govern",
+        "Monitor",
+        "Audit"
+       ],
+       "a": 1,
+       "w": "CSF 2.0 has Govern, Identify, Protect, Detect, Respond and Recover."
+      },
+      {
+       "t": "Frameworks",
+       "q": "*(Recall)* MITRE ATT&CK is",
+       "o": [
+        "a law",
+        "a firewall product",
+        "a vulnerability scanner",
+        "a knowledge base of real attacker tactics and techniques"
+       ],
+       "a": 3,
+       "w": "Used to map detections, plan red-team exercises and discuss incidents."
+      },
+      {
+       "t": "Frameworks",
+       "q": "*(Recall)* ISO/IEC 27001 is",
+       "o": [
+        "an encryption standard",
+        "a programming language",
+        "a certifiable standard for an information security management system",
+        "a type of malware"
+       ],
+       "a": 2,
+       "w": "Organisations are audited against it by an accredited certification body."
+      },
+      {
+       "t": "Playbooks",
+       "q": "*(Scenario)* A user reports that their mailbox is forwarding all mail to an unknown address and they never set it up. This most likely means",
+       "o": [
+        "the account was compromised and an attacker created a forwarding rule for persistence",
+        "a printer problem",
+        "a DNS cache issue",
+        "a normal feature"
+       ],
+       "a": 0,
+       "w": "Mailbox rules are a classic persistence and data-theft technique after account takeover."
+      },
+      {
+       "t": "Playbooks",
+       "q": "*(Scenario)* On a web server you find a file `uploads/img.php` containing a few lines that run commands from a request parameter. This is a",
+       "o": [
+        "TLS certificate",
+        "cache file",
+        "web shell, a sign of compromise",
+        "harmless image"
+       ],
+       "a": 2,
+       "w": "A web shell gives the attacker remote command execution. Preserve evidence, find the entry point, rotate secrets and rebuild from a clean image."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Vulnerability management and resilience"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a false positive and a false negative, and which is worse for security?",
+       "answer": "A false positive is an alert on benign activity. A false negative is a real attack with no alert. The false negative is worse because the attack goes unnoticed, although too many false positives hide real alerts."
+      },
+      {
+       "question": "You see Windows events 4625 repeatedly for one account followed by 4624 from the same IP. What do you conclude?",
+       "answer": "A brute force attack that probably succeeded. Treat the account as compromised: reset it, kill sessions and investigate what it accessed."
+      },
+      {
+       "question": "Why is the order of volatility important?",
+       "answer": "Evidence in memory and network state disappears when a machine is powered off or rebooted, so it must be captured before the more permanent disk and log evidence."
+      },
+      {
+       "question": "Explain SPF, DKIM and DMARC in one sentence each.",
+       "answer": "SPF lists which servers may send for a domain. DKIM signs messages so the receiver can verify them. DMARC sets the policy for failures and ties the checks to the visible From domain."
+      },
+      {
+       "question": "What does 3-2-1 mean for backups and why test restores?",
+       "answer": "Three copies, on two media types, one offsite. A backup you have never restored may be corrupt, incomplete or too slow to meet the recovery time objective."
+      },
+      {
+       "question": "A CVSS 9.8 flaw exists on an isolated lab server and a CVSS 6.5 flaw is on a public web server listed in the KEV catalogue. Which is patched first?",
+       "answer": "Usually the 6.5 flaw on the exposed, actively exploited system. Prioritisation uses exploitation, exposure and asset value, not the score alone."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

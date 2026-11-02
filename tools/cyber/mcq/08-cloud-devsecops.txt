@@ -1,0 +1,370 @@
+# Cloud security and DevSecOps: 52 original questions. Format: see tools/build_gate.py (?1 recall, ?2 scenario)
+
+?1 [Shared responsibility] In the cloud, which item is always the customer's responsibility?
+(a) physical security of the data centre
+(b) the hypervisor
+(c)* data, identities and the configuration of the services they use
+(d) the power supply
+=> Even for SaaS the customer decides who has access and which data is stored. The provider handles the underlying infrastructure.
+
+?1 [Shared responsibility] On a plain EC2 instance (IaaS), who patches the guest operating system?
+(a) AWS
+(b)* the customer
+(c) the browser vendor
+(d) nobody
+=> With IaaS the customer manages the OS and everything above it. With managed services such as RDS the provider patches the OS.
+
+?2 [Shared responsibility] A company's customer database was exposed through a publicly readable storage bucket. Who is usually at fault?
+(a) the cloud provider, because the service allowed it
+(b)* the customer, who configured the bucket's access
+(c) the user's ISP
+(d) the browser
+=> Misconfiguration on the customer side is the most common cause of cloud data exposure.
+
+?1 [IAM] By default, a new IAM user with no policies can
+(a) do everything
+(b)* do nothing, because actions are implicitly denied
+(c) read all buckets
+(d) create users
+=> Everything starts as a deny. Permissions are added explicitly.
+
+?1 [IAM] If one policy allows an action and another explicitly denies it, the result is
+(a) allowed
+(b)* denied, because an explicit deny overrides any allow
+(c) decided by the oldest policy
+(d) random
+=> Explicit deny always wins in AWS policy evaluation.
+!py st = [{'Effect': 'Allow', 'Action': 's3:*', 'Resource': '*'}, {'Effect': 'Deny', 'Action': 's3:DeleteObject', 'Resource': 'arn:aws:s3:::b/*'}]; assert not iam_allowed(st, 's3:DeleteObject', 'arn:aws:s3:::b/x') and iam_allowed(st, 's3:GetObject', 'arn:aws:s3:::b/x')
+
+?2 [IAM] A policy allows "s3:GetObject" on "arn:aws:s3:::reports/*". A user tries "s3:PutObject" on the same bucket. The result is
+(a) allowed
+(b)* denied by default, because no statement allows PutObject
+(c) allowed for admins only
+(d) an error in the policy
+=> Only the listed action is allowed. Everything else is an implicit deny.
+!py st = [{'Effect': 'Allow', 'Action': 's3:GetObject', 'Resource': 'arn:aws:s3:::reports/*'}]; assert not iam_allowed(st, 's3:PutObject', 'arn:aws:s3:::reports/a.csv') and iam_allowed(st, 's3:GetObject', 'arn:aws:s3:::reports/a.csv')
+
+?1 [IAM] Which policy fragment is the biggest red flag in a review?
+(a) "Action": "s3:GetObject", "Resource": "arn:aws:s3:::reports/*"
+(b) "Effect": "Deny"
+(c)* "Effect": "Allow", "Action": "*", "Resource": "*"
+(d) "Condition": {"Bool": {"aws:SecureTransport": "true"}}
+=> Full wildcards grant everything. Narrow actions and resources are the point of least privilege.
+
+?1 [IAM] For the AWS root user the recommended practice is to
+(a) use it daily
+(b) create access keys and share them with the team
+(c)* enable MFA, create no access keys and use it only for the few tasks that need it
+(d) delete it
+=> The root user cannot be restricted by IAM policies, so its credentials need the strongest protection.
+
+?1 [IAM] An application on EC2 needs to read from S3. The best way to give it permissions is
+(a) hard-coding an IAM user's access key
+(b)* attaching an IAM role (instance profile) with a least-privilege policy
+(c) using the root key
+(d) making the bucket public
+=> Roles supply short-lived credentials automatically, so there is no long-term secret to leak.
+
+?2 [IAM] An access key belonging to a developer is found in a public GitHub repository. The first action is to
+(a) delete the repository
+(b)* deactivate and rotate the key immediately, then review CloudTrail for what it did
+(c) wait for the next audit
+(d) change the repository name
+=> Bots scan GitHub for keys within minutes. Revoke first, then investigate, then find the root cause.
+
+?1 [IAM] IAM Access Analyzer helps by
+(a) encrypting data
+(b)* identifying resources shared externally and helping to generate least-privilege policies from actual use
+(c) blocking DDoS traffic
+(d) patching servers
+=> It finds unintended access and uses CloudTrail history to suggest tighter policies.
+
+?1 [Network] A security group is
+(a) stateless and supports deny rules
+(b)* stateful and supports allow rules only
+(c) attached to a subnet and numbered
+(d) a type of encryption
+=> Return traffic for an allowed connection is permitted automatically. Network ACLs are the stateless subnet-level option.
+
+?2 [Network] A security group allows TCP 22 only from 203.0.113.0/24. A connection from 198.51.100.1 to port 22 is
+(a) allowed
+(b)* denied, because security groups deny anything that no rule allows
+(c) allowed but logged
+(d) redirected
+=> There are no deny rules to write: unmatched traffic is dropped.
+!py assert sg_allows([(22, 22, '203.0.113.0/24')], 22, '203.0.113.9') and not sg_allows([(22, 22, '203.0.113.0/24')], 22, '198.51.100.1')
+
+?2 [Network] A network ACL has rule 100: deny TCP 22 and rule 200: allow all. Traffic to port 22 is
+(a) allowed, because rule 200 allows everything
+(b)* denied, because rules are evaluated in number order and rule 100 matches first
+(c) allowed, because ACLs are stateless
+(d) delayed
+=> The lowest-numbered matching rule decides. Putting the allow first would permit the traffic.
+!py assert nacl_decision([(100, 22, 22, 'deny'), (200, 0, 65535, 'allow')], 22) == 'deny' and nacl_decision([(100, 22, 22, 'deny'), (200, 0, 65535, 'allow')], 80) == 'allow'
+
+?1 [Network] Where should a production database be placed?
+(a) a public subnet with a public IP
+(b)* a private subnet, reachable only from the application tier
+(c) the same subnet as the load balancer, open to the internet
+(d) any subnet with port 3306 open to 0.0.0.0/0
+=> Databases should never face the internet. Restrict by security group reference.
+
+?2 [Network] Which security group rule is the most dangerous?
+(a) TCP 443 from 0.0.0.0/0 on a load balancer
+(b) TCP 5432 from the app tier's security group
+(c)* TCP 22 from 0.0.0.0/0 on a production server
+(d) TCP 80 from 0.0.0.0/0 that redirects to HTTPS
+=> SSH from the whole internet invites brute force. Use SSM Session Manager, a bastion with MFA, or restrict by IP or VPN.
+
+?1 [Storage and keys] "Block Public Access" for S3 is used to
+(a) hide the console
+(b)* prevent buckets and objects from being made public through ACLs or policies
+(c) encrypt objects
+(d) speed up uploads
+=> Turn it on at the account level so a mistaken policy cannot expose data.
+
+?1 [Storage and keys] Envelope encryption means
+(a) encrypting the envelope of an e-mail
+(b)* encrypting data with a data key and encrypting that data key with a master key in KMS
+(c) using two passwords
+(d) hashing a file twice
+=> The master key never leaves KMS, and decrypting the data key is an audited call.
+
+?1 [Storage and keys] Where should an application's database password be stored in AWS?
+(a) in the Git repository
+(b) in EC2 user data in plain text
+(c)* in Secrets Manager or SSM Parameter Store, retrieved at runtime
+(d) in a public S3 object
+=> They provide access control, encryption, auditing and rotation.
+
+?1 [Storage and keys] Why is IMDSv2 preferred over IMDSv1?
+(a) it is faster
+(b)* it requires a session token, which blocks simple SSRF attacks against the metadata endpoint
+(c) it encrypts disks
+(d) it removes roles
+=> With v2, a vulnerable web app that only makes GET requests cannot fetch the credentials.
+
+?2 [Storage and keys] A web app has an SSRF flaw and runs on EC2 with IMDSv1 enabled and an over-privileged role. What can the attacker do?
+(a) nothing
+(b)* fetch the role's temporary credentials from 169.254.169.254 and use them with the role's permissions
+(c) only deface the home page
+(d) change the DNS record
+=> Fix the SSRF, enforce IMDSv2 and shrink the role's permissions.
+
+?1 [Detection] AWS CloudTrail records
+(a) packet contents
+(b)* API calls made in the account, such as who changed an IAM policy
+(c) CPU usage
+(d) application errors only
+=> It is the audit log of the control plane. Send it to a protected bucket with log file validation.
+
+?1 [Detection] Amazon GuardDuty is
+(a) a firewall
+(b)* a threat detection service that analyses CloudTrail, VPC flow and DNS logs for suspicious activity
+(c) a backup tool
+(d) a load balancer
+=> Examples: API calls from known malicious IPs, crypto-mining behaviour.
+
+?1 [Detection] AWS Config mainly helps to
+(a) deploy code
+(b)* record resource configurations and flag changes that break compliance rules
+(c) scan source code
+(d) encrypt traffic
+=> A rule such as "S3 buckets must not be public" can alert or auto-remediate.
+
+?2 [Detection] CloudTrail shows `DeleteTrail` and `StopLogging` events by an unfamiliar principal. This suggests
+(a) routine maintenance
+(b)* an attacker covering their tracks
+(c) a billing issue
+(d) a new region
+=> Disabling logging is a classic defence-evasion technique and warrants an immediate alert.
+
+?1 [Containers] A container should run as
+(a) root, for convenience
+(b)* a non-root user with minimal privileges
+(c) the host's admin
+(d) any user, the choice is irrelevant
+=> If an attacker escapes the app, a non-root user in a container limits the damage.
+
+?1 [Containers] Mounting /var/run/docker.sock into a container gives that container
+(a) read access to logs
+(b)* effective root control of the host via the Docker daemon
+(c) no extra rights
+(d) faster networking
+=> Anyone who can talk to the Docker socket can start privileged containers.
+
+?1 [Containers] Why scan container images?
+(a) to speed up pulls
+(b)* base images and packages may contain known vulnerabilities
+(c) to compress layers
+(d) to rename tags
+=> Tools such as Trivy or Grype compare installed packages with CVE databases.
+
+?2 [Containers] A Dockerfile contains `ENV DB_PASSWORD=Sup3rSecret`. Why is this a problem?
+(a) environment variables are slow
+(b)* the secret is stored in the image layers and visible to anyone who can pull the image
+(c) Docker rejects it
+(d) it breaks the build
+=> Inject secrets at runtime from a secret manager or orchestrator.
+
+?1 [Containers] A Kubernetes NetworkPolicy is used to
+(a) schedule pods
+(b)* control which pods may talk to each other, enabling default-deny between workloads
+(c) store secrets
+(d) scale deployments
+=> By default all pods can reach all pods, so a compromised pod can move laterally.
+
+?1 [Containers] Kubernetes Secrets, by default, are
+(a) strongly encrypted in all clusters
+(b)* only base64-encoded unless encryption at rest and RBAC are configured
+(c) hashed
+(d) never readable
+=> Base64 is encoding, not protection. Enable encryption at rest and restrict who can read secrets.
+
+?1 [DevSecOps] "Shift left" in a CI/CD pipeline means
+(a) deploying faster
+(b)* running security checks early, close to the developer, instead of only before release
+(c) ignoring tests
+(d) removing reviews
+=> Early feedback in pull requests is cheaper than a late finding in production.
+
+?1 [DevSecOps] Which pipeline stage is best suited for secret scanning?
+(a) after deployment
+(b)* on commit (pre-commit hook) and in CI on every pull request
+(c) only once a year
+(d) never
+=> The earlier a leaked secret is caught, the smaller the risk window.
+
+?1 [DevSecOps] A tool that scans Terraform files for public S3 buckets and open security groups before deployment is doing
+(a) DAST
+(b)* IaC scanning (for example Checkov or Trivy config)
+(c) penetration testing
+(d) load testing
+=> It reads the configuration code and applies policy rules before resources are created.
+
+?1 [DevSecOps] In a pipeline, a DAST step such as OWASP ZAP is normally run against
+(a) the source code
+(b)* a running staging deployment
+(c) the Git history
+(d) the developer's laptop only
+=> DAST tests behaviour from outside, so it needs a running application.
+
+?2 [DevSecOps] A pipeline stores a long-lived AWS access key in its secrets store. A better design is
+(a) share the key by chat
+(b)* OIDC federation so the job assumes a short-lived role with a narrow policy
+(c) use the root key
+(d) store the key in the repository
+=> Short-lived credentials mean a leaked pipeline log cannot be used for long.
+
+?2 [DevSecOps] A GitHub Actions workflow uses `uses: someone/action@main` for a third-party action. The risk is
+(a) none
+(b)* the maintainer, or an attacker controlling that branch, can change the code that runs with your secrets; pin to a commit SHA
+(c) the action will be slower
+(d) the YAML will not parse
+=> Moving references such as branches and tags can be changed after you reviewed them. A full commit SHA is immutable.
+
+?2 [DevSecOps] Pull requests from forks are run with the repository's deployment secrets. What is the risk?
+(a) none
+(b)* an attacker can change the workflow or tests in the fork to print or steal the secrets (poisoned pipeline execution)
+(c) slower builds
+(d) more code coverage
+=> Untrusted code must not run with secrets. Use separate workflows with minimal permissions.
+
+?1 [DevSecOps] A protected main branch typically requires
+(a) direct pushes by anyone
+(b)* pull requests with reviews and passing status checks, and no force pushes
+(c) no tests
+(d) deleting history
+=> It stops a single compromised account or mistake from changing production code unnoticed.
+
+?1 [Supply chain] The SolarWinds incident (2020) is a well-known example of
+(a) SQL injection
+(b)* a software supply chain attack in which the build process was compromised and trojanised updates were shipped
+(c) a DDoS
+(d) a phishing campaign without malware
+=> The malicious code was inserted into signed updates that customers trusted and installed.
+
+?1 [Supply chain] Dependency confusion happens when
+(a) two developers disagree
+(b)* a build pulls a public package with the same name as an internal one, with a higher version
+(c) a library is deleted
+(d) the licence changes
+=> Use scoped registries, reserved names and repository priority rules.
+
+?1 [Supply chain] An SBOM is most useful when
+(a) designing the UI
+(b)* a new vulnerability is announced and you must find which products contain the affected component
+(c) buying hardware
+(d) writing commit messages
+=> It turns a manual search into a quick lookup.
+
+?1 [Supply chain] SLSA (Supply-chain Levels for Software Artifacts) is
+(a) a database
+(b)* a framework of levels for build integrity and provenance
+(c) a firewall rule format
+(d) a Java library
+=> Higher levels give stronger guarantees about how and where an artifact was built.
+
+?1 [IaC] Why can a Terraform state file be sensitive?
+(a) it is very large
+(b)* it can contain secrets and resource details in clear text
+(c) it contains the compiler
+(d) it is public by default
+=> Store state in an encrypted remote backend with restricted access and versioning.
+
+?1 [IaC] Drift detection finds
+(a) network latency
+(b)* differences between the real infrastructure and what the code says it should be
+(c) memory leaks
+(d) unused tests
+=> Manual changes in a console bypass review and are a common source of exposure.
+
+?2 [Scenario] A security review finds an S3 bucket policy with "Principal": "*" and "Action": "s3:GetObject" on a bucket of invoices. Block Public Access is off. The right fix is
+(a) rename the bucket
+(b)* remove the public principal, enable Block Public Access, restrict access to the application role, and review access logs for past downloads
+(c) delete CloudTrail
+(d) add more users
+=> Fix the exposure, prevent recurrence with the account-level control, and investigate whether the data was accessed.
+
+?2 [Scenario] A GuardDuty finding reports an EC2 instance communicating with a known crypto-mining pool. First steps are
+(a) ignore it
+(b)* isolate the instance (security group), snapshot it for evidence, investigate how it was compromised, rotate its credentials and rebuild from a clean image
+(c) only delete the finding
+(d) increase the instance size
+=> Contain, preserve, investigate, eradicate and recover, and revoke the instance role's credentials.
+
+?2 [Scenario] A team wants every new service to start secure without each developer remembering all the rules. Which approach fits DevSecOps best?
+(a) a long wiki page
+(b)* secure templates and pipeline guardrails (policy as code) that fail the build on violations
+(c) annual training only
+(d) one security reviewer for everything
+=> Automation and paved roads scale. Training and review still matter but cannot be the only controls.
+
+?1 [Scenario] A security champion in a development team is
+(a) the person who is blamed for incidents
+(b)* a developer who acts as the team's security contact, spreading practices and escalating issues
+(c) an external auditor
+(d) a firewall administrator
+=> Champions bring security knowledge into teams without bottlenecking on a central group.
+
+?1 [Storage and keys] S3 server-side encryption with KMS keys (SSE-KMS) adds which benefit over SSE-S3?
+(a) faster uploads
+(b)* key-level access control and an audit trail of every use of the key
+(c) public access
+(d) free storage
+=> Because each decrypt call goes through KMS, the key policy limits who can read the data and CloudTrail logs the use.
+
+?2 [IAM] A Lambda function needs to write to one DynamoDB table. Which role policy is best?
+(a) AdministratorAccess
+(b) dynamodb:* on all resources
+(c)* dynamodb:PutItem on the ARN of that table only
+(d) the root user's policy
+=> Grant only the needed action on only the needed resource. Broad policies turn a small bug into a full compromise.
+!py st = [{'Effect': 'Allow', 'Action': 'dynamodb:PutItem', 'Resource': 'arn:aws:dynamodb:ap-south-1:111122223333:table/orders'}]; assert iam_allowed(st, 'dynamodb:PutItem', 'arn:aws:dynamodb:ap-south-1:111122223333:table/orders') and not iam_allowed(st, 'dynamodb:DeleteTable', 'arn:aws:dynamodb:ap-south-1:111122223333:table/orders')
+
+?2 [Network] A scan of your own cloud account shows a security group with 0.0.0.0/0 on TCP 3306 attached to a database. The urgent steps are
+(a) wait for the next sprint
+(b)* restrict the rule to the application's security group now, check the database logs for unauthorised access and rotate credentials if there are signs of it
+(c) change the database name
+(d) delete CloudTrail
+=> An internet-exposed database is attacked within minutes. Fix the exposure first, then investigate.

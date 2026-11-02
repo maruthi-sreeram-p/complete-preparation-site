@@ -1,0 +1,363 @@
+# Defence: logging, detection and incident response: 54 original questions. Format: see tools/build_gate.py (?1 recall, ?2 scenario)
+
+?1 [SOC basics] A Tier 1 SOC analyst's main job is to
+(a) write malware
+(b)* triage alerts, close false positives and escalate real incidents
+(c) design the corporate network
+(d) negotiate with attackers
+=> Tier 1 watches the queue, decides what is real and hands real incidents to deeper investigation.
+
+?1 [SOC basics] MTTD stands for
+(a) mean time to deploy
+(b)* mean time to detect
+(c) maximum time to disable
+(d) managed threat data
+=> It measures how long attackers go unnoticed. Shorter is better, as is MTTR (time to respond or recover).
+
+?1 [SOC basics] Why must the clocks of all servers be synchronised (NTP) for incident investigation?
+(a) to save battery
+(b)* events from different systems can only be ordered into a timeline if their timestamps agree
+(c) to speed up logins
+(d) to compress logs
+=> Without consistent time, correlating a firewall event with a login event is guesswork.
+
+?1 [Logs] Windows Security event ID 4625 means
+(a) a successful logon
+(b)* a failed logon
+(c) a new service installed
+(d) the audit log was cleared
+=> 4624 is success, 4625 is failure, 7045 is a new service, 1102 is a cleared audit log.
+
+?1 [Logs] Windows Security event ID 1102 (audit log cleared) is suspicious because
+(a) it is a normal daily event
+(b)* attackers clear logs to cover their tracks
+(c) it means the disk is full
+(d) it only happens during updates
+=> Log clearing outside planned maintenance is a strong sign of intrusion.
+
+?1 [Logs] Event ID 4688 records
+(a) a user logoff
+(b) a password change
+(c)* the creation of a new process
+(d) a firewall rule change
+=> Process creation logs, with the command line enabled, are one of the best sources for detecting malicious activity.
+
+?2 [Logs] Which sequence in an authentication log most strongly suggests a successful brute force?
+(a) one 4624 for each user
+(b)* many 4625 events for an account from one IP, followed by a 4624 for the same account from that IP
+(c) a 4625 followed by a logoff
+(d) 4688 events at night
+=> Failures followed by a success from the same source mean the guess eventually worked.
+
+?2 [Logs] You see `Failed password for root from 198.51.100.7` 400 times, then `Accepted password for root from 198.51.100.7`. The first action is to
+(a) ignore it because root exists on every server
+(b)* treat the host as compromised: isolate it, preserve evidence and investigate what root did afterwards
+(c) restart SSH
+(d) delete the log lines
+=> A success after a flood of failures means the attacker got in. Containment and evidence come first.
+
+?2 [Logs] A web access log shows a request containing UNION SELECT and a 200 status with a large response size, from user agent sqlmap. What is the most important observation?
+(a) the user agent is old
+(b)* the 200 and large response suggest the injection may have succeeded and data may have been returned
+(c) the URL is long
+(d) the request was a GET
+=> Attempts that return errors are noise. A 200 with unusual size on an injection attempt needs urgent investigation.
+
+?2 [Logs] Given this log excerpt, which IP made the most requests?
+```text
+10.0.0.5 GET /
+10.0.0.9 GET /login
+10.0.0.9 POST /login
+10.0.0.9 POST /login
+10.0.0.5 GET /about
+10.0.0.9 POST /login
+```
+(a) 10.0.0.5
+(b)* 10.0.0.9
+(c) both equally
+(d) 10.0.0.1
+=> 10.0.0.9 appears four times (one GET and three POSTs to /login), against twice for 10.0.0.5. Repeated POSTs to /login from one address suggest password guessing.
+!py log = "10.0.0.5 GET /\n10.0.0.9 GET /login\n10.0.0.9 POST /login\n10.0.0.9 POST /login\n10.0.0.5 GET /about\n10.0.0.9 POST /login\n"; assert top_ip(log) == ans
+
+?2 [Logs] How many POST /login requests are in the excerpt above?
+(a) 2
+(b)* 3
+(c) 4
+(d) 6
+=> Lines 3, 4 and 6 are POST /login.
+!py log = "10.0.0.5 GET /\n10.0.0.9 GET /login\n10.0.0.9 POST /login\n10.0.0.9 POST /login\n10.0.0.5 GET /about\n10.0.0.9 POST /login\n"; assert count_matches(log, r'POST /login') == num(ans)
+
+?1 [Logs] A burst of HTTP 404 responses to many different paths from a single IP most likely indicates
+(a) a successful login
+(b)* automated scanning or forced browsing
+(c) a database backup
+(d) a certificate renewal
+=> Scanners probe many URLs looking for hidden files and admin pages.
+
+?1 [SIEM] A SIEM is used to
+(a) host the company website
+(b)* collect, normalise and correlate logs from many sources and raise alerts
+(c) hash passwords
+(d) block spam e-mail only
+=> Examples: Splunk, Microsoft Sentinel, Elastic Security, Wazuh.
+
+?1 [SIEM] Sigma is
+(a) a vulnerability scanner
+(b)* a vendor-neutral format for writing detection rules
+(c) an encryption algorithm
+(d) a type of firewall
+=> A Sigma rule can be converted to the query language of different SIEMs.
+
+?1 [SIEM] "Impossible travel" detection raises an alert when
+(a) a user logs in at night
+(b)* the same account signs in from two distant locations too quickly for physical travel
+(c) a password is changed
+(d) the VPN is down
+=> It may indicate stolen credentials, though VPNs can cause false positives.
+
+?2 [SIEM] An organisation has an alert rule for "failed logins > 3 in 10 minutes" and receives 500 alerts a day, mostly users who mistyped passwords. The best improvement is
+(a) switch the SIEM off
+(b)* tune it: raise the threshold, add context such as source reputation and success afterwards, and automate the routine triage
+(c) ignore the alerts
+(d) lock all accounts
+=> Alert fatigue hides real attacks. Better rules and automation raise the signal-to-noise ratio.
+
+?1 [Alert quality] A real attack that produces no alert is a
+(a) true positive
+(b) false positive
+(c) true negative
+(d)* false negative
+=> False negatives are the most dangerous failures of a detection system.
+
+?2 [Alert quality] A rule fired 100 times: 80 were real attacks and 20 were benign. The precision is
+(a) 20%
+(b)* 80%
+(c) 100%
+(d) 120%
+=> Precision = TP / (TP + FP) = 80 / 100 = 80%.
+!py assert 80 / (80 + 20) * 100 == num(ans)
+
+?2 [Alert quality] During a month there were 50 real attacks. The rule caught 40 of them. The recall (detection rate) is
+(a) 40%
+(b)* 80%
+(c) 90%
+(d) 125%
+=> Recall = TP / (TP + FN) = 40 / 50 = 80%. Ten attacks were missed.
+!py assert 40 / 50 * 100 == num(ans)
+
+?2 [Alert quality] Tuning a rule to remove all false positives made it miss several real attacks. Which statement describes the trade-off?
+(a) precision and recall are unrelated
+(b)* making a rule stricter tends to raise precision but can reduce recall
+(c) false negatives cannot happen
+(d) alerts should never be tuned
+=> Detection engineering balances noisy alerts against missed attacks. Measure both.
+
+?1 [Threat intelligence] Which indicator is hardest for an attacker to change?
+(a) a file hash
+(b) an IP address
+(c) a domain name
+(d)* behaviour (tactics and techniques)
+=> Changing a hash or IP is trivial. Changing how the attack works is expensive, which is why ATT&CK techniques are valuable detection targets.
+
+?1 [Threat intelligence] An IOC (indicator of compromise) is
+(a) a security policy
+(b)* an artefact such as an IP, domain or file hash associated with malicious activity
+(c) an employee badge
+(d) a firewall vendor
+=> IOCs are shared quickly but become stale quickly.
+
+?1 [Threat intelligence] A canary token is
+(a) a type of firewall rule
+(b)* a decoy credential, file or URL that raises an alert when someone touches it
+(c) a password manager
+(d) a TLS certificate
+=> It is cheap and has a very low false-positive rate: legitimate users never touch it.
+
+?1 [Email security] An SPF record lists
+(a) the sender's private key
+(b)* the servers allowed to send e-mail for the domain
+(c) the recipient list
+(d) the user's password
+=> The receiving server compares the sending IP with the domain's SPF record.
+
+?1 [Email security] DKIM provides
+(a) encryption of the mailbox
+(b)* a digital signature on the message that the receiver verifies with a public key in DNS
+(c) spam filtering
+(d) attachment scanning
+=> It shows the message was authorised by the signing domain and was not altered.
+
+?1 [Email security] A DMARC policy of p=reject tells receivers to
+(a) deliver all mail
+(b) quarantine suspicious mail
+(c)* reject messages that fail the aligned SPF/DKIM checks
+(d) delete the domain
+=> It protects the domain from being spoofed in the From header. p=none only reports.
+
+?2 [Email security] A message claims to be from "IT Support" but the Return-Path domain is a look-alike (examp1e.com) and SPF fails. The best action is to
+(a) click the link to test it
+(b)* report it, search for and remove the same message from other mailboxes, and block the domain
+(c) forward it to colleagues
+(d) reply asking if it is real
+=> Triage by headers, contain the campaign by removing copies, and check whether anyone clicked.
+
+?2 [Email security] A user clicked a link in a phishing email and typed their password. What should be done?
+(a) nothing, passwords are strong
+(b)* reset the password, revoke sessions and tokens, review sign-in logs and mailbox rules, and check for lateral activity
+(c) only warn the user
+(d) delete the e-mail
+=> Assume the credentials are in the attacker's hands. Mailbox forwarding rules are a common persistence trick.
+
+?1 [Malware analysis] Static malware analysis means
+(a) running the sample in production
+(b)* examining the file without executing it, for example hashes, strings and imports
+(c) watching its network traffic live
+(d) restoring backups
+=> Dynamic analysis runs it in a sandbox and observes behaviour.
+
+?2 [Malware analysis] A suspicious attachment arrives. The safest way to learn what it does is to
+(a) open it on your laptop
+(b)* analyse it in an isolated sandbox with no connection to your network
+(c) e-mail it to a friend
+(d) rename the extension
+=> Live malware must be contained. Hash lookups on reputation services are the safe first step.
+
+?1 [Incident response] The first phase of the incident response lifecycle is
+(a) containment
+(b) eradication
+(c)* preparation
+(d) lessons learned
+=> Playbooks, tools, contacts and training must exist before the incident.
+
+?1 [Incident response] After detecting that a workstation is infected, the first priority is usually
+(a) reformat it immediately
+(b)* contain it by isolating it from the network while preserving evidence
+(c) post about it
+(d) turn off the whole data centre
+=> Containment stops the spread. Cleaning too early destroys evidence and leaves the root cause unknown.
+
+?2 [Incident response] Why isolate a suspected compromised host from the network instead of powering it off?
+(a) to save electricity
+(b)* powering off loses volatile evidence in memory, such as running processes and connections
+(c) isolation is faster
+(d) servers cannot be powered off
+=> RAM contents disappear at shutdown. Isolation stops the attacker's access while keeping evidence.
+
+?2 [Incident response] Which list is in the correct order of volatility, most volatile first?
+(a) disk, RAM, network state, backups
+(b)* registers and cache, RAM, network connections and processes, disk, remote logs and backups
+(c) backups, disk, RAM, cache
+(d) network state, backups, disk, RAM
+=> Collect the data that disappears fastest first.
+
+?1 [Incident response] Chain of custody documents
+(a) the network topology
+(b)* who handled evidence, when and what they did, so it stays trustworthy
+(c) the password policy
+(d) the firewall rules
+=> Without it, evidence may be challenged in disciplinary or legal proceedings.
+
+?1 [Incident response] The purpose of a blameless post-incident review is to
+(a) find someone to fire
+(b)* learn what happened and improve controls and processes
+(c) hide the incident
+(d) update the logo
+=> Blame discourages people from reporting problems early.
+
+?2 [Incident response] Ransomware encrypts file servers. Backups exist on a share that is mounted on the same servers. What is the likely problem?
+(a) none
+(b)* the backups were reachable and may also be encrypted; keep an offline or immutable copy
+(c) too many backups
+(d) backups cannot be restored
+=> That is why the 3-2-1 rule includes an offsite or offline copy, and why restore tests matter.
+
+?1 [Incident response] An RPO of 4 hours means
+(a) recovery must complete within 4 hours
+(b)* up to 4 hours of data may be lost
+(c) backups are kept for 4 hours
+(d) the incident lasts 4 hours
+=> RPO is about data loss. RTO is about recovery time.
+
+?2 [Incident response] A business requires that after a failure the system is back within 2 hours with at most 15 minutes of data lost. Which is correct?
+(a) RTO 15 minutes, RPO 2 hours
+(b)* RTO 2 hours, RPO 15 minutes
+(c) RTO 2 hours, RPO 2 hours
+(d) RTO 15 minutes, RPO 15 minutes
+=> Time to restore is RTO, tolerable data loss is RPO.
+
+?1 [Incident response] The 3-2-1 backup rule is
+(a)* 3 copies, 2 different media, 1 offsite
+(b) 3 servers, 2 disks, 1 tape
+(c) 3 days, 2 weeks, 1 month
+(d) 3 users, 2 admins, 1 owner
+=> Add an immutable or offline copy and test restores regularly.
+
+?1 [Vulnerability management] CWE-89 refers to
+(a) a specific CVE
+(b)* the weakness class SQL injection
+(c) a CVSS vector
+(d) a firewall setting
+=> CWE classifies weakness types. A CVE identifies one specific vulnerability in a product.
+
+?1 [Vulnerability management] CISA's KEV catalogue lists
+(a) all possible vulnerabilities
+(b)* vulnerabilities known to be exploited in the wild
+(c) approved patches
+(d) security vendors
+=> Presence in KEV is a strong signal to patch urgently.
+
+?2 [Vulnerability management] Which vulnerability should usually be fixed first?
+(a) CVSS 9.8 on an isolated, offline test machine
+(b)* CVSS 7.5 on an internet-facing server with a public exploit being used in attacks
+(c) CVSS 3.1 on a printer
+(d) CVSS 9.0 in an unused library function
+=> Prioritise by exploitation, exposure and asset value, using CVSS as one input.
+
+?2 [Vulnerability management] A scanner reports a critical flaw on a legacy device that cannot be patched. A good response is
+(a) ignore it
+(b)* apply compensating controls such as network isolation, access restrictions and monitoring, and record the risk acceptance
+(c) turn off the scanner
+(d) rename the device
+=> When patching is impossible, reduce exposure and document the decision.
+
+?1 [Vulnerability management] EPSS is a score that estimates
+(a) the severity of the impact
+(b)* the probability that a vulnerability will be exploited in the near future
+(c) the age of the software
+(d) the cost of a patch
+=> It complements CVSS, which measures severity rather than likelihood.
+
+?1 [Frameworks] The NIST Cybersecurity Framework 2.0 added which function to the original five?
+(a) Monitor
+(b)* Govern
+(c) Audit
+(d) Detect
+=> CSF 2.0 has Govern, Identify, Protect, Detect, Respond and Recover.
+
+?1 [Frameworks] MITRE ATT&CK is
+(a) a vulnerability scanner
+(b)* a knowledge base of real attacker tactics and techniques
+(c) a firewall product
+(d) a law
+=> Used to map detections, plan red-team exercises and discuss incidents.
+
+?1 [Frameworks] ISO/IEC 27001 is
+(a) an encryption standard
+(b)* a certifiable standard for an information security management system
+(c) a programming language
+(d) a type of malware
+=> Organisations are audited against it by an accredited certification body.
+
+?2 [Playbooks] A user reports that their mailbox is forwarding all mail to an unknown address and they never set it up. This most likely means
+(a) a normal feature
+(b)* the account was compromised and an attacker created a forwarding rule for persistence
+(c) a printer problem
+(d) a DNS cache issue
+=> Mailbox rules are a classic persistence and data-theft technique after account takeover.
+
+?2 [Playbooks] On a web server you find a file `uploads/img.php` containing a few lines that run commands from a request parameter. This is a
+(a) harmless image
+(b)* web shell, a sign of compromise
+(c) cache file
+(d) TLS certificate
+=> A web shell gives the attacker remote command execution. Preserve evidence, find the entry point, rotate secrets and rebuild from a clean image.

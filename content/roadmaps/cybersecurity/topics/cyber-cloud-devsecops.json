@@ -1,0 +1,806 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 52
+ },
+ "sections": [
+  {
+   "id": "ch-8-1",
+   "type": "concept",
+   "title": "The shared responsibility model",
+   "subtopicId": "8-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "A cloud provider and its customer split the security work. The provider secures **the cloud** (data centres, hardware, the virtualisation layer). You secure **what you put in the cloud** (your data, identities, configuration, code and network rules).\n\n| Layer | IaaS (EC2) | PaaS (Elastic Beanstalk, RDS) | SaaS (Microsoft 365) |\n|---|---|---|---|\n| Physical, hypervisor | provider | provider | provider |\n| Operating system and patching | **you** | provider | provider |\n| Application code | **you** | **you** | provider |\n| Identities, access and data | **you** | **you** | **you** |\n| Configuration of the service | **you** | **you** | **you** |\n\nThe pattern in almost every public cloud breach is not that the provider failed. It is a **customer misconfiguration**: a public bucket, an over-permissive role, a leaked access key, or a database open to the internet. The AWS foundations are in the AI and Cloud tree (AWS Part 1: IAM and networking). This part looks at them as a defender."
+    }
+   ]
+  },
+  {
+   "id": "ch-8-2",
+   "type": "concept",
+   "title": "Identity and access management (IAM) in AWS",
+   "subtopicId": "8-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Identity is the new perimeter. In AWS:\n\n| Concept | Meaning |\n|---|---|\n| **Root user** | the account owner, with unlimited power. Protect it with MFA, create **no access keys** for it, and use it only for the few tasks that need it |\n| **IAM user** | a long-term identity with a password and optional access keys. Prefer a federated login (IAM Identity Center) for people |\n| **IAM role** | an identity with **temporary credentials** that something *assumes*: an EC2 instance, a Lambda function, a person from another account |\n| **Policy** | a JSON document that allows or denies actions on resources |\n| **Access key** | an ID and a secret for programmatic access. A leaked key is a very common breach |\n\n### Policy evaluation rules\n\n1. Everything is **denied by default** (implicit deny).\n2. An **explicit `Allow`** in an applicable policy permits the action.\n3. An **explicit `Deny` always wins**, overriding any Allow.\n4. Other layers can still block it: permission boundaries, service control policies (SCPs) from AWS Organizations, session policies."
+    },
+    {
+     "type": "code",
+     "language": "json",
+     "code": "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [{\n    \"Effect\": \"Allow\",\n    \"Action\": [\"s3:GetObject\"],\n    \"Resource\": \"arn:aws:s3:::orders-reports-prod/exports/*\",\n    \"Condition\": { \"Bool\": { \"aws:SecureTransport\": \"true\" } }\n  }]\n}",
+     "title": "A least-privilege policy: read one prefix of one bucket"
+    },
+    {
+     "type": "markdown",
+     "text": "Compare this with `\"Action\": \"*\", \"Resource\": \"*\"`, which gives away the whole account. **Wildcards on both action and resource are the warning sign** to look for in a review."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Default deny. Explicit deny beats allow.**\n- **Roles over keys:** workloads use instance roles or task roles with short-lived credentials, never long-lived access keys in code.\n- **Root:** MFA on, no keys, not for daily use.\n- **Least privilege** is built by starting narrow and widening with evidence (IAM Access Analyzer and CloudTrail show what is actually used).\n- **A leaked key** → deactivate it, rotate, review CloudTrail for what it did, then find how it leaked.\n- **Separate accounts** for production, development and security logging limit the blast radius.",
+     "title": "AWS IAM cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-3",
+   "type": "concept",
+   "title": "Network and data protection",
+   "subtopicId": "8-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Security groups versus network ACLs\n\n| | Security group | Network ACL |\n|---|---|---|\n| Attached to | an instance or network interface | a subnet |\n| State | **stateful** (replies are allowed automatically) | **stateless** (allow replies explicitly) |\n| Rule type | **allow only** | allow **and deny**, evaluated in rule-number order |\n| Default | deny all inbound | allows all (default NACL) |\n\nDesign rules: put databases and internal services in **private subnets** with no public IP, expose only a load balancer, let the database's security group accept connections **only from the application's security group**, and never open `0.0.0.0/0` to SSH (22), RDP (3389) or a database port.\n\n### Storage and keys\n\n- **S3:** turn on **Block Public Access** (account-wide), use bucket policies with least privilege, enable **versioning**, **encryption at rest** (SSE-S3 or SSE-KMS) and **access logging**. New buckets already block public access by default, so a public bucket usually means someone deliberately changed it.\n- **KMS (Key Management Service):** keeps master keys inside hardware. **Envelope encryption** encrypts data with a data key and encrypts the data key with a KMS key. Key policies and grants control who may use a key, and every use is logged.\n- **Secrets:** AWS Secrets Manager or SSM Parameter Store, with automatic rotation. Never put secrets in user data, environment variables of public images or source code.\n- **Databases:** not publicly accessible, encrypted, with automated backups and TLS enforced.\n- **IMDSv2:** the instance metadata service version that needs a session token. It blocks the simple SSRF attack on `169.254.169.254` that steals instance role credentials.\n\n### Logging and detection services\n\n| Service | Purpose |\n|---|---|\n| **CloudTrail** | records AWS API calls (who did what, from where). Send trails to a protected S3 bucket with log file validation |\n| **CloudWatch** | metrics, logs and alarms |\n| **GuardDuty** | threat detection from CloudTrail, VPC flow logs and DNS logs (unusual API calls, crypto-mining, known-bad IPs) |\n| **AWS Config** | records resource configuration and flags non-compliant changes (public bucket, unencrypted volume) |\n| **Security Hub** | aggregates findings and checks against standards such as CIS |\n| **VPC Flow Logs** | network connection metadata |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Enable MFA on the root user and stop using it. Set up IAM Identity Center with MFA and least-privilege roles. Turn on CloudTrail in all regions to a locked-down bucket, plus GuardDuty, Config and Security Hub. Block public S3 access account-wide. Keep workloads in private subnets, use security groups that reference each other, and encrypt data with KMS. Use roles for workloads, set budget alerts, and separate production into its own account.\"",
+     "title": "\"How would you secure a new AWS account?\""
+    }
+   ]
+  },
+  {
+   "id": "ch-8-4",
+   "type": "concept",
+   "title": "Containers and Kubernetes",
+   "subtopicId": "8-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Containers share the host kernel, so their isolation is weaker than a virtual machine's.\n\n| Area | Good practice |\n|---|---|\n| **Images** | small trusted base images (distroless, alpine, slim), pin versions or digests, **scan** for vulnerabilities (Trivy, Grype), rebuild regularly |\n| **Runtime user** | run as a **non-root user**; drop capabilities; read-only root filesystem |\n| **Secrets** | never in the image or in `ENV` at build time; inject at runtime |\n| **Privilege** | no `--privileged`, never mount the Docker socket (`/var/run/docker.sock`), which is root on the host |\n| **Resources** | memory and CPU limits so one container cannot starve others |\n| **Kubernetes** | RBAC with least privilege, **NetworkPolicies** (default deny between pods), Pod Security Standards (\"restricted\"), secrets encrypted at rest, an admission controller that blocks unsigned or vulnerable images, API server not public |"
+    },
+    {
+     "type": "code",
+     "language": "dockerfile",
+     "code": "FROM eclipse-temurin:21-jre-alpine\nRUN addgroup -S app && adduser -S app -G app\nWORKDIR /app\nCOPY --chown=app:app target/orders.jar app.jar\nUSER app\nEXPOSE 8080\nENTRYPOINT [\"java\", \"-jar\", \"app.jar\"]",
+     "title": "A hardened Dockerfile for a Spring Boot jar"
+    }
+   ]
+  },
+  {
+   "id": "ch-8-5",
+   "type": "concept",
+   "title": "Securing the pipeline: DevSecOps",
+   "subtopicId": "8-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**DevSecOps** means security is part of the delivery pipeline and everyone's job, not a gate at the end. The principle: **automate checks, fail the build on serious findings, and give developers fast feedback.**\n\n| Stage | Control | Example tools |\n|---|---|---|\n| **Commit** | pre-commit hooks, secret scanning, signed commits | gitleaks, git hooks |\n| **Build** | SAST, dependency scan (SCA), SBOM generation | CodeQL, SpotBugs, Dependency-Check, Syft |\n| **Package** | container image scan, image signing | Trivy, cosign |\n| **Infrastructure as code** | scan Terraform, CloudFormation and Kubernetes manifests | Checkov, Trivy config, tfsec, OPA policies |\n| **Test** | DAST against a staging deployment | OWASP ZAP |\n| **Deploy** | approvals for production, signed artefacts only, least-privilege deploy role | |\n| **Run** | monitoring, runtime detection, patching, drift detection | CloudWatch, Falco, Config |"
+    },
+    {
+     "type": "code",
+     "language": "yaml",
+     "code": "name: ci\non: [pull_request]\npermissions:\n  contents: read                     # least privilege for the pipeline's own token\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4    # pin third-party actions to a full commit SHA for stronger protection\n      - uses: actions/setup-java@v4\n        with: { distribution: temurin, java-version: 21 }\n      - run: mvn -B verify                                  # unit and security tests\n      - run: mvn org.owasp:dependency-check-maven:check     # fail on high CVSS dependencies\n      - uses: aquasecurity/trivy-action@0.28.0              # scan the image and IaC\n        with: { scan-type: fs, severity: 'HIGH,CRITICAL', exit-code: '1' }",
+     "title": "A GitHub Actions job with security built in"
+    },
+    {
+     "type": "markdown",
+     "text": "### Supply chain and pipeline attacks\n\nThe pipeline holds the keys to production, so attackers go after it.\n\n| Attack | Real example or idea | Defence |\n|---|---|---|\n| **Poisoned dependency** | a maintainer account is hijacked or a malicious package version is published (event-stream, 2018) | pin and verify, review updates, SCA, private registry proxy |\n| **Compromised build system** | attackers inject code during the build (SolarWinds, 2020) | hardened, isolated build servers, reproducible builds, provenance (SLSA) |\n| **Leaked CI secrets** | a third-party CI script exposed credentials (Codecov, 2021) | short-lived credentials, secret masking, minimal permissions |\n| **Poisoned pipeline execution** | a pull request from a fork changes the workflow and runs with secrets | do not run untrusted PR code with secrets, require review for workflow changes |\n| **Typosquatting / dependency confusion** | a public package with the name of an internal one | scoped registries, reserved names |\n\nBest practices: **protect the main branch** (reviews, status checks, no force pushes), use **OIDC federation** so the pipeline assumes a short-lived AWS role instead of storing access keys, keep the pipeline's own permissions minimal, sign and verify artefacts, and generate an **SBOM** for every release.\n\n### Infrastructure as code (IaC)\n\nScan Terraform and CloudFormation **before** they create anything, because a one-line mistake (`acl = \"public-read\"`, an unencrypted volume, `0.0.0.0/0` on port 22) is cheaper to fix in a pull request than in production. Remember that **Terraform state files can contain secrets**, so store them encrypted in a remote backend with restricted access and versioning. **Drift detection** compares real resources with the code to catch manual changes."
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "DevSecOps jobs are largely \"developer who knows pipelines\". If you can write a Maven build, a Dockerfile and a GitHub Actions workflow, adding scanners, least-privilege roles and a policy check is a small step with a large value to employers.",
+     "title": "Why this suits a Java developer"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- The provider secures the cloud and you secure your configuration, identities and data\n- IAM is default deny, explicit deny wins and wildcards are the warning sign\n- Prefer roles with temporary credentials over long-lived access keys\n- Private subnets and security groups that reference each other limit exposure\n- Containers run as non-root with scanned minimal images and no secrets inside\n- Automate SAST, SCA, secret, image and IaC scans in the pipeline and protect the pipeline itself"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (52 questions)",
+   "subtopicId": "8-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "52 original questions on 10 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-cloud-devsecops",
+     "items": [
+      {
+       "t": "Shared responsibility",
+       "q": "*(Recall)* In the cloud, which item is always the customer's responsibility?",
+       "o": [
+        "the hypervisor",
+        "the power supply",
+        "data, identities and the configuration of the services they use",
+        "physical security of the data centre"
+       ],
+       "a": 2,
+       "w": "Even for SaaS the customer decides who has access and which data is stored. The provider handles the underlying infrastructure."
+      },
+      {
+       "t": "Shared responsibility",
+       "q": "*(Recall)* On a plain EC2 instance (IaaS), who patches the guest operating system?",
+       "o": [
+        "nobody",
+        "AWS",
+        "the customer",
+        "the browser vendor"
+       ],
+       "a": 2,
+       "w": "With IaaS the customer manages the OS and everything above it. With managed services such as RDS the provider patches the OS."
+      },
+      {
+       "t": "Shared responsibility",
+       "q": "*(Scenario)* A company's customer database was exposed through a publicly readable storage bucket. Who is usually at fault?",
+       "o": [
+        "the cloud provider, because the service allowed it",
+        "the browser",
+        "the user's ISP",
+        "the customer, who configured the bucket's access"
+       ],
+       "a": 3,
+       "w": "Misconfiguration on the customer side is the most common cause of cloud data exposure."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* By default, a new IAM user with no policies can",
+       "o": [
+        "do everything",
+        "create users",
+        "do nothing, because actions are implicitly denied",
+        "read all buckets"
+       ],
+       "a": 2,
+       "w": "Everything starts as a deny. Permissions are added explicitly."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* If one policy allows an action and another explicitly denies it, the result is",
+       "o": [
+        "random",
+        "allowed",
+        "denied, because an explicit deny overrides any allow",
+        "decided by the oldest policy"
+       ],
+       "a": 2,
+       "w": "Explicit deny always wins in AWS policy evaluation."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Scenario)* A policy allows \"s3:GetObject\" on \"arn:aws:s3:::reports/*\". A user tries \"s3:PutObject\" on the same bucket. The result is",
+       "o": [
+        "denied by default, because no statement allows PutObject",
+        "allowed",
+        "allowed for admins only",
+        "an error in the policy"
+       ],
+       "a": 0,
+       "w": "Only the listed action is allowed. Everything else is an implicit deny."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* Which policy fragment is the biggest red flag in a review?",
+       "o": [
+        "\"Effect\": \"Allow\", \"Action\": \"*\", \"Resource\": \"*\"",
+        "\"Action\": \"s3:GetObject\", \"Resource\": \"arn:aws:s3:::reports/*\"",
+        "\"Condition\": {\"Bool\": {\"aws:SecureTransport\": \"true\"}}",
+        "\"Effect\": \"Deny\""
+       ],
+       "a": 0,
+       "w": "Full wildcards grant everything. Narrow actions and resources are the point of least privilege."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* For the AWS root user the recommended practice is to",
+       "o": [
+        "create access keys and share them with the team",
+        "enable MFA, create no access keys and use it only for the few tasks that need it",
+        "delete it",
+        "use it daily"
+       ],
+       "a": 1,
+       "w": "The root user cannot be restricted by IAM policies, so its credentials need the strongest protection."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* An application on EC2 needs to read from S3. The best way to give it permissions is",
+       "o": [
+        "making the bucket public",
+        "attaching an IAM role (instance profile) with a least-privilege policy",
+        "using the root key",
+        "hard-coding an IAM user's access key"
+       ],
+       "a": 1,
+       "w": "Roles supply short-lived credentials automatically, so there is no long-term secret to leak."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Scenario)* An access key belonging to a developer is found in a public GitHub repository. The first action is to",
+       "o": [
+        "delete the repository",
+        "deactivate and rotate the key immediately, then review CloudTrail for what it did",
+        "wait for the next audit",
+        "change the repository name"
+       ],
+       "a": 1,
+       "w": "Bots scan GitHub for keys within minutes. Revoke first, then investigate, then find the root cause."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Recall)* IAM Access Analyzer helps by",
+       "o": [
+        "patching servers",
+        "encrypting data",
+        "blocking DDoS traffic",
+        "identifying resources shared externally and helping to generate least-privilege policies from actual use"
+       ],
+       "a": 3,
+       "w": "It finds unintended access and uses CloudTrail history to suggest tighter policies."
+      },
+      {
+       "t": "Network",
+       "q": "*(Recall)* A security group is",
+       "o": [
+        "stateless and supports deny rules",
+        "attached to a subnet and numbered",
+        "a type of encryption",
+        "stateful and supports allow rules only"
+       ],
+       "a": 3,
+       "w": "Return traffic for an allowed connection is permitted automatically. Network ACLs are the stateless subnet-level option."
+      },
+      {
+       "t": "Network",
+       "q": "*(Scenario)* A security group allows TCP 22 only from 203.0.113.0/24. A connection from 198.51.100.1 to port 22 is",
+       "o": [
+        "denied, because security groups deny anything that no rule allows",
+        "redirected",
+        "allowed but logged",
+        "allowed"
+       ],
+       "a": 0,
+       "w": "There are no deny rules to write: unmatched traffic is dropped."
+      },
+      {
+       "t": "Network",
+       "q": "*(Scenario)* A network ACL has rule 100: deny TCP 22 and rule 200: allow all. Traffic to port 22 is",
+       "o": [
+        "delayed",
+        "allowed, because rule 200 allows everything",
+        "denied, because rules are evaluated in number order and rule 100 matches first",
+        "allowed, because ACLs are stateless"
+       ],
+       "a": 2,
+       "w": "The lowest-numbered matching rule decides. Putting the allow first would permit the traffic."
+      },
+      {
+       "t": "Network",
+       "q": "*(Recall)* Where should a production database be placed?",
+       "o": [
+        "a public subnet with a public IP",
+        "a private subnet, reachable only from the application tier",
+        "any subnet with port 3306 open to 0.0.0.0/0",
+        "the same subnet as the load balancer, open to the internet"
+       ],
+       "a": 1,
+       "w": "Databases should never face the internet. Restrict by security group reference."
+      },
+      {
+       "t": "Network",
+       "q": "*(Scenario)* Which security group rule is the most dangerous?",
+       "o": [
+        "TCP 80 from 0.0.0.0/0 that redirects to HTTPS",
+        "TCP 5432 from the app tier's security group",
+        "TCP 443 from 0.0.0.0/0 on a load balancer",
+        "TCP 22 from 0.0.0.0/0 on a production server"
+       ],
+       "a": 3,
+       "w": "SSH from the whole internet invites brute force. Use SSM Session Manager, a bastion with MFA, or restrict by IP or VPN."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Recall)* \"Block Public Access\" for S3 is used to",
+       "o": [
+        "encrypt objects",
+        "prevent buckets and objects from being made public through ACLs or policies",
+        "speed up uploads",
+        "hide the console"
+       ],
+       "a": 1,
+       "w": "Turn it on at the account level so a mistaken policy cannot expose data."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Recall)* Envelope encryption means",
+       "o": [
+        "using two passwords",
+        "encrypting data with a data key and encrypting that data key with a master key in KMS",
+        "encrypting the envelope of an e-mail",
+        "hashing a file twice"
+       ],
+       "a": 1,
+       "w": "The master key never leaves KMS, and decrypting the data key is an audited call."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Recall)* Where should an application's database password be stored in AWS?",
+       "o": [
+        "in a public S3 object",
+        "in EC2 user data in plain text",
+        "in the Git repository",
+        "in Secrets Manager or SSM Parameter Store, retrieved at runtime"
+       ],
+       "a": 3,
+       "w": "They provide access control, encryption, auditing and rotation."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Recall)* Why is IMDSv2 preferred over IMDSv1?",
+       "o": [
+        "it is faster",
+        "it requires a session token, which blocks simple SSRF attacks against the metadata endpoint",
+        "it encrypts disks",
+        "it removes roles"
+       ],
+       "a": 1,
+       "w": "With v2, a vulnerable web app that only makes GET requests cannot fetch the credentials."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Scenario)* A web app has an SSRF flaw and runs on EC2 with IMDSv1 enabled and an over-privileged role. What can the attacker do?",
+       "o": [
+        "nothing",
+        "only deface the home page",
+        "fetch the role's temporary credentials from 169.254.169.254 and use them with the role's permissions",
+        "change the DNS record"
+       ],
+       "a": 2,
+       "w": "Fix the SSRF, enforce IMDSv2 and shrink the role's permissions."
+      },
+      {
+       "t": "Detection",
+       "q": "*(Recall)* AWS CloudTrail records",
+       "o": [
+        "application errors only",
+        "CPU usage",
+        "API calls made in the account, such as who changed an IAM policy",
+        "packet contents"
+       ],
+       "a": 2,
+       "w": "It is the audit log of the control plane. Send it to a protected bucket with log file validation."
+      },
+      {
+       "t": "Detection",
+       "q": "*(Recall)* Amazon GuardDuty is",
+       "o": [
+        "a backup tool",
+        "a threat detection service that analyses CloudTrail, VPC flow and DNS logs for suspicious activity",
+        "a load balancer",
+        "a firewall"
+       ],
+       "a": 1,
+       "w": "Examples: API calls from known malicious IPs, crypto-mining behaviour."
+      },
+      {
+       "t": "Detection",
+       "q": "*(Recall)* AWS Config mainly helps to",
+       "o": [
+        "encrypt traffic",
+        "record resource configurations and flag changes that break compliance rules",
+        "deploy code",
+        "scan source code"
+       ],
+       "a": 1,
+       "w": "A rule such as \"S3 buckets must not be public\" can alert or auto-remediate."
+      },
+      {
+       "t": "Detection",
+       "q": "*(Scenario)* CloudTrail shows `DeleteTrail` and `StopLogging` events by an unfamiliar principal. This suggests",
+       "o": [
+        "routine maintenance",
+        "an attacker covering their tracks",
+        "a new region",
+        "a billing issue"
+       ],
+       "a": 1,
+       "w": "Disabling logging is a classic defence-evasion technique and warrants an immediate alert."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Recall)* A container should run as",
+       "o": [
+        "a non-root user with minimal privileges",
+        "root, for convenience",
+        "any user, the choice is irrelevant",
+        "the host's admin"
+       ],
+       "a": 0,
+       "w": "If an attacker escapes the app, a non-root user in a container limits the damage."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Recall)* Mounting /var/run/docker.sock into a container gives that container",
+       "o": [
+        "read access to logs",
+        "faster networking",
+        "effective root control of the host via the Docker daemon",
+        "no extra rights"
+       ],
+       "a": 2,
+       "w": "Anyone who can talk to the Docker socket can start privileged containers."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Recall)* Why scan container images?",
+       "o": [
+        "to compress layers",
+        "to rename tags",
+        "base images and packages may contain known vulnerabilities",
+        "to speed up pulls"
+       ],
+       "a": 2,
+       "w": "Tools such as Trivy or Grype compare installed packages with CVE databases."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Scenario)* A Dockerfile contains `ENV DB_PASSWORD=Sup3rSecret`. Why is this a problem?",
+       "o": [
+        "Docker rejects it",
+        "it breaks the build",
+        "environment variables are slow",
+        "the secret is stored in the image layers and visible to anyone who can pull the image"
+       ],
+       "a": 3,
+       "w": "Inject secrets at runtime from a secret manager or orchestrator."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Recall)* A Kubernetes NetworkPolicy is used to",
+       "o": [
+        "store secrets",
+        "schedule pods",
+        "scale deployments",
+        "control which pods may talk to each other, enabling default-deny between workloads"
+       ],
+       "a": 3,
+       "w": "By default all pods can reach all pods, so a compromised pod can move laterally."
+      },
+      {
+       "t": "Containers",
+       "q": "*(Recall)* Kubernetes Secrets, by default, are",
+       "o": [
+        "never readable",
+        "strongly encrypted in all clusters",
+        "hashed",
+        "only base64-encoded unless encryption at rest and RBAC are configured"
+       ],
+       "a": 3,
+       "w": "Base64 is encoding, not protection. Enable encryption at rest and restrict who can read secrets."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Recall)* \"Shift left\" in a CI/CD pipeline means",
+       "o": [
+        "running security checks early, close to the developer, instead of only before release",
+        "removing reviews",
+        "ignoring tests",
+        "deploying faster"
+       ],
+       "a": 0,
+       "w": "Early feedback in pull requests is cheaper than a late finding in production."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Recall)* Which pipeline stage is best suited for secret scanning?",
+       "o": [
+        "on commit (pre-commit hook) and in CI on every pull request",
+        "never",
+        "only once a year",
+        "after deployment"
+       ],
+       "a": 0,
+       "w": "The earlier a leaked secret is caught, the smaller the risk window."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Recall)* A tool that scans Terraform files for public S3 buckets and open security groups before deployment is doing",
+       "o": [
+        "penetration testing",
+        "IaC scanning (for example Checkov or Trivy config)",
+        "load testing",
+        "DAST"
+       ],
+       "a": 1,
+       "w": "It reads the configuration code and applies policy rules before resources are created."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Recall)* In a pipeline, a DAST step such as OWASP ZAP is normally run against",
+       "o": [
+        "a running staging deployment",
+        "the developer's laptop only",
+        "the source code",
+        "the Git history"
+       ],
+       "a": 0,
+       "w": "DAST tests behaviour from outside, so it needs a running application."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Scenario)* A pipeline stores a long-lived AWS access key in its secrets store. A better design is",
+       "o": [
+        "OIDC federation so the job assumes a short-lived role with a narrow policy",
+        "store the key in the repository",
+        "share the key by chat",
+        "use the root key"
+       ],
+       "a": 0,
+       "w": "Short-lived credentials mean a leaked pipeline log cannot be used for long."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Scenario)* A GitHub Actions workflow uses `uses: someone/action@main` for a third-party action. The risk is",
+       "o": [
+        "the action will be slower",
+        "none",
+        "the YAML will not parse",
+        "the maintainer, or an attacker controlling that branch, can change the code that runs with your secrets; pin to a commit SHA"
+       ],
+       "a": 3,
+       "w": "Moving references such as branches and tags can be changed after you reviewed them. A full commit SHA is immutable."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Scenario)* Pull requests from forks are run with the repository's deployment secrets. What is the risk?",
+       "o": [
+        "slower builds",
+        "more code coverage",
+        "an attacker can change the workflow or tests in the fork to print or steal the secrets (poisoned pipeline execution)",
+        "none"
+       ],
+       "a": 2,
+       "w": "Untrusted code must not run with secrets. Use separate workflows with minimal permissions."
+      },
+      {
+       "t": "DevSecOps",
+       "q": "*(Recall)* A protected main branch typically requires",
+       "o": [
+        "direct pushes by anyone",
+        "deleting history",
+        "no tests",
+        "pull requests with reviews and passing status checks, and no force pushes"
+       ],
+       "a": 3,
+       "w": "It stops a single compromised account or mistake from changing production code unnoticed."
+      },
+      {
+       "t": "Supply chain",
+       "q": "*(Recall)* The SolarWinds incident (2020) is a well-known example of",
+       "o": [
+        "a DDoS",
+        "a software supply chain attack in which the build process was compromised and trojanised updates were shipped",
+        "a phishing campaign without malware",
+        "SQL injection"
+       ],
+       "a": 1,
+       "w": "The malicious code was inserted into signed updates that customers trusted and installed."
+      },
+      {
+       "t": "Supply chain",
+       "q": "*(Recall)* Dependency confusion happens when",
+       "o": [
+        "two developers disagree",
+        "a build pulls a public package with the same name as an internal one, with a higher version",
+        "a library is deleted",
+        "the licence changes"
+       ],
+       "a": 1,
+       "w": "Use scoped registries, reserved names and repository priority rules."
+      },
+      {
+       "t": "Supply chain",
+       "q": "*(Recall)* An SBOM is most useful when",
+       "o": [
+        "buying hardware",
+        "designing the UI",
+        "a new vulnerability is announced and you must find which products contain the affected component",
+        "writing commit messages"
+       ],
+       "a": 2,
+       "w": "It turns a manual search into a quick lookup."
+      },
+      {
+       "t": "Supply chain",
+       "q": "*(Recall)* SLSA (Supply-chain Levels for Software Artifacts) is",
+       "o": [
+        "a Java library",
+        "a firewall rule format",
+        "a database",
+        "a framework of levels for build integrity and provenance"
+       ],
+       "a": 3,
+       "w": "Higher levels give stronger guarantees about how and where an artifact was built."
+      },
+      {
+       "t": "IaC",
+       "q": "*(Recall)* Why can a Terraform state file be sensitive?",
+       "o": [
+        "it can contain secrets and resource details in clear text",
+        "it is public by default",
+        "it contains the compiler",
+        "it is very large"
+       ],
+       "a": 0,
+       "w": "Store state in an encrypted remote backend with restricted access and versioning."
+      },
+      {
+       "t": "IaC",
+       "q": "*(Recall)* Drift detection finds",
+       "o": [
+        "unused tests",
+        "network latency",
+        "differences between the real infrastructure and what the code says it should be",
+        "memory leaks"
+       ],
+       "a": 2,
+       "w": "Manual changes in a console bypass review and are a common source of exposure."
+      },
+      {
+       "t": "Scenario",
+       "q": "*(Scenario)* A security review finds an S3 bucket policy with \"Principal\": \"*\" and \"Action\": \"s3:GetObject\" on a bucket of invoices. Block Public Access is off. The right fix is",
+       "o": [
+        "remove the public principal, enable Block Public Access, restrict access to the application role, and review access logs for past downloads",
+        "add more users",
+        "rename the bucket",
+        "delete CloudTrail"
+       ],
+       "a": 0,
+       "w": "Fix the exposure, prevent recurrence with the account-level control, and investigate whether the data was accessed."
+      },
+      {
+       "t": "Scenario",
+       "q": "*(Scenario)* A GuardDuty finding reports an EC2 instance communicating with a known crypto-mining pool. First steps are",
+       "o": [
+        "ignore it",
+        "only delete the finding",
+        "isolate the instance (security group), snapshot it for evidence, investigate how it was compromised, rotate its credentials and rebuild from a clean image",
+        "increase the instance size"
+       ],
+       "a": 2,
+       "w": "Contain, preserve, investigate, eradicate and recover, and revoke the instance role's credentials."
+      },
+      {
+       "t": "Scenario",
+       "q": "*(Scenario)* A team wants every new service to start secure without each developer remembering all the rules. Which approach fits DevSecOps best?",
+       "o": [
+        "secure templates and pipeline guardrails (policy as code) that fail the build on violations",
+        "a long wiki page",
+        "annual training only",
+        "one security reviewer for everything"
+       ],
+       "a": 0,
+       "w": "Automation and paved roads scale. Training and review still matter but cannot be the only controls."
+      },
+      {
+       "t": "Scenario",
+       "q": "*(Recall)* A security champion in a development team is",
+       "o": [
+        "a developer who acts as the team's security contact, spreading practices and escalating issues",
+        "a firewall administrator",
+        "an external auditor",
+        "the person who is blamed for incidents"
+       ],
+       "a": 0,
+       "w": "Champions bring security knowledge into teams without bottlenecking on a central group."
+      },
+      {
+       "t": "Storage and keys",
+       "q": "*(Recall)* S3 server-side encryption with KMS keys (SSE-KMS) adds which benefit over SSE-S3?",
+       "o": [
+        "faster uploads",
+        "free storage",
+        "public access",
+        "key-level access control and an audit trail of every use of the key"
+       ],
+       "a": 3,
+       "w": "Because each decrypt call goes through KMS, the key policy limits who can read the data and CloudTrail logs the use."
+      },
+      {
+       "t": "IAM",
+       "q": "*(Scenario)* A Lambda function needs to write to one DynamoDB table. Which role policy is best?",
+       "o": [
+        "the root user's policy",
+        "AdministratorAccess",
+        "dynamodb:* on all resources",
+        "dynamodb:PutItem on the ARN of that table only"
+       ],
+       "a": 3,
+       "w": "Grant only the needed action on only the needed resource. Broad policies turn a small bug into a full compromise."
+      },
+      {
+       "t": "Network",
+       "q": "*(Scenario)* A scan of your own cloud account shows a security group with 0.0.0.0/0 on TCP 3306 attached to a database. The urgent steps are",
+       "o": [
+        "restrict the rule to the application's security group now, check the database logs for unauthorised access and rotate credentials if there are signs of it",
+        "delete CloudTrail",
+        "change the database name",
+        "wait for the next sprint"
+       ],
+       "a": 0,
+       "w": "An internet-exposed database is attacked within minutes. Fix the exposure first, then investigate."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Securing the pipeline: DevSecOps"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "In the shared responsibility model, who is responsible for an S3 bucket being public?",
+       "answer": "The customer. The provider secures the infrastructure, but bucket policies, ACLs and Block Public Access settings are the customer's configuration."
+      },
+      {
+       "question": "An IAM user has one policy that allows s3:* and another that explicitly denies s3:DeleteObject. Can they delete objects?",
+       "answer": "No. An explicit Deny always overrides an Allow."
+      },
+      {
+       "question": "Name two differences between a security group and a network ACL.",
+       "answer": "A security group is stateful and allow-only and attaches to instances, whereas a network ACL is stateless, supports allow and deny rules in numbered order and attaches to subnets."
+      },
+      {
+       "question": "Why is mounting /var/run/docker.sock into a container dangerous?",
+       "answer": "Whoever controls that socket can start privileged containers on the host, which is effectively root access to the host machine."
+      },
+      {
+       "question": "A pipeline stores a long-lived AWS access key as a secret. What is a better design?",
+       "answer": "Use OIDC federation so the pipeline assumes a role and gets short-lived credentials, with a narrowly scoped role policy."
+      },
+      {
+       "question": "What does a SAST step in CI find, and what does an SCA step find?",
+       "answer": "SAST finds insecure patterns in your own code. SCA finds known vulnerabilities in the third-party libraries you depend on."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

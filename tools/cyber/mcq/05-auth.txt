@@ -1,0 +1,357 @@
+# Authentication, sessions and access control: 54 original questions. Format: see tools/build_gate.py (?1 recall, ?2 scenario)
+
+?1 [Authentication] Which pair counts as true two-factor authentication?
+(a) password and security question
+(b) PIN and password
+(c)* password and a code from an authenticator app
+(d) two different passwords
+=> A password is knowledge. The authenticator app code proves possession of the device. The other pairs use two knowledge factors.
+
+?1 [Authentication] A fingerprint is an example of which factor?
+(a) knowledge
+(b) possession
+(c)* inherence (something you are)
+(d) location
+=> Biometrics are inherence factors. They cannot be changed if they are copied, so they are best used together with another factor.
+
+?1 [Authentication] Which MFA method resists real-time phishing the best?
+(a) SMS codes
+(b) e-mailed codes
+(c) TOTP codes
+(d)* FIDO2/WebAuthn passkeys
+=> WebAuthn credentials are bound to the genuine site's origin, so a look-alike phishing domain cannot obtain a valid response. Codes can be relayed.
+
+?1 [Authentication] MFA fatigue is an attack in which
+(a) users forget their codes
+(b)* the attacker triggers repeated push approvals until the user taps Approve
+(c) the authenticator app crashes
+(d) tokens expire early
+=> Number matching and rate-limiting push prompts reduce the risk.
+
+?1 [Authentication] A TOTP code generally changes every
+(a) 5 seconds
+(b)* 30 seconds
+(c) 5 minutes
+(d) 24 hours
+=> The code is derived from the shared secret and the current 30-second time window.
+
+?2 [Authentication] The HOTP value for the secret "12345678901234567890" at counter 0 (RFC 4226 test vector) is
+(a) 123456
+(b) 287082
+(c)* 755224
+(d) 359152
+=> The HMAC-SHA-1 of the counter is truncated to 6 digits. Counter 1 gives 287082. This is how authenticator apps compute codes.
+!py assert hotp('12345678901234567890', 0) == ans
+
+?2 [Authentication] The same secret at counter 1 gives
+(a) 755224
+(b)* 287082
+(c) 359152
+(d) 969429
+=> Each new counter value gives a different 6-digit code. TOTP uses floor(time / 30) as the counter.
+!py assert hotp('12345678901234567890', 1) == ans
+
+?2 [Authentication] Two TOTP codes are generated from the same secret at Unix time 59 and at Unix time 89. They are
+(a) the same
+(b)* different, because the 30-second counter moved from 1 to 2
+(c) both 000000
+(d) valid at the same time
+=> floor(59/30) = 1 and floor(89/30) = 2, so the counters differ.
+!py assert totp('12345678901234567890', 59) != totp('12345678901234567890', 89) and 59 // 30 == 1 and 89 // 30 == 2
+
+?1 [Login security] Which login error message is best?
+(a) "No account with that e-mail"
+(b) "Wrong password for admin@example.com"
+(c)* "Invalid username or password"
+(d) "Account locked for 3 failed attempts on your username"
+=> A single generic message avoids account enumeration. Timing and response size should also be the same.
+
+?2 [Login security] A login page responds in 20 ms for unknown users and in 300 ms for known users because only the latter run the password hash. What can an attacker do?
+(a) nothing
+(b)* enumerate valid usernames from the response time
+(c) break the hash
+(d) log in without a password
+=> Always perform a dummy hash comparison so both paths take about the same time.
+
+?2 [Login security] A bank sees 10,000 accounts each receive 1 failed login from many IPs in 5 minutes, all using the password "Spring2026!". This is most likely
+(a) a brute-force attack on one account
+(b)* password spraying
+(c) session fixation
+(d) a DNS attack
+=> One common password tried against many accounts keeps per-account counters low. Detect it by looking at failures across accounts and sources.
+
+?1 [Login security] Credential stuffing is stopped most effectively by
+(a) hiding the login URL
+(b)* MFA together with breached-password checks and rate limiting
+(c) longer session cookies
+(d) removing CAPTCHA
+=> Stuffing uses real, leaked passwords. MFA makes the stolen password insufficient.
+
+?2 [Login security] A site permanently locks an account after 5 failed logins. Why is this risky?
+(a) it is too lenient
+(b)* an attacker can lock out any user on purpose (a denial of service)
+(c) it breaks TLS
+(d) it exposes hashes
+=> Use progressive delays or temporary locks, with alerts and a recovery path, so that attackers cannot easily weaponise the lockout.
+
+?2 [Password reset] Which reset design is the most secure?
+(a) e-mail the user's current password
+(b) ask for the mother's maiden name
+(c)* send a random single-use link that expires quickly, then invalidate old sessions after the change
+(d) send a 4-digit code that never expires
+=> The token must be unguessable (at least 128 bits), single-use and short-lived. Security questions are guessable.
+
+?2 [Password reset] A reset link looks like /reset?token=1001, and the next user gets token=1002. What is wrong?
+(a) nothing
+(b)* tokens are sequential and predictable, so an attacker can reset other users' passwords
+(c) the link is too short to type
+(d) the site uses HTTP
+=> Reset tokens must come from a cryptographically secure random generator.
+
+?1 [Password reset] Why should "forgot password" always answer "if the account exists we have sent a link"?
+(a) to be polite
+(b)* to avoid revealing which e-mail addresses are registered
+(c) to save e-mails
+(d) to stop spam
+=> Different answers allow account enumeration.
+
+?1 [Sessions] A session ID should be
+(a) a sequential number
+(b) the MD5 of the username
+(c)* a long random value from a secure generator
+(d) the user's e-mail address
+=> At least 128 bits of unpredictability stops guessing. Predictable IDs allow session hijacking.
+
+?1 [Sessions] Session fixation is prevented by
+(a) making the cookie longer
+(b)* issuing a new session ID when the user logs in
+(c) using a hash
+(d) disabling cookies
+=> If the ID changes at login, an ID that an attacker planted before login is useless.
+
+?2 [Sessions] A user clicks "Log out", but the server only deletes the cookie in the browser. A stolen copy of the cookie still works. The fix is
+(a) a shorter cookie name
+(b)* invalidating the session on the server at logout
+(c) switching to HTTP
+(d) using localStorage
+=> Real logout destroys the server-side session or revokes the token.
+
+?2 [Sessions] A URL such as /dashboard;jsessionid=A81F... is risky mainly because
+(a) it is too long
+(b)* session IDs in URLs leak through logs, Referer headers, bookmarks and shared links
+(c) servers cannot parse it
+(d) it breaks HTTPS
+=> Keep session IDs in cookies only.
+
+?1 [JWT] A JWT consists of
+(a) one encrypted blob
+(b)* header, payload and signature, each Base64URL-encoded and separated by dots
+(c) a username and a password
+(d) a certificate chain
+=> The first two parts are readable by anyone. The signature makes tampering detectable.
+
+?1 [JWT] The payload of a signed JWT is
+(a) encrypted with the server key
+(b)* only encoded, so anyone holding the token can read it
+(c) hashed
+(d) invisible to the client
+=> A signature gives integrity, not confidentiality. Never put secrets or sensitive personal data in it.
+
+?2 [JWT] The payload eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ1c2VyIn0 decodes to
+(a) {"sub":"admin","role":"admin"}
+(b) {"user":"alice","exp":0}
+(c)* {"sub":"alice","role":"user"}
+(d) {"sub":"bob","role":"user"}
+=> Base64URL decoding gives the JSON text. Anyone can read it, which is why a payload is not a secret.
+!py assert b64url_d('eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ1c2VyIn0') == ans
+
+?2 [JWT] An attacker changes "role":"user" to "role":"admin" in a token's payload and keeps the old signature. A correctly implemented server will
+(a) accept it
+(b)* reject it, because the signature no longer matches the content
+(c) log the user out of all devices
+(d) ignore the role claim
+=> The HMAC is computed over header and payload, so changing the payload invalidates the signature.
+!py t = jwt_make({'alg': 'HS256', 'typ': 'JWT'}, {'sub': 'alice', 'role': 'user'}, 'k'); h, p, s = t.split('.'); bad = h + '.' + b64url_e('{"sub":"alice","role":"admin"}') + '.' + s; assert jwt_valid(t, 'k') and not jwt_valid(bad, 'k')
+
+?2 [JWT] A token is signed with HS256 using the secret "secret". Which statement is true?
+(a) the secret is safe because it is hashed
+(b)* the secret is trivially guessable, so an attacker can forge any token
+(c) HS256 cannot be cracked
+(d) tokens with weak secrets are rejected automatically
+=> The HMAC secret can be brute-forced offline from one captured token. Use at least 256 random bits.
+!py tok = jwt_make({'alg': 'HS256', 'typ': 'JWT'}, {'sub': 'x'}, 'secret'); assert jwt_valid(tok, 'secret') and not jwt_valid(tok, 'other')
+
+?1 [JWT] What is the "alg: none" attack?
+(a) setting the token lifetime to zero
+(b)* removing the signature and declaring no algorithm, hoping the server accepts an unsigned token
+(c) encrypting the token twice
+(d) stealing the signing key
+=> The server must configure the allowed algorithms itself and reject none.
+
+?2 [JWT] A service accepts the algorithm named in the token header. The attacker takes the RSA public key, switches the header to HS256 and signs with the public key as the HMAC secret. This is
+(a) a replay attack
+(b)* algorithm confusion
+(c) session fixation
+(d) a padding oracle
+=> The verifier treats the public key as an HMAC secret. Pin the algorithm on the server.
+
+?1 [JWT] Which claim states when a token expires?
+(a) iss
+(b) aud
+(c)* exp
+(d) jti
+=> exp is the expiry time. iss is the issuer, aud the intended audience and jti a unique token id.
+
+?2 [JWT] A token is valid, signed and unexpired, but was issued for another service (aud = "billing") and is presented to the "orders" API. The orders API should
+(a)* reject it, because the audience does not match
+(b) accept it, since the signature is valid
+(c) accept it for GET only
+(d) re-sign it
+=> Validating aud prevents tokens meant for one service from being used on another.
+
+?2 [JWT] Where is it safest for a browser app to keep a session token?
+(a) localStorage
+(b) a JavaScript variable shared globally
+(c)* an HttpOnly, Secure, SameSite cookie
+(d) the URL fragment
+=> JavaScript cannot read an HttpOnly cookie, so an XSS bug cannot steal the token directly (CSRF must then be addressed).
+
+?2 [JWT] Why are short-lived access tokens combined with refresh tokens?
+(a) to make logins slower
+(b)* a stolen access token expires quickly and refresh tokens can be rotated and revoked
+(c) to encrypt the payload
+(d) because browsers require it
+=> Short lifetimes limit damage without forcing users to log in again constantly.
+
+?1 [OAuth and OIDC] OAuth 2.0 is mainly a framework for
+(a) authentication of users
+(b)* delegated authorisation, letting an app act on a user's resources without their password
+(c) password hashing
+(d) encrypting traffic
+=> OAuth issues access tokens with scopes. OpenID Connect adds identity.
+
+?1 [OAuth and OIDC] OpenID Connect adds which artefact to OAuth 2.0?
+(a) a refresh token
+(b)* an ID token that tells the application who the user is
+(c) a client secret
+(d) a certificate
+=> The ID token is a JWT with claims about the authentication event and the user.
+
+?1 [OAuth and OIDC] PKCE protects the authorization code flow by
+(a) encrypting the redirect
+(b)* binding the code to a secret that only the client that started the flow holds
+(c) hashing the password
+(d) hiding the scope
+=> A stolen code is useless without the code verifier.
+
+?1 [OAuth and OIDC] The purpose of the OAuth "state" parameter is to
+(a) record the user's country
+(b)* tie the callback to the original request and prevent CSRF on the login callback
+(c) choose the scope
+(d) set the token expiry
+=> The client generates a random value, stores it and compares it on return.
+
+?2 [OAuth and OIDC] An authorization server allows redirect URIs matching https://app.example.com/*. What is the danger?
+(a) none
+(b)* a flaw such as an open redirect on that host can leak the authorization code to an attacker, so register exact URIs
+(c) the user must log in twice
+(d) tokens expire
+=> Exact matching of registered redirect URIs is required by best practice.
+
+?1 [OAuth and OIDC] The implicit flow is discouraged because
+(a) it is too slow
+(b)* access tokens appear in the URL and leak through history and referrers; use code with PKCE instead
+(c) it needs a client secret
+(d) it uses SAML
+=> The current guidance retires the implicit flow in favour of the authorization code flow with PKCE.
+
+?1 [OAuth and OIDC] The OAuth flow for server-to-server calls with no user involved is
+(a) implicit
+(b) authorization code with PKCE
+(c)* client credentials
+(d) device code
+=> The client authenticates itself and receives a token for its own permissions.
+
+?1 [Authorisation] RBAC grants permissions based on
+(a) the user's IP address
+(b)* roles assigned to users
+(c) file names
+(d) the time of day only
+=> Permissions belong to roles such as ADMIN or SUPPORT, and users are given roles.
+
+?1 [Authorisation] Rules like "a doctor can open records of patients in their own hospital during their shift" are an example of
+(a) RBAC
+(b) ACL
+(c)* ABAC
+(d) DAC
+=> Attribute-based access control uses attributes of the user, the resource and the context.
+
+?1 [Authorisation] A normal user obtaining administrator functions is called
+(a) horizontal privilege escalation
+(b)* vertical privilege escalation
+(c) lateral movement
+(d) session fixation
+=> Horizontal means reaching another user at the same level, such as by IDOR.
+
+?1 [Authorisation] HTTP 401 means
+(a) the page does not exist
+(b)* the request is not authenticated (credentials missing or invalid)
+(c) the user lacks permission
+(d) the server failed
+=> 403 means the user is authenticated but not allowed.
+
+?2 [Authorisation] An API returns 200 with an empty list for orders you do not own, and 200 with the data for orders you own. A tester wants to check access control. They should
+(a) test only the browser UI
+(b)* log in as two users and replay user A's requests with user B's identifiers and tokens
+(c) scan the ports
+(d) check the TLS version
+=> Authorisation is tested by crossing identities and objects. Role-based pages need the same test for each role.
+
+?1 [Authorisation] "Deny by default" means
+(a) users are blocked until they pay
+(b)* access is forbidden unless a rule explicitly allows it
+(c) all errors are hidden
+(d) everyone is an admin
+=> New endpoints are protected automatically, so forgetting a rule fails safe.
+
+?2 [Spring Security] In a SecurityFilterChain these rules appear in order: anyRequest().authenticated(), then requestMatchers("/public/**").permitAll(). The result is
+(a) /public/** is open
+(b)* /public/** still requires login (or startup fails), because the first matching rule wins and anyRequest must be last
+(c) all endpoints are open
+(d) rules are alphabetical
+=> Rule order matters: specific matchers first, anyRequest last. Spring even refuses a chain in which a rule follows anyRequest.
+
+?2 [Spring Security] A cookie-authenticated Spring MVC application disables CSRF protection "because it gets in the way". The consequence is
+(a)* state-changing requests can be forged from other sites
+(b) passwords are stored in plain text
+(c) JWTs stop working
+(d) nothing, browsers prevent it
+=> CSRF protection is on by default for a reason. Disable it only for stateless APIs authenticated by bearer tokens.
+
+?1 [Spring Security] What does @PreAuthorize("hasRole('ADMIN')") do?
+(a) encrypts the method
+(b)* checks the authority before the method runs and denies access if the user lacks it
+(c) logs the call
+(d) caches the result
+=> It needs method security to be enabled with @EnableMethodSecurity.
+
+?1 [Spring Security] DelegatingPasswordEncoder stores hashes such as {bcrypt}$2a$10$... so that
+(a) passwords are shorter
+(b)* the algorithm is recorded and can be upgraded later without breaking old hashes
+(c) the salt is removed
+(d) hashes are reversible
+=> The prefix tells Spring which encoder to use when verifying, which makes migration to a stronger algorithm possible.
+
+?2 [Spring Security] A developer uses hasRole("ROLE_ADMIN") and the check never matches in a Spring config. The likely reason is
+(a) the user is not logged in
+(b)* hasRole adds the ROLE_ prefix itself, so use hasRole("ADMIN") or hasAuthority("ROLE_ADMIN")
+(c) roles are case sensitive only in tests
+(d) Spring ignores roles
+=> A prefix mismatch is a classic bug. hasAuthority takes the exact string.
+
+?2 [Spring Security] Which test best proves that an endpoint is protected?
+(a) a unit test that calls the service directly as admin
+(b)* integration tests that call it anonymously, as a normal user and as an admin and assert 401, 403 and 200
+(c) reading the code once
+(d) running a spell checker
+=> Security rules live in the filter chain, so tests must go through it with different identities.

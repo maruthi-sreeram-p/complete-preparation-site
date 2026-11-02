@@ -1,0 +1,866 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 55
+ },
+ "sections": [
+  {
+   "id": "ch-3-1",
+   "type": "concept",
+   "title": "Encoding, hashing and encryption are three different things",
+   "subtopicId": "3-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "Beginners (and some code reviewers) mix these up, and the mistake becomes a vulnerability.\n\n| | Purpose | Reversible? | Needs a key? | Examples |\n|---|---|---|---|---|\n| **Encoding** | change the format so data fits a medium | yes, by anyone | no | Base64, URL encoding, hex |\n| **Hashing** | a fixed-size fingerprint | **no** | no (HMAC does) | SHA-256, SHA-3, bcrypt for passwords |\n| **Encryption** | hide data from anyone without the key | yes, with the key | yes | AES, ChaCha20, RSA |\n\n`YWRtaW46cGFzc3dvcmQ=` is **Base64** of `admin:password`. It hides nothing. HTTP Basic authentication is exactly this, which is why it must only travel over HTTPS. If you find passwords \"protected\" by Base64 in a code review, that is a finding."
+    }
+   ]
+  },
+  {
+   "id": "ch-3-2",
+   "type": "concept",
+   "title": "Cryptographic hash functions",
+   "subtopicId": "3-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A hash function maps any input to a fixed-size output. The properties that matter:\n\n- **Deterministic:** the same input always gives the same output.\n- **Pre-image resistance:** given a hash, you cannot find an input that produces it.\n- **Second pre-image resistance:** given one input, you cannot find a different input with the same hash.\n- **Collision resistance:** you cannot find any two inputs with the same hash.\n- **Avalanche effect:** changing one bit of input changes about half the output bits.\n\n| Algorithm | Output | Status |\n|---|---|---|\n| MD5 | 128 bits (32 hex characters) | **broken** for collisions. Do not use for security |\n| SHA-1 | 160 bits (40 hex) | **broken** for collisions (a practical collision was shown in 2017). Being retired |\n| SHA-256 | 256 bits (64 hex) | secure, the general-purpose default |\n| SHA-512 | 512 bits (128 hex) | secure |\n| SHA-3 | 224 to 512 bits | secure, a different design from SHA-2 |\n\nThe **birthday bound** says collisions in an n-bit hash appear after about 2^(n/2) attempts, so a 128-bit hash gives only about 64 bits of collision security.\n\n**Uses of hashing:** file integrity (published checksums), digital signatures (sign the hash, not the whole file), Git commit IDs, deduplication and, with extra care, password storage.\n\n### HMAC: a hash with a key\n\nA plain hash proves nothing about who made it, because anyone can compute it. **HMAC** mixes a secret key into the hash: `HMAC(key, message)`. Only holders of the key can produce or verify the tag, which gives **integrity and authenticity**. Webhooks, API request signing and JWTs with `HS256` all use HMAC-SHA-256. Always compare tags with a **constant-time** function to avoid timing leaks."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Lengths:** MD5 128 bits = 32 hex, SHA-1 160 = 40 hex, SHA-256 256 = 64 hex, SHA-512 512 = 128 hex.\n- **Broken for collisions:** MD5 and SHA-1. Use SHA-256 or better.\n- **Collision effort:** about 2^(n/2) for an n-bit hash.\n- **Hash is not encryption:** you cannot \"decrypt\" a hash, you can only guess and compare.\n- **Need to prove who sent it?** Use HMAC (shared key) or a digital signature (private key).",
+     "title": "Hash cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-3",
+   "type": "concept",
+   "title": "Symmetric encryption",
+   "subtopicId": "3-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "One **shared secret key** both encrypts and decrypts. It is fast, so it carries the bulk of the data. The hard part is sharing the key safely.\n\n- **AES** is the standard block cipher. Block size is always **128 bits**. Key sizes are **128, 192 or 256 bits**. DES (56-bit key) is broken and 3DES is deprecated.\n- **ChaCha20-Poly1305** is a modern stream cipher with authentication, common on phones and in TLS 1.3.\n- A **block cipher mode** says how to encrypt more than one block:\n\n| Mode | Behaviour | Verdict |\n|---|---|---|\n| **ECB** | each block encrypted independently | **never use**: identical plaintext blocks give identical ciphertext blocks and patterns leak (the famous encrypted penguin picture) |\n| **CBC** | each block is XORed with the previous ciphertext, needs a random IV | acceptable but gives **no integrity** and has padding-oracle attacks if misused |\n| **CTR** | turns the cipher into a stream cipher | fast, also no integrity |\n| **GCM** | CTR plus an authentication tag (**AEAD**) | **the default choice**: encrypts and detects tampering |\n\n- An **IV or nonce** is a non-secret value that makes each encryption different. For **GCM the nonce must never repeat under the same key**, because a repeat breaks both secrecy and authenticity.\n- **Encryption without authentication** allows an attacker to flip bits in the ciphertext and change the plaintext in a predictable way. Use an AEAD mode.\n- **Key length vs password:** an AES key is random bytes, a password is not. To derive a key from a password use a slow function (PBKDF2, scrypt or Argon2)."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "SecureRandom random = new SecureRandom();\nbyte[] nonce = new byte[12];                  // 96-bit nonce, new for every message\nrandom.nextBytes(nonce);\n\nCipher cipher = Cipher.getInstance(\"AES/GCM/NoPadding\");\ncipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, nonce));   // 128-bit tag\nbyte[] ciphertext = cipher.doFinal(plaintext);  // the 16-byte tag is appended\n// Store nonce + ciphertext together. Decrypting with the wrong key or a modified byte throws AEADBadTagException.",
+     "title": "AES-256-GCM with the Java standard library"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Use a reviewed library (the JDK, Bouncy Castle, Google Tink) and its high-level API. Never write your own cipher, never reuse a nonce, never hard-code a key in source code, and never use `java.util.Random` for anything secret. Use `SecureRandom`.",
+     "title": "Do not invent crypto"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-4",
+   "type": "concept",
+   "title": "Asymmetric (public-key) cryptography",
+   "subtopicId": "3-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Each party has a **key pair**: a public key that can be shared and a private key that never leaves its owner. What one key does, only the other can undo.\n\n| Goal | Use | How |\n|---|---|---|\n| **Confidentiality** | encrypt with the **recipient's public key**, they decrypt with their private key | |\n| **Authenticity and non-repudiation** | **sign with your private key**, anyone verifies with your public key | digital signature |\n| **Agree on a shared key** | key exchange (Diffie-Hellman, ECDH) | both sides compute the same secret without sending it |\n\n- **RSA** relies on the difficulty of factoring a large number n = p × q. Use at least **2048-bit** keys. **ECC** (elliptic curve cryptography) gives similar strength with far shorter keys: 256-bit ECC is roughly as strong as 3072-bit RSA. **Ed25519** and **ECDSA** are common signature schemes.\n- Asymmetric operations are slow, so real systems use them only to **exchange a key or sign a hash**, and then switch to symmetric encryption. This is called **hybrid encryption** and it is what TLS does.\n- **Digital signature flow:** hash the message, encrypt/sign the hash with the private key, send message and signature. The receiver hashes the message and checks the signature with the public key. A changed message gives a different hash and the check fails.\n\n### Toy RSA: do this once to understand it\n\nTake p = 61, q = 53 (real keys use primes of 1000+ bits).\n\n1. n = p × q = **3233**\n2. φ(n) = (p − 1)(q − 1) = 60 × 52 = **3120**\n3. Choose e = **17** (coprime to 3120). Public key = (3233, 17).\n4. d = e⁻¹ mod φ(n) = **2753**. Private key = (3233, 2753).\n5. Encrypt m = 65: c = 65¹⁷ mod 3233 = **2790**. Decrypt: 2790²⁷⁵³ mod 3233 = 65.\n\nTextbook RSA like this is insecure without padding (OAEP for encryption, PSS for signatures). Real libraries add it for you.\n\n### Diffie-Hellman in one example\n\nPublic values p = 23 and g = 5. Alice picks secret a = 6 and sends A = 5⁶ mod 23 = 8. Bob picks b = 15 and sends B = 5¹⁵ mod 23 = 19. Alice computes 19⁶ mod 23 = 2. Bob computes 8¹⁵ mod 23 = 2. They share the secret **2** and an eavesdropper who saw only 23, 5, 8 and 19 cannot easily get it. Unauthenticated DH is open to a man-in-the-middle, which is why certificates are needed."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Encrypt to someone:** their **public** key. **Sign as yourself:** your **private** key.\n- **Verify a signature:** the signer's **public** key.\n- **Private key leaked = start over:** revoke, reissue, rotate.\n- **Sizes:** RSA ≥ 2048 bits, ECC 256 bits (≈ RSA 3072), AES 128 or 256 bits.\n- **Hybrid:** asymmetric for the key exchange or signature, symmetric (AES-GCM) for the data.",
+     "title": "Public-key cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-3-5",
+   "type": "concept",
+   "title": "TLS and the certificate system",
+   "subtopicId": "3-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**TLS** (Transport Layer Security) protects HTTP and many other protocols. It gives **confidentiality** (encryption), **integrity** (authentication tags) and **server authentication** (a certificate).\n\n### How a TLS 1.3 connection starts\n\n1. **ClientHello:** the client sends supported versions and cipher suites and its key share.\n2. **ServerHello and certificate:** the server picks the options, returns its key share and its **certificate**, and proves it owns the private key.\n3. Both sides derive the same session keys using (EC)DHE, then switch to symmetric encryption (AES-GCM or ChaCha20-Poly1305).\n\n- **Forward secrecy:** because every session uses fresh ephemeral DH keys, stealing the server's private key later does not decrypt recorded old traffic. TLS 1.3 makes this mandatory.\n- **Versions:** SSL 2.0, SSL 3.0, TLS 1.0 and TLS 1.1 are obsolete and should be disabled. Use **TLS 1.2 and 1.3**. TLS 1.3 removes old weak options and completes the handshake in one round trip.\n- **mTLS (mutual TLS):** the server also demands a client certificate. Common between internal services.\n\n### Certificates and certificate authorities\n\nAn **X.509 certificate** binds a public key to an identity (a domain name) and is signed by a **certificate authority (CA)**. Browsers and operating systems ship a list of trusted **root CAs**. A server usually presents a **chain**: its own certificate, signed by an intermediate CA, signed by a root.\n\nA client accepts a certificate only if all of these hold:\n\n- the chain leads to a **trusted root** and every signature is valid,\n- the certificate is **within its validity dates** and not **revoked** (CRL or OCSP),\n- the **domain name matches** the Subject Alternative Name,\n- the certificate may be used for this purpose."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "openssl s_client -connect example.com:443 -servername example.com </dev/null | openssl x509 -noout -subject -issuer -dates",
+     "title": "Looking at a certificate (any site you are allowed to connect to)"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Let's Encrypt** issues free, automated certificates that last 90 days and renew automatically.\n- **HSTS** (`Strict-Transport-Security` header) tells the browser to use HTTPS only for a domain, so an attacker cannot downgrade the connection.\n- **Self-signed certificates** are fine for local development but give no third-party proof of identity. Never tell users to click through a certificate warning.\n- **Certificate pinning** ties a client to a specific key or certificate. It is powerful but can break the app when keys rotate."
+    }
+   ]
+  },
+  {
+   "id": "ch-3-6",
+   "type": "concept",
+   "title": "Storing passwords properly",
+   "subtopicId": "3-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A password must never be stored in clear text or encrypted (encryption can be reversed if the key leaks). It must be stored as a **slow, salted hash**.\n\n| Idea | Why |\n|---|---|\n| **Salt**: a random value (16 bytes or more) generated per user and stored with the hash | the same password gives different hashes, so precomputed **rainbow tables** are useless and one cracked hash does not reveal others |\n| **Pepper**: a secret value kept outside the database (an HSM or secret store) | a stolen database alone is not enough to crack hashes |\n| **Slow, memory-hard hashing** | a plain SHA-256 can be computed billions of times a second on a GPU. A deliberately slow function cuts that to thousands |\n\nUse one of: **Argon2id** (first choice in OWASP's Password Storage Cheat Sheet), **scrypt**, **bcrypt** (cost factor 10 or more) or **PBKDF2** (a very high iteration count). Check the cheat sheet for current parameters because hardware keeps improving. Spring Security's `DelegatingPasswordEncoder` stores the algorithm in the hash (`{bcrypt}$2a$10$...`), so you can upgrade algorithms later."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "PasswordEncoder encoder = new BCryptPasswordEncoder(12);   // cost factor 12 = 2^12 rounds\nString hash = encoder.encode(rawPassword);                 // the salt is generated and stored inside the hash\nboolean ok = encoder.matches(rawPassword, hash);           // constant-time comparison",
+     "title": "Spring Security password hashing"
+    },
+    {
+     "type": "markdown",
+     "text": "### How strong is a password?\n\nEntropy in bits = length × log₂(size of the alphabet), for a randomly chosen password.\n\n| Password | Alphabet | Entropy |\n|---|---|---|\n| 8 random lowercase letters | 26 | 8 × 4.70 = **37.6 bits** |\n| 8 random from letters and digits (62) | 62 | 8 × 5.95 = **47.6 bits** |\n| 12 random from 94 printable characters | 94 | 12 × 6.55 = **78.7 bits** |\n| 6 random Diceware words | 7776 | 6 × 12.9 = **77.5 bits** |\n\n**Length beats complexity.** \"Password1!\" looks complex but is on every cracking list. A long random passphrase or a password manager beats a short symbol-filled word. Check passwords against lists of breached passwords, and do not force periodic changes without a reason (NIST SP 800-63B recommends against it)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Never** plain text, Base64, reversible encryption, or a fast hash such as MD5 or one round of SHA-256.\n- **Always** a unique random **salt** per password and a **slow** algorithm: Argon2id, scrypt, bcrypt or PBKDF2.\n- **Pepper** lives outside the database.\n- **Entropy** = length × log₂(alphabet). Each extra random character is worth 5 to 6.5 bits.\n- **Rainbow tables** are defeated by salts. **GPU cracking** is slowed by work factors.\n- Reset passwords by a one-time, expiring link. Never e-mail the old password (you should not be able to).",
+     "title": "Password storage cheat codes"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "DNS resolves the name. The client opens a TCP connection and sends a ClientHello. The server returns a certificate chain and a key share. The client validates the chain (trusted root, dates, name, revocation), both sides derive session keys with ephemeral Diffie-Hellman, and everything afterwards is encrypted and authenticated with AES-GCM or ChaCha20-Poly1305. HSTS stops downgrade to HTTP.",
+     "title": "\"What happens when you type https://bank.com?\""
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Encoding is not encryption and hashing is not reversible\n- Use SHA-256 or better, never MD5 or SHA-1 for security\n- Use authenticated encryption such as AES-GCM and never reuse a nonce\n- Encrypt to the public key, sign with the private key\n- TLS 1.3 uses ephemeral key exchange for forward secrecy\n- Store passwords with a salt and a slow algorithm such as Argon2id or bcrypt"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (55 questions)",
+   "subtopicId": "3-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "55 original questions on 10 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-crypto",
+     "items": [
+      {
+       "t": "Encoding, hashing, encryption",
+       "q": "*(Recall)* The string dXNlcjpwYXNz is found in a code review as \"protected\" credentials. It is most likely",
+       "o": [
+        "a SHA-256 hash",
+        "AES-encrypted data",
+        "Base64 encoding, which anyone can reverse",
+        "an RSA signature"
+       ],
+       "a": 2,
+       "w": "Base64 uses only letters, digits, + and / and is decoded without a key. This one decodes to user:pass. Encoding is not protection."
+      },
+      {
+       "t": "Encoding, hashing, encryption",
+       "q": "*(Recall)* Which statement is true?",
+       "o": [
+        "Base64 needs a secret key",
+        "hashing can be reversed with the right key",
+        "encoding and encryption are the same",
+        "encryption is reversible with the key, hashing is one-way"
+       ],
+       "a": 3,
+       "w": "Encryption is designed to be undone by the key holder. A hash has no key to undo it. Encoding has no secret at all."
+      },
+      {
+       "t": "Encoding, hashing, encryption",
+       "q": "*(Recall)* HTTP Basic authentication sends credentials as",
+       "o": [
+        "a signed cookie",
+        "base64(username:password) in the Authorization header",
+        "an encrypted token",
+        "a salted hash"
+       ],
+       "a": 1,
+       "w": "It is only encoding, so Basic authentication must always run over HTTPS."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* A SHA-256 digest written in hexadecimal has how many characters?",
+       "o": [
+        "64",
+        "40",
+        "32",
+        "128"
+       ],
+       "a": 0,
+       "w": "256 bits / 4 bits per hex character = 64 characters."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* An MD5 digest written in hexadecimal has how many characters?",
+       "o": [
+        "64",
+        "32",
+        "40",
+        "16"
+       ],
+       "a": 1,
+       "w": "MD5 is 128 bits, which is 32 hex characters. SHA-1 gives 40 and SHA-256 gives 64."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* How many bits are in a SHA-512 digest?",
+       "o": [
+        "256",
+        "512",
+        "1024",
+        "384"
+       ],
+       "a": 1,
+       "w": "The name is the size."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* Which hash function is currently considered unsuitable for security because practical collisions exist?",
+       "o": [
+        "MD5 (and SHA-1)",
+        "SHA3-256",
+        "SHA-512",
+        "SHA-256"
+       ],
+       "a": 0,
+       "w": "MD5 collisions have been practical for years and SHA-1 collisions were shown in 2017. Use SHA-256 or SHA-3."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* Changing one character of a file produces a completely different hash. This is called",
+       "o": [
+        "salting",
+        "the avalanche effect",
+        "forward secrecy",
+        "key stretching"
+       ],
+       "a": 1,
+       "w": "Small input changes flip about half the output bits, so similar inputs cannot be recognised from their hashes."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Scenario)* Which is the beginning of SHA-256(\"abc\")?",
+       "o": [
+        "e3b0c442",
+        "5e884898",
+        "ba7816bf",
+        "2c26b46b"
+       ],
+       "a": 2,
+       "w": "ba7816bf8f01cfea... is the well-known SHA-256 of abc. e3b0c442 is the hash of the empty string and 5e884898 is the hash of \"password\"."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Recall)* The birthday bound says that finding a collision in an n-bit hash takes about",
+       "o": [
+        "n attempts",
+        "n² attempts",
+        "2^n attempts",
+        "2^(n/2) attempts"
+       ],
+       "a": 3,
+       "w": "A 128-bit hash offers only about 64 bits of collision resistance, which is one reason 128-bit hashes are considered weak for signatures."
+      },
+      {
+       "t": "Hash functions",
+       "q": "*(Scenario)* A software vendor publishes an installer and its SHA-256 hash on the same web page. Why is that weaker than it seems?",
+       "o": [
+        "hashes cannot detect changes",
+        "an attacker who can change the download can change the hash on the same page too",
+        "the hash is too long",
+        "SHA-256 is broken"
+       ],
+       "a": 1,
+       "w": "Integrity checks need a trusted channel for the hash or a digital signature. Otherwise the hash only catches accidental corruption."
+      },
+      {
+       "t": "HMAC",
+       "q": "*(Recall)* HMAC differs from a plain hash because it",
+       "o": [
+        "is reversible",
+        "encrypts the message",
+        "is always shorter",
+        "mixes in a secret key, so only key holders can produce or verify the tag"
+       ],
+       "a": 3,
+       "w": "A plain hash can be computed by anyone. An HMAC proves integrity and authenticity to someone who shares the key."
+      },
+      {
+       "t": "HMAC",
+       "q": "*(Scenario)* An API signs requests with HMAC-SHA256 using a shared secret. The server compares the received signature with the expected one using ==. What is the weakness?",
+       "o": [
+        "the secret must be public",
+        "HMAC cannot be used for APIs",
+        "a normal comparison can leak timing information, so a constant-time comparison should be used",
+        "the signature is too long"
+       ],
+       "a": 2,
+       "w": "Early-exit comparisons take slightly longer the more leading bytes match, letting an attacker recover a valid tag byte by byte. Use a constant-time compare such as MessageDigest.isEqual."
+      },
+      {
+       "t": "HMAC",
+       "q": "*(Scenario)* Two parties share the key \"k\". The HMAC-SHA256 of the message \"pay 100\" is computed by both. If an attacker changes the message to \"pay 900\" without the key, the receiver will",
+       "o": [
+        "still accept it",
+        "see that the tag does not match",
+        "see the same tag",
+        "decrypt it"
+       ],
+       "a": 1,
+       "w": "The tag depends on the message and the key, so a modified message produces a different tag that the attacker cannot recompute."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* The block size of AES is",
+       "o": [
+        "64 bits",
+        "the same as the key size",
+        "256 bits regardless of the key",
+        "128 bits"
+       ],
+       "a": 3,
+       "w": "AES always works on 128-bit blocks. The key can be 128, 192 or 256 bits."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* Which AES key length is NOT valid?",
+       "o": [
+        "512 bits",
+        "192 bits",
+        "128 bits",
+        "256 bits"
+       ],
+       "a": 0,
+       "w": "AES defines 128, 192 and 256-bit keys. 512 bits is a hash size and not an AES key size."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* Which of these ciphers should no longer be used?",
+       "o": [
+        "ChaCha20-Poly1305",
+        "AES-256",
+        "DES",
+        "AES-128-GCM"
+       ],
+       "a": 2,
+       "w": "DES has a 56-bit key and can be brute-forced. 3DES is deprecated as well."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* The major weakness of ECB mode is that",
+       "o": [
+        "identical plaintext blocks give identical ciphertext blocks, leaking patterns",
+        "it cannot decrypt",
+        "it needs a 4096-bit key",
+        "it is too slow"
+       ],
+       "a": 0,
+       "w": "Structure in the data, such as an image, remains visible in the ciphertext."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* AES-GCM is called an AEAD mode because it",
+       "o": [
+        "is asymmetric",
+        "provides confidentiality and integrity together, via an authentication tag",
+        "works without a nonce",
+        "uses a public key"
+       ],
+       "a": 1,
+       "w": "AEAD means authenticated encryption with associated data. Tampering is detected when decrypting."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Scenario)* A developer encrypts every message with AES-GCM using the same key and a fixed all-zero nonce. What is the problem?",
+       "o": [
+        "reusing a nonce under one key breaks the confidentiality and authenticity guarantees of GCM",
+        "AES-GCM does not use nonces",
+        "the messages become longer",
+        "none, the key is secret"
+       ],
+       "a": 0,
+       "w": "GCM requires a unique nonce for every encryption with the same key. Generate a fresh random 96-bit nonce or use a counter."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Scenario)* An encrypted cookie uses AES-CBC with no MAC. An attacker flips bits in the ciphertext and the server accepts it, with the decrypted value altered. Which property is missing?",
+       "o": [
+        "integrity (authenticated encryption)",
+        "availability",
+        "confidentiality",
+        "forward secrecy"
+       ],
+       "a": 0,
+       "w": "CBC alone does not detect modification. Use AES-GCM or encrypt-then-MAC."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Recall)* Which Java class should be used to generate keys, nonces and tokens?",
+       "o": [
+        "java.util.Random",
+        "System.currentTimeMillis()",
+        "java.security.SecureRandom",
+        "Math.random()"
+       ],
+       "a": 2,
+       "w": "Random and Math.random are predictable. SecureRandom draws from the operating system's entropy source."
+      },
+      {
+       "t": "Symmetric encryption",
+       "q": "*(Scenario)* A one-time pad XOR operation: the byte 0x5A is XORed with the key byte 0x3C. The result is",
+       "o": [
+        "0x66",
+        "0x00",
+        "0x96",
+        "0x7E"
+       ],
+       "a": 0,
+       "w": "0101 1010 XOR 0011 1100 = 0110 0110, which is 0x66. XOR is its own inverse, so XORing again with 0x3C returns 0x5A."
+      },
+      {
+       "t": "Classical ciphers",
+       "q": "*(Recall)* A Caesar cipher with shift 3 turns KHOOR back into",
+       "o": [
+        "EBIIL",
+        "HELLO",
+        "NKRRU",
+        "KHOOR"
+       ],
+       "a": 1,
+       "w": "Each letter moves three places back: K→H, H→E, O→L, O→L, R→O. A Caesar cipher has only 25 useful keys and is trivial to brute-force."
+      },
+      {
+       "t": "Classical ciphers",
+       "q": "*(Recall)* Why can a Caesar cipher not be considered secure?",
+       "o": [
+        "it uses a public key",
+        "it uses a hash",
+        "the key space is tiny, so every shift can be tried in a moment",
+        "it needs a certificate"
+       ],
+       "a": 2,
+       "w": "There are only 25 non-trivial shifts. Even a substitution cipher falls to letter-frequency analysis."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Recall)* To send a confidential message to Bob using public-key encryption, Alice encrypts with",
+       "o": [
+        "Alice's private key",
+        "Bob's private key",
+        "Alice's public key",
+        "Bob's public key"
+       ],
+       "a": 3,
+       "w": "Only Bob's private key can decrypt what Bob's public key encrypted."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Recall)* To create a digital signature, the signer uses",
+       "o": [
+        "a shared password",
+        "the recipient's private key",
+        "the recipient's public key",
+        "their private key"
+       ],
+       "a": 3,
+       "w": "Anyone can then verify it with the signer's public key, and only the signer could have created it."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Recall)* A digital signature does NOT by itself provide",
+       "o": [
+        "authenticity",
+        "non-repudiation",
+        "integrity",
+        "confidentiality of the message"
+       ],
+       "a": 3,
+       "w": "A signature proves who signed and that the data is unchanged. The message remains readable unless it is also encrypted."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Recall)* 256-bit elliptic-curve keys give roughly the security of an RSA key of",
+       "o": [
+        "1024 bits",
+        "512 bits",
+        "256 bits",
+        "3072 bits"
+       ],
+       "a": 3,
+       "w": "ECC achieves the same strength with much smaller keys, which makes it popular on phones and in TLS."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Scenario)* Textbook RSA with p = 61, q = 53 and public exponent e = 17. The private exponent d is",
+       "o": [
+        "17",
+        "3233",
+        "2753",
+        "3120"
+       ],
+       "a": 2,
+       "w": "n = 3233 and φ(n) = 60 × 52 = 3120. d is the inverse of 17 modulo 3120, which is 2753 because 17 × 2753 = 46801 = 15 × 3120 + 1."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Scenario)* With the RSA key n = 3233, e = 17, the ciphertext of the message m = 65 is",
+       "o": [
+        "65",
+        "3233",
+        "1105",
+        "2790"
+       ],
+       "a": 3,
+       "w": "c = m^e mod n = 65^17 mod 3233 = 2790. Decrypting with d = 2753 returns 65."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Scenario)* In a Diffie-Hellman exchange with p = 23, g = 5, Alice's secret a = 6 and Bob's secret b = 15, the shared secret is",
+       "o": [
+        "15",
+        "8",
+        "2",
+        "19"
+       ],
+       "a": 2,
+       "w": "Alice sends 5^6 mod 23 = 8 and Bob sends 5^15 mod 23 = 19. Alice computes 19^6 mod 23 = 2 and Bob computes 8^15 mod 23 = 2."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Scenario)* Plain Diffie-Hellman between two strangers is still vulnerable to",
+       "o": [
+        "hash collisions",
+        "a man-in-the-middle, because neither side authenticates the other",
+        "brute force of small keys only",
+        "nothing, it is perfectly secure"
+       ],
+       "a": 1,
+       "w": "An active attacker can run one exchange with each party. Certificates or signatures are needed to authenticate the public values."
+      },
+      {
+       "t": "Public-key cryptography",
+       "q": "*(Recall)* Why do real systems encrypt bulk data with a symmetric cipher and not with RSA?",
+       "o": [
+        "symmetric ciphers have longer keys",
+        "RSA cannot encrypt anything",
+        "RSA is not secure",
+        "symmetric encryption is far faster, so public-key crypto is used only to exchange keys or sign hashes"
+       ],
+       "a": 3,
+       "w": "This hybrid approach is what TLS does."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* Forward secrecy means",
+       "o": [
+        "data is compressed",
+        "the browser caches the key",
+        "the server's certificate never expires",
+        "stealing the server's long-term private key later does not reveal past recorded sessions"
+       ],
+       "a": 3,
+       "w": "Each session uses fresh ephemeral Diffie-Hellman keys that are discarded afterwards. TLS 1.3 requires this."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* Which protocol versions should be disabled on a modern server?",
+       "o": [
+        "none, compatibility matters most",
+        "SSL 3.0, TLS 1.0 and TLS 1.1",
+        "TLS 1.2 and 1.3",
+        "TLS 1.3 only"
+       ],
+       "a": 1,
+       "w": "Older versions have known weaknesses (POODLE, BEAST) and are deprecated. Use TLS 1.2 or 1.3."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* A TLS certificate binds",
+       "o": [
+        "a hash to a file",
+        "a public key to an identity such as a domain name, signed by a certificate authority",
+        "an IP address to a MAC address",
+        "a password to a user"
+       ],
+       "a": 1,
+       "w": "The CA's signature is what lets a browser believe the key belongs to that domain."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Scenario)* A browser shows a certificate warning for shop.example.com. The certificate is valid and trusted, but it was issued for www.example.org. The problem is",
+       "o": [
+        "a name mismatch: the certificate does not cover the site being visited",
+        "a weak cipher",
+        "a revoked root",
+        "an expired certificate"
+       ],
+       "a": 0,
+       "w": "The name in the certificate (SAN) must match the host. A mismatch can mean a misconfiguration or a man-in-the-middle."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Scenario)* Users routinely click through a certificate warning on an internal tool. What is the risk?",
+       "o": [
+        "they will also click through when an attacker presents a forged certificate, so MITM goes unnoticed",
+        "the page loads slower",
+        "none, internal tools are safe",
+        "the warning disappears forever"
+       ],
+       "a": 0,
+       "w": "Training users to ignore warnings defeats server authentication. Fix the certificate instead (an internal CA trusted on the devices)."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* HSTS (Strict-Transport-Security) tells the browser to",
+       "o": [
+        "cache images longer",
+        "always use HTTPS for the domain and refuse plain HTTP",
+        "encrypt cookies",
+        "block JavaScript"
+       ],
+       "a": 1,
+       "w": "It prevents downgrade and cookie-stripping attacks on later visits."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* Mutual TLS (mTLS) means",
+       "o": [
+        "the connection uses two ciphers",
+        "TLS is used twice",
+        "the client also presents a certificate and the server verifies it",
+        "the server has two certificates"
+       ],
+       "a": 2,
+       "w": "It is widely used for service-to-service authentication."
+      },
+      {
+       "t": "TLS",
+       "q": "*(Recall)* If a certificate authority's intermediate key is compromised, certificates it signed can be marked invalid through",
+       "o": [
+        "revocation (CRL or OCSP)",
+        "a longer password",
+        "DNSSEC",
+        "HSTS"
+       ],
+       "a": 0,
+       "w": "Clients check revocation lists or OCSP responses where supported. Short-lived certificates reduce the need."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Recall)* Which is the right way to store a user's password?",
+       "o": [
+        "SHA-256 without a salt",
+        "encrypted with AES, key in the code",
+        "a salted hash made with a slow algorithm such as Argon2id, bcrypt or PBKDF2",
+        "Base64"
+       ],
+       "a": 2,
+       "w": "Encryption is reversible if the key leaks, and a fast unsalted hash is cracked at billions of guesses per second."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Recall)* A salt is",
+       "o": [
+        "a secret kept outside the database",
+        "a second password",
+        "a random per-user value stored with the hash that makes equal passwords hash differently",
+        "the number of hash rounds"
+       ],
+       "a": 2,
+       "w": "The secret kept outside the database is a pepper. A salt is not secret."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Recall)* Why are rainbow tables ineffective against salted hashes?",
+       "o": [
+        "hashes are reversible",
+        "salts are encrypted",
+        "the table would have to be rebuilt for every salt",
+        "salts are public keys"
+       ],
+       "a": 2,
+       "w": "A precomputed table only works for one hash function without salt. A unique salt per user forces separate work for each hash."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Recall)* The cost factor of bcrypt is increased from 10 to 12. The work per hash becomes",
+       "o": [
+        "unchanged",
+        "4 times higher",
+        "12 times higher",
+        "2 times higher"
+       ],
+       "a": 1,
+       "w": "The work is 2^cost, so cost 12 is 2^12 / 2^10 = 4 times more."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Scenario)* A breach exposes a table of unsalted SHA-1 password hashes. Which attack is now fastest?",
+       "o": [
+        "looking the hashes up in precomputed tables of common passwords",
+        "phishing the CEO",
+        "side-channel attack on the server",
+        "breaking AES"
+       ],
+       "a": 0,
+       "w": "Unsalted fast hashes of common passwords are in public lookup tables. The company should force resets and move to a salted slow hash."
+      },
+      {
+       "t": "Password strength",
+       "q": "*(Scenario)* The entropy of a random 8-character password using lowercase letters only, to the nearest bit, is",
+       "o": [
+        "64",
+        "38",
+        "26",
+        "47"
+       ],
+       "a": 1,
+       "w": "8 × log2(26) = 8 × 4.7 ≈ 37.6, so about 38 bits."
+      },
+      {
+       "t": "Password strength",
+       "q": "*(Scenario)* How many bits of entropy does a random 12-character password from the 94 printable ASCII characters have, approximately?",
+       "o": [
+        "79",
+        "48",
+        "94",
+        "63"
+       ],
+       "a": 0,
+       "w": "12 × log2(94) = 12 × 6.55 ≈ 78.7 bits."
+      },
+      {
+       "t": "Password strength",
+       "q": "*(Scenario)* Which has the most entropy (all random)?",
+       "o": [
+        "10 digits",
+        "6 characters from 62 letters and digits",
+        "8 characters from 26 lowercase letters",
+        "6 words from a list of 7776 words (Diceware)"
+       ],
+       "a": 3,
+       "w": "Six Diceware words give about 77.5 bits, against 37.6, 35.7 and 33.2 bits for the others."
+      },
+      {
+       "t": "Password strength",
+       "q": "*(Scenario)* An attacker tests 10 billion guesses per second against an unsalted fast hash of an 8-character random password from 62 letters and digits. The worst case time to try them all is about",
+       "o": [
+        "2 seconds",
+        "3 years",
+        "6 hours",
+        "400 years"
+       ],
+       "a": 2,
+       "w": "62^8 ≈ 2.18 × 10^14 guesses / 10^10 per second ≈ 21,800 seconds, which is about 6 hours."
+      },
+      {
+       "t": "Password strength",
+       "q": "*(Recall)* Which password policy is recommended by NIST SP 800-63B?",
+       "o": [
+        "check against breached-password lists and allow long passphrases, without forced periodic changes",
+        "force a change every 30 days",
+        "require one symbol and one capital letter",
+        "forbid password managers"
+       ],
+       "a": 0,
+       "w": "Frequent forced changes lead to predictable variations. Length and blocking known-bad passwords work better."
+      },
+      {
+       "t": "Password storage",
+       "q": "*(Recall)* \"Peppering\" passwords means",
+       "o": [
+        "lowercasing the password",
+        "hashing twice",
+        "mixing in a secret kept outside the database, such as in an HSM or secret store",
+        "adding a random value to each hash row"
+       ],
+       "a": 2,
+       "w": "If only the database leaks, the pepper is missing and offline cracking is much harder."
+      },
+      {
+       "t": "Java crypto",
+       "q": "*(Scenario)* A developer writes `MessageDigest.getInstance(\"SHA-256\").digest(password.getBytes())` to store a password. What is wrong?",
+       "o": [
+        "it is fast and unsalted, so the hash can be attacked at huge speed, use BCryptPasswordEncoder or Argon2",
+        "getBytes cannot be called",
+        "digests cannot be stored",
+        "SHA-256 is broken"
+       ],
+       "a": 0,
+       "w": "A password hash must be slow and salted. SHA-256 alone is designed to be fast."
+      },
+      {
+       "t": "Java crypto",
+       "q": "*(Scenario)* A repository contains `private static final String KEY = \"my-secret-key-123\";` used for AES encryption. The main issue is",
+       "o": [
+        "AES is outdated",
+        "static fields cannot be final",
+        "the key is too long",
+        "the key is hard-coded in source code and visible to anyone with the repository"
+       ],
+       "a": 3,
+       "w": "Keys belong in a secret manager or KMS and must be rotated. Anything committed to version control must be treated as exposed."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Storing passwords properly"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is Base64 not a way to protect a password?",
+       "answer": "Base64 is an encoding with no key. Anyone can decode it instantly."
+      },
+      {
+       "question": "How many hex characters does a SHA-256 digest have, and why is MD5 unsuitable for signatures?",
+       "answer": "64 hex characters (256 bits). MD5 is broken for collisions, so an attacker can create two different documents with the same hash."
+      },
+      {
+       "question": "What is the problem with AES in ECB mode?",
+       "answer": "Identical plaintext blocks produce identical ciphertext blocks, so patterns in the data remain visible. Use GCM or another authenticated mode."
+      },
+      {
+       "question": "Alice wants to send Bob a secret that only Bob can read, and Bob wants to know it came from Alice. Which keys are involved?",
+       "answer": "Alice encrypts with Bob's public key (so only Bob can decrypt) and signs with her own private key (so Bob can verify with Alice's public key)."
+      },
+      {
+       "question": "Compute the toy RSA ciphertext of m = 65 with n = 3233 and e = 17, and say what the private exponent is.",
+       "answer": "c = 65^17 mod 3233 = 2790. The private exponent is d = 2753."
+      },
+      {
+       "question": "Why do we salt passwords?",
+       "answer": "The salt makes identical passwords produce different hashes, so precomputed rainbow tables fail and cracking one hash gives no clue about another."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

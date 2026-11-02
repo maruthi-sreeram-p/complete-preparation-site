@@ -1,0 +1,792 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 50
+ },
+ "sections": [
+  {
+   "id": "ch-5-1",
+   "type": "concept",
+   "title": "Authentication: proving who you are",
+   "subtopicId": "5-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "Three classic factor types:\n\n| Factor | Meaning | Examples | Weakness |\n|---|---|---|---|\n| **Knowledge** | something you know | password, PIN | guessed, phished, reused, leaked |\n| **Possession** | something you have | phone, hardware key, smart card | stolen or lost |\n| **Inherence** | something you are | fingerprint, face | cannot be changed if copied, false matches |\n\n**Multi-factor authentication (MFA)** needs two or more *different* factors. A password plus a security question is **not** MFA, because both are knowledge.\n\n| MFA method | Strength | Notes |\n|---|---|---|\n| SMS code | weak | SIM-swap and interception; better than nothing |\n| **TOTP** app (Google Authenticator, Authy) | good | 6-digit code from a shared secret and the clock, changes every 30 seconds |\n| Push approval | medium | vulnerable to **MFA fatigue** (the attacker spams requests until the user taps Approve). Use number matching |\n| **FIDO2 / WebAuthn / passkeys** | strongest | public-key credential bound to the real website's origin, so a phishing site cannot use it |\n\n**TOTP in one line:** `code = HOTP(secret, floor(time / 30))`, where HOTP is an HMAC-SHA-1 of the counter reduced to 6 digits. The RFC test secret `12345678901234567890` with counter 0 gives `755224`."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **MFA means different factor types.** Password + OTP yes; password + security question no.\n- **Phishing-resistant:** WebAuthn / passkeys. TOTP codes can be phished in real time; WebAuthn cannot.\n- **Account recovery is part of authentication.** If \"forgot password\" only needs an e-mail link, the mailbox is the real password.\n- **Do not reveal which part was wrong.** One generic message: \"Invalid username or password\".\n- **Never store the password** you can read. Store a slow salted hash (Argon2id, bcrypt).",
+     "title": "Authentication cheat codes"
+    },
+    {
+     "type": "markdown",
+     "text": "### Attacks on login and the defences\n\n| Attack | Defence |\n|---|---|\n| **Brute force** one account | throttle (increasing delay), temporary lock, CAPTCHA after repeated failures |\n| **Credential stuffing** (leaked pairs from other sites) | MFA, breached-password check, per-IP and per-device rate limits, bot detection |\n| **Password spraying** (one password, many accounts) | alert on many accounts failing from one source, ban common passwords |\n| **Account enumeration** (error messages or timing differ for known and unknown users) | identical messages and response times for all outcomes, also on sign-up and reset |\n| **Phishing** | WebAuthn, awareness, domain-bound credentials |\n| **Session theft** (XSS, malware) | HttpOnly and Secure cookies, short lifetimes, re-authentication for sensitive actions |\n\n**Permanent account lockout can itself be abused** to lock real users out (a denial of service). Prefer delays and temporary locks with alerts.\n\n### A safe password reset\n\n1. Ask for the e-mail address and always answer \"if the account exists, we sent a link\".\n2. Send a **random, single-use token** (at least 128 bits), stored hashed, **expiring** within minutes.\n3. On use, require a new password, invalidate the token and **all existing sessions**, and notify the user.\n4. Do not use security questions (answers are often guessable or public) and never put the token in a place that is logged or sent to third parties (watch the `Referer` header)."
+    }
+   ]
+  },
+  {
+   "id": "ch-5-2",
+   "type": "concept",
+   "title": "Sessions: staying logged in",
+   "subtopicId": "5-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "HTTP is stateless, so after login the server gives the browser a **session ID** (or a token) that proves each later request belongs to the same login.\n\nA secure session ID is:\n\n- **random and long** (at least 128 bits from a secure generator), never a counter, timestamp or hash of the username,\n- sent in a cookie with `HttpOnly; Secure; SameSite`,\n- **regenerated at login**, which stops **session fixation** (the attacker plants a known ID before login and then uses it after the victim logs in),\n- **expired** after idle time and a maximum lifetime, and **destroyed on the server at logout** (just deleting the cookie in the browser is not logout),\n- tied to nothing secret in the URL: session IDs in URLs leak through logs, `Referer` and sharing.\n\nServer-side sessions (an ID that points to data in memory or Redis) are easy to revoke. Stateless tokens (JWT) are easy to scale but hard to revoke."
+    }
+   ]
+  },
+  {
+   "id": "ch-5-3",
+   "type": "concept",
+   "title": "JSON Web Tokens (JWT)",
+   "subtopicId": "5-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A JWT has three Base64URL parts separated by dots: `header.payload.signature`."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "header   {\"alg\":\"HS256\",\"typ\":\"JWT\"}\npayload  {\"sub\":\"alice\",\"role\":\"user\",\"exp\":1893456000}\nsignature = HMAC_SHA256(base64url(header) + \".\" + base64url(payload), secret)",
+     "title": "A decoded token"
+    },
+    {
+     "type": "markdown",
+     "text": "- **The payload is only encoded, not encrypted.** Anyone who has the token can read it. Never put passwords, personal data or secrets in it.\n- **The signature protects integrity.** If the payload changes, the signature no longer matches, as long as the server actually verifies it.\n- **HS256** uses one shared secret. **RS256 / ES256** use a private key to sign and a public key to verify, so many services can verify without being able to issue tokens.\n- Standard claims: `iss` (issuer), `sub` (subject), `aud` (audience), `exp` (expiry), `nbf` (not before), `iat` (issued at), `jti` (id).\n\n### Classic JWT mistakes\n\n| Mistake | What goes wrong | Fix |\n|---|---|---|\n| Trusting `alg: none` | the attacker removes the signature and sets `alg` to `none`; a weak library accepts it | the server fixes the accepted algorithm and rejects `none` |\n| **Algorithm confusion** | the attacker signs with HS256 using the RSA **public** key as the secret; a server that lets the token choose its algorithm verifies it | pin the algorithm, use separate key types |\n| Weak HMAC secret | `secret` or a dictionary word is cracked offline in seconds | at least 256 random bits |\n| Not checking `exp`, `aud`, `iss` | stolen or foreign tokens work forever or on other services | validate all registered claims |\n| Storing in `localStorage` | any XSS reads it | an `HttpOnly` cookie, or keep tokens in memory with short lifetimes |\n| Long-lived access tokens | no revocation, so a stolen token stays valid | access tokens of 5 to 15 minutes plus **refresh tokens** that are rotated and revocable |\n| Trusting the payload for authorisation without checking the user still exists | deleted or demoted users keep access until expiry | short expiry, or check a server-side status for sensitive actions |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Pasting a token into a debugger shows you the payload, but that proves nothing. Only a successful signature verification with the expected key, algorithm, issuer and audience means the token is genuine.",
+     "title": "Decode, never trust"
+    }
+   ]
+  },
+  {
+   "id": "ch-5-4",
+   "type": "concept",
+   "title": "OAuth 2.0, OpenID Connect and SSO",
+   "subtopicId": "5-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**OAuth 2.0** is a framework for **delegated authorisation**: a user lets an application access their data at another service without giving that application their password.\n\n| Role | Example |\n|---|---|\n| **Resource owner** | the user |\n| **Client** | the app that wants access (your web app) |\n| **Authorization server** | issues tokens (Google, Okta, Keycloak) |\n| **Resource server** | the API that holds the data |\n\n**Authorization Code flow with PKCE** is the recommended flow for web, mobile and single-page apps:\n\n1. The client sends the user to the authorisation server with `client_id`, `redirect_uri`, `scope`, a random **`state`** and a **PKCE code challenge** (the hash of a secret `code_verifier`).\n2. The user logs in and consents. The server redirects back with a short-lived **authorization code** and the same `state`.\n3. The client checks `state` (this blocks CSRF on the callback), then exchanges the code plus the `code_verifier` for an **access token** (and a refresh token).\n4. The client calls the API with `Authorization: Bearer <access token>`.\n\nSecurity rules: register **exact** redirect URIs (no wildcards, or codes leak to an attacker's URL), always use `state`, always use PKCE for public clients, and do not use the old **implicit flow** (tokens in the URL fragment). The **client credentials** flow is for machine-to-machine calls with no user.\n\n**OpenID Connect (OIDC)** is a layer on OAuth 2.0 that adds **authentication**: an **ID token** (a JWT) says who the user is. Rule of thumb: *OAuth answers \"what may this app do?\" and OIDC answers \"who logged in?\"*. Never use a plain OAuth access token as proof of identity.\n\n**SAML** is an older XML-based SSO standard still common in enterprises. **SSO** means one login for many applications, so MFA at the identity provider protects all of them, and so does a compromise of it."
+    }
+   ]
+  },
+  {
+   "id": "ch-5-5",
+   "type": "concept",
+   "title": "Authorisation: deciding what you may do",
+   "subtopicId": "5-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Model | Idea | Example |\n|---|---|---|\n| **ACL** | a list on each object saying who may do what | file permissions |\n| **RBAC** | permissions belong to roles, users get roles | `ROLE_ADMIN`, `ROLE_SUPPORT` |\n| **ABAC** | rules over attributes of user, object and context | \"doctors may read records of patients in their own hospital during working hours\" |\n| **ReBAC** | permissions follow relationships | \"editors of the folder can edit its documents\" |\n\n- **Vertical escalation:** a normal user acts as an admin. **Horizontal escalation:** a user accesses another user's data (IDOR).\n- **Deny by default.** Every endpoint is forbidden until a rule allows it.\n- Enforce authorisation in **one central place** (filters, method annotations, a policy service) so that new endpoints cannot forget it.\n- **401 Unauthorized** means \"not authenticated\"; **403 Forbidden** means \"authenticated but not allowed\".\n- Re-check authorisation on **every** request and for **every** object, including in batch endpoints, exports, search results and background jobs."
+    }
+   ]
+  },
+  {
+   "id": "ch-5-6",
+   "type": "concept",
+   "title": "Spring Security in practice",
+   "subtopicId": "5-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Spring Security is a chain of servlet filters in front of your controllers. You declare rules in a `SecurityFilterChain` bean. **Rules are evaluated in order and the first matching one wins**, so put specific rules first and `anyRequest()` last."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Configuration\n@EnableMethodSecurity\nclass SecurityConfig {\n\n    @Bean\n    SecurityFilterChain api(HttpSecurity http) throws Exception {\n        http\n            .authorizeHttpRequests(a -> a\n                .requestMatchers(\"/public/**\").permitAll()\n                .requestMatchers(\"/admin/**\").hasRole(\"ADMIN\")\n                .anyRequest().authenticated())                       // deny by default\n            .oauth2ResourceServer(o -> o.jwt(Customizer.withDefaults()))\n            .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))\n            .csrf(csrf -> csrf.disable());   // acceptable ONLY because no cookies authenticate these calls\n        return http.build();\n    }\n\n    @Bean\n    PasswordEncoder passwordEncoder() {\n        return PasswordEncoderFactories.createDelegatingPasswordEncoder();   // bcrypt by default, upgradable\n    }\n}\n\n@Service\nclass InvoiceService {\n    @PreAuthorize(\"hasRole('ADMIN') or #ownerId == authentication.name\")\n    public List<Invoice> invoicesOf(String ownerId) { /* ... */ }\n}",
+     "title": "A stateless REST API that accepts JWTs from an identity provider"
+    },
+    {
+     "type": "markdown",
+     "text": "- Keep **CSRF protection on** for any app where the browser authenticates by cookie or session (the default). Turn it off only for stateless token APIs.\n- Configure **CORS** with exact origins; do not enable all origins together with credentials.\n- Use `hasRole(\"ADMIN\")` (Spring adds the `ROLE_` prefix) or `hasAuthority(\"ROLE_ADMIN\")`. Mixing the two is a common bug.\n- Add the **security headers** (Spring Security sets several by default).\n- Test it: write tests that call endpoints as anonymous, as a normal user and as an admin, and assert 401, 403 and 200."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Server sessions are simple and easy to revoke, but need shared storage when you scale out. JWTs are stateless and good for service-to-service calls, but cannot be revoked before expiry unless you add a deny list. For a browser app I would use a server session or a short-lived token in an HttpOnly cookie, plus CSRF protection. For APIs consumed by many services I would use short-lived signed JWTs from an identity provider and verify issuer, audience, expiry and algorithm.\"",
+     "title": "Session versus JWT"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- MFA needs different factor types and WebAuthn is phishing-resistant\n- Use generic error messages and throttling to stop enumeration and brute force\n- Regenerate the session ID at login and destroy it on the server at logout\n- A JWT payload is readable by everyone, so only a verified signature makes it trustworthy\n- Use the authorization code flow with PKCE, exact redirect URIs and a state value\n- Deny by default and check authorisation on every request"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (50 questions)",
+   "subtopicId": "5-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "50 original questions on 8 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-auth",
+     "items": [
+      {
+       "t": "Authentication",
+       "q": "*(Recall)* Which pair counts as true two-factor authentication?",
+       "o": [
+        "PIN and password",
+        "password and a code from an authenticator app",
+        "password and security question",
+        "two different passwords"
+       ],
+       "a": 1,
+       "w": "A password is knowledge. The authenticator app code proves possession of the device. The other pairs use two knowledge factors."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Recall)* A fingerprint is an example of which factor?",
+       "o": [
+        "location",
+        "possession",
+        "knowledge",
+        "inherence (something you are)"
+       ],
+       "a": 3,
+       "w": "Biometrics are inherence factors. They cannot be changed if they are copied, so they are best used together with another factor."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Recall)* Which MFA method resists real-time phishing the best?",
+       "o": [
+        "SMS codes",
+        "FIDO2/WebAuthn passkeys",
+        "TOTP codes",
+        "e-mailed codes"
+       ],
+       "a": 1,
+       "w": "WebAuthn credentials are bound to the genuine site's origin, so a look-alike phishing domain cannot obtain a valid response. Codes can be relayed."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Recall)* MFA fatigue is an attack in which",
+       "o": [
+        "the authenticator app crashes",
+        "tokens expire early",
+        "users forget their codes",
+        "the attacker triggers repeated push approvals until the user taps Approve"
+       ],
+       "a": 3,
+       "w": "Number matching and rate-limiting push prompts reduce the risk."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Recall)* A TOTP code generally changes every",
+       "o": [
+        "5 minutes",
+        "5 seconds",
+        "24 hours",
+        "30 seconds"
+       ],
+       "a": 3,
+       "w": "The code is derived from the shared secret and the current 30-second time window."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Scenario)* The HOTP value for the secret \"12345678901234567890\" at counter 0 (RFC 4226 test vector) is",
+       "o": [
+        "359152",
+        "287082",
+        "755224",
+        "123456"
+       ],
+       "a": 2,
+       "w": "The HMAC-SHA-1 of the counter is truncated to 6 digits. Counter 1 gives 287082. This is how authenticator apps compute codes."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Scenario)* The same secret at counter 1 gives",
+       "o": [
+        "755224",
+        "287082",
+        "969429",
+        "359152"
+       ],
+       "a": 1,
+       "w": "Each new counter value gives a different 6-digit code. TOTP uses floor(time / 30) as the counter."
+      },
+      {
+       "t": "Authentication",
+       "q": "*(Scenario)* Two TOTP codes are generated from the same secret at Unix time 59 and at Unix time 89. They are",
+       "o": [
+        "different, because the 30-second counter moved from 1 to 2",
+        "the same",
+        "both 000000",
+        "valid at the same time"
+       ],
+       "a": 0,
+       "w": "floor(59/30) = 1 and floor(89/30) = 2, so the counters differ."
+      },
+      {
+       "t": "Login security",
+       "q": "*(Recall)* Which login error message is best?",
+       "o": [
+        "\"Wrong password for admin@example.com\"",
+        "\"Invalid username or password\"",
+        "\"Account locked for 3 failed attempts on your username\"",
+        "\"No account with that e-mail\""
+       ],
+       "a": 1,
+       "w": "A single generic message avoids account enumeration. Timing and response size should also be the same."
+      },
+      {
+       "t": "Login security",
+       "q": "*(Scenario)* A login page responds in 20 ms for unknown users and in 300 ms for known users because only the latter run the password hash. What can an attacker do?",
+       "o": [
+        "log in without a password",
+        "enumerate valid usernames from the response time",
+        "break the hash",
+        "nothing"
+       ],
+       "a": 1,
+       "w": "Always perform a dummy hash comparison so both paths take about the same time."
+      },
+      {
+       "t": "Login security",
+       "q": "*(Scenario)* A bank sees 10,000 accounts each receive 1 failed login from many IPs in 5 minutes, all using the password \"Spring2026!\". This is most likely",
+       "o": [
+        "password spraying",
+        "session fixation",
+        "a brute-force attack on one account",
+        "a DNS attack"
+       ],
+       "a": 0,
+       "w": "One common password tried against many accounts keeps per-account counters low. Detect it by looking at failures across accounts and sources."
+      },
+      {
+       "t": "Login security",
+       "q": "*(Recall)* Credential stuffing is stopped most effectively by",
+       "o": [
+        "hiding the login URL",
+        "longer session cookies",
+        "removing CAPTCHA",
+        "MFA together with breached-password checks and rate limiting"
+       ],
+       "a": 3,
+       "w": "Stuffing uses real, leaked passwords. MFA makes the stolen password insufficient."
+      },
+      {
+       "t": "Login security",
+       "q": "*(Scenario)* A site permanently locks an account after 5 failed logins. Why is this risky?",
+       "o": [
+        "an attacker can lock out any user on purpose (a denial of service)",
+        "it is too lenient",
+        "it breaks TLS",
+        "it exposes hashes"
+       ],
+       "a": 0,
+       "w": "Use progressive delays or temporary locks, with alerts and a recovery path, so that attackers cannot easily weaponise the lockout."
+      },
+      {
+       "t": "Password reset",
+       "q": "*(Scenario)* Which reset design is the most secure?",
+       "o": [
+        "send a random single-use link that expires quickly, then invalidate old sessions after the change",
+        "e-mail the user's current password",
+        "send a 4-digit code that never expires",
+        "ask for the mother's maiden name"
+       ],
+       "a": 0,
+       "w": "The token must be unguessable (at least 128 bits), single-use and short-lived. Security questions are guessable."
+      },
+      {
+       "t": "Password reset",
+       "q": "*(Scenario)* A reset link looks like /reset?token=1001, and the next user gets token=1002. What is wrong?",
+       "o": [
+        "nothing",
+        "tokens are sequential and predictable, so an attacker can reset other users' passwords",
+        "the site uses HTTP",
+        "the link is too short to type"
+       ],
+       "a": 1,
+       "w": "Reset tokens must come from a cryptographically secure random generator."
+      },
+      {
+       "t": "Password reset",
+       "q": "*(Recall)* Why should \"forgot password\" always answer \"if the account exists we have sent a link\"?",
+       "o": [
+        "to stop spam",
+        "to avoid revealing which e-mail addresses are registered",
+        "to be polite",
+        "to save e-mails"
+       ],
+       "a": 1,
+       "w": "Different answers allow account enumeration."
+      },
+      {
+       "t": "Sessions",
+       "q": "*(Recall)* A session ID should be",
+       "o": [
+        "the user's e-mail address",
+        "the MD5 of the username",
+        "a long random value from a secure generator",
+        "a sequential number"
+       ],
+       "a": 2,
+       "w": "At least 128 bits of unpredictability stops guessing. Predictable IDs allow session hijacking."
+      },
+      {
+       "t": "Sessions",
+       "q": "*(Recall)* Session fixation is prevented by",
+       "o": [
+        "using a hash",
+        "issuing a new session ID when the user logs in",
+        "making the cookie longer",
+        "disabling cookies"
+       ],
+       "a": 1,
+       "w": "If the ID changes at login, an ID that an attacker planted before login is useless."
+      },
+      {
+       "t": "Sessions",
+       "q": "*(Scenario)* A user clicks \"Log out\", but the server only deletes the cookie in the browser. A stolen copy of the cookie still works. The fix is",
+       "o": [
+        "using localStorage",
+        "invalidating the session on the server at logout",
+        "switching to HTTP",
+        "a shorter cookie name"
+       ],
+       "a": 1,
+       "w": "Real logout destroys the server-side session or revokes the token."
+      },
+      {
+       "t": "Sessions",
+       "q": "*(Scenario)* A URL such as /dashboard;jsessionid=A81F... is risky mainly because",
+       "o": [
+        "servers cannot parse it",
+        "it is too long",
+        "it breaks HTTPS",
+        "session IDs in URLs leak through logs, Referer headers, bookmarks and shared links"
+       ],
+       "a": 3,
+       "w": "Keep session IDs in cookies only."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Recall)* A JWT consists of",
+       "o": [
+        "a certificate chain",
+        "a username and a password",
+        "header, payload and signature, each Base64URL-encoded and separated by dots",
+        "one encrypted blob"
+       ],
+       "a": 2,
+       "w": "The first two parts are readable by anyone. The signature makes tampering detectable."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Recall)* The payload of a signed JWT is",
+       "o": [
+        "invisible to the client",
+        "only encoded, so anyone holding the token can read it",
+        "hashed",
+        "encrypted with the server key"
+       ],
+       "a": 1,
+       "w": "A signature gives integrity, not confidentiality. Never put secrets or sensitive personal data in it."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* The payload eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ1c2VyIn0 decodes to",
+       "o": [
+        "{\"user\":\"alice\",\"exp\":0}",
+        "{\"sub\":\"bob\",\"role\":\"user\"}",
+        "{\"sub\":\"alice\",\"role\":\"user\"}",
+        "{\"sub\":\"admin\",\"role\":\"admin\"}"
+       ],
+       "a": 2,
+       "w": "Base64URL decoding gives the JSON text. Anyone can read it, which is why a payload is not a secret."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* An attacker changes \"role\":\"user\" to \"role\":\"admin\" in a token's payload and keeps the old signature. A correctly implemented server will",
+       "o": [
+        "accept it",
+        "reject it, because the signature no longer matches the content",
+        "ignore the role claim",
+        "log the user out of all devices"
+       ],
+       "a": 1,
+       "w": "The HMAC is computed over header and payload, so changing the payload invalidates the signature."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* A token is signed with HS256 using the secret \"secret\". Which statement is true?",
+       "o": [
+        "HS256 cannot be cracked",
+        "the secret is safe because it is hashed",
+        "tokens with weak secrets are rejected automatically",
+        "the secret is trivially guessable, so an attacker can forge any token"
+       ],
+       "a": 3,
+       "w": "The HMAC secret can be brute-forced offline from one captured token. Use at least 256 random bits."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Recall)* What is the \"alg: none\" attack?",
+       "o": [
+        "setting the token lifetime to zero",
+        "encrypting the token twice",
+        "removing the signature and declaring no algorithm, hoping the server accepts an unsigned token",
+        "stealing the signing key"
+       ],
+       "a": 2,
+       "w": "The server must configure the allowed algorithms itself and reject none."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* A service accepts the algorithm named in the token header. The attacker takes the RSA public key, switches the header to HS256 and signs with the public key as the HMAC secret. This is",
+       "o": [
+        "a padding oracle",
+        "session fixation",
+        "a replay attack",
+        "algorithm confusion"
+       ],
+       "a": 3,
+       "w": "The verifier treats the public key as an HMAC secret. Pin the algorithm on the server."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Recall)* Which claim states when a token expires?",
+       "o": [
+        "jti",
+        "aud",
+        "exp",
+        "iss"
+       ],
+       "a": 2,
+       "w": "exp is the expiry time. iss is the issuer, aud the intended audience and jti a unique token id."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* A token is valid, signed and unexpired, but was issued for another service (aud = \"billing\") and is presented to the \"orders\" API. The orders API should",
+       "o": [
+        "re-sign it",
+        "accept it, since the signature is valid",
+        "accept it for GET only",
+        "reject it, because the audience does not match"
+       ],
+       "a": 3,
+       "w": "Validating aud prevents tokens meant for one service from being used on another."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* Where is it safest for a browser app to keep a session token?",
+       "o": [
+        "a JavaScript variable shared globally",
+        "an HttpOnly, Secure, SameSite cookie",
+        "the URL fragment",
+        "localStorage"
+       ],
+       "a": 1,
+       "w": "JavaScript cannot read an HttpOnly cookie, so an XSS bug cannot steal the token directly (CSRF must then be addressed)."
+      },
+      {
+       "t": "JWT",
+       "q": "*(Scenario)* Why are short-lived access tokens combined with refresh tokens?",
+       "o": [
+        "because browsers require it",
+        "to encrypt the payload",
+        "a stolen access token expires quickly and refresh tokens can be rotated and revoked",
+        "to make logins slower"
+       ],
+       "a": 2,
+       "w": "Short lifetimes limit damage without forcing users to log in again constantly."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* OAuth 2.0 is mainly a framework for",
+       "o": [
+        "delegated authorisation, letting an app act on a user's resources without their password",
+        "password hashing",
+        "encrypting traffic",
+        "authentication of users"
+       ],
+       "a": 0,
+       "w": "OAuth issues access tokens with scopes. OpenID Connect adds identity."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* OpenID Connect adds which artefact to OAuth 2.0?",
+       "o": [
+        "a refresh token",
+        "a certificate",
+        "a client secret",
+        "an ID token that tells the application who the user is"
+       ],
+       "a": 3,
+       "w": "The ID token is a JWT with claims about the authentication event and the user."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* PKCE protects the authorization code flow by",
+       "o": [
+        "hashing the password",
+        "encrypting the redirect",
+        "binding the code to a secret that only the client that started the flow holds",
+        "hiding the scope"
+       ],
+       "a": 2,
+       "w": "A stolen code is useless without the code verifier."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* The purpose of the OAuth \"state\" parameter is to",
+       "o": [
+        "set the token expiry",
+        "tie the callback to the original request and prevent CSRF on the login callback",
+        "record the user's country",
+        "choose the scope"
+       ],
+       "a": 1,
+       "w": "The client generates a random value, stores it and compares it on return."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Scenario)* An authorization server allows redirect URIs matching https://app.example.com/*. What is the danger?",
+       "o": [
+        "none",
+        "the user must log in twice",
+        "a flaw such as an open redirect on that host can leak the authorization code to an attacker, so register exact URIs",
+        "tokens expire"
+       ],
+       "a": 2,
+       "w": "Exact matching of registered redirect URIs is required by best practice."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* The implicit flow is discouraged because",
+       "o": [
+        "access tokens appear in the URL and leak through history and referrers; use code with PKCE instead",
+        "it is too slow",
+        "it uses SAML",
+        "it needs a client secret"
+       ],
+       "a": 0,
+       "w": "The current guidance retires the implicit flow in favour of the authorization code flow with PKCE."
+      },
+      {
+       "t": "OAuth and OIDC",
+       "q": "*(Recall)* The OAuth flow for server-to-server calls with no user involved is",
+       "o": [
+        "client credentials",
+        "device code",
+        "implicit",
+        "authorization code with PKCE"
+       ],
+       "a": 0,
+       "w": "The client authenticates itself and receives a token for its own permissions."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Recall)* RBAC grants permissions based on",
+       "o": [
+        "file names",
+        "the user's IP address",
+        "the time of day only",
+        "roles assigned to users"
+       ],
+       "a": 3,
+       "w": "Permissions belong to roles such as ADMIN or SUPPORT, and users are given roles."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Recall)* Rules like \"a doctor can open records of patients in their own hospital during their shift\" are an example of",
+       "o": [
+        "ABAC",
+        "ACL",
+        "DAC",
+        "RBAC"
+       ],
+       "a": 0,
+       "w": "Attribute-based access control uses attributes of the user, the resource and the context."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Recall)* A normal user obtaining administrator functions is called",
+       "o": [
+        "horizontal privilege escalation",
+        "lateral movement",
+        "vertical privilege escalation",
+        "session fixation"
+       ],
+       "a": 2,
+       "w": "Horizontal means reaching another user at the same level, such as by IDOR."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Recall)* HTTP 401 means",
+       "o": [
+        "the request is not authenticated (credentials missing or invalid)",
+        "the server failed",
+        "the user lacks permission",
+        "the page does not exist"
+       ],
+       "a": 0,
+       "w": "403 means the user is authenticated but not allowed."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Scenario)* An API returns 200 with an empty list for orders you do not own, and 200 with the data for orders you own. A tester wants to check access control. They should",
+       "o": [
+        "log in as two users and replay user A's requests with user B's identifiers and tokens",
+        "check the TLS version",
+        "test only the browser UI",
+        "scan the ports"
+       ],
+       "a": 0,
+       "w": "Authorisation is tested by crossing identities and objects. Role-based pages need the same test for each role."
+      },
+      {
+       "t": "Authorisation",
+       "q": "*(Recall)* \"Deny by default\" means",
+       "o": [
+        "access is forbidden unless a rule explicitly allows it",
+        "users are blocked until they pay",
+        "everyone is an admin",
+        "all errors are hidden"
+       ],
+       "a": 0,
+       "w": "New endpoints are protected automatically, so forgetting a rule fails safe."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Scenario)* In a SecurityFilterChain these rules appear in order: anyRequest().authenticated(), then requestMatchers(\"/public/**\").permitAll(). The result is",
+       "o": [
+        "/public/** still requires login (or startup fails), because the first matching rule wins and anyRequest must be last",
+        "/public/** is open",
+        "rules are alphabetical",
+        "all endpoints are open"
+       ],
+       "a": 0,
+       "w": "Rule order matters: specific matchers first, anyRequest last. Spring even refuses a chain in which a rule follows anyRequest."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Scenario)* A cookie-authenticated Spring MVC application disables CSRF protection \"because it gets in the way\". The consequence is",
+       "o": [
+        "passwords are stored in plain text",
+        "JWTs stop working",
+        "state-changing requests can be forged from other sites",
+        "nothing, browsers prevent it"
+       ],
+       "a": 2,
+       "w": "CSRF protection is on by default for a reason. Disable it only for stateless APIs authenticated by bearer tokens."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Recall)* What does @PreAuthorize(\"hasRole('ADMIN')\") do?",
+       "o": [
+        "logs the call",
+        "encrypts the method",
+        "caches the result",
+        "checks the authority before the method runs and denies access if the user lacks it"
+       ],
+       "a": 3,
+       "w": "It needs method security to be enabled with @EnableMethodSecurity."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Recall)* DelegatingPasswordEncoder stores hashes such as {bcrypt}$2a$10$... so that",
+       "o": [
+        "passwords are shorter",
+        "the salt is removed",
+        "hashes are reversible",
+        "the algorithm is recorded and can be upgraded later without breaking old hashes"
+       ],
+       "a": 3,
+       "w": "The prefix tells Spring which encoder to use when verifying, which makes migration to a stronger algorithm possible."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Scenario)* A developer uses hasRole(\"ROLE_ADMIN\") and the check never matches in a Spring config. The likely reason is",
+       "o": [
+        "hasRole adds the ROLE_ prefix itself, so use hasRole(\"ADMIN\") or hasAuthority(\"ROLE_ADMIN\")",
+        "roles are case sensitive only in tests",
+        "the user is not logged in",
+        "Spring ignores roles"
+       ],
+       "a": 0,
+       "w": "A prefix mismatch is a classic bug. hasAuthority takes the exact string."
+      },
+      {
+       "t": "Spring Security",
+       "q": "*(Scenario)* Which test best proves that an endpoint is protected?",
+       "o": [
+        "a unit test that calls the service directly as admin",
+        "running a spell checker",
+        "integration tests that call it anonymously, as a normal user and as an admin and assert 401, 403 and 200",
+        "reading the code once"
+       ],
+       "a": 2,
+       "w": "Security rules live in the filter chain, so tests must go through it with different identities."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Spring Security in practice"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a password plus a security question not MFA?",
+       "answer": "Both are knowledge factors. MFA needs factors of different types, for example knowledge plus possession."
+      },
+      {
+       "question": "What is session fixation and how is it prevented?",
+       "answer": "The attacker gives the victim a known session ID before login and reuses it afterwards. The server prevents it by issuing a new session ID when the user authenticates."
+      },
+      {
+       "question": "Why is `alg: none` dangerous in a JWT library?",
+       "answer": "A token with no signature is accepted as valid if the library lets the token decide the algorithm. The server must pin the allowed algorithms."
+      },
+      {
+       "question": "What does PKCE protect against?",
+       "answer": "An attacker who steals the authorization code cannot exchange it, because the exchange also needs the secret code verifier that only the real client holds."
+      },
+      {
+       "question": "What is the difference between OAuth 2.0 and OpenID Connect?",
+       "answer": "OAuth 2.0 delegates access to resources (authorisation). OpenID Connect adds an ID token that tells the application who the user is (authentication)."
+      },
+      {
+       "question": "Why can disabling CSRF protection be correct for a JWT API but wrong for a form-based site?",
+       "answer": "CSRF relies on the browser sending credentials automatically. Cookie sessions are sent automatically, whereas a bearer token must be added explicitly by code, which a forged page cannot do."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -143,3 +143,16 @@ python -I tools/build_gate.py      writes content/roadmaps/gate-cs/ and checks e
 A question marks its right option with `*`, and an optional `!py` line is run at build time against `ans` (the right option): numeric answers are recomputed with small reference implementations (schedulers, page replacement, Banker's algorithm, LR automata, SQL on SQLite, CIDR maths …), so a wrong key fails the build. Options are placed so the right answer is spread evenly over A to D. `npm test` also checks every subject has at least 50 well-formed questions.
 
 The study order is the `ROWS` list in `tools/build_gate.py`. Keep each row within one stage, because the tree layout draws a stage heading wherever a row's stage changes.
+
+## Cybersecurity for Freshers tree
+
+`roadmaps/cybersecurity/` is a path for a Java full stack fresher into application security and entry-level SOC work: security thinking, Linux and networking, cryptography, the OWASP Top 10, authentication, secure Java and Spring, detection and incident response, cloud and DevSecOps, legal labs, and careers and interviews. It is built the same way as the GATE tree (notes with `!cheat` callouts plus MCQs checked at build time) and reuses its question parser.
+
+```
+tools/cyber/NN-<topic>.md          notes (guide format of tools/guide_source.py)
+tools/cyber/mcq/NN-<topic>.txt     the MCQs (?1 = recall, ?2 = scenario; format in tools/build_gate.py)
+tools/cyber/cyber_helpers.py       names the !py checks can use: hashes, HMAC, JWT, TOTP, CIDR, CVSS 3.1, an SQL injection lab on SQLite, IAM and security-group evaluation
+python -I tools/build_cyber.py     writes content/roadmaps/cybersecurity/ and checks every question
+```
+
+The content is written for defence and learning, and every practical exercise points to a target you are allowed to attack (OWASP Juice Shop, DVWA, WebGoat, PortSwigger labs, TryHackMe). Standards move (OWASP Top 10 editions, TLS versions, certificate exams), so each page says which official source to check. The study order is the `ROWS` list in `tools/build_cyber.py`, with the same one-stage-per-row rule as the GATE tree.

@@ -1,0 +1,950 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 57
+ },
+ "sections": [
+  {
+   "id": "ch-4-1",
+   "type": "concept",
+   "title": "The browser security model you must know first",
+   "subtopicId": "4-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "Most web attacks make sense once you know three browser rules.\n\n- **Origin** = scheme + host + port. `https://shop.com` and `https://shop.com:8443` and `http://shop.com` are three different origins. The **same-origin policy (SOP)** stops a script from one origin reading responses from another.\n- **Cookies are sent automatically** with every request to the site that set them, whichever page triggered the request. That convenience is what makes CSRF possible.\n- **The browser runs whatever script the page contains**, with the page's full privileges. That is what makes XSS dangerous.\n\n### Cookie attributes\n\n| Attribute | Effect | Protects against |\n|---|---|---|\n| `HttpOnly` | JavaScript cannot read the cookie | theft of the session by XSS |\n| `Secure` | sent only over HTTPS | sniffing on plain HTTP |\n| `SameSite=Lax` / `Strict` | not sent on most cross-site requests | CSRF |\n| `Path`, `Domain`, `Max-Age` | limit where and how long it lives | wide exposure, long-lived sessions |"
+    },
+    {
+     "type": "code",
+     "language": "http",
+     "code": "Set-Cookie: SESSION=9f2c...e1; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=1800",
+     "title": "A well-protected session cookie"
+    },
+    {
+     "type": "markdown",
+     "text": "### CORS is not a security feature for your server\n\n**CORS** (cross-origin resource sharing) is a way for a server to tell the browser \"this other origin may read my responses\". It relaxes SOP. It does not stop anyone from calling your API with `curl`. Typical mistakes: `Access-Control-Allow-Origin: *` on an API that returns private data, and echoing back whatever `Origin` arrives together with `Access-Control-Allow-Credentials: true`. Allow-list exact origins.\n\n### Security headers worth knowing\n\n| Header | Purpose |\n|---|---|\n| `Content-Security-Policy` | which scripts, styles and frames the page may load (the strongest XSS mitigation after output encoding) |\n| `Strict-Transport-Security` | HTTPS only (HSTS) |\n| `X-Content-Type-Options: nosniff` | the browser must trust the declared content type |\n| `X-Frame-Options: DENY` or CSP `frame-ancestors 'none'` | no framing, which stops clickjacking |\n| `Referrer-Policy` | how much of the URL is sent to other sites |\n| `Permissions-Policy` | switch off camera, microphone, geolocation if unused |"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-2",
+   "type": "concept",
+   "title": "The OWASP Top 10 at a glance",
+   "subtopicId": "4-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**OWASP** (Open Worldwide Application Security Project) publishes the Top 10, a consensus list of the most serious web application risks. It is the vocabulary of AppSec interviews. The most widely used edition is **2021**:\n\n| # | 2021 category | One-line meaning |\n|---|---|---|\n| A01 | **Broken Access Control** | users can do or see what they should not (IDOR, missing checks) |\n| A02 | **Cryptographic Failures** | missing or weak protection of sensitive data in transit or at rest |\n| A03 | **Injection** | untrusted input is run as part of a command or query (SQL, OS, LDAP, XSS) |\n| A04 | **Insecure Design** | the flaw is in the design, not just the code |\n| A05 | **Security Misconfiguration** | defaults, open cloud storage, verbose errors, missing headers |\n| A06 | **Vulnerable and Outdated Components** | libraries with known CVEs |\n| A07 | **Identification and Authentication Failures** | weak passwords, bad sessions, no brute-force protection |\n| A08 | **Software and Data Integrity Failures** | unsigned updates, insecure deserialization, tampered pipelines |\n| A09 | **Security Logging and Monitoring Failures** | attacks happen and nobody notices |\n| A10 | **Server-Side Request Forgery (SSRF)** | the server is tricked into requesting internal or attacker-chosen URLs |"
+    },
+    {
+     "type": "callout",
+     "variant": "note",
+     "text": "A new edition was announced as a release candidate in November 2025. As reported, Broken Access Control stays first (and now includes SSRF), Security Misconfiguration moves up to second, and two categories are new: Software Supply Chain Failures and Mishandling of Exceptional Conditions. The ideas in this part are unchanged; only the grouping moved. Check owasp.org/Top10 for the final list and its numbering.",
+     "title": "The 2025 edition"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Input becomes code** → Injection (SQL, OS command, XSS). Fix: parameterise, encode output, validate.\n- **Who may do this?** → Broken Access Control. Fix: check on the server for every request.\n- **Who are you?** → Authentication failures. Fix: MFA, rate limits, safe sessions.\n- **Is it secret?** → Cryptographic failures. Fix: TLS, strong algorithms, no secrets in code.\n- **Server fetches a URL for me** → SSRF. Fix: allow-list destinations, block internal ranges.\n- **Library has a CVE** → Vulnerable components. Fix: scan dependencies, upgrade.\n- **Nobody saw it** → Logging failures. Fix: log security events and alert.",
+     "title": "OWASP quick map"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-3",
+   "type": "concept",
+   "title": "Injection",
+   "subtopicId": "4-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Injection** happens when untrusted data is sent to an interpreter as part of a command or query, and the interpreter cannot tell where the data ends and the instructions begin.\n\n### SQL injection\n\nVulnerable code builds the query by concatenation:"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "String sql = \"SELECT name, role FROM users WHERE name = '\" + user + \"' AND pass = '\" + password + \"'\";\nResultSet rs = connection.createStatement().executeQuery(sql);",
+     "title": "Vulnerable"
+    },
+    {
+     "type": "markdown",
+     "text": "If `user` is `admin' --` the database sees"
+    },
+    {
+     "type": "code",
+     "language": "sql",
+     "code": "SELECT name, role FROM users WHERE name = 'admin' --' AND pass = ''",
+     "title": "What the database receives"
+    },
+    {
+     "type": "markdown",
+     "text": "`--` starts a comment, so the password check disappears and the attacker logs in as admin. With `' OR '1'='1` in both fields the condition is always true and every row matches.\n\n| Type | How the attacker learns data |\n|---|---|\n| **In-band (error / UNION)** | results or errors appear in the page. `UNION SELECT` appends rows from other tables |\n| **Blind (boolean)** | the page behaves differently for true and false conditions |\n| **Blind (time)** | `SLEEP(5)` makes the response slow when a condition is true |\n| **Out-of-band** | the database sends data over DNS or HTTP to the attacker |\n| **Second-order** | a payload is stored safely, then used unsafely in a later query |\n\n**The fix is parameterised queries (prepared statements)**: the SQL text and the data travel separately, so data can never become syntax."
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "PreparedStatement ps = connection.prepareStatement(\"SELECT name, role FROM users WHERE name = ? AND pass_hash = ?\");\nps.setString(1, user);\nps.setString(2, hash);",
+     "title": "Fixed"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "@Query(\"select u from User u where u.name = :name\")            // named parameter: safe\nOptional<User> findByName(@Param(\"name\") String name);\n\njdbcTemplate.query(\"select * from notes where owner = ?\", mapper, owner);   // placeholder: safe\n\n// UNSAFE even in JPA: \"select u from User u where u.name = '\" + name + \"'\"",
+     "title": "Spring Data JPA and JdbcTemplate"
+    },
+    {
+     "type": "markdown",
+     "text": "Things parameters cannot do: **table names, column names and `ORDER BY` direction cannot be bound as parameters.** Map user choices to a fixed **allow-list** (`\"price\" → \"price_cents\"`). Additional layers: a database user with only the rights the app needs, no verbose database errors in responses, a WAF.\n\n### OS command injection"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Runtime.getRuntime().exec(\"ping -c 1 \" + host);      // host = \"8.8.8.8; cat /etc/passwd\" runs two commands\nnew ProcessBuilder(\"ping\", \"-c\", \"1\", host).start(); // arguments are not parsed by a shell, and host is still validated",
+     "title": "Vulnerable and safer"
+    },
+    {
+     "type": "markdown",
+     "text": "Best: do not call the shell at all (use a library), allow-list the input (`InetAddress` parsing, regex for hostnames) and run with a low-privilege account. Related interpreters with the same flaw: LDAP, XPath, NoSQL (`{\"$ne\": null}` in a Mongo login), expression languages and template engines (server-side template injection)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Cause:** data and code mixed in one string. **Cure:** keep them apart (parameters).\n- **Escaping by hand fails.** Use the framework's parameter binding.\n- **Cannot bind a table, column or ORDER BY** → allow-list.\n- **`' --`** ends a SQL statement early. **`; cmd`** or `| cmd` chains an OS command.\n- Defence in depth: least-privilege DB account, generic error messages, input validation, WAF.",
+     "title": "Injection cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-4",
+   "type": "concept",
+   "title": "Cross-site scripting (XSS)",
+   "subtopicId": "4-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "In **XSS**, the attacker gets their own script to run in the victim's browser **as part of your site**. It can read the page, make requests as the user, show a fake login form or steal tokens that are not `HttpOnly`.\n\n| Type | Where the payload lives | Example |\n|---|---|---|\n| **Reflected** | in the request (URL or form) and echoed in the response | a search page printing `?q=<script>...` |\n| **Stored (persistent)** | saved in the database and shown to other users | a comment, profile name or support ticket |\n| **DOM-based** | the page's own JavaScript writes untrusted data into the DOM (`innerHTML`) | `element.innerHTML = location.hash` |\n\nStored XSS in an admin-facing screen (a support ticket the admin opens) is the worst case.\n\n### Defence, in order of importance\n\n1. **Encode output for its context.** The same text needs HTML-escaping in a body (`<` becomes `&lt;`), different escaping in an attribute, in JavaScript and in a URL. Template engines such as **Thymeleaf (`th:text`) and React (`{value}`) escape by default**. The danger is in the escape hatches: `th:utext`, `dangerouslySetInnerHTML`, `innerHTML`, `document.write`.\n2. **Validate and sanitise input** on arrival. If you must allow HTML (a rich-text editor), pass it through a maintained sanitiser (OWASP Java HTML Sanitizer, DOMPurify) with an allow-list.\n3. **Content Security Policy** blocks inline scripts and unknown sources, which turns many XSS bugs into harmless text: `Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'`.\n4. **`HttpOnly` cookies** so a script cannot read the session."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Input:    <script>alert(1)</script>\nIn HTML:  &lt;script&gt;alert(1)&lt;/script&gt;      shown as text, never executed",
+     "title": "What escaping does"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A real XSS payload will not pop a dialog. It sends cookies, keystrokes or API calls to the attacker. The dialog is just the cheapest way to prove that script ran.",
+     "title": "alert(1) is only a proof"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-5",
+   "type": "concept",
+   "title": "Cross-site request forgery (CSRF) and clickjacking",
+   "subtopicId": "4-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**CSRF** tricks a logged-in user's browser into sending a state-changing request to your site, for example by loading an attacker's page that auto-submits `POST /transfer?to=attacker&amount=5000`. The browser attaches the session cookie, so the server thinks it is the user.\n\nDefences:\n\n- **SameSite cookies** (`Lax` or `Strict`). Most browsers now treat cookies as `Lax` by default.\n- **Anti-CSRF tokens**: a random, per-session value in every state-changing form or header, which the attacker's page cannot read (SOP). Spring Security enables this by default for browser apps.\n- **Never change state with GET.** Require POST, PUT, PATCH or DELETE.\n- For sensitive actions, re-authenticate or confirm.\n- APIs that use an `Authorization: Bearer` header (not cookies) are not CSRF-prone, because the browser does not add that header by itself.\n\n**Clickjacking** loads your site in an invisible frame over a decoy button so the user clicks something they cannot see. Defence: `frame-ancestors 'none'` (CSP) or `X-Frame-Options: DENY`."
+    }
+   ]
+  },
+  {
+   "id": "ch-4-6",
+   "type": "concept",
+   "title": "Broken access control",
+   "subtopicId": "4-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "This is the number one category because it is easy to get wrong: authentication was done, but **the check \"may this user do this to this object?\"** was missing, or was done only in the UI.\n\n| Flaw | Example | Fix |\n|---|---|---|\n| **IDOR** (insecure direct object reference) / BOLA | `GET /api/invoices/1042` returns any user's invoice if you change the number | verify ownership on the server: `invoice.owner == currentUser` |\n| **Missing function-level check** | a normal user calls `POST /admin/users/5/delete` | authorise every endpoint (`@PreAuthorize(\"hasRole('ADMIN')\")`) |\n| **Privilege escalation via mass assignment** | request JSON includes `\"role\":\"ADMIN\"` and the entity binds it | bind to a DTO with only the allowed fields |\n| **Forced browsing** | `/admin`, `/backup.zip`, `/.git/` guessed in the URL | deny by default and do not deploy them |\n| **Path traversal** | `?file=../../etc/passwd` | resolve, normalise and check the path stays under the base directory |\n| **Hidden != protected** | an admin button is hidden in the UI but the API works | the server is the only authority |\n| **Tampering with JWT/cookie claims** | changing `\"role\":\"user\"` in an unsigned or weakly verified token | verify signatures, take roles from the server |"
+    },
+    {
+     "type": "code",
+     "language": "java",
+     "code": "Invoice invoice = repo.findById(id).orElseThrow(NotFound::new);\nif (!invoice.getOwnerId().equals(currentUser.getId())) throw new AccessDeniedException(\"not yours\");\n\nPath base = Path.of(\"/srv/uploads\").toRealPath();\nPath file = base.resolve(requestedName).normalize();\nif (!file.startsWith(base)) throw new SecurityException(\"path traversal\");",
+     "title": "Ownership check and a safe file path"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "For objects the user must not know about, a 404 reveals less than a 403. Either way, log the attempt: repeated denied attempts are a sign of someone probing for IDORs.",
+     "title": "Return 404 or 403?"
+    }
+   ]
+  },
+  {
+   "id": "ch-4-7",
+   "type": "concept",
+   "title": "Other classic web flaws",
+   "subtopicId": "4-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Server-side request forgery (SSRF)\n\nThe application fetches a URL that the user supplies (an image importer, a webhook tester). The attacker supplies an **internal** address instead: `http://localhost:8080/admin` or the cloud metadata service `http://169.254.169.254/latest/meta-data/`, which can return temporary cloud credentials. Defences: allow-list destination hosts, resolve the name and **block private, loopback and link-local ranges** (re-check after redirects, because DNS can change), disable redirects, require **IMDSv2** on AWS, and give the instance role minimal permissions.\n\n### Insecure deserialization and XXE\n\n- **Java deserialization** (`ObjectInputStream.readObject`) of untrusted bytes can run attacker-chosen \"gadget chains\" and lead to remote code execution. Never deserialise untrusted native Java objects. Use JSON with explicit DTOs and a library with polymorphic typing turned off, or an allow-list filter.\n- **XXE** (XML external entity): an XML parser that resolves entities can read local files or make requests. Disable DTDs and external entities in the parser factory (`disallow-doctype-decl`).\n\n### File upload\n\nDangers: an executable uploaded to a web-served folder, a huge file, an HTML file served from your domain (stored XSS), a filename with `../`. Defences: allow-list extension **and** verify the content type, generate your own random filename, store outside the web root or in object storage, cap the size, scan for malware, serve with `Content-Disposition: attachment` and `nosniff`.\n\n### Open redirect and others\n\n- **Open redirect**: `/login?next=https://evil.com` sends users to a phishing site after login. Allow only relative paths or an allow-list of hosts.\n- **Business logic flaws** are not in any scanner's signature list: negative quantities, applying a coupon twice, skipping a payment step, racing two requests to spend one balance twice. Threat model the flow and enforce rules on the server.\n- **Security misconfiguration**: default credentials, directory listing, debug mode, `/actuator` endpoints exposed, verbose stack traces, S3 buckets open to the world.\n- **Vulnerable components**: a library with a known CVE. The Log4Shell flaw (CVE-2021-44228) showed how one logging dependency could expose a huge part of the internet."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Parameterised queries or an ORM's bound parameters everywhere, never string concatenation. Allow-list anything that cannot be a parameter, such as column names. Run the application with a database account that has only the privileges it needs, return generic error messages, and add a WAF and static analysis as extra layers.\"",
+     "title": "How do you prevent SQL injection?"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- SQL injection is fixed with parameterised queries, not with escaping\n- XSS is fixed by context-aware output encoding, backed by a CSP and HttpOnly cookies\n- CSRF is fixed with SameSite cookies and anti-CSRF tokens\n- Access control must be checked on the server for every request and object\n- SSRF turns your server into a proxy for the attacker, so allow-list destinations\n- The OWASP Top 10 is a map of categories, learn the idea behind each one"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (57 questions)",
+   "subtopicId": "4-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "57 original questions on 13 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-web-attacks",
+     "items": [
+      {
+       "t": "Browser model",
+       "q": "*(Recall)* Two URLs have the same origin only if they share the same",
+       "o": [
+        "path and query",
+        "scheme, host and port",
+        "IP address",
+        "host only"
+       ],
+       "a": 1,
+       "w": "https://shop.com and http://shop.com differ in scheme, and https://shop.com:8443 differs in port. Each pair is a different origin."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Recall)* The HttpOnly cookie attribute prevents",
+       "o": [
+        "JavaScript from reading the cookie, so XSS cannot steal it directly",
+        "the cookie expiring",
+        "the cookie being sent over HTTP",
+        "the cookie being sent to other sites"
+       ],
+       "a": 0,
+       "w": "HttpOnly hides the cookie from document.cookie. The Secure attribute controls HTTPS-only, and SameSite controls cross-site sending."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Recall)* The Secure cookie attribute means the cookie is",
+       "o": [
+        "encrypted in the browser",
+        "hidden from scripts",
+        "sent only over HTTPS",
+        "valid for one day"
+       ],
+       "a": 2,
+       "w": "Without it the cookie can leak over a plain HTTP request, for example on public Wi-Fi."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Recall)* SameSite=Lax on a session cookie mainly helps defend against",
+       "o": [
+        "clickjacking",
+        "XSS",
+        "SQL injection",
+        "CSRF"
+       ],
+       "a": 3,
+       "w": "The browser omits the cookie on most cross-site sub-requests and form posts, so a forged request from another site arrives unauthenticated."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Scenario)* An API returns private user data and sends `Access-Control-Allow-Origin: *`. What is the issue?",
+       "o": [
+        "any website can read the responses from a visitor's browser if the API does not rely on cookies, and CORS never blocked non-browser clients anyway",
+        "the API stops working",
+        "cookies are encrypted",
+        "none, CORS protects the server"
+       ],
+       "a": 0,
+       "w": "CORS is a browser rule that relaxes the same-origin policy. A wildcard is acceptable for public data only, never as a substitute for authentication."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Scenario)* A server reflects any Origin header into Access-Control-Allow-Origin and also sends Access-Control-Allow-Credentials: true. What can an attacker do?",
+       "o": [
+        "change the DNS record",
+        "break TLS",
+        "nothing",
+        "host a page that makes credentialed requests as the victim and reads the responses"
+       ],
+       "a": 3,
+       "w": "The policy lets any origin read authenticated responses. Allow-list exact origins."
+      },
+      {
+       "t": "Browser model",
+       "q": "*(Recall)* Which header or directive helps prevent clickjacking?",
+       "o": [
+        "Content-Security-Policy: frame-ancestors 'none'",
+        "X-Content-Type-Options: nosniff",
+        "Set-Cookie: Secure",
+        "Strict-Transport-Security"
+       ],
+       "a": 0,
+       "w": "It forbids other sites from framing the page. X-Frame-Options: DENY is the older equivalent."
+      },
+      {
+       "t": "OWASP Top 10",
+       "q": "*(Recall)* In the 2021 OWASP Top 10, which category is number one?",
+       "o": [
+        "Security Misconfiguration",
+        "Cryptographic Failures",
+        "Broken Access Control",
+        "Injection"
+       ],
+       "a": 2,
+       "w": "Broken Access Control moved to first place in 2021 and remains there in the 2025 release candidate."
+      },
+      {
+       "t": "OWASP Top 10",
+       "q": "*(Recall)* Using a library version with a publicly known vulnerability falls under",
+       "o": [
+        "Logging failures",
+        "Vulnerable and Outdated Components (supply chain)",
+        "Insecure Design",
+        "Injection"
+       ],
+       "a": 1,
+       "w": "Keep an inventory of dependencies and scan them. The 2025 release candidate widens this to software supply chain failures."
+      },
+      {
+       "t": "OWASP Top 10",
+       "q": "*(Recall)* Not recording failed logins and admin actions, so an intrusion goes unnoticed for months, is",
+       "o": [
+        "Cryptographic Failures",
+        "Security Logging and Monitoring Failures",
+        "Broken Access Control",
+        "SSRF"
+       ],
+       "a": 1,
+       "w": "Without logs and alerts, detection and forensics are impossible."
+      },
+      {
+       "t": "OWASP Top 10",
+       "q": "*(Recall)* A design in which users may reset any password by answering a question whose answer is on their public profile is mainly a(n)",
+       "o": [
+        "injection flaw",
+        "insecure design flaw",
+        "misconfiguration",
+        "buffer overflow"
+       ],
+       "a": 1,
+       "w": "The code may be perfect, but the idea is flawed. Threat modelling at design time catches this class."
+      },
+      {
+       "t": "OWASP Top 10",
+       "q": "*(Recall)* An S3 bucket created with public read access and a default admin password left on a console are examples of",
+       "o": [
+        "security misconfiguration",
+        "insecure deserialization",
+        "CSRF",
+        "injection"
+       ],
+       "a": 0,
+       "w": "Insecure defaults and exposed management features are misconfigurations."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Recall)* The most effective fix for SQL injection is",
+       "o": [
+        "escaping quotes by hand",
+        "a longer password",
+        "parameterised queries (prepared statements)",
+        "hiding the error messages"
+       ],
+       "a": 2,
+       "w": "Parameters keep data separate from the SQL text so it can never be parsed as SQL. Other measures only add depth."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* A login query is \"... WHERE name = '\" + user + \"' AND pass = '\" + pw + \"'\". Which username logs in as admin without the password?",
+       "o": [
+        "admin\"",
+        "admin;",
+        "admin OR",
+        "admin' --"
+       ],
+       "a": 3,
+       "w": "The single quote ends the string and -- comments out the password check. The query becomes WHERE name = 'admin' --' AND pass = ''."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* The vulnerable login query is called with the username ' OR 1=1 -- and any password. How many users does it return in the lab database?",
+       "o": [
+        "1",
+        "0",
+        "3",
+        "it throws an error"
+       ],
+       "a": 2,
+       "w": "OR 1=1 makes the condition always true and the comment removes the rest, so every row matches."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* The same payload sent to the parameterised version of the login returns",
+       "o": [
+        "no rows, because the payload is treated as a literal name",
+        "a syntax error",
+        "the admin only",
+        "all three users"
+       ],
+       "a": 0,
+       "w": "With a placeholder the whole string is compared as a username. No such user exists."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* A search page shows two columns from a query. An attacker enters a UNION SELECT of name and pass from the users table. This is",
+       "o": [
+        "command injection",
+        "in-band (UNION-based) injection",
+        "blind injection",
+        "second-order injection"
+       ],
+       "a": 1,
+       "w": "The extra rows appear directly in the page, so the attacker reads other tables without any side channel."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Recall)* In blind SQL injection the attacker",
+       "o": [
+        "intercepts network traffic",
+        "uses a stolen key",
+        "infers data from true/false behaviour or timing of the page",
+        "sees the full result of the query"
+       ],
+       "a": 2,
+       "w": "The page shows no data, but a difference in content or a delay such as SLEEP(5) answers yes/no questions one bit at a time."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* A developer must let users sort by column name from a dropdown (`ORDER BY ` + column). Parameters cannot be used there. The safe approach is",
+       "o": [
+        "escape the quotes",
+        "lowercase the input",
+        "trust the dropdown value",
+        "map the user's choice to a fixed allow-list of column names"
+       ],
+       "a": 3,
+       "w": "The value in a request can be changed by anyone, regardless of the dropdown. Only values from the allow-list reach the SQL."
+      },
+      {
+       "t": "SQL injection",
+       "q": "*(Scenario)* Which Spring Data JPA statement is vulnerable?",
+       "o": [
+        "jdbcTemplate.query(\"select * from notes where owner = ?\", mapper, owner)",
+        "@Query(\"select u from User u where u.name = :name\")",
+        "entityManager.createQuery(\"select u from User u where u.name = '\" + name + \"'\")",
+        "repository.findByName(name)"
+       ],
+       "a": 2,
+       "w": "String concatenation into JPQL has the same flaw as in SQL. The others bind the value as a parameter."
+      },
+      {
+       "t": "Command injection",
+       "q": "*(Recall)* `Runtime.exec(\"ping -c 1 \" + host)` with host = \"8.8.8.8; cat /etc/passwd\" is an example of",
+       "o": [
+        "SQL injection",
+        "CSRF",
+        "XSS",
+        "OS command injection"
+       ],
+       "a": 3,
+       "w": "The shell treats the semicolon as a command separator. Avoid the shell, pass an argument array and allow-list the input."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Recall)* XSS lets an attacker",
+       "o": [
+        "run SQL on the server",
+        "read the server's files",
+        "crash the database",
+        "run their script in the victim's browser in the context of the vulnerable site"
+       ],
+       "a": 3,
+       "w": "The script has the page's privileges: it can read the DOM, call APIs as the user and steal non-HttpOnly tokens."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Recall)* A comment containing a script tag is saved and shown to every visitor of the page. This is",
+       "o": [
+        "stored XSS",
+        "CSRF",
+        "reflected XSS",
+        "DOM XSS only"
+       ],
+       "a": 0,
+       "w": "Stored (persistent) XSS affects everyone who views the content and is usually the most serious type."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Recall)* `element.innerHTML = location.hash.substring(1)` is a typical source of",
+       "o": [
+        "path traversal",
+        "stored XSS",
+        "DOM-based XSS",
+        "SQL injection"
+       ],
+       "a": 2,
+       "w": "The page's own JavaScript writes attacker-controlled data into the DOM as HTML. Use textContent, or sanitise."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Scenario)* The best primary defence against XSS in a Thymeleaf template is",
+       "o": [
+        "hiding the field",
+        "removing the word script",
+        "th:text, which HTML-encodes the value",
+        "th:utext for all fields"
+       ],
+       "a": 2,
+       "w": "th:text escapes special characters. th:utext prints raw HTML and should only be used with sanitised content."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Scenario)* Encoding `<script>alert(1)</script>` for HTML output produces",
+       "o": [
+        "%3Cscript%3E",
+        "<script>alert(1)</script>",
+        "&lt;script&gt;alert(1)&lt;/script&gt;",
+        "alert(1)"
+       ],
+       "a": 2,
+       "w": "The browser then displays the text instead of executing it. URL-encoding (option c) is the wrong context for an HTML body."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Scenario)* A team blocks the word \"script\" in input and thinks XSS is solved. Why is this a weak defence?",
+       "o": [
+        "it prevents CSRF too",
+        "the word script is harmless",
+        "it blocks too much",
+        "attackers use other vectors such as event handlers and encodings, so block lists fail; encode output instead"
+       ],
+       "a": 3,
+       "w": "`<img src=x onerror=...>` needs no script tag. Context-aware output encoding addresses the cause."
+      },
+      {
+       "t": "XSS",
+       "q": "*(Recall)* A Content Security Policy helps against XSS by",
+       "o": [
+        "blocking all images",
+        "restricting the sources from which scripts can run and blocking inline scripts",
+        "encrypting scripts",
+        "removing cookies"
+       ],
+       "a": 1,
+       "w": "A strict CSP stops injected inline scripts from executing even if encoding was missed somewhere."
+      },
+      {
+       "t": "CSRF",
+       "q": "*(Recall)* A CSRF attack succeeds because",
+       "o": [
+        "the attacker steals the cookie",
+        "the server stores passwords in clear text",
+        "the browser automatically attaches the victim's cookie to a request the attacker triggered",
+        "the connection is not encrypted"
+       ],
+       "a": 2,
+       "w": "The attacker never sees the cookie. They only cause the request."
+      },
+      {
+       "t": "CSRF",
+       "q": "*(Recall)* An anti-CSRF token works because",
+       "o": [
+        "it is encrypted with the user's password",
+        "it replaces the session cookie",
+        "it blocks scripts",
+        "an attacker's page cannot read the token due to the same-origin policy"
+       ],
+       "a": 3,
+       "w": "The server rejects any state-changing request that lacks the correct per-session token."
+      },
+      {
+       "t": "CSRF",
+       "q": "*(Scenario)* Which request is most likely to be CSRF-prone?",
+       "o": [
+        "an API call that requires an Authorization: Bearer header added by JavaScript",
+        "a TLS handshake",
+        "a public GET of the home page",
+        "a cookie-authenticated POST /transfer form without a token or SameSite"
+       ],
+       "a": 3,
+       "w": "Bearer headers are not attached automatically by the browser. Cookies are, so a cookie-based form post needs protection."
+      },
+      {
+       "t": "CSRF",
+       "q": "*(Scenario)* A \"delete account\" action is implemented as GET /delete?id=5. What is the main problem?",
+       "o": [
+        "delete needs TLS 1.3",
+        "GET is slower",
+        "any image tag or link on another site can trigger it, and CSRF protections do not normally cover GET",
+        "none"
+       ],
+       "a": 2,
+       "w": "State changes must use POST, PUT, PATCH or DELETE and be protected by tokens."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Recall)* Changing /invoice?id=1042 to id=1043 and seeing another customer's invoice is called",
+       "o": [
+        "IDOR (insecure direct object reference)",
+        "XSS",
+        "clickjacking",
+        "SQL injection"
+       ],
+       "a": 0,
+       "w": "The server did not check that the logged-in user owns invoice 1043. Fix with an ownership check on every request."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Recall)* Why is hiding the Admin button in the UI not access control?",
+       "o": [
+        "an attacker can call the underlying API directly, so the server must check the role",
+        "browsers ignore hidden buttons",
+        "it makes the page slower",
+        "buttons are decorations"
+       ],
+       "a": 0,
+       "w": "The client is under the attacker's control. Any rule enforced only in the UI can be skipped."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Scenario)* A profile update endpoint binds the JSON body directly to a User entity. An attacker adds \"role\":\"ADMIN\" and becomes admin. This is",
+       "o": [
+        "SSRF",
+        "CSRF",
+        "mass assignment, fixed by binding to a DTO that only contains the allowed fields",
+        "clickjacking"
+       ],
+       "a": 2,
+       "w": "Frameworks bind every matching field. Expose only intended fields through a DTO or an allow-list."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Scenario)* A file download endpoint takes `?name=` and returns /srv/files/<name>. Which request reads a file outside the folder?",
+       "o": [
+        "?name=report.pdf",
+        "?name=../../etc/passwd",
+        "?name=2024/report.pdf",
+        "?name=REPORT.PDF"
+       ],
+       "a": 1,
+       "w": "The ../ sequences climb out of the folder (path traversal). Normalise the path and check it still starts with the base directory."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Scenario)* A path-traversal filter strips the string \"../\" once. The attacker sends \"....//\". After stripping, the result is",
+       "o": [
+        "....//",
+        "../",
+        "..",
+        "empty"
+       ],
+       "a": 1,
+       "w": "Removing the inner \"../\" leaves \"../\" behind. Filtering by deletion is fragile, so resolve the path and compare it to the base instead."
+      },
+      {
+       "t": "Access control",
+       "q": "*(Scenario)* URL-encoding the string ../ (every reserved character) gives",
+       "o": [
+        "..%2F",
+        "..%5C",
+        "..%2f%2e",
+        "%2E%2E/"
+       ],
+       "a": 0,
+       "w": "The slash becomes %2F. Attackers use encoded and double-encoded forms to slip past naive filters, so decode and normalise before checking."
+      },
+      {
+       "t": "SSRF",
+       "q": "*(Recall)* SSRF is dangerous in cloud environments mainly because it can",
+       "o": [
+        "install a browser extension",
+        "deface the home page",
+        "reach internal services such as the metadata endpoint 169.254.169.254 and steal instance credentials",
+        "bypass TLS"
+       ],
+       "a": 2,
+       "w": "The server's network position gives access to addresses the attacker cannot reach directly."
+      },
+      {
+       "t": "SSRF",
+       "q": "*(Scenario)* An image-import feature fetches any URL a user pastes. The best mitigation is",
+       "o": [
+        "using a longer timeout",
+        "allow-listing schemes and hosts, blocking private and link-local ranges after DNS resolution, and disabling redirects",
+        "hiding the feature",
+        "trusting URLs that start with http"
+       ],
+       "a": 1,
+       "w": "Checks must apply to the address actually used, so resolve the name, validate the IP, and avoid redirect or DNS-rebinding tricks."
+      },
+      {
+       "t": "SSRF",
+       "q": "*(Scenario)* Which IP address would an SSRF filter that blocks private ranges still need to block explicitly if it forgot link-local space?",
+       "o": [
+        "93.184.216.34",
+        "1.1.1.1",
+        "8.8.8.8",
+        "169.254.169.254"
+       ],
+       "a": 3,
+       "w": "169.254.0.0/16 is link-local, not RFC 1918 space, and holds the cloud metadata service."
+      },
+      {
+       "t": "Deserialization and XML",
+       "q": "*(Recall)* Deserialising untrusted data with Java's ObjectInputStream can lead to",
+       "o": [
+        "remote code execution through gadget chains in the classpath",
+        "clickjacking",
+        "cross-site scripting",
+        "only slower parsing"
+       ],
+       "a": 0,
+       "w": "Object construction during deserialization can trigger dangerous method calls. Use JSON with DTOs or strict allow-list filters."
+      },
+      {
+       "t": "Deserialization and XML",
+       "q": "*(Recall)* XXE (XML external entity) attacks are prevented mainly by",
+       "o": [
+        "using HTTPS",
+        "disabling DTDs and external entity resolution in the XML parser",
+        "larger XML files",
+        "using GET only"
+       ],
+       "a": 1,
+       "w": "A parser that resolves external entities can read local files or call internal URLs."
+      },
+      {
+       "t": "Uploads",
+       "q": "*(Recall)* Which is a safe handling of an uploaded file?",
+       "o": [
+        "saving it under the user's original filename inside the web root",
+        "generating a random filename, checking type and size, and storing it outside the web root or in object storage",
+        "trusting the Content-Type header",
+        "executing it to check for viruses"
+       ],
+       "a": 1,
+       "w": "Original names can include path tricks or double extensions, and a file under the web root may execute or be served as HTML."
+      },
+      {
+       "t": "Uploads",
+       "q": "*(Scenario)* A site allows upload of \"images\" and checks only that the filename ends in .jpg. An attacker uploads shell.php.jpg. What further risk exists if the server executes files based on content?",
+       "o": [
+        "the image is too large",
+        "none",
+        "the filename is illegal",
+        "the file might run as code or be served as HTML; validate content, use a new name and do not execute uploads"
+       ],
+       "a": 3,
+       "w": "Extension checks are weak. Validate the actual content, re-encode images and serve with nosniff and attachment headers."
+      },
+      {
+       "t": "Other flaws",
+       "q": "*(Recall)* An open redirect is",
+       "o": [
+        "a DNS failure",
+        "a login or link parameter such as next=https://evil.com that sends users to any URL",
+        "a firewall rule",
+        "a redirect from HTTP to HTTPS"
+       ],
+       "a": 1,
+       "w": "It lends your domain's trust to phishing links. Allow only relative paths or a list of known hosts."
+      },
+      {
+       "t": "Other flaws",
+       "q": "*(Scenario)* An online shop lets a user submit the same discount code in two requests at exactly the same time, and both apply. This is a",
+       "o": [
+        "race condition (business logic flaw)",
+        "CSRF flaw",
+        "certificate error",
+        "XSS"
+       ],
+       "a": 0,
+       "w": "Check-then-update without locking or a unique constraint allows concurrent requests to both pass. Use transactions, locks or idempotency keys."
+      },
+      {
+       "t": "Other flaws",
+       "q": "*(Scenario)* A cart accepts a quantity of -5 and the total becomes negative. The root cause is",
+       "o": [
+        "missing server-side validation of business rules",
+        "weak encryption",
+        "an old browser",
+        "missing HTTPS"
+       ],
+       "a": 0,
+       "w": "Never trust any value from the client. Validate range and rules on the server for every request."
+      },
+      {
+       "t": "Other flaws",
+       "q": "*(Recall)* A Spring Boot app exposes /actuator/env publicly. This is mainly",
+       "o": [
+        "a security misconfiguration that can leak configuration and secrets",
+        "an injection flaw",
+        "a CSRF flaw",
+        "a design pattern"
+       ],
+       "a": 0,
+       "w": "Management endpoints must be restricted or disabled in production."
+      },
+      {
+       "t": "Other flaws",
+       "q": "*(Recall)* The Log4Shell vulnerability (CVE-2021-44228) is a lesson in",
+       "o": [
+        "CSRF tokens",
+        "physical security",
+        "password policies",
+        "the risk of vulnerable third-party components and the need for a dependency inventory"
+       ],
+       "a": 3,
+       "w": "One logging library embedded everywhere allowed remote code execution. Software composition analysis and fast patching are the answer."
+      },
+      {
+       "t": "Scoring",
+       "q": "*(Scenario)* The reflected XSS vector AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N has a CVSS v3.1 base score of",
+       "o": [
+        "5.5",
+        "6.1",
+        "7.5",
+        "9.8"
+       ],
+       "a": 1,
+       "w": "Network, low complexity, no privileges, but the victim must click (UI:R), and the scope changes to the browser. Score 6.1, Medium."
+      },
+      {
+       "t": "Scoring",
+       "q": "*(Scenario)* An unauthenticated SQL injection with full impact over the network (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) scores",
+       "o": [
+        "9.8",
+        "8.1",
+        "10.0",
+        "7.5"
+       ],
+       "a": 0,
+       "w": "9.8, Critical. 10.0 requires a changed scope as well."
+      },
+      {
+       "t": "Scoring",
+       "q": "*(Scenario)* An authenticated user can read other users' data through an IDOR (AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N). The CVSS v3.1 base score is",
+       "o": [
+        "4.3",
+        "9.1",
+        "7.5",
+        "6.5"
+       ],
+       "a": 3,
+       "w": "The need for a low-privilege account lowers the score compared with an unauthenticated read. 6.5 is Medium."
+      },
+      {
+       "t": "Scoring",
+       "q": "*(Recall)* A CVSS base score of 8.4 is rated",
+       "o": [
+        "High",
+        "Critical",
+        "Medium",
+        "Low"
+       ],
+       "a": 0,
+       "w": "Bands: 0.1 to 3.9 Low, 4.0 to 6.9 Medium, 7.0 to 8.9 High, 9.0 to 10.0 Critical."
+      },
+      {
+       "t": "Secure defaults",
+       "q": "*(Recall)* Which response header stops a browser from guessing the content type of a response?",
+       "o": [
+        "Server",
+        "Referrer-Policy",
+        "X-Content-Type-Options: nosniff",
+        "X-Frame-Options"
+       ],
+       "a": 2,
+       "w": "Without it, a browser may treat an uploaded text file as HTML or script."
+      },
+      {
+       "t": "Secure defaults",
+       "q": "*(Scenario)* A production error page shows the full Java stack trace and SQL text. Which risk is it?",
+       "o": [
+        "CSRF",
+        "information disclosure that helps an attacker tune their next request",
+        "clickjacking",
+        "none"
+       ],
+       "a": 1,
+       "w": "Show a generic error and a correlation id, and keep details in the server log."
+      },
+      {
+       "t": "Secure defaults",
+       "q": "*(Scenario)* A security scanner reports \"SQL injection\" on an endpoint that already uses prepared statements for every value. The first step is to",
+       "o": [
+        "deploy a patch immediately",
+        "disable the scanner",
+        "ignore all scanner output",
+        "verify manually whether it is a false positive before changing anything"
+       ],
+       "a": 3,
+       "w": "Scanners produce false positives. Triage means reproducing the issue and tracing the code path."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Other classic web flaws"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does `' OR '1'='1` bypass a login that concatenates strings?",
+       "answer": "It closes the original string literal and adds a condition that is always true, so the WHERE clause matches every row."
+      },
+      {
+       "question": "What is the difference between stored and reflected XSS?",
+       "answer": "Reflected XSS comes from the current request and appears in its own response. Stored XSS is saved by the application and runs for every user who views it, so it is usually worse."
+      },
+      {
+       "question": "Name two defences that reduce the damage of an XSS bug even when encoding is missed.",
+       "answer": "A Content Security Policy that blocks inline scripts, and HttpOnly cookies so the session cannot be read by script."
+      },
+      {
+       "question": "A report page uses `GET /api/orders/{id}`. A user changes the id and sees someone else's order. What is the flaw and the fix?",
+       "answer": "It is an IDOR (broken access control). The server must verify that the order belongs to the logged-in user (or that the user has a role that allows it)."
+      },
+      {
+       "question": "Why can a CSRF attack not read the response?",
+       "answer": "The same-origin policy stops the attacker's page from reading cross-origin responses. CSRF only needs the request to be sent and to take effect."
+      },
+      {
+       "question": "A feature fetches a user-supplied image URL. How do you stop SSRF?",
+       "answer": "Allow-list hosts or schemes, resolve and block private and link-local ranges, disable redirects, use short timeouts, and limit the instance's cloud permissions."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

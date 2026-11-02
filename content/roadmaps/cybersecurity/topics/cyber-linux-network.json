@@ -1,0 +1,804 @@
+{
+ "source": {
+  "document": "Written for this site, for freshers (November 2026)",
+  "questions": 52
+ },
+ "sections": [
+  {
+   "id": "ch-2-1",
+   "type": "concept",
+   "title": "Linux for security work",
+   "subtopicId": "2-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher. Standards and tools change (OWASP Top 10 editions, TLS versions, certificate exams), so check the official source named in the text before relying on a detail. Practise only on systems you own or have written permission to test."
+    },
+    {
+     "type": "markdown",
+     "text": "Servers, containers, cloud machines and most security tools run on Linux, so you need to be comfortable at its command line. You do not need to be an administrator, but you must be able to look around a machine, read logs and understand permissions.\n\n### Files, users and permissions\n\nEverything is a file, arranged in one tree starting at `/`. The places security people look first:\n\n| Path | What is there |\n|---|---|\n| `/etc/passwd` | account list (world-readable; no password hashes in it on modern systems) |\n| `/etc/shadow` | password hashes, readable by root only |\n| `/etc/sudoers` | who may run commands as root |\n| `/var/log/` | logs: `auth.log` or `secure` (logins, sudo), `syslog`, web server logs |\n| `/home/<user>/.ssh/` | a user's SSH keys and `authorized_keys` |\n| `/tmp` | world-writable scratch space, a favourite place for attackers to drop files |\n| `/proc` | live view of processes and the kernel |\n\nEvery file has an **owner**, a **group** and three permission sets (owner, group, others), each made of **r** (read = 4), **w** (write = 2) and **x** (execute = 1)."
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "ls -l report.txt\n# -rw-r----- 1 alice staff 120 Nov 1 10:00 report.txt\n#  rw- r-- ---  = 6 4 0  -> owner read+write, group read, others nothing\nchmod 640 report.txt        # same, as an octal number\nchmod u+x,g-r script.sh     # symbolic form: add execute for owner, remove read for group\nchown alice:staff report.txt",
+     "title": "Reading and setting permissions"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Directories:** `x` means \"may enter\", `r` means \"may list names\", `w` means \"may create and delete entries\".\n- **umask** removes bits from the default mode. Files start at 666 and directories at 777. With umask 022 a new file is 644 and a new directory 755. With umask 027 a new file is 640 and a directory 750.\n- **setuid (4xxx)** makes a program run with its owner's rights (`passwd` is root-owned setuid so you can change your password). A setuid program with a bug is a classic route to root, so `find / -perm -4000` is a standard audit command.\n- **sticky bit (1xxx)** on a directory such as `/tmp` stops users from deleting each other's files.\n- **sudo** runs one command as root and leaves a log line. Prefer a short, specific `sudoers` rule over giving everyone full root.\n\n### Processes, networking and logs from the shell"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "whoami; id                      # who am I, which groups\nps aux --sort=-%cpu | head      # busiest processes\nss -tulpn                       # listening TCP/UDP ports and the process that owns each\nip addr; ip route               # addresses and routes\nlast -n 10                      # recent logins\nsudo grep \"Failed password\" /var/log/auth.log | tail\njournalctl -u ssh --since \"1 hour ago\"\nfind / -perm -4000 -type f 2>/dev/null     # setuid files",
+     "title": "A first look at a machine"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Text tools** are the security analyst's spreadsheet: `grep` filters lines, `cut` and `awk` take columns, `sort | uniq -c | sort -nr` counts and ranks. The pipeline `grep \"Failed password\" auth.log | awk '{print $(NF-3)}' | sort | uniq -c | sort -nr | head` shows the IP addresses with the most failed SSH logins.\n- **Package updates** are a security control: `apt update && apt upgrade` or `dnf update` close known holes.\n- **SSH** is the standard remote login. Use **key pairs** instead of passwords, disable root login and password login in `/etc/ssh/sshd_config` (`PermitRootLogin no`, `PasswordAuthentication no`), and treat a private key like a password.\n- **Firewall tools:** `ufw` (simple) and `iptables` or `nftables` (full control) decide which packets are accepted."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Octal:** r=4, w=2, x=1. `rwxr-x---` = **750**. `rw-r-----` = **640**.\n- **umask** subtracts: files 666 − umask, directories 777 − umask. 022 gives 644 and 755.\n- **Where did someone log in from?** `last`, `lastb`, `/var/log/auth.log`.\n- **What is listening?** `ss -tulpn`. Anything you do not recognise is a question to ask.\n- **Hardening first five:** patch, key-only SSH, no root login, firewall on, remove unused services.\n- A file that is **world-writable** (`o+w`) and executed by root is a privilege-escalation gift.",
+     "title": "Linux cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-2",
+   "type": "concept",
+   "title": "Networking the way a security person sees it",
+   "subtopicId": "2-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Layers and addresses\n\n| Layer (TCP/IP) | Unit | Example protocols | Typical attacks at this layer |\n|---|---|---|---|\n| Application | message | HTTP, DNS, SMTP, SSH | injection, XSS, DNS tunnelling |\n| Transport | segment | TCP, UDP | SYN flood, port scanning |\n| Internet | packet | IP, ICMP | IP spoofing, ping floods |\n| Link | frame | Ethernet, Wi-Fi, ARP | ARP spoofing, MAC flooding, rogue access point |\n\n- **MAC address:** 48-bit hardware address, used inside one local network. **IP address:** logical address used across networks. **Port:** 16-bit number (0 to 65535) naming a service on a host.\n- **IPv4** addresses are 32 bits. **CIDR notation** `192.168.1.0/26` means the first 26 bits are the network and the last 6 are for hosts. That gives 2⁶ = 64 addresses, of which **62 are usable** (the first is the network address, the last is the broadcast address).\n- **Private ranges (RFC 1918):** `10.0.0.0/8`, `172.16.0.0/12` (172.16 to 172.31), `192.168.0.0/16`. They are not routed on the internet. `127.0.0.0/8` is loopback and `169.254.0.0/16` is link-local (what a machine gives itself when DHCP fails).\n- **NAT** lets many private hosts share one public address. It is not a firewall, but it does block unsolicited inbound connections as a side effect.\n\n| Prefix | Addresses | Usable hosts |\n|---|---|---|\n| /24 | 256 | 254 |\n| /25 | 128 | 126 |\n| /26 | 64 | 62 |\n| /27 | 32 | 30 |\n| /28 | 16 | 14 |\n| /30 | 4 | 2 |\n\n### TCP, UDP and the handshake\n\n- **TCP** is connection-oriented and reliable. The **three-way handshake** is **SYN → SYN/ACK → ACK**. Teardown uses FIN (or RST to abort).\n- **UDP** is connectionless and has no handshake, which makes it fast and easy to spoof. DNS, DHCP, NTP and VoIP use it.\n- A **SYN flood** sends many SYNs and never completes the handshake, filling the server's half-open connection table. **SYN cookies** defend against it.\n- **Port states** in a scan: **open** (a service answered), **closed** (the host replied with RST) and **filtered** (no reply, usually because a firewall dropped the packet).\n\n| Port | Service | Note |\n|---|---|---|\n| 20/21 | FTP | clear text. Use SFTP or FTPS |\n| 22 | SSH (and SFTP) | encrypted remote shell |\n| 23 | Telnet | clear text, never expose it |\n| 25 | SMTP | mail between servers |\n| 53 | DNS | UDP for queries, TCP for large answers and zone transfers |\n| 67/68 | DHCP | UDP |\n| 80 / 443 | HTTP / HTTPS | |\n| 110 / 143 | POP3 / IMAP | clear text. Use 995 / 993 (TLS) |\n| 123 | NTP | UDP |\n| 161 | SNMP | UDP; versions 1 and 2c use a clear-text \"community string\" |\n| 389 / 636 | LDAP / LDAPS | directory service |\n| 445 | SMB | Windows file sharing, a favourite worm target |\n| 1433 / 3306 / 5432 | SQL Server / MySQL / PostgreSQL | never expose to the internet |\n| 3389 | RDP | remote desktop, heavily attacked when exposed |\n| 8080 / 8443 | alternative HTTP / HTTPS | |\n\n### DNS, HTTP and the other protocols attackers love\n\n- **DNS** turns names into addresses. It is usually unauthenticated, so attackers use **cache poisoning** (making a resolver store a false answer), **DNS tunnelling** (hiding data in queries) and **subdomain takeover** (a DNS record points to a service you no longer own). **DNSSEC** signs records so forged answers can be detected. **DNS over HTTPS/TLS** encrypts the lookup.\n- **HTTP** is clear text, so anyone on the path can read and change it. **HTTPS** is HTTP inside TLS. A request has a method (GET, POST...), a path, headers (`Host`, `Cookie`, `Authorization`) and an optional body. The response has a status code: **2xx** success, **3xx** redirect, **4xx** client error (401 not authenticated, 403 forbidden), **5xx** server error.\n- **ARP** maps an IP to a MAC address on the local network and has no authentication. **ARP spoofing** answers \"that IP is at my MAC\" to intercept traffic (a man-in-the-middle).\n- **DHCP** hands out addresses; a **rogue DHCP server** can point clients at the attacker's gateway or DNS.\n- **ICMP** carries ping and error messages. Blocking all of it breaks path MTU discovery, so filter selectively."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **/n hosts:** 2^(32−n) addresses, minus 2 usable. /26 = 62, /27 = 30, /28 = 14.\n- **Block size trick:** a /26 splits a /24 into blocks of 64 (0, 64, 128, 192). 192.168.1.70/26 is in the block starting at .64.\n- **TCP handshake:** SYN, SYN/ACK, ACK. RST means refused or aborted.\n- **Clear-text twins:** Telnet→SSH, FTP→SFTP, HTTP→HTTPS, POP3/IMAP→with TLS.\n- **Scan reading:** RST = closed, silence = filtered, SYN/ACK = open.\n- **DNS** = UDP/53 for queries, TCP/53 for zone transfers and big answers.",
+     "title": "Network cheat codes"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-3",
+   "type": "concept",
+   "title": "Seeing the traffic: scanning and packet analysis",
+   "subtopicId": "2-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Nmap (only on machines you may scan)\n\nNmap discovers hosts and open ports. On your own lab network:"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "nmap 192.168.56.101                  # top 1000 TCP ports\nnmap -sn 192.168.56.0/24             # ping sweep: which hosts are up?\nnmap -p- 192.168.56.101              # all 65535 ports\nnmap -sV -p 22,80,443 192.168.56.101 # service and version detection\nnmap -sS 192.168.56.101              # SYN (\"half-open\") scan, needs root\nnmap -A 192.168.56.101               # OS detection, versions, default scripts, traceroute\nnmap --script vuln 192.168.56.101    # run vulnerability-check scripts (lab machines only)",
+     "title": "Common nmap scans"
+    },
+    {
+     "type": "markdown",
+     "text": "- A **connect scan** (`-sT`) completes the handshake and is logged by the application. A **SYN scan** (`-sS`) sends SYN, reads the reply and then sends RST, so the connection never completes.\n- **Banner grabbing** (`-sV`, `nc host 80`) reads the version a service announces. That is why you should hide version banners in production.\n- Scans are noisy and visible in logs. That is fine for testing, and a useful detection signal for defenders.\n\n### Wireshark and tcpdump\n\nWireshark (a GUI) and `tcpdump` (a command line) capture packets. Filters you will use in practice:\n\n| Goal | Wireshark display filter | tcpdump capture filter |\n|---|---|---|\n| one host | `ip.addr == 10.0.0.5` | `host 10.0.0.5` |\n| one port | `tcp.port == 443` | `port 443` |\n| DNS only | `dns` | `udp port 53` |\n| HTTP requests | `http.request` | `tcp port 80` |\n| SYN packets | `tcp.flags.syn == 1 && tcp.flags.ack == 0` | `tcp[tcpflags] & tcp-syn != 0` |\n\nWhat to look for: a three-way handshake, a stream of SYNs with no ACKs (flood or scan), credentials in a clear-text protocol, many DNS queries with long random names (tunnelling), and a host answering ARP for an address that is not its own."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Sniffing other people's traffic is illegal in most places. Use a home lab, a virtual machine network or a recorded `.pcap` from a training site.",
+     "title": "Capture on your own network only"
+    }
+   ]
+  },
+  {
+   "id": "ch-2-4",
+   "type": "concept",
+   "title": "Network attacks and their defences",
+   "subtopicId": "2-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Attack | How it works | Defence |\n|---|---|---|\n| **Sniffing** | reading traffic on a shared or compromised path | encryption (TLS, SSH, VPN), switched networks |\n| **ARP spoofing / MITM** | forged ARP replies put the attacker on the path | dynamic ARP inspection, static entries for critical hosts, TLS everywhere |\n| **DNS cache poisoning** | forged answers are accepted by the resolver | DNSSEC, randomised source ports and transaction IDs, patched resolvers |\n| **SYN flood** | half-open connections exhaust the table | SYN cookies, rate limiting, upstream scrubbing |\n| **DDoS amplification** | small spoofed requests to open resolvers or NTP servers produce large replies to the victim | disable open resolvers, filter spoofed source addresses (BCP 38), use a CDN |\n| **Rogue access point / evil twin** | a fake Wi-Fi with a familiar name | WPA3 or WPA2-Enterprise, user training, certificate checks |\n| **VLAN hopping** | tagged frames escape their VLAN | disable unused trunking, set the native VLAN to an unused one |\n| **Port scanning** | mapping open services | close unused ports, firewall rules, detect and alert |\n\n### The building blocks of network defence\n\n- **Firewall:** a **packet filter** decides by address, port and protocol. A **stateful** firewall also remembers established connections, so return traffic is allowed without a separate rule. A **next-generation firewall** adds application awareness and intrusion prevention. A **WAF** (web application firewall) understands HTTP and blocks things like SQL injection patterns.\n- **Rule order matters.** Rules are read top to bottom and the first match wins, and the last rule should be **deny all**.\n- **DMZ:** a separate network segment for public-facing servers so a compromise does not land inside the internal network.\n- **Segmentation (VLANs, subnets, security groups):** limits lateral movement. A printer should not be able to talk to the database.\n- **VPN:** an encrypted tunnel (IPsec, WireGuard, OpenVPN). It protects traffic in transit and extends the private network, but it does not make the connecting device trustworthy.\n- **IDS / IPS:** an intrusion **detection** system alerts, an intrusion **prevention** system sits inline and blocks. **Signature-based** engines (Snort, Suricata rules) match known patterns, **anomaly-based** engines flag deviations from a baseline and produce more false positives.\n- **Proxy:** a **forward proxy** sits in front of users and filters outbound traffic. A **reverse proxy** or load balancer sits in front of servers, terminates TLS and hides them.\n- **Honeypot:** a decoy system that exists to be attacked, so defenders can watch and learn."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Inbound rules: allow TCP 443 to the web server, allow TCP 22 only from the admin subnet, deny everything else. Outbound: allow what the server needs (DNS, updates) and deny the rest. Because the firewall is stateful, replies to allowed connections need no extra rule. Order matters: the specific allows come before the final deny.\"",
+     "title": "A firewall question that is asked often"
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- /n gives 2^(32−n) addresses and two fewer usable hosts\n- TCP opens with SYN, SYN/ACK, ACK and a closed port answers RST\n- Replace clear-text protocols (Telnet, FTP, HTTP) with encrypted ones\n- ARP and DNS have no built-in authentication, so they can be spoofed\n- Stateful firewalls remember connections and the last rule should be deny all\n- Scan and capture only on networks you own or may test"
+    }
+   ]
+  },
+  {
+   "id": "mcq",
+   "type": "practice",
+   "title": "MCQ practice (52 questions)",
+   "subtopicId": "2-mcq",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "52 original questions on 10 areas. *Recall* questions test a definition or a rule. *Scenario* questions give you a situation, a log or a snippet and ask what is wrong or what to do. Pick an answer to see why it is right and which trap catches people."
+    },
+    {
+     "type": "mcq",
+     "id": "cyber-linux-network",
+     "items": [
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* The permission string rwxr-x--- written as an octal number is",
+       "o": [
+        "570",
+        "755",
+        "750",
+        "740"
+       ],
+       "a": 2,
+       "w": "Owner rwx = 4+2+1 = 7, group r-x = 4+0+1 = 5, others --- = 0."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* chmod 640 gives the file the symbolic permissions",
+       "o": [
+        "rw-rw----",
+        "rwxr-----",
+        "r--r-----",
+        "rw-r-----"
+       ],
+       "a": 3,
+       "w": "6 = rw-, 4 = r--, 0 = ---. The owner may read and write, the group may read, others have no access."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Scenario)* A config file holds a database password. Which mode is the most appropriate if only the owner and the application group need access, and only the owner should edit it?",
+       "o": [
+        "777",
+        "640",
+        "666",
+        "604"
+       ],
+       "a": 1,
+       "w": "640 gives the owner read and write, the group read only, and others nothing. 666 and 777 expose the password to everyone, and 604 gives access to others but not to the group."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* With a umask of 022, a newly created file has the mode",
+       "o": [
+        "600",
+        "755",
+        "644",
+        "666"
+       ],
+       "a": 2,
+       "w": "Files start at 666 and the umask clears bits: 666 − 022 = 644. Directories start at 777 and become 755."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Scenario)* A hardening guide sets umask 027. New directories will have the mode",
+       "o": [
+        "750",
+        "777",
+        "755",
+        "640"
+       ],
+       "a": 0,
+       "w": "777 minus 027 gives 750: rwx for the owner, r-x for the group, nothing for others."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* On a directory, the execute (x) bit means",
+       "o": [
+        "files inside may be run",
+        "it can be deleted",
+        "the directory may be entered and its entries accessed by name",
+        "its names can be listed"
+       ],
+       "a": 2,
+       "w": "x allows traversal, r allows listing the names, and w allows creating or removing entries."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* Why is a setuid-root program with a vulnerability particularly dangerous?",
+       "o": [
+        "it cannot be logged",
+        "it ignores file permissions of its own directory",
+        "an attacker who exploits it gains the rights of the owner, usually root",
+        "it runs slower than other programs"
+       ],
+       "a": 2,
+       "w": "setuid makes the program run with its owner's privileges. A bug can therefore hand a normal user root access. That is why setuid files are audited."
+      },
+      {
+       "t": "Linux permissions",
+       "q": "*(Recall)* The sticky bit on /tmp ensures that",
+       "o": [
+        "files in it are never deleted",
+        "only root can create files there",
+        "users can delete only their own files in the directory",
+        "files are encrypted"
+       ],
+       "a": 2,
+       "w": "Without it, anyone with write access to the directory could delete everyone else's files."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Recall)* Password hashes of local accounts are stored in",
+       "o": [
+        "/etc/passwd, readable by all",
+        "/home/user/.ssh",
+        "/etc/shadow, readable only by root",
+        "/var/log/auth.log"
+       ],
+       "a": 2,
+       "w": "Splitting the hash into /etc/shadow stops ordinary users from running offline guessing attacks on it."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Recall)* Which command lists listening TCP and UDP ports together with the owning process?",
+       "o": [
+        "ps -e",
+        "ls -l",
+        "ss -tulpn",
+        "chmod -R"
+       ],
+       "a": 2,
+       "w": "ss (or the older netstat) shows sockets. An unexpected listener is a lead for investigation."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Recall)* Failed SSH logins on a Debian or Ubuntu server are usually recorded in",
+       "o": [
+        "/proc/net",
+        "/var/log/auth.log",
+        "/etc/ssh/ssh_config",
+        "/tmp/ssh.log"
+       ],
+       "a": 1,
+       "w": "Authentication events go to auth.log (secure on Red Hat family systems). journalctl -u ssh shows the same events on systemd systems."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Scenario)* Which pipeline shows the five IP addresses with the most \"Failed password\" lines, assuming the IP is the third field from the end?",
+       "o": [
+        "cat auth.log | sort | uniq",
+        "grep \"Failed password\" auth.log | head -5",
+        "grep \"Failed password\" auth.log | awk '{print $(NF-3)}' | sort | uniq -c | sort -nr | head -5",
+        "awk '{print $1}' auth.log | wc -l"
+       ],
+       "a": 2,
+       "w": "Filter the lines, extract the IP column, count duplicates with sort | uniq -c, then rank with sort -nr and keep the top five."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Recall)* In /etc/ssh/sshd_config, which settings do the most to harden SSH?",
+       "o": [
+        "Port 22 and Protocol 1",
+        "X11Forwarding yes",
+        "PermitRootLogin yes and PasswordAuthentication yes",
+        "PermitRootLogin no and PasswordAuthentication no, with key-based login"
+       ],
+       "a": 3,
+       "w": "Disabling root login and passwords removes the two things brute-force bots try. Keys cannot be guessed over the network."
+      },
+      {
+       "t": "Linux basics",
+       "q": "*(Scenario)* find / -perm -4000 -type f 2>/dev/null is typically used to",
+       "o": [
+        "find world-writable files",
+        "delete temporary files",
+        "show the largest files",
+        "list setuid files that might allow privilege escalation"
+       ],
+       "a": 3,
+       "w": "Mode bit 4000 is setuid. Auditing the list for unexpected binaries is part of hardening and of privilege-escalation hunting."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Recall)* How many usable host addresses does a /26 network have?",
+       "o": [
+        "30",
+        "62",
+        "126",
+        "64"
+       ],
+       "a": 1,
+       "w": "2^(32−26) = 64 addresses, minus the network address and the broadcast address leaves 62."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Recall)* How many usable host addresses does 192.168.10.0/28 provide?",
+       "o": [
+        "14",
+        "15",
+        "16",
+        "30"
+       ],
+       "a": 0,
+       "w": "A /28 has 16 addresses. Two are reserved, so 14 can be assigned to hosts."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Scenario)* A department needs 100 hosts. What is the smallest prefix that fits them?",
+       "o": [
+        "/27",
+        "/24",
+        "/26",
+        "/25"
+       ],
+       "a": 3,
+       "w": "A /25 has 128 addresses and 126 usable. A /26 has only 62 usable."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Scenario)* Which address belongs to the network 172.16.4.0/22?",
+       "o": [
+        "172.16.8.1",
+        "172.16.7.200",
+        "172.16.3.255",
+        "172.17.4.9"
+       ],
+       "a": 1,
+       "w": "A /22 spans four /24 blocks: 172.16.4.0 to 172.16.7.255. 172.16.7.200 is inside; .8.1 and .3.255 are just outside."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Recall)* Which of these is a private (RFC 1918) address?",
+       "o": [
+        "192.169.1.1",
+        "11.0.0.5",
+        "172.20.5.9",
+        "172.32.0.1"
+       ],
+       "a": 2,
+       "w": "172.16.0.0/12 covers 172.16 to 172.31. 172.32.x.x, 11.x.x.x and 192.169.x.x are public."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Recall)* The address 169.254.12.7 on a laptop most likely means",
+       "o": [
+        "the address is a public address from the ISP",
+        "DHCP failed and the machine assigned itself a link-local address",
+        "the laptop is a DNS server",
+        "the laptop is connected to the internet through NAT"
+       ],
+       "a": 1,
+       "w": "169.254.0.0/16 is link-local (APIPA). It appears when no DHCP server answers."
+      },
+      {
+       "t": "IP addressing",
+       "q": "*(Recall)* Network address translation (NAT) is best described as",
+       "o": [
+        "a way to speed up DNS",
+        "a replacement for a firewall",
+        "mapping private addresses to a public address, which also blocks unsolicited inbound connections as a side effect",
+        "an encryption method"
+       ],
+       "a": 2,
+       "w": "NAT is not a security product, but without a mapping, unsolicited inbound packets have nowhere to go."
+      },
+      {
+       "t": "TCP and UDP",
+       "q": "*(Recall)* The TCP three-way handshake is",
+       "o": [
+        "ACK, SYN, SYN/ACK",
+        "SYN, RST, ACK",
+        "SYN, ACK, FIN",
+        "SYN, SYN/ACK, ACK"
+       ],
+       "a": 3,
+       "w": "The client sends SYN, the server answers SYN/ACK, and the client confirms with ACK."
+      },
+      {
+       "t": "TCP and UDP",
+       "q": "*(Recall)* A SYN flood works by",
+       "o": [
+        "starting many connections and never completing the handshake, filling the half-open table",
+        "sending huge UDP packets",
+        "guessing session IDs",
+        "forging DNS replies"
+       ],
+       "a": 0,
+       "w": "The server keeps state for every half-open connection until it times out. SYN cookies avoid holding that state."
+      },
+      {
+       "t": "TCP and UDP",
+       "q": "*(Scenario)* During a SYN scan, one port returns RST and another returns nothing at all. This means",
+       "o": [
+        "the first is closed and the second is probably filtered by a firewall",
+        "the first is filtered and the second is open",
+        "both are open",
+        "both are closed"
+       ],
+       "a": 0,
+       "w": "RST is the host's answer for a closed port. Silence usually means a firewall dropped the probe, so the port is reported as filtered."
+      },
+      {
+       "t": "TCP and UDP",
+       "q": "*(Recall)* Which protocol is the more natural choice for spoofed-source amplification attacks?",
+       "o": [
+        "HTTPS",
+        "UDP, because it needs no handshake",
+        "TCP, because of its handshake",
+        "SSH"
+       ],
+       "a": 1,
+       "w": "With no handshake, a forged source address is not detected, so the reply is sent to the victim. DNS and NTP are classic examples."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Recall)* SSH uses TCP port",
+       "o": [
+        "21",
+        "22",
+        "23",
+        "25"
+       ],
+       "a": 1,
+       "w": "21 is FTP, 23 is Telnet and 25 is SMTP."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Recall)* Which port and protocol pair sends credentials in clear text?",
+       "o": [
+        "993 IMAPS",
+        "23 Telnet",
+        "443 HTTPS",
+        "22 SSH"
+       ],
+       "a": 1,
+       "w": "Telnet has no encryption. SSH, HTTPS and IMAP over TLS do."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Recall)* DNS queries normally use",
+       "o": [
+        "UDP 53, with TCP 53 for zone transfers and large answers",
+        "UDP 80",
+        "TCP 25 only",
+        "TCP 22"
+       ],
+       "a": 0,
+       "w": "Most lookups are small UDP packets. TCP 53 is used for big responses and zone transfers."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Recall)* A database port such as 3306 or 5432 should be",
+       "o": [
+        "reachable only from the application servers",
+        "moved to port 80",
+        "open to the internet for convenience",
+        "left on the default and unfiltered"
+       ],
+       "a": 0,
+       "w": "Databases should never face the internet. Restrict by firewall or security group to the application tier."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Recall)* Which port is the default for RDP, one of the most attacked services when exposed?",
+       "o": [
+        "3389",
+        "22",
+        "5900",
+        "445"
+       ],
+       "a": 0,
+       "w": "445 is SMB. 3389 is Windows remote desktop. If remote access is needed, put it behind a VPN or gateway with MFA."
+      },
+      {
+       "t": "Ports and protocols",
+       "q": "*(Scenario)* A scan of a public server shows 21, 23, 80, 443 and 3306 open. Which finding is most urgent?",
+       "o": [
+        "3306 (a database) and 21/23 (clear-text protocols) are exposed",
+        "none, a server should have many open ports",
+        "80 is open",
+        "443 is open"
+       ],
+       "a": 0,
+       "w": "A database, FTP and Telnet on the internet are serious. 80 and 443 are expected for a web server (80 should redirect to HTTPS)."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(Recall)* DNS cache poisoning means",
+       "o": [
+        "a name server has too many records",
+        "a certificate has expired",
+        "a resolver is too slow",
+        "a resolver is tricked into storing a false answer, sending users to the attacker's address"
+       ],
+       "a": 3,
+       "w": "Users who trust the resolver follow the forged record. DNSSEC and randomised ports and IDs reduce the risk."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(Recall)* DNSSEC provides",
+       "o": [
+        "digital signatures that prove DNS records are authentic and unmodified",
+        "encryption of DNS queries",
+        "blocking of malicious sites",
+        "faster lookups"
+       ],
+       "a": 0,
+       "w": "It authenticates the data but does not encrypt it. DNS over HTTPS or TLS encrypts the lookup."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(Scenario)* A host sends hundreds of DNS queries a minute for very long random-looking names under one domain. This most likely indicates",
+       "o": [
+        "a misconfigured printer",
+        "a software update",
+        "DNS tunnelling used to smuggle data out",
+        "normal browsing"
+       ],
+       "a": 2,
+       "w": "Data encoded into subdomain labels travels out through the resolver. Query length, volume and entropy are the usual detection signals."
+      },
+      {
+       "t": "DNS and HTTP",
+       "q": "*(Recall)* An HTTP response with status 403 means",
+       "o": [
+        "the page was not found",
+        "the user is not authenticated",
+        "the server crashed",
+        "the server understood the request but refuses to allow it"
+       ],
+       "a": 3,
+       "w": "401 means authentication is required or failed, 403 means forbidden, 404 not found and 500 server error."
+      },
+      {
+       "t": "Local network attacks",
+       "q": "*(Recall)* ARP spoofing allows an attacker on the same LAN to",
+       "o": [
+        "resolve DNS names faster",
+        "crack Wi-Fi passwords",
+        "escape a VLAN",
+        "position themselves between a victim and the gateway"
+       ],
+       "a": 3,
+       "w": "By answering ARP requests with their own MAC address, the attacker receives traffic meant for another host. Encryption (TLS) protects the content."
+      },
+      {
+       "t": "Local network attacks",
+       "q": "*(Scenario)* A security team sees the same IP address mapped to two different MAC addresses in rapid alternation in the ARP table. The most likely cause is",
+       "o": [
+        "DHCP lease renewal",
+        "ARP spoofing",
+        "a DNS misconfiguration",
+        "a failed switch port"
+       ],
+       "a": 1,
+       "w": "Two devices claiming one IP, especially flip-flopping, is the classic ARP spoofing signature. Dynamic ARP inspection on the switch blocks it."
+      },
+      {
+       "t": "Local network attacks",
+       "q": "*(Recall)* An evil twin is",
+       "o": [
+        "a clone of a server certificate",
+        "a rogue Wi-Fi access point that imitates a legitimate network name",
+        "a duplicate database",
+        "a second admin account"
+       ],
+       "a": 1,
+       "w": "Victims connect to the attacker's access point, who can then intercept traffic. HTTPS and certificate checks limit the damage."
+      },
+      {
+       "t": "Local network attacks",
+       "q": "*(Recall)* Which defence limits the damage of a DDoS amplification attack that uses open DNS resolvers?",
+       "o": [
+        "disabling HTTPS",
+        "closing open resolvers and filtering spoofed source addresses",
+        "using IPv6 only",
+        "longer passwords"
+       ],
+       "a": 1,
+       "w": "Amplification needs open resolvers and the ability to spoof the victim's address. Fixing either breaks the attack."
+      },
+      {
+       "t": "Firewalls and monitoring",
+       "q": "*(Recall)* A stateful firewall differs from a stateless packet filter because it",
+       "o": [
+        "remembers established connections and lets return traffic through automatically",
+        "cannot block ports",
+        "inspects only the MAC address",
+        "works only on UDP"
+       ],
+       "a": 0,
+       "w": "State tracking means one rule for outbound traffic is enough, and unsolicited inbound packets that match no connection are dropped."
+      },
+      {
+       "t": "Firewalls and monitoring",
+       "q": "*(Scenario)* A firewall rule list reads: 1) deny all 2) allow TCP 443 to the web server. Users cannot reach the website. Why?",
+       "o": [
+        "rule 2 uses the wrong protocol",
+        "HTTPS is blocked by default",
+        "the firewall needs a reboot",
+        "rules are processed in order and the first match wins, so rule 1 drops everything"
+       ],
+       "a": 3,
+       "w": "The specific allow rules must come before the final deny all."
+      },
+      {
+       "t": "Firewalls and monitoring",
+       "q": "*(Recall)* A WAF is mainly designed to protect",
+       "o": [
+        "wireless clients",
+        "email servers",
+        "file shares",
+        "web applications, by inspecting HTTP requests for attacks such as SQL injection"
+       ],
+       "a": 3,
+       "w": "A web application firewall understands HTTP. It is a helpful extra layer, not a substitute for fixing the code."
+      },
+      {
+       "t": "Firewalls and monitoring",
+       "q": "*(Recall)* The difference between an IDS and an IPS is that an IPS",
+       "o": [
+        "cannot use signatures",
+        "only logs events",
+        "works only on hosts",
+        "sits inline and can block traffic, while an IDS only alerts"
+       ],
+       "a": 3,
+       "w": "An IPS can drop malicious packets in real time. A false positive on an IPS can block legitimate users."
+      },
+      {
+       "t": "Firewalls and monitoring",
+       "q": "*(Recall)* Anomaly-based intrusion detection compared with signature-based detection",
+       "o": [
+        "only detects known malware",
+        "never produces false alarms",
+        "can spot unknown attacks but usually raises more false positives",
+        "needs no baseline"
+       ],
+       "a": 2,
+       "w": "It flags deviations from normal behaviour, so it can catch new attacks and also unusual but harmless activity."
+      },
+      {
+       "t": "Network design",
+       "q": "*(Recall)* A DMZ is used to",
+       "o": [
+        "place public-facing servers in a segment separated from the internal network",
+        "store backups",
+        "hold user passwords",
+        "encrypt emails"
+       ],
+       "a": 0,
+       "w": "If a DMZ server is compromised, the attacker still faces another firewall before the internal network."
+      },
+      {
+       "t": "Network design",
+       "q": "*(Scenario)* Why should a printer VLAN not be able to reach the database subnet?",
+       "o": [
+        "segmentation limits lateral movement if the printer is compromised",
+        "it reduces ink costs",
+        "databases cannot be reached from VLANs",
+        "printers use a different protocol"
+       ],
+       "a": 0,
+       "w": "Segmentation applies least privilege to the network, so a weak device cannot become a stepping stone to valuable systems."
+      },
+      {
+       "t": "Network design",
+       "q": "*(Recall)* A VPN primarily provides",
+       "o": [
+        "an anonymous identity",
+        "an encrypted tunnel for traffic across an untrusted network",
+        "a stronger password",
+        "protection from malware on the endpoint"
+       ],
+       "a": 1,
+       "w": "It protects traffic in transit. It does not make an infected laptop safe."
+      },
+      {
+       "t": "Network design",
+       "q": "*(Recall)* A reverse proxy placed in front of web servers can",
+       "o": [
+        "terminate TLS, hide the real servers and filter requests",
+        "replace the operating system",
+        "only cache images",
+        "block all outbound traffic"
+       ],
+       "a": 0,
+       "w": "Clients talk to the proxy, which forwards to backends. It is a convenient place to add TLS, rate limiting and a WAF."
+      },
+      {
+       "t": "Scanning",
+       "q": "*(Recall)* The nmap option that detects service versions is",
+       "o": [
+        "-p-",
+        "-sn",
+        "-Pn",
+        "-sV"
+       ],
+       "a": 3,
+       "w": "-sV probes open ports to identify the service and version. -sn is a ping sweep and -p- selects all ports."
+      },
+      {
+       "t": "Scanning",
+       "q": "*(Scenario)* A tester is told in the scope document to scan 10.1.1.0/24 only. A host at 10.1.2.15 responds during a broader sweep. What should they do?",
+       "o": [
+        "scan it quickly to see",
+        "leave it out and note that it exists, because it is outside the authorised scope",
+        "include it, since it responded",
+        "shut it down"
+       ],
+       "a": 1,
+       "w": "Only systems named in the written scope may be tested. Mention the discovery to the client so they can extend the scope if they wish."
+      },
+      {
+       "t": "Scanning",
+       "q": "*(Recall)* Which Wireshark display filter shows only DNS traffic?",
+       "o": [
+        "http.request",
+        "tcp.port == 80",
+        "arp",
+        "dns"
+       ],
+       "a": 3,
+       "w": "`dns` matches DNS packets. The others select HTTP traffic, a TCP port or ARP."
+      },
+      {
+       "t": "Scanning",
+       "q": "*(Recall)* Banner grabbing is",
+       "o": [
+        "decrypting TLS",
+        "disabling a firewall",
+        "reading the software name and version a service announces",
+        "breaking a login screen"
+       ],
+       "a": 2,
+       "w": "Banners help attackers pick exploits. Production services should reveal as little as possible."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Network attacks and their defences"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does `chmod 750 deploy.sh` give to the owner, the group and others?",
+       "answer": "Owner read, write and execute (7), group read and execute (5), others nothing (0)."
+      },
+      {
+       "question": "A new network needs 50 hosts. Which is the smallest IPv4 prefix that fits, and how many usable hosts does it have?",
+       "answer": "A /26: 64 addresses, 62 usable. A /27 has only 30 usable."
+      },
+      {
+       "question": "Describe how a SYN scan tells open, closed and filtered ports apart.",
+       "answer": "An open port answers SYN/ACK. A closed port answers RST. A filtered port gives no answer or an ICMP unreachable, because a firewall is dropping the probe."
+      },
+      {
+       "question": "Why is Telnet considered unsafe, and what replaces it?",
+       "answer": "It sends everything, including the password, in clear text, so anyone on the path can read it. SSH encrypts the session and supports key-based login."
+      },
+      {
+       "question": "How does a stateful firewall differ from a simple packet filter?",
+       "answer": "It tracks connections, so return traffic for an allowed outbound connection is accepted automatically without an explicit inbound rule."
+      },
+      {
+       "question": "You see hundreds of failed SSH logins from one IP in `auth.log`. List three responses.",
+       "answer": "Block or rate-limit the IP (a firewall rule or fail2ban), disable password logins in favour of keys, and check whether any login from that IP succeeded."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

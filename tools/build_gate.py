@@ -88,8 +88,11 @@ def fail(path, line, message):
     sys.exit(f"{path.name}:{line}: {message}")
 
 
-def parse_questions(path):
-    """-> list of question dicts, checked and with the options in their final order."""
+def parse_questions(path, names=helpers, tag_for=lambda marks: f"*({marks} mark{'s' if marks == 2 else ''})*"):
+    """-> list of question dicts, checked and with the options in their final order.
+
+    `names` is the module whose names the !py checks can use; `tag_for(marks)` is the italic prefix of the stem
+    (build_cyber.py reuses this parser with its own checks and levels instead of marks)."""
     raw, cur, mode = [], None, None
 
     def finish():
@@ -153,7 +156,7 @@ def parse_questions(path):
             fail(path, where, "no explanation (=>)")
         right_text = q["opts"][q["right"]]
         if q["py"]:
-            namespace = dict(vars(helpers), ans=right_text, opts=list(q["opts"]))
+            namespace = dict(vars(names), ans=right_text, opts=list(q["opts"]))
             try:
                 exec("\n".join(q["py"]), namespace)
             except Exception as error:  # noqa: BLE001 - report which question failed
@@ -165,7 +168,7 @@ def parse_questions(path):
             options = others[:]
             options.insert(slots.pop(), right_text)
         stem = "\n".join(q["stem"]).strip()
-        tag = f"*({q['marks']} mark{'s' if q['marks'] == 2 else ''})*"
+        tag = tag_for(q["marks"])
         out.append({"t": q["label"], "q": f"{tag}\n\n{stem}" if stem.startswith("```") else f"{tag} {stem}",
                     "o": options, "a": options.index(right_text), "w": "\n".join(q["why"]).strip()})
     return out

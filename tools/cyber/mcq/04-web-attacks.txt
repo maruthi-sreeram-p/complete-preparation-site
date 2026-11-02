@@ -1,0 +1,412 @@
+# Web attacks and the OWASP Top 10: 56 original questions. Format: see tools/build_gate.py (?1 recall, ?2 scenario)
+
+?1 [Browser model] Two URLs have the same origin only if they share the same
+(a) path and query
+(b) host only
+(c)* scheme, host and port
+(d) IP address
+=> https://shop.com and http://shop.com differ in scheme, and https://shop.com:8443 differs in port. Each pair is a different origin.
+
+?1 [Browser model] The HttpOnly cookie attribute prevents
+(a) the cookie being sent over HTTP
+(b)* JavaScript from reading the cookie, so XSS cannot steal it directly
+(c) the cookie being sent to other sites
+(d) the cookie expiring
+=> HttpOnly hides the cookie from document.cookie. The Secure attribute controls HTTPS-only, and SameSite controls cross-site sending.
+
+?1 [Browser model] The Secure cookie attribute means the cookie is
+(a) encrypted in the browser
+(b)* sent only over HTTPS
+(c) hidden from scripts
+(d) valid for one day
+=> Without it the cookie can leak over a plain HTTP request, for example on public Wi-Fi.
+
+?1 [Browser model] SameSite=Lax on a session cookie mainly helps defend against
+(a) SQL injection
+(b) XSS
+(c)* CSRF
+(d) clickjacking
+=> The browser omits the cookie on most cross-site sub-requests and form posts, so a forged request from another site arrives unauthenticated.
+
+?2 [Browser model] An API returns private user data and sends `Access-Control-Allow-Origin: *`. What is the issue?
+(a) none, CORS protects the server
+(b)* any website can read the responses from a visitor's browser if the API does not rely on cookies, and CORS never blocked non-browser clients anyway
+(c) the API stops working
+(d) cookies are encrypted
+=> CORS is a browser rule that relaxes the same-origin policy. A wildcard is acceptable for public data only, never as a substitute for authentication.
+
+?2 [Browser model] A server reflects any Origin header into Access-Control-Allow-Origin and also sends Access-Control-Allow-Credentials: true. What can an attacker do?
+(a) nothing
+(b)* host a page that makes credentialed requests as the victim and reads the responses
+(c) break TLS
+(d) change the DNS record
+=> The policy lets any origin read authenticated responses. Allow-list exact origins.
+
+?1 [Browser model] Which header or directive helps prevent clickjacking?
+(a) Strict-Transport-Security
+(b)* Content-Security-Policy: frame-ancestors 'none'
+(c) X-Content-Type-Options: nosniff
+(d) Set-Cookie: Secure
+=> It forbids other sites from framing the page. X-Frame-Options: DENY is the older equivalent.
+
+?1 [OWASP Top 10] In the 2021 OWASP Top 10, which category is number one?
+(a) Injection
+(b) Cryptographic Failures
+(c)* Broken Access Control
+(d) Security Misconfiguration
+=> Broken Access Control moved to first place in 2021 and remains there in the 2025 release candidate.
+
+?1 [OWASP Top 10] Using a library version with a publicly known vulnerability falls under
+(a) Injection
+(b)* Vulnerable and Outdated Components (supply chain)
+(c) Insecure Design
+(d) Logging failures
+=> Keep an inventory of dependencies and scan them. The 2025 release candidate widens this to software supply chain failures.
+
+?1 [OWASP Top 10] Not recording failed logins and admin actions, so an intrusion goes unnoticed for months, is
+(a) Broken Access Control
+(b)* Security Logging and Monitoring Failures
+(c) Cryptographic Failures
+(d) SSRF
+=> Without logs and alerts, detection and forensics are impossible.
+
+?1 [OWASP Top 10] A design in which users may reset any password by answering a question whose answer is on their public profile is mainly a(n)
+(a) injection flaw
+(b)* insecure design flaw
+(c) misconfiguration
+(d) buffer overflow
+=> The code may be perfect, but the idea is flawed. Threat modelling at design time catches this class.
+
+?1 [OWASP Top 10] An S3 bucket created with public read access and a default admin password left on a console are examples of
+(a) injection
+(b) insecure deserialization
+(c)* security misconfiguration
+(d) CSRF
+=> Insecure defaults and exposed management features are misconfigurations.
+
+?1 [SQL injection] The most effective fix for SQL injection is
+(a) escaping quotes by hand
+(b) hiding the error messages
+(c)* parameterised queries (prepared statements)
+(d) a longer password
+=> Parameters keep data separate from the SQL text so it can never be parsed as SQL. Other measures only add depth.
+
+?2 [SQL injection] A login query is "... WHERE name = '" + user + "' AND pass = '" + pw + "'". Which username logs in as admin without the password?
+(a) admin"
+(b)* admin' --
+(c) admin;
+(d) admin OR
+=> The single quote ends the string and -- comments out the password check. The query becomes WHERE name = 'admin' --' AND pass = ''.
+!py assert vulnerable_login(ans, 'x') == [('admin', 'admin')] and all(vulnerable_login(o, 'x') != [('admin', 'admin')] for o in opts if o != ans)
+
+?2 [SQL injection] The vulnerable login query is called with the username ' OR 1=1 -- and any password. How many users does it return in the lab database?
+(a) 0
+(b) 1
+(c)* 3
+(d) it throws an error
+=> OR 1=1 makes the condition always true and the comment removes the rest, so every row matches.
+!py assert len(vulnerable_login("' OR 1=1 --", 'x')) == num(ans)
+
+?2 [SQL injection] The same payload sent to the parameterised version of the login returns
+(a) all three users
+(b) the admin only
+(c)* no rows, because the payload is treated as a literal name
+(d) a syntax error
+=> With a placeholder the whole string is compared as a username. No such user exists.
+!py assert safe_login("' OR 1=1 --", 'x') == []
+
+?2 [SQL injection] A search page shows two columns from a query. An attacker enters a UNION SELECT of name and pass from the users table. This is
+(a) blind injection
+(b)* in-band (UNION-based) injection
+(c) command injection
+(d) second-order injection
+=> The extra rows appear directly in the page, so the attacker reads other tables without any side channel.
+!py assert ('admin', 's3cret') in vulnerable_login("x' UNION SELECT name, pass FROM users --", '')
+
+?1 [SQL injection] In blind SQL injection the attacker
+(a) sees the full result of the query
+(b)* infers data from true/false behaviour or timing of the page
+(c) uses a stolen key
+(d) intercepts network traffic
+=> The page shows no data, but a difference in content or a delay such as SLEEP(5) answers yes/no questions one bit at a time.
+
+?2 [SQL injection] A developer must let users sort by column name from a dropdown (`ORDER BY ` + column). Parameters cannot be used there. The safe approach is
+(a) escape the quotes
+(b)* map the user's choice to a fixed allow-list of column names
+(c) lowercase the input
+(d) trust the dropdown value
+=> The value in a request can be changed by anyone, regardless of the dropdown. Only values from the allow-list reach the SQL.
+
+?2 [SQL injection] Which Spring Data JPA statement is vulnerable?
+(a) @Query("select u from User u where u.name = :name")
+(b) jdbcTemplate.query("select * from notes where owner = ?", mapper, owner)
+(c)* entityManager.createQuery("select u from User u where u.name = '" + name + "'")
+(d) repository.findByName(name)
+=> String concatenation into JPQL has the same flaw as in SQL. The others bind the value as a parameter.
+
+?1 [Command injection] `Runtime.exec("ping -c 1 " + host)` with host = "8.8.8.8; cat /etc/passwd" is an example of
+(a) XSS
+(b)* OS command injection
+(c) SQL injection
+(d) CSRF
+=> The shell treats the semicolon as a command separator. Avoid the shell, pass an argument array and allow-list the input.
+
+?1 [XSS] XSS lets an attacker
+(a) run SQL on the server
+(b)* run their script in the victim's browser in the context of the vulnerable site
+(c) read the server's files
+(d) crash the database
+=> The script has the page's privileges: it can read the DOM, call APIs as the user and steal non-HttpOnly tokens.
+
+?1 [XSS] A comment containing a script tag is saved and shown to every visitor of the page. This is
+(a) reflected XSS
+(b)* stored XSS
+(c) DOM XSS only
+(d) CSRF
+=> Stored (persistent) XSS affects everyone who views the content and is usually the most serious type.
+
+?1 [XSS] `element.innerHTML = location.hash.substring(1)` is a typical source of
+(a) SQL injection
+(b) stored XSS
+(c)* DOM-based XSS
+(d) path traversal
+=> The page's own JavaScript writes attacker-controlled data into the DOM as HTML. Use textContent, or sanitise.
+
+?2 [XSS] The best primary defence against XSS in a Thymeleaf template is
+(a) th:utext for all fields
+(b)* th:text, which HTML-encodes the value
+(c) removing the word script
+(d) hiding the field
+=> th:text escapes special characters. th:utext prints raw HTML and should only be used with sanitised content.
+
+?2 [XSS] Encoding `<script>alert(1)</script>` for HTML output produces
+(a) <script>alert(1)</script>
+(b)* &lt;script&gt;alert(1)&lt;/script&gt;
+(c) %3Cscript%3E
+(d) alert(1)
+=> The browser then displays the text instead of executing it. URL-encoding (option c) is the wrong context for an HTML body.
+!py assert html_escape('<script>alert(1)</script>') == ans
+
+?2 [XSS] A team blocks the word "script" in input and thinks XSS is solved. Why is this a weak defence?
+(a) it blocks too much
+(b)* attackers use other vectors such as event handlers and encodings, so block lists fail; encode output instead
+(c) the word script is harmless
+(d) it prevents CSRF too
+=> `<img src=x onerror=...>` needs no script tag. Context-aware output encoding addresses the cause.
+
+?1 [XSS] A Content Security Policy helps against XSS by
+(a) encrypting scripts
+(b)* restricting the sources from which scripts can run and blocking inline scripts
+(c) removing cookies
+(d) blocking all images
+=> A strict CSP stops injected inline scripts from executing even if encoding was missed somewhere.
+
+?1 [CSRF] A CSRF attack succeeds because
+(a) the attacker steals the cookie
+(b)* the browser automatically attaches the victim's cookie to a request the attacker triggered
+(c) the server stores passwords in clear text
+(d) the connection is not encrypted
+=> The attacker never sees the cookie. They only cause the request.
+
+?1 [CSRF] An anti-CSRF token works because
+(a)* an attacker's page cannot read the token due to the same-origin policy
+(b) it is encrypted with the user's password
+(c) it replaces the session cookie
+(d) it blocks scripts
+=> The server rejects any state-changing request that lacks the correct per-session token.
+
+?2 [CSRF] Which request is most likely to be CSRF-prone?
+(a) an API call that requires an Authorization: Bearer header added by JavaScript
+(b)* a cookie-authenticated POST /transfer form without a token or SameSite
+(c) a public GET of the home page
+(d) a TLS handshake
+=> Bearer headers are not attached automatically by the browser. Cookies are, so a cookie-based form post needs protection.
+
+?2 [CSRF] A "delete account" action is implemented as GET /delete?id=5. What is the main problem?
+(a) GET is slower
+(b)* any image tag or link on another site can trigger it, and CSRF protections do not normally cover GET
+(c) delete needs TLS 1.3
+(d) none
+=> State changes must use POST, PUT, PATCH or DELETE and be protected by tokens.
+
+?1 [Access control] Changing /invoice?id=1042 to id=1043 and seeing another customer's invoice is called
+(a) SQL injection
+(b)* IDOR (insecure direct object reference)
+(c) XSS
+(d) clickjacking
+=> The server did not check that the logged-in user owns invoice 1043. Fix with an ownership check on every request.
+
+?1 [Access control] Why is hiding the Admin button in the UI not access control?
+(a) buttons are decorations
+(b)* an attacker can call the underlying API directly, so the server must check the role
+(c) browsers ignore hidden buttons
+(d) it makes the page slower
+=> The client is under the attacker's control. Any rule enforced only in the UI can be skipped.
+
+?2 [Access control] A profile update endpoint binds the JSON body directly to a User entity. An attacker adds "role":"ADMIN" and becomes admin. This is
+(a) CSRF
+(b)* mass assignment, fixed by binding to a DTO that only contains the allowed fields
+(c) SSRF
+(d) clickjacking
+=> Frameworks bind every matching field. Expose only intended fields through a DTO or an allow-list.
+
+?2 [Access control] A file download endpoint takes `?name=` and returns /srv/files/<name>. Which request reads a file outside the folder?
+(a) ?name=report.pdf
+(b) ?name=2024/report.pdf
+(c)* ?name=../../etc/passwd
+(d) ?name=REPORT.PDF
+=> The ../ sequences climb out of the folder (path traversal). Normalise the path and check it still starts with the base directory.
+
+?2 [Access control] A path-traversal filter strips the string "../" once. The attacker sends "....//". After stripping, the result is
+(a) ....//
+(b)* ../
+(c) empty
+(d) ..
+=> Removing the inner "../" leaves "../" behind. Filtering by deletion is fragile, so resolve the path and compare it to the base instead.
+!py assert "....//".replace("../", "") == ans
+
+?2 [Access control] URL-encoding the string ../ (every reserved character) gives
+(a) ..%2f%2e
+(b)* ..%2F
+(c) %2E%2E/
+(d) ..%5C
+=> The slash becomes %2F. Attackers use encoded and double-encoded forms to slip past naive filters, so decode and normalise before checking.
+!py assert url_encode('../') == ans
+
+?1 [SSRF] SSRF is dangerous in cloud environments mainly because it can
+(a) deface the home page
+(b)* reach internal services such as the metadata endpoint 169.254.169.254 and steal instance credentials
+(c) install a browser extension
+(d) bypass TLS
+=> The server's network position gives access to addresses the attacker cannot reach directly.
+
+?2 [SSRF] An image-import feature fetches any URL a user pastes. The best mitigation is
+(a) trusting URLs that start with http
+(b)* allow-listing schemes and hosts, blocking private and link-local ranges after DNS resolution, and disabling redirects
+(c) hiding the feature
+(d) using a longer timeout
+=> Checks must apply to the address actually used, so resolve the name, validate the IP, and avoid redirect or DNS-rebinding tricks.
+
+?2 [SSRF] Which IP address would an SSRF filter that blocks private ranges still need to block explicitly if it forgot link-local space?
+(a) 8.8.8.8
+(b) 93.184.216.34
+(c)* 169.254.169.254
+(d) 1.1.1.1
+=> 169.254.0.0/16 is link-local, not RFC 1918 space, and holds the cloud metadata service.
+!py assert is_private(ans) and not any(is_private(o) for o in opts if o != ans)
+
+?1 [Deserialization and XML] Deserialising untrusted data with Java's ObjectInputStream can lead to
+(a) only slower parsing
+(b)* remote code execution through gadget chains in the classpath
+(c) cross-site scripting
+(d) clickjacking
+=> Object construction during deserialization can trigger dangerous method calls. Use JSON with DTOs or strict allow-list filters.
+
+?1 [Deserialization and XML] XXE (XML external entity) attacks are prevented mainly by
+(a) using HTTPS
+(b)* disabling DTDs and external entity resolution in the XML parser
+(c) larger XML files
+(d) using GET only
+=> A parser that resolves external entities can read local files or call internal URLs.
+
+?1 [Uploads] Which is a safe handling of an uploaded file?
+(a) saving it under the user's original filename inside the web root
+(b)* generating a random filename, checking type and size, and storing it outside the web root or in object storage
+(c) trusting the Content-Type header
+(d) executing it to check for viruses
+=> Original names can include path tricks or double extensions, and a file under the web root may execute or be served as HTML.
+
+?2 [Uploads] A site allows upload of "images" and checks only that the filename ends in .jpg. An attacker uploads shell.php.jpg. What further risk exists if the server executes files based on content?
+(a) none
+(b)* the file might run as code or be served as HTML; validate content, use a new name and do not execute uploads
+(c) the image is too large
+(d) the filename is illegal
+=> Extension checks are weak. Validate the actual content, re-encode images and serve with nosniff and attachment headers.
+
+?1 [Other flaws] An open redirect is
+(a) a redirect from HTTP to HTTPS
+(b)* a login or link parameter such as next=https://evil.com that sends users to any URL
+(c) a firewall rule
+(d) a DNS failure
+=> It lends your domain's trust to phishing links. Allow only relative paths or a list of known hosts.
+
+?2 [Other flaws] An online shop lets a user submit the same discount code in two requests at exactly the same time, and both apply. This is a
+(a) CSRF flaw
+(b)* race condition (business logic flaw)
+(c) XSS
+(d) certificate error
+=> Check-then-update without locking or a unique constraint allows concurrent requests to both pass. Use transactions, locks or idempotency keys.
+
+?2 [Other flaws] A cart accepts a quantity of -5 and the total becomes negative. The root cause is
+(a) missing HTTPS
+(b)* missing server-side validation of business rules
+(c) weak encryption
+(d) an old browser
+=> Never trust any value from the client. Validate range and rules on the server for every request.
+
+?1 [Other flaws] A Spring Boot app exposes /actuator/env publicly. This is mainly
+(a) a CSRF flaw
+(b)* a security misconfiguration that can leak configuration and secrets
+(c) an injection flaw
+(d) a design pattern
+=> Management endpoints must be restricted or disabled in production.
+
+?1 [Other flaws] The Log4Shell vulnerability (CVE-2021-44228) is a lesson in
+(a) password policies
+(b)* the risk of vulnerable third-party components and the need for a dependency inventory
+(c) CSRF tokens
+(d) physical security
+=> One logging library embedded everywhere allowed remote code execution. Software composition analysis and fast patching are the answer.
+
+?2 [Scoring] The reflected XSS vector AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N has a CVSS v3.1 base score of
+(a) 5.5
+(b)* 6.1
+(c) 7.5
+(d) 9.8
+=> Network, low complexity, no privileges, but the victim must click (UI:R), and the scope changes to the browser. Score 6.1, Medium.
+!py assert cvss31('AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N') == num(ans)
+
+?2 [Scoring] An unauthenticated SQL injection with full impact over the network (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) scores
+(a) 7.5
+(b) 8.1
+(c)* 9.8
+(d) 10.0
+=> 9.8, Critical. 10.0 requires a changed scope as well.
+!py assert cvss31('AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H') == num(ans)
+
+?2 [Scoring] An authenticated user can read other users' data through an IDOR (AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N). The CVSS v3.1 base score is
+(a) 4.3
+(b)* 6.5
+(c) 7.5
+(d) 9.1
+=> The need for a low-privilege account lowers the score compared with an unauthenticated read. 6.5 is Medium.
+!py assert cvss31('AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N') == num(ans)
+
+?1 [Scoring] A CVSS base score of 8.4 is rated
+(a) Medium
+(b)* High
+(c) Critical
+(d) Low
+=> Bands: 0.1 to 3.9 Low, 4.0 to 6.9 Medium, 7.0 to 8.9 High, 9.0 to 10.0 Critical.
+!py assert cvss_rating(8.4) == ans
+
+?1 [Secure defaults] Which response header stops a browser from guessing the content type of a response?
+(a) X-Frame-Options
+(b)* X-Content-Type-Options: nosniff
+(c) Referrer-Policy
+(d) Server
+=> Without it, a browser may treat an uploaded text file as HTML or script.
+
+?2 [Secure defaults] A production error page shows the full Java stack trace and SQL text. Which risk is it?
+(a) CSRF
+(b)* information disclosure that helps an attacker tune their next request
+(c) clickjacking
+(d) none
+=> Show a generic error and a correlation id, and keep details in the server log.
+
+?2 [Secure defaults] A security scanner reports "SQL injection" on an endpoint that already uses prepared statements for every value. The first step is to
+(a) deploy a patch immediately
+(b)* verify manually whether it is a false positive before changing anything
+(c) disable the scanner
+(d) ignore all scanner output
+=> Scanners produce false positives. Triage means reproducing the issue and tracing the code path.
