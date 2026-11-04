@@ -1,0 +1,230 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-33-1",
+   "type": "concept",
+   "title": "A Testing Strategy for Services",
+   "subtopicId": "33-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A service's tests have different jobs at different speeds. The goal is **fast feedback on the rules that matter**, not a coverage number.\n\n| Layer | Tests | Speed | Real dependencies |\n| --- | --- | --- | --- |\n| **Unit** | Pure functions, domain rules, services with **fake repositories** | milliseconds | none |\n| **API** | Routes through `TestClient`: status codes, validation, auth, error format | tens of ms | in-memory database, dependency overrides |\n| **Integration** | Repositories and migrations against **real PostgreSQL**, Redis, a broker | seconds | containers (Testcontainers, docker-compose in CI) |\n| **Contract** | `openapi.json` snapshot; consumer-driven contracts with other services | fast | none |\n| **End-to-end** | A few critical journeys against a deployed environment | minutes | everything |\n| **Property-based** | Invariants checked on generated inputs (Hypothesis) | seconds | none |\n| **Non-functional** | Load tests, security scans, migration tests | minutes | staging |\n\nShape it as a **pyramid**: many unit tests, fewer API tests, a handful of integration and end-to-end tests. Common failure modes are an **ice-cream cone** (mostly slow end-to-end tests) and **mock-heavy unit tests** that restate the implementation and break on every refactor.\n\n### Property-based testing with Hypothesis\n\nExample-based tests check inputs you thought of. **Property-based tests** state a rule that must hold for **any** input and let the library hunt for a counter-example, then **shrink** it to the smallest failing case."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport re\nimport subprocess\nimport sys\n\npathlib.Path(\"stats.py\").write_text('''\\\ndef average(values):\n    return sum(values) / len(values)            # BUG: crashes on an empty list\n\n\ndef clamp(value, low, high):\n    return max(low, min(value, high))\n''')\n\npathlib.Path(\"test_properties.py\").write_text('''\\\nfrom hypothesis import given, settings, strategies as st\n\nfrom stats import average, clamp\n\n\n@settings(derandomize=True, database=None)          # reproducible runs for this demonstration\n@given(st.lists(st.integers(min_value=-1000, max_value=1000)))\ndef test_average_is_between_min_and_max(values):\n    result = average(values)\n    assert min(values) <= result <= max(values)\n\n\n@settings(derandomize=True, database=None)\n@given(st.integers(), st.integers(), st.integers())\ndef test_clamp_stays_inside_the_range(value, a, b):\n    low, high = min(a, b), max(a, b)\n    assert low <= clamp(value, low, high) <= high\n''')\n\nrun = subprocess.run([sys.executable, \"-m\", \"pytest\", \"-q\", \"-p\", \"no:cacheprovider\", \"--no-header\", \"--tb=short\"], capture_output=True, text=True)\ntext = re.sub(r\" in \\d+\\.\\d+s\", \"\", run.stdout)                           # drop the timing so the output is reproducible\nfor line in text.splitlines():\n    if line.startswith(\"FAILED\") or re.match(r\"^\\d+ (failed|passed)\", line):\n        print(line.strip())\n\nsys.path.insert(0, \".\")                                            # run the property directly to read Hypothesis's shrunk counter-example\nimport test_properties\n\ntry:\n    test_properties.test_average_is_between_min_and_max()\nexcept Exception as error:\n    notes = \" \".join(\" \".join(note.split()) for note in getattr(error, \"__notes__\", []))\n    print(type(error).__name__, \"|\", notes)",
+     "title": "HypothesisDemo.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "FAILED test_properties.py::test_average_is_between_min_and_max - ZeroDivisionError: division by zero\n1 failed, 1 passed\nZeroDivisionError | Failing test case: test_average_is_between_min_and_max( values=[], )",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Hypothesis found the empty list (which the author of `average` did not consider) and shrank to the **minimal** counter-example. Properties worth testing in services: \"encode then decode returns the original\", \"a sorted result is ordered and a permutation of the input\", \"adding then removing an item leaves the cart unchanged\", \"the total of the invoice equals the sum of its lines\", \"parsing never crashes on any string\" (it may raise a clean error, never an unexpected one)."
+    }
+   ]
+  },
+  {
+   "id": "ch-33-2",
+   "type": "concept",
+   "title": "Async Tests and Test Clients",
+   "subtopicId": "33-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Async endpoints and async dependencies are tested with `pytest-asyncio` and `httpx.AsyncClient` over `ASGITransport` (no server, no thread hop), which also lets tests `await` your own coroutines directly."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport re\nimport subprocess\nimport sys\n\npathlib.Path(\"app.py\").write_text('''\\\nimport asyncio\nfrom contextlib import asynccontextmanager\n\nfrom fastapi import FastAPI, HTTPException\n\nstate = {\"started\": False, \"calls\": 0}\n\n\n@asynccontextmanager\nasync def lifespan(app):\n    state[\"started\"] = True\n    yield\n    state[\"started\"] = False\n\n\napp = FastAPI(lifespan=lifespan)\n\n\nasync def slow_lookup(item_id: int) -> dict:\n    await asyncio.sleep(0.01)                          # stands in for an async database call\n    if item_id > 100:\n        raise HTTPException(404, \"no such item\")\n    return {\"id\": item_id}\n\n\n@app.get(\"/items/{item_id}\")\nasync def get_item(item_id: int):\n    state[\"calls\"] += 1\n    return await slow_lookup(item_id)\n''')\n\npathlib.Path(\"test_app.py\").write_text('''\\\nimport asyncio\n\nimport httpx\nimport pytest\nimport pytest_asyncio\n\nfrom app import app, slow_lookup, state\n\n\n@pytest_asyncio.fixture                                                         # async fixtures need this decorator in strict mode\nasync def client():\n    async with app.router.lifespan_context(app):                                   # run start-up and shutdown around the test\n        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=\"http://test\") as client:\n            yield client\n\n\n@pytest.mark.asyncio\nasync def test_endpoint(client):\n    response = await client.get(\"/items/7\")\n    assert response.status_code == 200 and response.json() == {\"id\": 7}\n    assert state[\"started\"] is True                                                # lifespan ran\n\n\n@pytest.mark.asyncio\nasync def test_not_found(client):\n    assert (await client.get(\"/items/500\")).status_code == 404\n\n\n@pytest.mark.asyncio\nasync def test_concurrent_requests_overlap(client):\n    results = await asyncio.gather(*(client.get(f\"/items/{i}\") for i in range(20)))      # 20 requests at once\n    assert [r.json()[\"id\"] for r in results] == list(range(20))\n\n\n@pytest.mark.asyncio\nasync def test_coroutines_can_be_awaited_directly():\n    assert await slow_lookup(3) == {\"id\": 3}\n''')\n\nrun = subprocess.run([sys.executable, \"-m\", \"pytest\", \"-q\", \"-p\", \"no:cacheprovider\", \"--no-header\", \"-W\", \"ignore\", \"-o\", \"asyncio_default_fixture_loop_scope=function\"],\n                     capture_output=True, text=True)\nprint(re.sub(r\" in \\d+\\.\\d+s\", \"\", run.stdout).strip())",
+     "title": "AsyncTests.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "....                                                                                         [100%]\n4 passed",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Rules of thumb: keep **one event loop per test** (the default) so tests stay independent; do not mix sync `TestClient` and async fixtures in one test; override dependencies with `app.dependency_overrides` exactly as in sync tests; and if a test hangs, suspect a forgotten `await` or an awaited event that never fires (add timeouts with `asyncio.timeout` in tests).\n\n### Test data, time and containers\n\n- **Builders and factories** keep tests readable: `make_order(total=500, status=\"paid\")` with sensible defaults beats copy-pasted dictionaries. Libraries: `factory_boy`, `polyfactory`, or 10 lines of your own.\n- **Freeze time by injecting it** (a `Clock` dependency or `get_today`), the technique of the Library API project.\n- **Real databases in CI**: start PostgreSQL with **Testcontainers** so each run has a clean, realistic database:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pytest\nfrom sqlalchemy import create_engine\nfrom testcontainers.postgres import PostgresContainer\n\n\n@pytest.fixture(scope=\"session\")\ndef engine():\n    with PostgresContainer(\"postgres:17\") as postgres:                     # starts a throw-away database in Docker\n        engine = create_engine(postgres.get_connection_url())\n        Base.metadata.create_all(engine)                                   # or: run the Alembic migrations, which also tests them\n        yield engine",
+     "title": "Testcontainers"
+    },
+    {
+     "type": "markdown",
+     "text": "- **Test the unhappy paths**: timeouts, 503s from dependencies (`httpx.MockTransport`), constraint violations, duplicate submissions, expired tokens.\n- **Measure what matters**: `pytest --cov=src --cov-branch --cov-fail-under=85` as a gate, and read the uncovered lines, not the percentage."
+    }
+   ]
+  },
+  {
+   "id": "ch-33-3",
+   "type": "concept",
+   "title": "Logging, Tracing and Correlation",
+   "subtopicId": "33-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The request-ID middleware of Part 4 generalises into **distributed tracing**: a request crosses several services, and one **trace ID** ties together the logs and timings of all of them. The standard carrier is the W3C **`traceparent`** header: `version-traceid-parentid-flags`."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import contextvars\nimport json\nimport secrets\nimport re\nimport sys\n\nimport structlog\n\ntrace_id: contextvars.ContextVar[str] = contextvars.ContextVar(\"trace_id\", default=\"-\")\nTRACEPARENT = re.compile(r\"^00-(?P<trace>[0-9a-f]{32})-(?P<parent>[0-9a-f]{16})-(?P<flags>[0-9a-f]{2})$\")\n\n\ndef start_span(incoming_header: str | None):\n    \"\"\"Continue the caller's trace if the header is valid; otherwise start a new one.\"\"\"\n    match = TRACEPARENT.match(incoming_header or \"\")\n    trace = match[\"trace\"] if match else secrets.token_hex(16)\n    span = secrets.token_hex(8)\n    trace_id.set(trace)\n    outgoing = f\"00-{trace}-{span}-01\"                                  # what we send to the next service\n    return outgoing, (match[\"parent\"] if match else None)\n\n\ndef add_trace(logger, method, event_dict):\n    event_dict[\"trace_id\"] = trace_id.get()\n    return event_dict\n\n\nstructlog.configure(processors=[add_trace, structlog.processors.add_log_level, structlog.processors.JSONRenderer(sort_keys=True)],\n                    logger_factory=structlog.PrintLoggerFactory(sys.stdout), cache_logger_on_first_use=False)\nlog = structlog.get_logger()\n\ncaller = \"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01\"         # the example from the W3C Trace Context specification\noutgoing, parent = start_span(caller)\nlog.info(\"order created\", order_id=42, amount=500)\nprint(parent, outgoing.split(\"-\")[1] == \"4bf92f3577b34da6a3ce929d0e0e4736\", len(outgoing.split(\"-\")[2]))\nlog.warning(\"downstream slow\", dependency=\"payments\", seconds=2.5)\n\nfresh, no_parent = start_span(\"garbage\")                                   # an invalid or absent header starts a new trace\nprint(no_parent, len(fresh.split(\"-\")[1]), trace_id.get() == fresh.split(\"-\")[1])",
+     "title": "Tracing.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{\"amount\": 500, \"event\": \"order created\", \"level\": \"info\", \"order_id\": 42, \"trace_id\": \"4bf92f3577b34da6a3ce929d0e0e4736\"}\n00f067aa0ba902b7 True 16\n{\"dependency\": \"payments\", \"event\": \"downstream slow\", \"level\": \"warning\", \"seconds\": 2.5, \"trace_id\": \"4bf92f3577b34da6a3ce929d0e0e4736\"}\nNone 32 True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Concept | Meaning |\n| --- | --- |\n| **Trace** | The whole journey of one request across services (one trace ID) |\n| **Span** | One unit of work in a trace (an endpoint, a database query, an HTTP call) with start, duration, attributes, and a parent span |\n| **Context propagation** | Passing the trace ID to the next service (`traceparent` header, a message header in Kafka) |\n| **OpenTelemetry** | The vendor-neutral standard and SDKs for traces, metrics and logs; `opentelemetry-instrumentation-fastapi`, `-sqlalchemy`, `-httpx` create spans automatically |\n| **Backends** | Jaeger, Tempo, Zipkin, Datadog, Honeycomb: where traces are stored and searched |\n\nA useful logging contract: every line is **one JSON object** with `timestamp`, `level`, `message`, `trace_id`, `service`, and the business identifiers you will search by (`order_id`, `user_id`). Never log secrets, full tokens, card numbers or personal data; sample or rate-limit noisy debug logs; and let the platform ship stdout instead of writing log files in containers."
+    }
+   ]
+  },
+  {
+   "id": "ch-33-4",
+   "type": "concept",
+   "title": "Performance: Measure, Cache, Then Tune",
+   "subtopicId": "33-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Method**: define the target (a latency SLO such as \"p95 under 300 ms at 200 requests/second\"), **load test** a realistic mix, **profile** the slowest paths, change **one thing**, measure again. Optimising without a measurement is guessing."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import cProfile\nimport io\nimport json\nimport pstats\nimport time\n\nimport orjson\nfrom cachetools import TTLCache, cached\nfrom fastapi import FastAPI\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\ndb_calls = {\"count\": 0}\nclock = [1000.0]\ncache = TTLCache(maxsize=128, ttl=60, timer=lambda: clock[0])             # an in-process cache with expiry (a fake clock keeps the demo deterministic)\n\n\ndef load_report(customer_id: int) -> dict:\n    db_calls[\"count\"] += 1                                               # stands in for several slow queries\n    return {\"customer\": customer_id, \"orders\": [{\"id\": i, \"total\": i * 3} for i in range(200)]}\n\n\n@cached(cache)\ndef cached_report(customer_id: int) -> dict:\n    return load_report(customer_id)\n\n\n@app.get(\"/report/{customer_id}\")\ndef report(customer_id: int, use_cache: bool = True):\n    return cached_report(customer_id) if use_cache else load_report(customer_id)\n\n\nclient = TestClient(app)\nfor _ in range(5):\n    client.get(\"/report/1\")\nprint(\"cached: database called\", db_calls[\"count\"], \"time(s) for 5 requests\")\nfor _ in range(5):\n    client.get(\"/report/2?use_cache=false\")\nprint(\"uncached: database called\", db_calls[\"count\"] - 1, \"more times for 5 requests\")\nclock[0] += 61                                                           # the entry expires\nclient.get(\"/report/1\")\nprint(\"after the TTL the cache reloads:\", db_calls[\"count\"] - 6)\n\nprofiler = cProfile.Profile()\nprofiler.enable()\nfor _ in range(50):\n    client.get(\"/report/3?use_cache=false\")\nprofiler.disable()\nstats = pstats.Stats(profiler, stream=io.StringIO())\nown = {name: calls for (_, _, name), (_, calls, *_) in stats.stats.items() if name in (\"load_report\", \"report\")}\nprint(\"profile shows these app functions were called:\", own)\n\npayload = {\"items\": [{\"id\": i, \"name\": f\"item-{i}\", \"price\": i * 1.5} for i in range(2000)]}\nstarted = time.perf_counter()\nfor _ in range(50):\n    json.dumps(payload)\njson_time = time.perf_counter() - started\nstarted = time.perf_counter()\nfor _ in range(50):\n    orjson.dumps(payload)\norjson_time = time.perf_counter() - started\nprint(\"orjson is at least 2x faster than json for a big payload:\", json_time > 2 * orjson_time)",
+     "title": "Profiling.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "cached: database called 1 time(s) for 5 requests\nuncached: database called 5 more times for 5 requests\nafter the TTL the cache reloads: 1\nprofile shows these app functions were called: {'load_report': 50, 'report': 50}\norjson is at least 2x faster than json for a big payload: True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The big levers, in the order that usually pays:\n\n1. **The database**: N+1 queries, missing indexes, selecting too many columns or rows, `OFFSET` pagination, long transactions. Most \"slow API\" tickets end here.\n2. **Do less work**: **cache** (in-process `TTLCache`, Redis cache-aside with explicit TTLs and invalidation, HTTP caching with `ETag`/`Cache-Control`), precompute, paginate, return only needed fields.\n3. **Do the waiting in parallel**: `asyncio.gather` over independent calls with a concurrency limit; move slow work to a queue and return `202 Accepted`.\n4. **Do not block the event loop**: async drivers or `def` endpoints; offload CPU work.\n5. **Serialisation**: very large JSON is CPU-bound (`orjson`, smaller payloads, streaming); response models validate every item, so for huge lists consider returning pre-validated data.\n6. **Process model**: right number of workers/replicas, keep-alive and proxy buffering, `uvloop` and `httptools` (included in `uvicorn[standard]`).\n7. **Only then micro-optimise** Python.\n\n### Capacity and SLOs: the arithmetic"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import math\n\n# Little's law: concurrent requests in the system = arrival rate x average time in system\narrival_rate = 400            # requests per second at peak\nlatency = 0.120               # average seconds per request\nin_flight = arrival_rate * latency\nprint(\"requests in flight:\", in_flight)\n\n# A sync worker handles ONE request at a time; an async worker overlaps I/O waits.\ncpu_time = 0.015              # seconds of actual CPU per request\nworkers_for_cpu = math.ceil(arrival_rate * cpu_time / 0.7)           # keep CPU at about 70% utilisation\nprint(\"processes needed for the CPU work alone:\", workers_for_cpu)\n\n# Database connections: concurrency at the database = rate x time spent holding a connection\ndb_hold = 0.030\nprint(\"average busy connections:\", arrival_rate * db_hold, \"-> a pool of 20 per process is far more than needed\")\n\n# SLO arithmetic: availability targets as allowed downtime per 30 days\nmonth = 30 * 24 * 60\nfor target in (99.0, 99.9, 99.95, 99.99):\n    print(f\"{target}% -> {month * (1 - target / 100):.1f} minutes of error budget per month\")",
+     "title": "Capacity.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "requests in flight: 48.0\nprocesses needed for the CPU work alone: 9\naverage busy connections: 12.0 -> a pool of 20 per process is far more than needed\n99.0% -> 432.0 minutes of error budget per month\n99.9% -> 43.2 minutes of error budget per month\n99.95% -> 21.6 minutes of error budget per month\n99.99% -> 4.3 minutes of error budget per month",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "An **SLO** (service-level objective) is a target on an **SLI** (a measured indicator such as \"fraction of requests under 300 ms and not 5xx\"); the **error budget** is what you may fail. When the budget is spent, reliability work takes priority over features. Alert on **budget burn rate**, not on single failed requests."
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### A Testing Strategy for Services"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between an example-based test and a property-based test?",
+       "answer": "An example test asserts one specific input gives one specific output. A property test states a rule that must hold for all inputs in a described space; the framework generates many inputs, finds a failing one and shrinks it to a minimal counter-example, which finds edge cases you would not have thought of."
+      },
+      {
+       "question": "What is wrong with tests that mock everything?",
+       "answer": "They verify that your code calls the mocks in the way you wrote it, not that the system works, so they pass when the real integration is broken and fail when you refactor safely. Prefer fakes (simple in-memory implementations) and real components where cheap, and mock only at true boundaries such as network calls."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Async Tests and Test Clients"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you test a FastAPI application that awaits other services?",
+       "answer": "Replace the outbound HTTP client with an `httpx.MockTransport` or a dependency override returning a fake, drive the app with `httpx.AsyncClient(transport=ASGITransport(app=app))`, and assert both the response and the calls made to the fake. Add tests where the fake times out or returns 503 to verify the resilience logic."
+      },
+      {
+       "question": "Why run integration tests against PostgreSQL in containers?",
+       "answer": "To catch dialect differences, real constraint and transaction behaviour, migration problems and driver issues that an in-memory SQLite database hides, while keeping every run isolated and reproducible."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Logging, Tracing and Correlation"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the point of the `traceparent` header?",
+       "answer": "It carries the trace ID and the caller's span ID to the next service, so that service can attach its spans and logs to the same trace. Without propagation each service sees an isolated request and a cross-service problem cannot be followed."
+      },
+      {
+       "question": "What is the difference between logs, metrics and traces?",
+       "answer": "Logs are discrete events with context (what happened); metrics are aggregated numbers over time (how many, how fast, how full) cheap to store and alert on; traces follow one request across services with timings (where the time went). You need all three, linked by IDs."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Performance: Measure, Cache, Then Tune"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "A service's p99 latency doubled after a release but the average barely moved. What does that tell you?",
+       "answer": "A small fraction of requests got much slower (a new slow path, lock contention, a cold cache, a GC pause, a particular tenant or input), which averages hide. Look at the latency histogram, slice by endpoint and parameters, and use traces of the slowest requests."
+      },
+      {
+       "question": "What does Little's law say and how do you use it?",
+       "answer": "The average number of requests in the system equals the arrival rate times the average time each spends in it (`L = λ × W`). Use it to estimate concurrency and thus workers, threads and connections: 400 requests/second at 120 ms means about 48 requests in flight on average."
+      },
+      {
+       "question": "Where do you start when asked to make an API three times faster?",
+       "answer": "Measure: define the target and load profile, profile or trace to find where time goes, and fix the biggest contributor (usually database access and N+1 queries), then caching, parallelising independent I/O and removing blocking calls, re-measuring after each change."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

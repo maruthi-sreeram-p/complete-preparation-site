@@ -17,8 +17,9 @@ from pathlib import Path
 DOCUMENT = "Written for this site (not from your PDFs)"
 
 
-def parse(path):
-    lines = path.read_text(encoding="utf-8").split("\n")
+def parse(path, text=None):
+    """`text` replaces the file's content: a builder can check or rewrite the source (run its code samples) before it is parsed."""
+    lines = (path.read_text(encoding="utf-8") if text is None else text).split("\n")
     if lines[0].strip() == "@more":
         part = {"id": None, "chapters": []}
     else:
@@ -88,12 +89,13 @@ def parse(path):
     return part
 
 
-def load_parts(folder):
-    """All parts of a guide folder, in file order; NN-more-*.md files extend the part before them."""
+def load_parts(folder, transform=None):
+    """All parts of a guide folder, in file order; NN-more-*.md files extend the part before them.
+    `transform(path, text) -> text` is applied to each file's source before parsing."""
     parts = []
     # by number, the part itself first: "07-more-x" would otherwise sort before "07-routing"
     for path in sorted(Path(folder).glob("*.md"), key=lambda p: (p.name[:2], "-more" in p.name, p.name)):
-        part = parse(path)
+        part = parse(path, None if transform is None else transform(path, path.read_text(encoding="utf-8")))
         if part["id"] is None:
             parts[-1]["chapters"] += part["chapters"]
         else:

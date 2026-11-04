@@ -1,0 +1,205 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-37-1",
+   "type": "concept",
+   "title": "Flask in One Page",
+   "subtopicId": "37-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "**Flask** is a **micro-framework**: a small core (routing, request and response objects, Jinja2 templates, sessions, a test client) built on **Werkzeug** (WSGI utilities) and **Jinja2**, and nothing else. You add what you need (a database layer, forms, authentication, migrations) from the ecosystem. That freedom makes it excellent for small services, prototypes, internal tools and for **learning how web frameworks work**.\n\n| | **Flask** | **Django** | **FastAPI** |\n| --- | --- | --- | --- |\n| Interface | WSGI (sync); async views supported but limited | WSGI and ASGI | ASGI |\n| Included | Routing, templates, sessions, testing | ORM, admin, auth, forms, migrations, ... | Routing, validation, DI, OpenAPI |\n| Structure | Yours to design (blueprints help) | Prescribed (apps, MVT) | Yours (routers, dependencies) |\n| Validation | Manual / extensions (WTForms, marshmallow, Pydantic) | Forms, serializers | Pydantic built in |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from flask import Flask, abort, jsonify, redirect, render_template_string, request, session, url_for\n\napp = Flask(__name__)\napp.config.update(SECRET_KEY=\"dev-only-change-me\", TESTING=True)\n\nBOOKS = {1: {\"id\": 1, \"title\": \"Python Internals\"}, 2: {\"id\": 2, \"title\": \"<script>alert(1)</script>\"}}\n\n\n@app.get(\"/\")                                              # shortcut for @app.route(\"/\", methods=[\"GET\"])\ndef index():\n    return \"hello from Flask\"                              # a str becomes a text/html response\n\n\n@app.get(\"/books/<int:book_id>\")                           # converters: int, float, string, path, uuid\ndef book(book_id):\n    if book_id not in BOOKS:\n        abort(404)\n    return jsonify(BOOKS[book_id])                         # jsonify sets the JSON content type\n\n\n@app.post(\"/books\")\ndef create_book():\n    payload = request.get_json(silent=True)                # None instead of an exception when the body is not valid JSON\n    if not payload or not payload.get(\"title\"):\n        return jsonify(error=\"title is required\"), 400     # (body, status) tuple\n    new_id = max(BOOKS) + 1\n    BOOKS[new_id] = {\"id\": new_id, \"title\": payload[\"title\"]}\n    return jsonify(BOOKS[new_id]), 201, {\"Location\": url_for(\"book\", book_id=new_id)}     # (body, status, headers)\n\n\n@app.get(\"/search\")\ndef search():\n    q = request.args.get(\"q\", \"\").lower()                  # query string; .args is a read-only MultiDict\n    limit = request.args.get(\"limit\", 10, type=int)\n    return jsonify([b for b in BOOKS.values() if q in b[\"title\"].lower()][:limit])\n\n\n@app.get(\"/page/<int:book_id>\")\ndef page(book_id):                                         # Jinja2 auto-escapes variables: user text cannot inject markup\n    return render_template_string(\"<h1>{{ book.title }}</h1><p>{{ book.title|upper }}</p>\", book=BOOKS[book_id])\n\n\n@app.get(\"/visit\")\ndef visit():\n    session[\"visits\"] = session.get(\"visits\", 0) + 1       # a signed cookie: tamper-proof but readable by the user\n    return jsonify(visits=session[\"visits\"])\n\n\nclient = app.test_client()\nprint(client.get(\"/\").text, client.get(\"/books/1\").json, client.get(\"/books/9\").status_code)\ncreated = client.post(\"/books\", json={\"title\": \"Flask Handbook\"})\nprint(created.status_code, created.headers[\"Location\"], client.post(\"/books\", data=\"not json\", content_type=\"application/json\").status_code)\nprint(client.get(\"/search?q=python&limit=5\").json, client.get(\"/page/2\").text)\nprint(client.get(\"/visit\").json, client.get(\"/visit\").json)\nprint(url_for.__module__, sorted(rule.rule for rule in app.url_map.iter_rules() if rule.rule != \"/static/<path:filename>\"))",
+     "title": "FlaskBasics.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "hello from Flask {'id': 1, 'title': 'Python Internals'} 404\n201 /books/3 400\n[{'id': 1, 'title': 'Python Internals'}] <h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1><p>&lt;SCRIPT&gt;ALERT(1)&lt;/SCRIPT&gt;</p>\n{'visits': 1} {'visits': 2}\nflask.helpers ['/', '/books', '/books/<int:book_id>', '/page/<int:book_id>', '/search', '/visit']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The pieces to notice:\n\n- **Routes** are plain functions registered with decorators; the return value (string, dict, `jsonify(...)`, tuple, or `Response`) becomes the HTTP response. `url_for(\"endpoint\", **values)` builds URLs from function names.\n- **`request`, `session`, `g` and `current_app`** are **context-local proxies**: they look like globals but refer to the current request. This is convenient and is also what makes Flask code harder to test and to use outside a request (you need an application or request context).\n- **Jinja2 auto-escaping** turned `<script>alert(1)</script>` into text in the page, the same XSS defence as Django's templates.\n- **`session`** is a **signed cookie** (tamper-proof, not encrypted): never store secrets in it; `SECRET_KEY` must be long, random and secret.\n- The **test client** (`app.test_client()`) calls the WSGI app in-process, with cookies kept between requests."
+    }
+   ]
+  },
+  {
+   "id": "ch-37-2",
+   "type": "concept",
+   "title": "Blueprints, the Application Factory and Configuration",
+   "subtopicId": "37-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A growing Flask app is organised with **blueprints** (groups of routes, templates and handlers) and an **application factory** (a function that builds the app), so each test or deployment can create a fresh configured instance."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\n\nfrom flask import Blueprint, Flask, current_app, jsonify, request\n\napi = Blueprint(\"api\", __name__, url_prefix=\"/api/v1\")\nadmin = Blueprint(\"admin\", __name__, url_prefix=\"/admin\")\n\n\n@api.get(\"/config\")\ndef show_config():\n    return jsonify(env=current_app.config[\"ENV_NAME\"], debug=current_app.debug, page_size=current_app.config[\"PAGE_SIZE\"])\n\n\n@api.errorhandler(ValueError)                                       # handlers can be scoped to a blueprint ...\ndef bad_value(error):\n    return jsonify(error=str(error)), 400\n\n\n@api.get(\"/double\")\ndef double():\n    return jsonify(result=int(request.args[\"n\"]) * 2)               # int(\"x\") raises ValueError -> the handler above\n\n\n@admin.before_request                                               # ... and so can request hooks\ndef require_admin_header():\n    if request.headers.get(\"X-Role\") != \"admin\":\n        return jsonify(error=\"forbidden\"), 403\n\n\n@admin.get(\"/stats\")\ndef stats():\n    return jsonify(users=42)\n\n\nclass Config:\n    ENV_NAME = \"default\"\n    PAGE_SIZE = 20\n\n\nclass TestConfig(Config):\n    ENV_NAME = \"test\"\n    TESTING = True\n    PAGE_SIZE = 2\n\n\ndef create_app(config=None):\n    app = Flask(__name__)\n    app.config.from_object(config or Config)                       # defaults ...\n    app.config.from_prefixed_env(\"APP\")                            # ... overridden by environment variables like APP_PAGE_SIZE=50\n    app.register_blueprint(api)\n    app.register_blueprint(admin)\n\n    @app.errorhandler(404)\n    def not_found(error):                                          # an app-wide handler: a consistent JSON error body\n        return jsonify(error=\"not found\", path=request.path), 404\n\n    return app\n\n\nos.environ[\"APP_PAGE_SIZE\"] = \"50\"\nproduction, testing = create_app().test_client(), create_app(TestConfig).test_client()\nprint(production.get(\"/api/v1/config\").json, testing.get(\"/api/v1/config\").json)\nprint(testing.get(\"/api/v1/double?n=21\").json, testing.get(\"/api/v1/double?n=abc\").status_code, testing.get(\"/missing\").json)\nprint(testing.get(\"/admin/stats\").status_code, testing.get(\"/admin/stats\", headers={\"X-Role\": \"admin\"}).json)",
+     "title": "Factory.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'debug': False, 'env': 'default', 'page_size': 50} {'debug': False, 'env': 'test', 'page_size': 50}\n{'result': 42} 400 {'error': 'not found', 'path': '/missing'}\n403 {'users': 42}",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The factory pattern is what lets tests create isolated apps with their own config, and lets one codebase run as a web process, a CLI (`flask --app mypkg:create_app shell`) and a worker. Typical Flask project layout:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop/\n  pyproject.toml\n  src/shop/\n    __init__.py          # create_app()\n    config.py            # Config classes\n    extensions.py        # db, migrate, login manager: created here, initialised in create_app\n    models.py\n    api/__init__.py      # Blueprint(\"api\", ...)\n    api/routes.py\n    templates/ static/\n  tests/conftest.py      # app and client fixtures",
+     "title": "Flask project layout"
+    }
+   ]
+  },
+  {
+   "id": "ch-37-3",
+   "type": "concept",
+   "title": "Data, Authentication and Validation",
+   "subtopicId": "37-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Flask has no ORM; **SQLAlchemy** (directly, or through `Flask-SQLAlchemy`) is the usual choice, with **Flask-Migrate** (Alembic), **Flask-Login** or a token library for authentication, and **Pydantic**, **marshmallow** or **WTForms** for validation. The example below wires them by hand to show the moving parts: a per-request SQLAlchemy session in `g`, password hashing, login via the session cookie, and Pydantic validation."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from functools import wraps\n\nfrom flask import Flask, g, jsonify, request, session\nfrom pwdlib import PasswordHash\nfrom pydantic import BaseModel, EmailStr, Field, ValidationError\nfrom sqlalchemy import String, create_engine, select\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column\nfrom sqlalchemy.pool import StaticPool\n\nhasher = PasswordHash.recommended()\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass User(Base):\n    __tablename__ = \"users\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    email: Mapped[str] = mapped_column(String(120), unique=True)\n    password_hash: Mapped[str]\n\n\nclass Credentials(BaseModel):                                      # validation with Pydantic\n    email: EmailStr\n    password: str = Field(min_length=8)\n\n\ndef create_app():\n    app = Flask(__name__)\n    app.config.update(SECRET_KEY=\"change-me\", SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE=\"Lax\")\n    engine = create_engine(\"sqlite://\", connect_args={\"check_same_thread\": False}, poolclass=StaticPool)\n    Base.metadata.create_all(engine)\n\n    @app.before_request\n    def open_session():\n        g.db = Session(engine)                                      # one session per request, stored in g\n\n    @app.teardown_request\n    def close_session(error):\n        db = g.pop(\"db\", None)\n        if db is not None:\n            db.rollback() if error else db.commit()\n            db.close()\n\n    def login_required(view):\n        @wraps(view)\n        def wrapper(*args, **kwargs):\n            user = g.db.get(User, session[\"user_id\"]) if \"user_id\" in session else None\n            if user is None:\n                return jsonify(error=\"login required\"), 401\n            g.user = user\n            return view(*args, **kwargs)\n        return wrapper\n\n    @app.errorhandler(ValidationError)\n    def invalid(error):\n        return jsonify(errors=[{\"field\": \".\".join(map(str, e[\"loc\"])), \"message\": e[\"msg\"]} for e in error.errors()]), 422\n\n    @app.post(\"/register\")\n    def register():\n        data = Credentials.model_validate(request.get_json(silent=True) or {})          # raises ValidationError -> 422 above\n        if g.db.scalar(select(User).where(User.email == data.email)):\n            return jsonify(error=\"email already registered\"), 409\n        g.db.add(User(email=data.email, password_hash=hasher.hash(data.password)))\n        return jsonify(email=data.email), 201\n\n    @app.post(\"/login\")\n    def login():\n        data = Credentials.model_validate(request.get_json(silent=True) or {})\n        user = g.db.scalar(select(User).where(User.email == data.email))\n        if user is None or not hasher.verify(data.password, user.password_hash):\n            return jsonify(error=\"incorrect email or password\"), 401\n        session.clear()                                             # a new session on login prevents session fixation\n        session[\"user_id\"] = user.id\n        return jsonify(ok=True)\n\n    @app.post(\"/logout\")\n    def logout():\n        session.clear()\n        return \"\", 204\n\n    @app.get(\"/me\")\n    @login_required\n    def me():\n        return jsonify(email=g.user.email)\n\n    return app\n\n\nclient = create_app().test_client()\nprint(client.get(\"/me\").status_code, client.post(\"/register\", json={\"email\": \"bad\", \"password\": \"short\"}).json)\nprint(client.post(\"/register\", json={\"email\": \"asha@example.com\", \"password\": \"correct horse\"}).status_code,\n      client.post(\"/register\", json={\"email\": \"asha@example.com\", \"password\": \"correct horse\"}).status_code)\nprint(client.post(\"/login\", json={\"email\": \"asha@example.com\", \"password\": \"wrong-password\"}).status_code, client.get(\"/me\").status_code)\nprint(client.post(\"/login\", json={\"email\": \"asha@example.com\", \"password\": \"correct horse\"}).json, client.get(\"/me\").json)\nprint(client.post(\"/logout\").status_code, client.get(\"/me\").status_code)",
+     "title": "FlaskApp.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "401 {'errors': [{'field': 'email', 'message': 'value is not a valid email address: An email address must have an @-sign.'}, {'field': 'password', 'message': 'String should have at least 8 characters'}]}\n201 409\n401 401\n{'ok': True} {'email': 'asha@example.com'}\n204 401",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Notes for real projects: with Flask-Login the decorator and user loader are provided; **CSRF protection** is needed for cookie-authenticated form posts (Flask-WTF/CSRFProtect); rate-limit `/login` (Flask-Limiter with Redis); set `SESSION_COOKIE_SECURE=True` in production; and keep secrets in the environment. For APIs consumed by SPAs and mobile apps, issue tokens (JWT) instead of relying on the session cookie."
+    }
+   ]
+  },
+  {
+   "id": "ch-37-4",
+   "type": "concept",
+   "title": "Testing and Running Flask",
+   "subtopicId": "37-4",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport re\nimport subprocess\nimport sys\n\npathlib.Path(\"app.py\").write_text('''\\\nfrom flask import Flask, jsonify, request\n\n\ndef create_app(config=None):\n    app = Flask(__name__)\n    app.config.update(TESTING=False, ITEMS=[])\n    if config:\n        app.config.update(config)\n\n    @app.get(\"/items\")\n    def list_items():\n        return jsonify(app.config[\"ITEMS\"])\n\n    @app.post(\"/items\")\n    def add_item():\n        name = (request.get_json(silent=True) or {}).get(\"name\")\n        if not name:\n            return jsonify(error=\"name required\"), 400\n        app.config[\"ITEMS\"].append(name)\n        return jsonify(name=name), 201\n\n    return app\n''')\n\npathlib.Path(\"conftest.py\").write_text('''\\\nimport pytest\n\nfrom app import create_app\n\n\n@pytest.fixture\ndef app():\n    return create_app({\"TESTING\": True, \"ITEMS\": []})          # a fresh app (and fresh state) for every test\n\n\n@pytest.fixture\ndef client(app):\n    return app.test_client()\n''')\n\npathlib.Path(\"test_items.py\").write_text('''\\\nimport pytest\n\n\ndef test_starts_empty(client):\n    assert client.get(\"/items\").json == []\n\n\ndef test_add_and_list(client):\n    assert client.post(\"/items\", json={\"name\": \"pen\"}).status_code == 201\n    assert client.get(\"/items\").json == [\"pen\"]\n\n\n@pytest.mark.parametrize(\"payload\", [{}, {\"name\": \"\"}, None])\ndef test_rejects_bad_payloads(client, payload):\n    assert client.post(\"/items\", json=payload).status_code == 400\n\n\ndef test_each_test_has_its_own_state(client):\n    assert client.get(\"/items\").json == []                     # items added by other tests are gone\n''')\n\nrun = subprocess.run([sys.executable, \"-m\", \"pytest\", \"-q\", \"-p\", \"no:cacheprovider\", \"--no-header\"], capture_output=True, text=True)\nprint(re.sub(r\" in \\d+\\.\\d+s\", \"\", run.stdout).strip())",
+     "title": "FlaskPytest.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "......                                                                                       [100%]\n6 passed",
+     "title": "Output"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "flask --app shop:create_app run --debug                     # development server with the debugger and auto-reload (never in production)\ngunicorn \"shop:create_app()\" --workers 4 --bind 0.0.0.0:8000  # production: a real WSGI server, several worker processes",
+     "title": "Running Flask"
+    },
+    {
+     "type": "markdown",
+     "text": "The built-in development server and the interactive debugger must **never** face the internet (the debugger allows code execution). In production: Gunicorn or uWSGI behind nginx or a load balancer, configuration from the environment, and the same checklist as any Python service (health endpoints, JSON logs, migrations as a release step)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "| Need | Code |\n| --- | --- |\n| Route | `@app.get(\"/x/<int:id>\")`, `@app.post(\"/x\")`, `@bp.route(..., methods=[...])` |\n| Request data | `request.args` (query), `request.form`, `request.get_json()`, `request.files`, `request.headers` |\n| Response | `return jsonify(...), 201, {\"Location\": ...}`; `abort(404)`; `redirect(url_for(\"endpoint\"))` |\n| Templates | `render_template(\"page.html\", x=1)`; Jinja2 auto-escapes `{{ x }}` |\n| State | `session` (signed cookie), `g` (per request), `current_app.config` |\n| Modularity | `Blueprint`, `create_app()`, `app.config.from_object/from_prefixed_env` |\n| Hooks | `@app.before_request`, `@app.after_request`, `@app.teardown_request`, `@app.errorhandler(...)` |\n| Test | `app.test_client()`, `client.get/post(json=...)`, fixtures building a fresh app |\n| Run | `flask --app pkg run --debug` (dev), `gunicorn \"pkg:create_app()\"` (prod) |",
+     "title": "Flask cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Flask in One Page"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What are the application context and the request context in Flask?",
+       "answer": "Contexts that make `current_app`, `g` (per-request scratch space), `request` and `session` available as if they were globals. The application context holds app-level state (config, extensions); the request context holds the current request and session. Outside a request (a CLI script, a test) you push one explicitly with `app.app_context()` or `app.test_request_context()`."
+      },
+      {
+       "question": "Is the Flask `session` secure?",
+       "answer": "It is a cookie signed with `SECRET_KEY`, so the client cannot modify it but can read it. Keep only small, non-secret data (user id, flags), set `HttpOnly`/`Secure`/`SameSite` cookie options, rotate the key if leaked, or use server-side sessions (Flask-Session with Redis) for larger or sensitive state."
+      },
+      {
+       "question": "When would you pick Flask over Django or FastAPI?",
+       "answer": "For small services, prototypes and teams who want to choose each component; also where the codebase already uses it. For a large product with many screens Django's built-ins save time; for typed, async-heavy APIs FastAPI fits better."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Blueprints, the Application Factory and Configuration"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why use an application factory?",
+       "answer": "It builds a fresh, configured app on demand: tests can create apps with test configuration and an isolated database, several configurations can coexist, extensions are initialised per app (`init_app`), and circular imports between the app object and the modules that need it disappear."
+      },
+      {
+       "question": "What is a blueprint?",
+       "answer": "A reusable bundle of routes, handlers, templates and static files with a URL prefix, registered on the app. It is Flask's unit of modularity: an `auth`, `api` or `admin` package each owns its routes and is mounted where needed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Testing and Running Flask"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does Flask handle concurrency, and how do you run it in production?",
+       "answer": "Flask is a WSGI application: each request is handled by a worker (process or thread) of the WSGI server, so concurrency comes from Gunicorn workers and threads, not from Flask itself. Run it behind Gunicorn or uWSGI with several workers, behind a reverse proxy; never use the development server in production."
+      },
+      {
+       "question": "What are `g` and `current_app`?",
+       "answer": "`g` is a per-request namespace for sharing objects such as a database session or the current user between functions; `current_app` is a proxy to the active application, used in blueprints and extensions to reach configuration without importing the app object."
+      },
+      {
+       "question": "How would you add input validation to Flask routes?",
+       "answer": "Parse the body with Pydantic (or marshmallow/WTForms) in the route or a decorator, return a 422 or 400 with field errors on failure, and keep validation separate from persistence. Flask itself does not validate input."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

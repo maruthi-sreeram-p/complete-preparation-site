@@ -1,0 +1,343 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-20-1",
+   "type": "concept",
+   "title": "Recursion and Divide and Conquer",
+   "subtopicId": "20-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A **recursive** function solves a problem by solving smaller instances of the same problem. Every correct recursion has three parts: a **base case** that stops, a **smaller subproblem** (progress towards the base case), and **trust** that the recursive call returns the right answer for the smaller input. **Divide and conquer** splits the input, solves the pieces and combines them (merge sort, quickselect, fast exponentiation)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import random\n\n\ndef power(x, n):                                       # fast exponentiation: O(log n) instead of O(n)\n    if n < 0:\n        return 1 / power(x, -n)\n    if n == 0:\n        return 1.0\n    half = power(x, n // 2)\n    return half * half if n % 2 == 0 else half * half * x\n\n\ndef merge_sort(nums):\n    if len(nums) <= 1:\n        return nums\n    mid = len(nums) // 2\n    left, right = merge_sort(nums[:mid]), merge_sort(nums[mid:])\n    merged, i, j = [], 0, 0\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:                        # <= keeps the sort stable\n            merged.append(left[i]); i += 1\n        else:\n            merged.append(right[j]); j += 1\n    return merged + left[i:] + right[j:]\n\n\ndef count_inversions(nums):\n    \"\"\"Pairs i < j with nums[i] > nums[j]: merge sort, counting while merging.\"\"\"\n    if len(nums) <= 1:\n        return nums, 0\n    mid = len(nums) // 2\n    (left, a), (right, b) = count_inversions(nums[:mid]), count_inversions(nums[mid:])\n    merged, i, j, cross = [], 0, 0, 0\n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            merged.append(left[i]); i += 1\n        else:\n            merged.append(right[j]); j += 1\n            cross += len(left) - i                     # every remaining left element is greater than right[j]\n    return merged + left[i:] + right[j:], a + b + cross\n\n\ndef quickselect(nums, k):\n    \"\"\"k-th smallest (0-based) in expected O(n): partition around a random pivot and keep only the side that holds k.\"\"\"\n    pivot = random.choice(nums)\n    smaller = [x for x in nums if x < pivot]\n    equal = [x for x in nums if x == pivot]\n    if k < len(smaller):\n        return quickselect(smaller, k)\n    if k < len(smaller) + len(equal):\n        return pivot\n    return quickselect([x for x in nums if x > pivot], k - len(smaller) - len(equal))\n\n\ndef flatten_depth(items):                              # recursion mirrors nested data\n    return 1 + max((flatten_depth(i) for i in items if isinstance(i, list)), default=0)\n\n\nassert power(2, 10) == 1024 and power(2, -2) == 0.25 and power(5, 0) == 1 and abs(power(1.5, 5) - 7.59375) < 1e-9\ndata = [5, 2, 9, 1, 5, 6, 0]\nassert merge_sort(data) == sorted(data) and merge_sort([]) == []\nassert count_inversions([2, 4, 1, 3, 5])[1] == 3 and count_inversions([5, 4, 3, 2, 1])[1] == 10 and count_inversions([1, 2, 3])[1] == 0\nassert quickselect([3, 2, 1, 5, 6, 4], 4) == 5 and quickselect([7], 0) == 7                     # 2nd largest = index 4 of 6\nassert flatten_depth([1, [2, [3]], [4]]) == 3\nprint(\"recursion ok\")",
+     "title": "Recursion.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "recursion ok",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "The default limit is about 1000 frames (`sys.getrecursionlimit()`). Recursion on a linked list or a skewed tree with 10⁵ nodes raises `RecursionError`. Convert to an explicit stack or loop, or (in contests, carefully) raise the limit. State this when you choose recursion: it shows you know the platform.",
+     "title": "Python has a recursion limit and no tail-call optimisation"
+    }
+   ]
+  },
+  {
+   "id": "ch-20-2",
+   "type": "concept",
+   "title": "Backtracking: Subsets, Permutations and Combinations",
+   "subtopicId": "20-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Build a solution one choice at a time. **Choose** an option, **explore** the rest recursively, then **un-choose** (undo) and try the next option. When the partial solution can no longer lead anywhere valid, **prune** and return: pruning is what separates backtracking from blind brute force.\n\n**Signals.** \"Generate all ...\", \"list every ...\", \"find all combinations that ...\", small n (≤ about 20)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def subsets(nums):\n    result, path = [], []\n\n    def go(start):\n        result.append(path[:])                         # every partial path is itself a subset\n        for i in range(start, len(nums)):\n            path.append(nums[i])                       # choose\n            go(i + 1)                                  # explore\n            path.pop()                                 # un-choose\n\n    go(0)\n    return result\n\n\ndef subsets_with_dup(nums):\n    nums.sort()\n    result, path = [], []\n\n    def go(start):\n        result.append(path[:])\n        for i in range(start, len(nums)):\n            if i > start and nums[i] == nums[i - 1]:\n                continue                               # skip a duplicate at the same decision level\n            path.append(nums[i])\n            go(i + 1)\n            path.pop()\n\n    go(0)\n    return result\n\n\ndef permutations(nums):\n    result, used, path = [], [False] * len(nums), []\n\n    def go():\n        if len(path) == len(nums):\n            result.append(path[:])\n            return\n        for i in range(len(nums)):\n            if used[i]:\n                continue\n            used[i] = True; path.append(nums[i])\n            go()\n            path.pop(); used[i] = False\n\n    go()\n    return result\n\n\ndef combinations(n, k):\n    result, path = [], []\n\n    def go(start):\n        if len(path) == k:\n            result.append(path[:])\n            return\n        for i in range(start, n + 1 - (k - len(path)) + 1):      # prune: not enough numbers left to fill the path\n            path.append(i)\n            go(i + 1)\n            path.pop()\n\n    go(1)\n    return result\n\n\ndef combination_sum(candidates, target):               # each number may be reused\n    result, path = [], []\n\n    def go(start, remaining):\n        if remaining == 0:\n            result.append(path[:])\n            return\n        for i in range(start, len(candidates)):\n            if candidates[i] > remaining:\n                continue                               # prune\n            path.append(candidates[i])\n            go(i, remaining - candidates[i])           # i, not i + 1: reuse allowed\n            path.pop()\n\n    go(0, target)\n    return result\n\n\ndef generate_parentheses(n):\n    result = []\n\n    def go(current, opened, closed):\n        if len(current) == 2 * n:\n            result.append(current)\n            return\n        if opened < n:\n            go(current + \"(\", opened + 1, closed)\n        if closed < opened:                            # a \")\" is only valid if something is open\n            go(current + \")\", opened, closed + 1)\n\n    go(\"\", 0, 0)\n    return result\n\n\nassert len(subsets([1, 2, 3])) == 8 and sorted(map(tuple, subsets_with_dup([1, 2, 2]))) == [(), (1,), (1, 2), (1, 2, 2), (2,), (2, 2)]\nassert len(permutations([1, 2, 3])) == 6 and permutations([1, 2]) == [[1, 2], [2, 1]]\nassert combinations(4, 2) == [[1, 2], [1, 3], [1, 4], [2, 3], [2, 4], [3, 4]]\nassert combination_sum([2, 3, 6, 7], 7) == [[2, 2, 3], [7]] and combination_sum([2], 1) == []\nassert generate_parentheses(3) == [\"((()))\", \"(()())\", \"(())()\", \"()(())\", \"()()()\"]\nprint(\"backtracking ok\")",
+     "title": "Backtracking.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "backtracking ok",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "```\ndef go(state):\n    if state is complete: record a COPY of it; return\n    for each option available from state:\n        if option is invalid or cannot lead to a solution: continue   # prune\n        apply option\n        go(next state)\n        undo option\n```\nRecord a **copy** (`path[:]`), because `path` keeps changing. To avoid duplicates, sort first and skip equal values at the same level.",
+     "title": "The backtracking template"
+    }
+   ]
+  },
+  {
+   "id": "ch-20-3",
+   "type": "concept",
+   "title": "Backtracking on Grids and Constraints",
+   "subtopicId": "20-3",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def exist(board, word):\n    rows, cols = len(board), len(board[0])\n\n    def go(r, c, i):\n        if i == len(word):\n            return True\n        if not (0 <= r < rows and 0 <= c < cols) or board[r][c] != word[i]:\n            return False\n        saved, board[r][c] = board[r][c], \"#\"          # mark the cell as used on this path\n        found = any(go(r + dr, c + dc, i + 1) for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)))\n        board[r][c] = saved                            # un-choose\n        return found\n\n    return any(go(r, c, 0) for r in range(rows) for c in range(cols))\n\n\ndef count_n_queens(n):\n    cols, diag1, diag2 = set(), set(), set()           # occupied columns and the two diagonal directions\n\n    def place(row):\n        if row == n:\n            return 1\n        total = 0\n        for col in range(n):\n            if col in cols or row - col in diag1 or row + col in diag2:\n                continue\n            cols.add(col); diag1.add(row - col); diag2.add(row + col)\n            total += place(row + 1)\n            cols.remove(col); diag1.remove(row - col); diag2.remove(row + col)\n        return total\n\n    return place(0)\n\n\ndef partition_palindromes(s):\n    result, path = [], []\n\n    def go(start):\n        if start == len(s):\n            result.append(path[:])\n            return\n        for end in range(start + 1, len(s) + 1):\n            piece = s[start:end]\n            if piece == piece[::-1]:                   # prune: only continue from palindromic pieces\n                path.append(piece)\n                go(end)\n                path.pop()\n\n    go(0)\n    return result\n\n\ndef letter_combinations(digits):\n    letters = {\"2\": \"abc\", \"3\": \"def\", \"4\": \"ghi\", \"5\": \"jkl\", \"6\": \"mno\", \"7\": \"pqrs\", \"8\": \"tuv\", \"9\": \"wxyz\"}\n    if not digits:\n        return []\n    result = [\"\"]\n    for d in digits:\n        result = [prefix + ch for prefix in result for ch in letters[d]]\n    return result\n\n\nboard = [[\"A\", \"B\", \"C\", \"E\"], [\"S\", \"F\", \"C\", \"S\"], [\"A\", \"D\", \"E\", \"E\"]]\nassert exist(board, \"ABCCED\") and exist(board, \"SEE\") and not exist(board, \"ABCB\")\nassert [count_n_queens(n) for n in (1, 4, 6, 8)] == [1, 2, 4, 92]\nassert partition_palindromes(\"aab\") == [[\"a\", \"a\", \"b\"], [\"aa\", \"b\"]]\nassert letter_combinations(\"23\") == [\"ad\", \"ae\", \"af\", \"bd\", \"be\", \"bf\", \"cd\", \"ce\", \"cf\"] and letter_combinations(\"\") == []\nprint(\"constraint search ok\")",
+     "title": "Constraints.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "constraint search ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Constraint problems are backtracking with **fast validity checks**: sets for columns and diagonals make each N-Queens placement check O(1). A Sudoku solver is the same shape (row, column and box sets). Without pruning N-Queens would examine nⁿ boards; with it, the n = 8 search is trivial."
+    }
+   ]
+  },
+  {
+   "id": "ch-20-4",
+   "type": "concept",
+   "title": "Binary Tree DFS",
+   "subtopicId": "20-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **binary tree** node has a value and up to two children. Almost every tree problem is a **depth-first traversal** where each node asks its children for information and combines it: the recursion mirrors the structure."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import deque\n\n\nclass TreeNode:\n    def __init__(self, val=0, left=None, right=None):\n        self.val, self.left, self.right = val, left, right\n\n\ndef build_tree(vals):                                  # level-order list with None for missing children\n    if not vals or vals[0] is None:\n        return None\n    root, queue, i = TreeNode(vals[0]), None, 1\n    queue = deque([root])\n    while queue and i < len(vals):\n        node = queue.popleft()\n        if i < len(vals) and vals[i] is not None:\n            node.left = TreeNode(vals[i]); queue.append(node.left)\n        i += 1\n        if i < len(vals) and vals[i] is not None:\n            node.right = TreeNode(vals[i]); queue.append(node.right)\n        i += 1\n    return root\n\n\ndef max_depth(node):\n    return 0 if not node else 1 + max(max_depth(node.left), max_depth(node.right))\n\n\ndef is_same(a, b):\n    if not a or not b:\n        return a is b\n    return a.val == b.val and is_same(a.left, b.left) and is_same(a.right, b.right)\n\n\ndef invert(node):\n    if node:\n        node.left, node.right = invert(node.right), invert(node.left)\n    return node\n\n\ndef is_symmetric(root):\n    def mirror(a, b):\n        if not a or not b:\n            return a is b\n        return a.val == b.val and mirror(a.left, b.right) and mirror(a.right, b.left)\n    return mirror(root.left, root.right) if root else True\n\n\ndef diameter(root):\n    best = 0\n\n    def depth(node):                                   # returns height; records the best path through each node\n        nonlocal best\n        if not node:\n            return 0\n        left, right = depth(node.left), depth(node.right)\n        best = max(best, left + right)\n        return 1 + max(left, right)\n\n    depth(root)\n    return best\n\n\ndef max_path_sum(root):\n    best = float(\"-inf\")\n\n    def gain(node):                                    # best downward path starting at node (never below 0)\n        nonlocal best\n        if not node:\n            return 0\n        left, right = max(gain(node.left), 0), max(gain(node.right), 0)\n        best = max(best, node.val + left + right)      # a path that bends at this node\n        return node.val + max(left, right)\n\n    gain(root)\n    return best\n\n\ndef has_path_sum(node, target):\n    if not node:\n        return False\n    if not node.left and not node.right:\n        return node.val == target\n    return has_path_sum(node.left, target - node.val) or has_path_sum(node.right, target - node.val)\n\n\ndef good_nodes(root):\n    def go(node, highest):\n        if not node:\n            return 0\n        return (node.val >= highest) + go(node.left, max(highest, node.val)) + go(node.right, max(highest, node.val))\n    return go(root, float(\"-inf\"))\n\n\ndef lowest_common_ancestor(root, p, q):\n    if not root or root.val in (p, q):\n        return root\n    left, right = lowest_common_ancestor(root.left, p, q), lowest_common_ancestor(root.right, p, q)\n    return root if left and right else left or right\n\n\ndef inorder_iterative(root):                           # explicit stack: no recursion limit\n    result, stack, node = [], [], root\n    while node or stack:\n        while node:\n            stack.append(node)\n            node = node.left\n        node = stack.pop()\n        result.append(node.val)\n        node = node.right\n    return result\n\n\ntree = build_tree([3, 9, 20, None, None, 15, 7])\nassert max_depth(tree) == 3 and max_depth(None) == 0\nassert is_same(build_tree([1, 2, 3]), build_tree([1, 2, 3])) and not is_same(build_tree([1, 2]), build_tree([1, None, 2]))\nassert inorder_iterative(invert(build_tree([4, 2, 7, 1, 3, 6, 9]))) == [9, 7, 6, 4, 3, 2, 1]\nassert is_symmetric(build_tree([1, 2, 2, 3, 4, 4, 3])) and not is_symmetric(build_tree([1, 2, 2, None, 3, None, 3]))\nassert diameter(build_tree([1, 2, 3, 4, 5])) == 3 and max_path_sum(build_tree([-10, 9, 20, None, None, 15, 7])) == 42\nassert has_path_sum(build_tree([5, 4, 8, 11, None, 13, 4, 7, 2, None, None, None, 1]), 22)\nassert good_nodes(build_tree([3, 1, 4, 3, None, 1, 5])) == 4\nassert lowest_common_ancestor(build_tree([3, 5, 1, 6, 2, 0, 8, None, None, 7, 4]), 5, 1).val == 3\nassert lowest_common_ancestor(build_tree([3, 5, 1, 6, 2, 0, 8, None, None, 7, 4]), 5, 4).val == 5\nassert inorder_iterative(build_tree([1, None, 2, 3])) == [1, 3, 2]\nprint(\"tree dfs ok\")",
+     "title": "TreeDfs.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "tree dfs ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Traversal | Order | Use |\n| --- | --- | --- |\n| Preorder | node, left, right | copy a tree, serialise |\n| Inorder | left, node, right | **sorted order for a BST** |\n| Postorder | left, right, node | delete, compute from children (height, diameter) |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Both need the best path that **bends at a node**, which cannot be returned to the parent. Use a helper that **returns** the one-sided value the parent needs and **updates a variable** (`nonlocal best`) with the two-sided value. Naming that separation is the key insight in many hard tree problems.",
+     "title": "The \"diameter\" and \"max path sum\" trick"
+    }
+   ]
+  },
+  {
+   "id": "ch-20-5",
+   "type": "concept",
+   "title": "Binary Tree BFS and Level Order",
+   "subtopicId": "20-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Breadth-first search** visits nodes level by level using a **queue**. Process the nodes already in the queue (one level) before touching the children you just added, by capturing `len(queue)` at the start of each level."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import deque\n\n\nclass TreeNode:\n    def __init__(self, val=0, left=None, right=None):\n        self.val, self.left, self.right = val, left, right\n\n\ndef build_tree(vals):\n    if not vals or vals[0] is None:\n        return None\n    root, queue, i = TreeNode(vals[0]), None, 1\n    queue = deque([root])\n    while queue and i < len(vals):\n        node = queue.popleft()\n        if i < len(vals) and vals[i] is not None:\n            node.left = TreeNode(vals[i]); queue.append(node.left)\n        i += 1\n        if i < len(vals) and vals[i] is not None:\n            node.right = TreeNode(vals[i]); queue.append(node.right)\n        i += 1\n    return root\n\n\ndef level_order(root):\n    levels, queue = [], deque([root] if root else [])\n    while queue:\n        level = []\n        for _ in range(len(queue)):                    # exactly the nodes of the current level\n            node = queue.popleft()\n            level.append(node.val)\n            queue.extend(child for child in (node.left, node.right) if child)\n        levels.append(level)\n    return levels\n\n\ndef right_side_view(root):\n    return [level[-1] for level in level_order(root)]\n\n\ndef zigzag(root):\n    return [level if i % 2 == 0 else level[::-1] for i, level in enumerate(level_order(root))]\n\n\ndef min_depth(root):\n    if not root:\n        return 0\n    queue, depth = deque([root]), 1\n    while queue:\n        for _ in range(len(queue)):\n            node = queue.popleft()\n            if not node.left and not node.right:\n                return depth                           # BFS reaches the first leaf at the minimum depth\n            queue.extend(child for child in (node.left, node.right) if child)\n        depth += 1\n\n\ndef serialize(root):\n    out, queue = [], deque([root])\n    while queue:\n        node = queue.popleft()\n        out.append(\"#\" if node is None else str(node.val))\n        if node:\n            queue.extend((node.left, node.right))\n    return \",\".join(out)\n\n\ndef deserialize(data):\n    values = data.split(\",\")\n    if values[0] == \"#\":\n        return None\n    root = TreeNode(int(values[0]))\n    queue, i = deque([root]), 1\n    while queue:\n        node = queue.popleft()\n        for side in (\"left\", \"right\"):\n            if i < len(values) and values[i] != \"#\":\n                setattr(node, side, TreeNode(int(values[i])))\n                queue.append(getattr(node, side))\n            i += 1\n    return root\n\n\ntree = build_tree([3, 9, 20, None, None, 15, 7])\nassert level_order(tree) == [[3], [9, 20], [15, 7]] and level_order(None) == []\nassert right_side_view(build_tree([1, 2, 3, None, 5, None, 4])) == [1, 3, 4]\nassert zigzag(tree) == [[3], [20, 9], [15, 7]]\nassert min_depth(tree) == 2 and min_depth(build_tree([2, None, 3, None, 4])) == 3\nassert level_order(deserialize(serialize(tree))) == level_order(tree) and deserialize(serialize(None)) is None\nprint(\"tree bfs ok\")",
+     "title": "TreeBfs.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "tree bfs ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-20-6",
+   "type": "concept",
+   "title": "BST and Tree Construction",
+   "subtopicId": "20-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **binary search tree** keeps `left < node < right` for every node, so search, insert and delete take O(h) and an **inorder traversal is sorted**. Validating a BST needs *ranges*, not just a comparison with the parent."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import deque\n\n\nclass TreeNode:\n    def __init__(self, val=0, left=None, right=None):\n        self.val, self.left, self.right = val, left, right\n\n\ndef build_tree(vals):\n    if not vals or vals[0] is None:\n        return None\n    root, queue, i = TreeNode(vals[0]), None, 1\n    queue = deque([root])\n    while queue and i < len(vals):\n        node = queue.popleft()\n        if i < len(vals) and vals[i] is not None:\n            node.left = TreeNode(vals[i]); queue.append(node.left)\n        i += 1\n        if i < len(vals) and vals[i] is not None:\n            node.right = TreeNode(vals[i]); queue.append(node.right)\n        i += 1\n    return root\n\n\ndef inorder(node):\n    return inorder(node.left) + [node.val] + inorder(node.right) if node else []\n\n\ndef is_valid_bst(node, low=float(\"-inf\"), high=float(\"inf\")):\n    if not node:\n        return True\n    return low < node.val < high and is_valid_bst(node.left, low, node.val) and is_valid_bst(node.right, node.val, high)\n\n\ndef kth_smallest(root, k):\n    stack, node = [], root\n    while True:\n        while node:\n            stack.append(node)\n            node = node.left\n        node = stack.pop()\n        k -= 1\n        if k == 0:\n            return node.val\n        node = node.right\n\n\ndef lca_bst(root, p, q):\n    while root:\n        if p < root.val and q < root.val:\n            root = root.left\n        elif p > root.val and q > root.val:\n            root = root.right\n        else:\n            return root                                # the paths split here (or one of them is the node)\n\n\ndef insert(root, val):\n    if not root:\n        return TreeNode(val)\n    if val < root.val:\n        root.left = insert(root.left, val)\n    else:\n        root.right = insert(root.right, val)\n    return root\n\n\ndef build_from_preorder_inorder(preorder, inorder_values):\n    index = {v: i for i, v in enumerate(inorder_values)}\n    position = 0\n\n    def build(lo, hi):                                 # builds the subtree for inorder[lo..hi]\n        nonlocal position\n        if lo > hi:\n            return None\n        root = TreeNode(preorder[position])\n        position += 1\n        mid = index[root.val]\n        root.left = build(lo, mid - 1)                 # the left subtree comes first in preorder\n        root.right = build(mid + 1, hi)\n        return root\n\n    return build(0, len(inorder_values) - 1)\n\n\ndef sorted_array_to_bst(nums):\n    if not nums:\n        return None\n    mid = len(nums) // 2\n    return TreeNode(nums[mid], sorted_array_to_bst(nums[:mid]), sorted_array_to_bst(nums[mid + 1:]))\n\n\ndef height(node):\n    return 0 if not node else 1 + max(height(node.left), height(node.right))\n\n\nassert is_valid_bst(build_tree([2, 1, 3])) and not is_valid_bst(build_tree([5, 1, 4, None, None, 3, 6]))\nassert not is_valid_bst(build_tree([5, 4, 6, None, None, 3, 7]))               # 3 is in the right subtree of 5: too small\nbst = build_tree([5, 3, 6, 2, 4, None, None, 1])\nassert kth_smallest(bst, 3) == 3 and inorder(bst) == [1, 2, 3, 4, 5, 6]\nassert lca_bst(build_tree([6, 2, 8, 0, 4, 7, 9, None, None, 3, 5]), 2, 8).val == 6\nassert lca_bst(build_tree([6, 2, 8, 0, 4, 7, 9, None, None, 3, 5]), 2, 4).val == 2\nroot = None\nfor v in (4, 2, 7, 1, 3):\n    root = insert(root, v)\nassert inorder(root) == [1, 2, 3, 4, 7]\nrebuilt = build_from_preorder_inorder([3, 9, 20, 15, 7], [9, 3, 15, 20, 7])\nassert inorder(rebuilt) == [9, 3, 15, 20, 7] and (rebuilt.val, rebuilt.right.val, rebuilt.right.left.val) == (3, 20, 15)\nbalanced = sorted_array_to_bst([-10, -3, 0, 5, 9])\nassert inorder(balanced) == [-10, -3, 0, 5, 9] and height(balanced) == 3\nprint(\"bst ok\")",
+     "title": "Bst.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "bst ok",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Checking only `node.left.val < node.val < node.right.val` accepts `[5, 4, 6, None, None, 3, 7]`, because 3 is less than its parent 6 but sits in the **right subtree of 5**. Carry the allowed `(low, high)` range down the recursion, or check that an inorder traversal is strictly increasing.",
+     "title": "The classic BST validation bug"
+    }
+   ]
+  },
+  {
+   "id": "ch-20-7",
+   "type": "concept",
+   "title": "Tries",
+   "subtopicId": "20-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **trie** (prefix tree) stores strings along paths of characters: each node maps a character to a child. Insert, search and prefix queries cost O(length of the word), independent of how many words are stored. Use it for **prefix** problems, autocomplete and spell-checkers."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "class TrieNode:\n    def __init__(self):\n        self.children, self.end = {}, False\n\n\nclass Trie:\n    def __init__(self):\n        self.root = TrieNode()\n\n    def insert(self, word):\n        node = self.root\n        for ch in word:\n            node = node.children.setdefault(ch, TrieNode())\n        node.end = True\n\n    def _find(self, prefix):\n        node = self.root\n        for ch in prefix:\n            node = node.children.get(ch)\n            if not node:\n                return None\n        return node\n\n    def search(self, word):\n        node = self._find(word)\n        return bool(node and node.end)\n\n    def starts_with(self, prefix):\n        return self._find(prefix) is not None\n\n    def suggestions(self, prefix, limit=3):\n        node, out = self._find(prefix), []\n        if not node:\n            return out\n\n        def walk(current, path):\n            if len(out) == limit:\n                return\n            if current.end:\n                out.append(prefix + path)\n            for ch in sorted(current.children):\n                walk(current.children[ch], path + ch)\n\n        walk(node, \"\")\n        return out\n\n\nclass WordDictionary:\n    \"\"\"add_word and search where '.' matches any one letter.\"\"\"\n    def __init__(self):\n        self.root = TrieNode()\n\n    def add_word(self, word):\n        node = self.root\n        for ch in word:\n            node = node.children.setdefault(ch, TrieNode())\n        node.end = True\n\n    def search(self, word):\n        def go(i, node):\n            if i == len(word):\n                return node.end\n            if word[i] == \".\":\n                return any(go(i + 1, child) for child in node.children.values())\n            return word[i] in node.children and go(i + 1, node.children[word[i]])\n        return go(0, self.root)\n\n\ndef find_words(board, words):\n    \"\"\"Word Search II: one DFS over the grid guided by a trie, instead of one DFS per word.\"\"\"\n    root = TrieNode()\n    for w in words:\n        node = root\n        for ch in w:\n            node = node.children.setdefault(ch, TrieNode())\n        node.end = w\n    found, rows, cols = [], len(board), len(board[0])\n\n    def go(r, c, node):\n        ch = board[r][c]\n        child = node.children.get(ch)\n        if not child:\n            return\n        if child.end:\n            found.append(child.end)\n            child.end = False                          # report each word once\n        board[r][c] = \"#\"\n        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):\n            nr, nc = r + dr, c + dc\n            if 0 <= nr < rows and 0 <= nc < cols and board[nr][nc] != \"#\":\n                go(nr, nc, child)\n        board[r][c] = ch\n\n    for r in range(rows):\n        for c in range(cols):\n            go(r, c, root)\n    return sorted(found)\n\n\ntrie = Trie()\nfor w in (\"apple\", \"app\", \"apply\", \"apt\", \"bat\"):\n    trie.insert(w)\nassert trie.search(\"app\") and not trie.search(\"ap\") and trie.starts_with(\"ap\") and not trie.starts_with(\"c\")\nassert trie.suggestions(\"ap\") == [\"app\", \"apple\", \"apply\"] and trie.suggestions(\"z\") == []\nwords = WordDictionary()\nfor w in (\"bad\", \"dad\", \"mad\"):\n    words.add_word(w)\nassert words.search(\"pad\") is False and words.search(\"bad\") and words.search(\".ad\") and words.search(\"b..\") and not words.search(\"b.\")\ngrid = [[\"o\", \"a\", \"a\", \"n\"], [\"e\", \"t\", \"a\", \"e\"], [\"i\", \"h\", \"k\", \"r\"], [\"i\", \"f\", \"l\", \"v\"]]\nassert find_words(grid, [\"oath\", \"pea\", \"eat\", \"rain\"]) == [\"eat\", \"oath\"]\nprint(\"tries ok\")",
+     "title": "Tries.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "tries ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Recursion and Divide and Conquer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What are the three ingredients of a correct recursive function?",
+       "answer": "A base case that returns without recursing; a recursive step that moves strictly closer to a base case; and combining the sub-results correctly. Missing or unreachable base cases cause infinite recursion (`RecursionError` in Python)."
+      },
+      {
+       "question": "Why is quickselect O(n) on average but O(n²) in the worst case?",
+       "answer": "On average a random pivot halves the data, so the work is n + n/2 + n/4 + ... = O(n). A consistently bad pivot (always the minimum) shrinks the input by one each time, giving O(n²). Randomising the pivot makes the worst case extremely unlikely."
+      },
+      {
+       "question": "What is the recurrence for merge sort and its solution?",
+       "answer": "T(n) = 2T(n/2) + O(n), which solves to O(n log n): log n levels of recursion, each doing O(n) merging work."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Backtracking: Subsets, Permutations and Combinations"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between backtracking and brute force?",
+       "answer": "Both explore a tree of choices, but backtracking abandons a branch as soon as it violates a constraint (pruning), which can cut the search drastically. The worst case is still exponential, which is why it suits small n."
+      },
+      {
+       "question": "Why append `path[:]` and not `path` to the result?",
+       "answer": "`path` is one list that is mutated for the whole search; appending it stores a reference that ends up empty or wrong. A slice copy captures the state at that moment."
+      },
+      {
+       "question": "How do you avoid duplicate subsets when the input has duplicates?",
+       "answer": "Sort the numbers, and in the loop skip `nums[i]` if `i > start` and it equals `nums[i - 1]`: at one decision level you only try each distinct value once."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Backtracking on Grids and Constraints"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you check N-Queens diagonals in O(1)?",
+       "answer": "Cells on the same \"\\\" diagonal share `row - col`, and on the same \"/\" diagonal share `row + col`. Keep a set for each, plus a set of used columns, and a placement is valid when none of the three contain the new cell's values."
+      },
+      {
+       "question": "Why must the word-search DFS restore the cell after exploring?",
+       "answer": "The cell is temporarily marked as visited so the path does not reuse it, but other paths from different start cells or branches may need it. Un-marking on the way back is the \"un-choose\" step of backtracking."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Binary Tree DFS"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you traverse a tree without recursion?",
+       "answer": "Use an explicit stack: for inorder, push nodes while going left, pop and visit, then go right. For preorder push the right child before the left; for BFS use a queue. This avoids Python's recursion limit on deep trees."
+      },
+      {
+       "question": "What is the time and space complexity of a DFS on a binary tree?",
+       "answer": "O(n) time, since each node is visited once; O(h) space for the call stack, where h is the height: O(log n) for a balanced tree and O(n) for a skewed one."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Binary Tree BFS and Level Order"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When do you use BFS rather than DFS on a tree?",
+       "answer": "When the answer depends on levels or distance from the root: level-order output, right side view, minimum depth (BFS stops at the first leaf), shortest path. DFS suits problems that combine information from children or explore whole root-to-leaf paths."
+      },
+      {
+       "question": "Why capture `len(queue)` at the start of each level?",
+       "answer": "The queue grows as you enqueue children, so a loop over the live length would mix levels. Fixing the count first processes exactly the nodes of the current level."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### BST and Tree Construction"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you validate a binary search tree?",
+       "answer": "Pass a `(low, high)` range to each recursive call: the node's value must lie strictly between them, the left child gets `(low, node.val)` and the right child `(node.val, high)`. Alternatively an inorder traversal must be strictly increasing."
+      },
+      {
+       "question": "Why does preorder plus inorder identify a unique tree?",
+       "answer": "Preorder gives the root first; finding that value in the inorder sequence splits the nodes into the left and right subtrees; recursing gives each subtree's root from the next preorder items. A dictionary from value to inorder index makes the split O(1), so construction is O(n)."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Tries"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When is a trie better than a hash set of words?",
+       "answer": "For prefix operations: \"does any word start with this prefix?\", autocomplete and longest common prefix. A hash set answers exact membership in O(length) too but cannot enumerate or test prefixes without scanning all words."
+      },
+      {
+       "question": "Why use a trie in Word Search II?",
+       "answer": "A trie lets one DFS from each cell explore all dictionary words at once and abandon a path the moment no word has that prefix, instead of running a separate search per word. Removing found words (`end = False`) avoids duplicates, and pruning empty branches speeds it up further."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

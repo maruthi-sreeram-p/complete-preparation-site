@@ -1,0 +1,329 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-12-1",
+   "type": "concept",
+   "title": "Type Hints and Static Checking",
+   "subtopicId": "12-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Python stays dynamically typed, but since 3.5 you can **annotate** variables, parameters and return values. The interpreter **ignores** annotations at run time (it only stores them); separate tools read them: **type checkers** (mypy, pyright, pyrefly), editors, and run-time libraries such as **Pydantic** and **FastAPI**. Treat hints as machine-checked documentation that catches a class of bugs before the code runs."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import Callable, Literal, TypedDict\n\n\ndef total(prices: list[float], tax: float = 0.18) -> float:        # built-in generics: list[float] (3.9+)\n    return sum(prices) * (1 + tax)\n\n\ndef find(users: dict[int, str], user_id: int) -> str | None:       # X | None instead of Optional[X] (3.10+)\n    return users.get(user_id)\n\n\nMode = Literal[\"r\", \"w\", \"a\"]                                       # only these exact values are allowed\n\ndef open_file(path: str, mode: Mode = \"r\") -> None: ...\n\n\nclass UserDict(TypedDict):                                          # a dict with known keys and value types\n    id: int\n    name: str\n\n\ndef apply(func: Callable[[int, int], int], a: int, b: int) -> int:  # a callable taking two ints, returning an int\n    return func(a, b)\n\n\ndef first[T](items: list[T]) -> T:                                  # PEP 695 generic syntax (3.12+)\n    return items[0]\n\ntype Matrix = list[list[float]]                                     # PEP 695 type alias (3.12+)\n\nprint(total([100.0, 50.0]), find({1: \"asha\"}, 2), apply(max, 3, 9), first([\"x\", \"y\"]))\nprint(total.__annotations__)                                        # the interpreter only STORES the hints\nprint(first(\"abc\"))                                                   # a str is not a list[T]; nothing stops it at run time",
+     "title": "Hints.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "177.0 None 9 x\n{'prices': list[float], 'tax': <class 'float'>, 'return': <class 'float'>}\na",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Running a type checker\n\nThe checker reads the same code and reports mismatches **without running it**:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport subprocess\nimport sys\n\npathlib.Path(\"shop.py\").write_text('''\\\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass Item:\n    name: str\n    price: float\n\n\ndef cheapest(items: list[Item]) -> Item | None:\n    return min(items, key=lambda i: i.price) if items else None\n\n\nbest = cheapest([Item(\"pen\", 2.5)])\nprint(best.name)                     # error: best may be None\nprint(cheapest([(\"pen\", 2.5)]))      # error: wrong element type\nItem(\"pen\", \"free\")                  # error: price must be a float\n''')\n\nresult = subprocess.run([sys.executable, \"-m\", \"mypy\", \"--strict\", \"--no-incremental\", \"--no-color-output\", \"--no-error-summary\", \"shop.py\"],\n                        capture_output=True, text=True)\nprint(result.stdout.strip())\nprint(\"mypy exit status:\", result.returncode)",
+     "title": "MypyDemo.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop.py:15: error: Item \"None\" of \"Item | None\" has no attribute \"name\"  [union-attr]\nshop.py:16: error: List item 0 has incompatible type \"tuple[str, float]\"; expected \"Item\"  [list-item]\nshop.py:17: error: Argument 2 to \"Item\" has incompatible type \"str\"; expected \"float\"  [arg-type]\nmypy exit status: 1",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "What to remember about static types:\n\n| Idea | Detail |\n| --- | --- |\n| **Gradual** | Annotate as much as you like; unannotated code is treated as `Any`. Start at the boundaries (public functions) |\n| **`Optional` is explicit** | `str | None` forces you to handle `None`: the largest category of bugs it catches |\n| **Duck typing, checked** | `Protocol` types describe the shape you need (`Iterable`, `SupportsClose`) |\n| **`Any` switches checking off** | Prefer `object` (safe) or a real type. `cast(T, x)` asserts, it does not convert |\n| **Run it in CI** | `mypy --strict` or `pyright`; type errors then block merges |\n| **Not enforced at run time** | `def f(x: int)` accepts a string. Validate untrusted input with Pydantic |\n| **FastAPI and Pydantic read hints at run time** | Annotations become request parsing and validation |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Hints are for the checker: a wrong call like `total([\"a\"])` still *runs* and fails inside the function. **Pydantic** reads the same annotations at run time, converts and validates incoming data (`\"42\"` becomes `42` or a clear error), which is why web frameworks use it at the boundary. Use hints everywhere, and validation wherever data enters the system.",
+     "title": "Type hints versus Pydantic validation"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-2",
+   "type": "concept",
+   "title": "Modern Python: What Changed From 3.8 to 3.14",
+   "subtopicId": "12-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Real code runs on whatever the team standardised on, and interview questions mention features by version. This table is a map of the language you will meet; check the \"What's New\" page of each release for details.\n\n| Version | Highlights for application developers |\n| --- | --- |\n| **3.8** | Walrus operator `:=`; positional-only parameters `/`; f-string `=` debug; `functools.cached_property` |\n| **3.9** | `dict | dict`; built-in generics (`list[int]`); `str.removeprefix`; `zoneinfo`; new PEG parser |\n| **3.10** | `match` statement; `X | Y` types; parenthesised `with`; `zip(strict=True)`; much better error messages; `aiter`/`anext` |\n| **3.11** | **10 to 60% faster** (specialising interpreter, zero-cost exceptions); `ExceptionGroup` and `except*`; `tomllib`; `asyncio.TaskGroup` and `timeout`; `Self`; `StrEnum`; fine-grained error locations |\n| **3.12** | PEP 695 (`def f[T]`, `type X = ...`); nicer f-strings (nested quotes); per-interpreter GIL; `itertools.batched`; `typing.override`; faster comprehensions (inlined); `datetime.utcnow` deprecated |\n| **3.13** | New interactive REPL; **experimental free-threaded build** and **experimental JIT**; removal of many \"dead batteries\" (PEP 594); `copy.replace` |\n| **3.14** | **t-strings** (template string literals, PEP 750); **deferred evaluation of annotations** (PEP 649/749); free-threaded build officially supported; `concurrent.interpreters`; Zstandard in the standard library (`compression.zstd`); incremental GC; remote-debugging hooks |\n| **3.15** (due October 2026) | Check the release notes: expected items include explicit lazy imports (PEP 810) and UTF-8 as the default text encoding (PEP 686) |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import override\nfrom itertools import batched\n\n\nclass Base:\n    def run(self) -> str:\n        return \"base\"\n\n\nclass Child(Base):\n    @override                                   # a type checker errors if Base has no run(): catches renames\n    def run(self) -> str:\n        return \"child\"\n\n\nsongs = {\"gold\": [\"a\", \"b\"], \"silver\": [\"c\"]}\nprint(f\"{\"gold\" if songs[\"gold\"] else \"none\"}: {\", \".join(songs[\"gold\"])}\")     # 3.12: same quotes inside f-strings\nprint(list(batched(range(7), 3)), Child().run())\n\nwith (open(\"a.txt\", \"w\") as first, open(\"b.txt\", \"w\") as second):             # 3.10: parenthesised context managers\n    first.write(\"1\")\n    second.write(\"2\")\n\nfor index, name in enumerate([\"x\", \"y\"], start=1):\n    match (index, name):                                                        # 3.10: structural pattern matching\n        case (1, str() as label):\n            print(\"first:\", label)\n        case (n, label):\n            print(\"other:\", n, label)",
+     "title": "Modern.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "gold: a, b\n[(0, 1, 2), (3, 4, 5), (6,)] child\nfirst: x\nother: 2 y",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "A library or service declares `requires-python = \">=3.10\"` and may then use that version's syntax everywhere. Libraries support the oldest version still receiving security fixes; applications can pin the newest. CI should test the minimum and the newest versions you claim to support (`tox`, `nox` or a GitHub Actions matrix).",
+     "title": "Know your minimum version"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-3",
+   "type": "concept",
+   "title": "Testing with pytest",
+   "subtopicId": "12-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "`pytest` is the de-facto standard. A test is a plain function named `test_*` that uses plain `assert`; pytest rewrites the assertion to explain **why** it failed. Fixtures, parametrisation and plugins do the rest."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport re\nimport subprocess\nimport sys\n\npathlib.Path(\"calc.py\").write_text('''\\\ndef divide(a, b):\n    if b == 0:\n        raise ZeroDivisionError(\"b must not be zero\")\n    return a / b\n\n\ndef apply_discount(price, percent):\n    return price - price * percent / 100\n''')\n\npathlib.Path(\"test_calc.py\").write_text('''\\\nimport pytest\nfrom calc import apply_discount, divide\n\n\n@pytest.fixture\ndef prices():\n    return [100, 250]                                   # a fixture: set-up shared by tests that ask for it\n\n\ndef test_divide():\n    assert divide(10, 4) == 2.5\n\n\n@pytest.mark.parametrize(\"price, percent, expected\", [(100, 10, 90), (200, 50, 100), (80, 0, 80)])\ndef test_discount(price, percent, expected):            # one test function, three cases\n    assert apply_discount(price, percent) == expected\n\n\ndef test_zero_division():\n    with pytest.raises(ZeroDivisionError, match=\"must not be zero\"):\n        divide(1, 0)\n\n\ndef test_fixture(prices, tmp_path, monkeypatch):        # tmp_path: a fresh temp folder; monkeypatch: undoable patching\n    (tmp_path / \"prices.txt\").write_text(\",\".join(map(str, prices)))\n    monkeypatch.setenv(\"CURRENCY\", \"INR\")\n    assert sum(prices) == 350\n\n\ndef test_failure_message():\n    assert apply_discount(100, 10) == 91                # deliberately wrong: see how pytest explains it\n''')\n\nrun = subprocess.run([sys.executable, \"-m\", \"pytest\", \"-q\", \"-p\", \"no:cacheprovider\", \"--no-header\", \"--tb=short\"],\n                     capture_output=True, text=True)\nprint(re.sub(r\" in \\d+\\.\\d+s\", \"\", run.stdout).strip())",
+     "title": "PytestDemo.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "......F                                                                                      [100%]\n============================================ FAILURES =============================================\n______________________________________ test_failure_message _______________________________________\ntest_calc.py:31: in test_failure_message\n    assert apply_discount(100, 10) == 91                # deliberately wrong: see how pytest explains it\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   assert 90.0 == 91\nE    +  where 90.0 = apply_discount(100, 10)\n===================================== short test summary info =====================================\nFAILED test_calc.py::test_failure_message - assert 90.0 == 91\n1 failed, 6 passed",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Five ideas explain most of pytest:\n\n| Feature | What it gives you |\n| --- | --- |\n| **Plain `assert`** | Introspected failure messages: you see both sides of the comparison |\n| **Fixtures** (`@pytest.fixture`) | Reusable set-up and teardown by **dependency injection**: a test names the fixture as a parameter. Scopes: function (default), module, session. `yield` fixtures clean up after the test. Put shared ones in `conftest.py` |\n| **Parametrisation** | `@pytest.mark.parametrize` runs one test over many inputs |\n| **Built-in helpers** | `tmp_path`, `monkeypatch`, `capsys`, `caplog`, `pytest.raises`, `pytest.approx` (floats) |\n| **Markers and selection** | `-k expr`, `-m slow`, `--lf` (last failed), `-x` (stop at first failure), `-q`, `-n auto` (xdist, parallel) |\n\n### Test doubles and async tests"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from unittest.mock import AsyncMock, MagicMock, patch\nimport asyncio\nimport json\n\n\ndef get_rate(client, currency):\n    response = client.get(f\"/rates/{currency}\")\n    return json.loads(response)[\"rate\"]\n\n\nclient = MagicMock()\nclient.get.return_value = '{\"rate\": 83.2}'\nprint(get_rate(client, \"USD\"), client.get.call_args.args, client.get.call_count)\n\n\nclass Payments:\n    def charge(self, amount):\n        raise RuntimeError(\"real network call!\")\n\n\nwith patch.object(Payments, \"charge\", return_value=\"ok\") as charge:          # replace for the duration of the block\n    print(Payments().charge(50), charge.assert_called_once_with(50))\n\n\nasync def notify(mailer, user):\n    await mailer.send(user)\n    return \"sent\"\n\n\nmailer = AsyncMock()                                                           # awaitable mock for async code\nprint(asyncio.run(notify(mailer, \"asha\")), mailer.send.await_args.args)",
+     "title": "Mocking.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "83.2 ('/rates/USD',) 1\nok None\nsent ('asha',)",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Mock at the boundary you own** (the HTTP client, the clock, the payment gateway), not deep inside your logic, and prefer **fakes** (a small in-memory implementation of the interface) over heavy mocking when behaviour matters. `patch` replaces the name **where it is looked up**, not where it is defined (`patch(\"orders.requests.get\")`, not `patch(\"requests.get\")`). Tests of async code use `pytest-asyncio` or `anyio`'s pytest plugin, and FastAPI endpoints are tested with `TestClient` (web stage)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Pyramid: many fast unit tests, fewer integration tests (real database via containers), a few end-to-end tests.\n- Name tests by behaviour (`test_rejects_negative_amount`); one reason to fail per test; Arrange, Act, Assert.\n- Fixtures for set-up, `yield` for tear-down, `conftest.py` for sharing, `parametrize` for cases.\n- Isolate time, randomness and the network behind parameters or fakes; use `freezegun`-style clocks sparingly.\n- `pytest --cov=pkg --cov-fail-under=85`, `-x`, `--lf`, `-k`, `-n auto`.\n- Property-based tests (Hypothesis) generate inputs and shrink failures: great for parsers and invariants.",
+     "title": "Testing cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-4",
+   "type": "concept",
+   "title": "Packaging and Dependencies",
+   "subtopicId": "12-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **distribution** is what you install: a **wheel** (`.whl`, pre-built, fast) or an **sdist** (source archive). It is described by **`pyproject.toml`**, the single standard configuration file, and published to **PyPI** (or a private index)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import tomllib\n\nPYPROJECT = \"\"\"\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n\n[project]\nname = \"shop-api\"\nversion = \"1.4.0\"\ndescription = \"Orders service\"\nrequires-python = \">=3.12\"\ndependencies = [\n    \"fastapi>=0.115,<1\",\n    \"sqlalchemy[asyncio]>=2.0\",\n    \"pydantic-settings>=2.4\",\n]\n\n[project.optional-dependencies]\ndev = [\"pytest>=8\", \"ruff\", \"mypy\"]\n\n[project.scripts]\nshop-api = \"shop.cli:main\"              # installs a `shop-api` command\n\n[tool.ruff]\nline-length = 100\n\n[tool.pytest.ini_options]\ntestpaths = [\"tests\"]\n\"\"\"\n\nconfig = tomllib.loads(PYPROJECT)\nproject = config[\"project\"]\nprint(project[\"name\"], project[\"version\"], project[\"requires-python\"])\nprint(project[\"dependencies\"][0], list(project[\"optional-dependencies\"]), project[\"scripts\"])\nprint(config[\"build-system\"][\"build-backend\"], list(config[\"tool\"]))\n\nfrom importlib.metadata import version\nprint(\"installed fastapi is\", \"a real version:\", version(\"fastapi\").count(\".\") >= 1)",
+     "title": "Pyproject.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop-api 1.4.0 >=3.12\nfastapi>=0.115,<1 ['dev'] {'shop-api': 'shop.cli:main'}\nhatchling.build ['ruff', 'pytest']\ninstalled fastapi is a real version: True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Concept | Meaning |\n| --- | --- |\n| **Dependency specifiers** | `fastapi>=0.115,<1` (a compatible range); `==1.4.2` (exact); `~=1.4` (compatible release); extras `pkg[extra]` |\n| **Lock file** (`uv.lock`, `poetry.lock`, `requirements.txt` with hashes) | The exact resolved versions, for reproducible builds. **Applications lock; libraries declare ranges** |\n| **Optional dependencies / dependency groups** | `dev`, `test`, `docs` sets installed on demand |\n| **Entry points** | `[project.scripts]` creates console commands; plugin systems use entry-point groups |\n| **Versioning** | PEP 440 (`1.4.0`, `1.4.0rc1`); semantic versioning is the convention |\n| **Build backends** | `hatchling`, `setuptools`, `flit-core`, `uv_build`: selected under `[build-system]` |\n| **Publishing** | `uv build` then `uv publish` (or `twine`); prefer **trusted publishing** (OpenID Connect from CI) over long-lived API tokens |\n\nA day-to-day workflow with uv:"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "uv init shop-api && cd shop-api          # project skeleton with pyproject.toml\nuv add fastapi \"sqlalchemy[asyncio]\"     # add dependencies; updates pyproject.toml and uv.lock\nuv add --dev pytest ruff mypy            # development-only group\nuv sync                                  # make .venv match the lock file exactly (use --frozen in CI)\nuv run pytest                            # run a command inside the project environment\nuv lock --upgrade-package fastapi        # upgrade one dependency, review the diff\nuv build                                 # create the wheel and sdist in dist/",
+     "title": "uv workflow"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Typosquatted package names, hijacked maintainer accounts and malicious updates are real. Pin and **hash-verify** dependencies in production images (`uv pip install --require-hashes`), review lock-file diffs in pull requests, scan with `pip-audit` or your platform's dependency scanner, avoid `pip install` of random commands from the internet, and install from your organisation's private index where available.",
+     "title": "Supply-chain hygiene"
+    }
+   ]
+  },
+  {
+   "id": "ch-12-5",
+   "type": "concept",
+   "title": "Code Quality Tooling",
+   "subtopicId": "12-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A professional Python repository has a small, automated quality gate. The tools below cover formatting, linting, types, tests and secrets, and all read `pyproject.toml`.\n\n| Concern | Tool | Typical command |\n| --- | --- | --- |\n| Formatting | `ruff format` (or `black`) | `ruff format .` |\n| Linting and import sorting | `ruff check` (replaces flake8, isort, pyupgrade, many plug-ins) | `ruff check . --fix` |\n| Static types | `mypy`, `pyright` | `mypy src` |\n| Tests and coverage | `pytest`, `pytest-cov` | `pytest --cov` |\n| Security lint | `bandit`, `ruff` S-rules | `bandit -r src` |\n| Dependency audit | `pip-audit`, `uv`, Dependabot / Renovate | `pip-audit` |\n| Run on every commit | `pre-commit` hooks | `pre-commit run --all-files` |\n| Run on every pull request | CI (GitHub Actions) | same commands, in a clean environment |"
+    },
+    {
+     "type": "code",
+     "language": "toml",
+     "code": "[tool.ruff]\nline-length = 100\ntarget-version = \"py312\"\n\n[tool.ruff.lint]\nselect = [\"E\", \"F\", \"I\", \"B\", \"UP\", \"S\", \"ASYNC\", \"SIM\", \"RUF\"]   # pycodestyle, pyflakes, isort, bugbear, pyupgrade, bandit, async checks...\nignore = [\"S101\"]                                                 # allow assert in tests\n\n[tool.mypy]\nstrict = true\npython_version = \"3.12\"\n\n[tool.pytest.ini_options]\naddopts = \"-q --strict-markers\"\ntestpaths = [\"tests\"]",
+     "title": "pyproject.toml excerpt"
+    },
+    {
+     "type": "markdown",
+     "text": "Docstrings document the **contract** (what, arguments, returns, raises) and can double as tests with `doctest`:"
+    },
+    {
+     "type": "code",
+     "language": "pycon",
+     "code": ">>> def slugify(title):\n...     \"\"\"Turn a title into a URL slug.\"\"\"\n...     return \"-\".join(title.lower().split())\n>>> slugify(\"Python Full Stack\")\n'python-full-stack'\n>>> slugify(\"  Many   Spaces \")\n'many-spaces'\n>>> [slugify(t) for t in (\"A B\", \"C\")]\n['a-b', 'c']",
+     "title": "Doctest transcript"
+    },
+    {
+     "type": "markdown",
+     "text": "The `pycon` block above is itself executed when this page is built, using the same mechanism as `python -m doctest`, so examples in docstrings cannot drift from the code."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "In a clean environment from the lock file: `ruff check` and `ruff format --check`, `mypy` (or `pyright`), `pytest` with coverage and a threshold, a dependency audit, and a build of the Docker image or wheel. Then fast feedback matters more than completeness: cache dependencies, run unit tests first, and run slow integration tests in a second stage. This is the same quality gate you run locally through pre-commit.",
+     "title": "What does a good Python CI pipeline run?"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Type Hints and Static Checking"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Are Python type hints enforced?",
+       "answer": "Not by the interpreter. They are metadata stored in `__annotations__`. Static checkers (mypy, pyright) verify them before running; libraries such as Pydantic, FastAPI and dataclass validators read them at run time to parse and validate data."
+      },
+      {
+       "question": "What is the difference between `Optional[int]`, `int | None` and a default of `None`?",
+       "answer": "`Optional[int]` and `int | None` mean exactly the same: the value is an int or `None` (the `|` spelling is 3.10+). A default of `None` is about the *default value*; a parameter `x: int = None` is a type error in strict checking because the annotation does not allow `None`: write `x: int | None = None`."
+      },
+      {
+       "question": "When do you use `TypeVar` or the new `def f[T]` syntax?",
+       "answer": "To say \"the output type depends on the input type\": `def first[T](items: list[T]) -> T` returns whatever the list holds. Without it you would have to write `Any` and lose type information."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Modern Python: What Changed From 3.8 to 3.14"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Name three features added in each of 3.10, 3.11 and 3.12.",
+       "answer": "3.10: `match`, `X | Y` type syntax, better error messages. 3.11: speed-ups, `ExceptionGroup`/`except*`, `tomllib`, `TaskGroup`. 3.12: PEP 695 generics and `type` aliases, nested-quote f-strings, per-interpreter GIL."
+      },
+      {
+       "question": "What are t-strings in Python 3.14?",
+       "answer": "Template string literals (`t\"Hello {name}\"`) that look like f-strings but produce a structured `Template` object instead of a finished string, so libraries can process the interpolated values safely (escaping for HTML, SQL parameters) rather than concatenating them. Check the release notes for the current API."
+      },
+      {
+       "question": "Why did the pace of Python releases matter for applications?",
+       "answer": "A new feature release arrives every October and each is supported about five years, so there are always several supported versions. You pin one for applications, test the range for libraries, and plan upgrades yearly rather than every five years."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Testing with pytest"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What are pytest fixtures and why are they better than set-up methods?",
+       "answer": "Functions decorated with `@pytest.fixture` that provide data or resources; a test requests one by naming it as a parameter, and pytest builds it (and tears it down after a `yield`). They compose (fixtures can use fixtures), have scopes, and keep the test body free of boilerplate, unlike `setUp` methods shared by a whole class."
+      },
+      {
+       "question": "What is the difference between a mock, a stub and a fake?",
+       "answer": "A **stub** returns canned answers; a **mock** also records and verifies how it was called; a **fake** is a lightweight working implementation (an in-memory repository). Prefer fakes and real components where cheap, because over-mocking makes tests mirror the implementation and break on refactors."
+      },
+      {
+       "question": "How do you test code that depends on the current time or randomness?",
+       "answer": "Inject the dependency (a `clock` callable or `Random` instance) so tests pass a fixed one, or patch the lookup (`monkeypatch.setattr`, `time-machine`/`freezegun`). Never make the test wait on the real clock."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Packaging and Dependencies"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a wheel and an sdist?",
+       "answer": "An sdist is a source archive that needs a build step on install; a wheel is a pre-built archive that is just unpacked, so installs are fast and do not need compilers. Packages with C extensions publish a wheel per platform and Python version (plus an sdist as fallback)."
+      },
+      {
+       "question": "Why lock dependencies in applications but use ranges in libraries?",
+       "answer": "An application must behave identically in every environment, so it pins the exact resolved versions. A library is installed alongside other packages and must stay compatible with many versions, so it declares the widest range it supports and lets the application's resolver choose."
+      },
+      {
+       "question": "What goes in `[project.scripts]`?",
+       "answer": "Console entry points: `name = \"package.module:function\"`. The installer creates an executable `name` that imports and calls that function, which is how `pytest`, `uvicorn` and `ruff` commands exist."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Code Quality Tooling"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why has ruff replaced flake8, isort and black for many teams?",
+       "answer": "One tool written in Rust does linting (hundreds of rules), import sorting, auto-fixes and formatting 10 to 100 times faster, with a single configuration section in `pyproject.toml`. Fewer tools, faster CI and pre-commit hooks, and consistent results."
+      },
+      {
+       "question": "What do you gain from `mypy --strict` on a new project?",
+       "answer": "Every function must be annotated and `Any` leaks are reported, so type information is complete from the start. It is much cheaper than retrofitting types onto a large untyped codebase, and it catches `None` handling bugs and wrong-argument calls before tests run."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

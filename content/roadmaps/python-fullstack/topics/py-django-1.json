@@ -1,0 +1,292 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-34-1",
+   "type": "concept",
+   "title": "Django at a Glance",
+   "subtopicId": "34-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "**Django** is the \"batteries included\" Python web framework: an **ORM**, **migrations**, an **admin interface**, **authentication and permissions**, **forms and validation**, a **template engine**, **sessions**, **caching**, **internationalisation**, **security protections** (CSRF, XSS escaping, clickjacking, SQL-injection-safe queries) and a **test framework**, all designed to work together. It powers sites from small CMSs to Instagram-scale products, and with **Django REST Framework** (Part 3) it is a strong API platform.\n\nDjango follows **MVT**: Model, View, Template. It is MVC with different names:\n\n| MVT piece | Role | Spring analogue |\n| --- | --- | --- |\n| **Model** | Data and rules (`models.py`) | Entity + repository |\n| **View** | Receives a request, returns a response (`views.py`): the *controller* logic | `@Controller` method |\n| **Template** | HTML with placeholders (`templates/*.html`) | Thymeleaf / JSP view |\n| **URLconf** | Maps URLs to views (`urls.py`) | `@RequestMapping` |\n| **Framework** | Dispatches, runs middleware, handles forms, auth, admin | Spring MVC + Security + Data |\n\nA Django **project** is the whole site (settings, root URLs, deployment). It is made of reusable **apps**, each a Python package with one purpose (`accounts`, `catalog`, `orders`). A typical layout:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop/                       # the repository\n  manage.py                 # command-line entry point: runserver, migrate, test, shell, createsuperuser\n  config/                   # the project package\n    settings.py             # configuration\n    urls.py                 # root URL configuration\n    asgi.py, wsgi.py        # entry points for ASGI / WSGI servers\n  catalog/                  # an app\n    models.py               # database models\n    views.py                # request handlers\n    urls.py                 # the app's routes\n    forms.py                # forms and validation\n    admin.py                # admin configuration\n    tests.py                # tests\n    migrations/             # generated schema history: commit these\n    templates/catalog/      # HTML templates",
+     "title": "Project layout"
+    },
+    {
+     "type": "markdown",
+     "text": "### The request lifecycle"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  W[\"WSGI/ASGI server\"] --> MW[\"Middleware<br/>(security, session, CSRF, auth ...)\"]\n  MW --> U[\"URL resolver<br/>urls.py\"]\n  U --> V[\"View<br/>function or class\"]\n  V --> M[\"Models / ORM<br/>database\"]\n  V --> T[\"Template<br/>render HTML\"]\n  V --> R[\"HttpResponse\"]\n  R --> MW2[\"Middleware<br/>(reverse order)\"]\n  MW2 --> W2[\"Server sends response\"]",
+     "title": "A Django request"
+    },
+    {
+     "type": "markdown",
+     "text": "### The commands you will use daily\n\n| Command | Purpose |\n| --- | --- |\n| `django-admin startproject config .` / `python manage.py startapp catalog` | Scaffold a project / an app |\n| `python manage.py runserver` | Development server with auto-reload |\n| `python manage.py makemigrations` / `migrate` | Generate migration files from model changes / apply them |\n| `python manage.py createsuperuser` | An admin account |\n| `python manage.py shell` | A Python shell with Django loaded (try queries here) |\n| `python manage.py test` | Run the test suite (a throw-away test database is created for you) |\n| `python manage.py check --deploy` | Audit the settings for production risks |\n| `python manage.py collectstatic` | Gather static files for deployment |"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "**Django** when you need a full application quickly: admin, auth, ORM, forms, templates (content sites, internal tools, e-commerce back office, anything with many CRUD screens) and the team values conventions. **FastAPI** for async-first JSON APIs and microservices with explicit control over each piece. **Flask** for small services and when you want to choose every component. Many companies run Django for the core product and FastAPI for specific high-throughput services.",
+     "title": "Django, Flask or FastAPI?"
+    }
+   ]
+  },
+  {
+   "id": "ch-34-2",
+   "type": "concept",
+   "title": "A Working Project, File by File",
+   "subtopicId": "34-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The program below writes a complete (tiny) Django project into a folder, exactly as a developer would create it, and then **runs `python manage.py test` on it**. Everything you see in the files is what runs."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\nimport pathlib\nimport re\nimport subprocess\nimport sys\nimport textwrap\n\nROOT = pathlib.Path(\"shop\")\n\n\ndef write(files: dict):\n    for name, content in files.items():\n        path = ROOT / name\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(textwrap.dedent(content).lstrip(), encoding=\"utf-8\")\n\n\ndef manage(*args):\n    run = subprocess.run([sys.executable, \"manage.py\", *args], cwd=ROOT, capture_output=True, text=True,\n                         env={**os.environ, \"DJANGO_SETTINGS_MODULE\": \"config.settings\"})\n    return run.stdout + run.stderr\n\n\ndef summary(output):\n    ran = re.search(r\"Ran \\d+ tests?\", output)\n    return f\"{ran[0] if ran else 'no tests ran'}: {'OK' if re.search(r'^OK', output, re.M) else 'FAILED'}\"\n\n\nwrite({\n    \"manage.py\": \"\"\"\n        import os, sys\n\n        if __name__ == \"__main__\":\n            os.environ.setdefault(\"DJANGO_SETTINGS_MODULE\", \"config.settings\")\n            from django.core.management import execute_from_command_line\n            execute_from_command_line(sys.argv)\n    \"\"\",\n    \"config/__init__.py\": \"\",\n    \"config/settings.py\": \"\"\"\n        from pathlib import Path\n\n        BASE_DIR = Path(__file__).resolve().parent.parent\n        SECRET_KEY = \"dev-only-not-a-secret\"\n        DEBUG = True\n        ALLOWED_HOSTS = [\"testserver\", \"localhost\"]\n        INSTALLED_APPS = [\"django.contrib.contenttypes\", \"django.contrib.auth\", \"django.contrib.sessions\", \"django.contrib.messages\", \"catalog\"]\n        MIDDLEWARE = [\"django.middleware.security.SecurityMiddleware\", \"django.contrib.sessions.middleware.SessionMiddleware\",\n                      \"django.middleware.common.CommonMiddleware\", \"django.middleware.csrf.CsrfViewMiddleware\",\n                      \"django.contrib.auth.middleware.AuthenticationMiddleware\", \"django.contrib.messages.middleware.MessageMiddleware\"]\n        ROOT_URLCONF = \"config.urls\"\n        TEMPLATES = [{\"BACKEND\": \"django.template.backends.django.DjangoTemplates\", \"APP_DIRS\": True,\n                      \"OPTIONS\": {\"context_processors\": [\"django.template.context_processors.request\"]}}]\n        DATABASES = {\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": BASE_DIR / \"db.sqlite3\"}}\n        DEFAULT_AUTO_FIELD = \"django.db.models.BigAutoField\"\n        USE_TZ = True\n    \"\"\",\n    \"config/urls.py\": \"\"\"\n        from django.urls import include, path\n\n        urlpatterns = [path(\"\", include(\"catalog.urls\"))]\n    \"\"\",\n    \"catalog/__init__.py\": \"\",\n    \"catalog/urls.py\": \"\"\"\n        from django.urls import path\n\n        from . import views\n\n        app_name = \"catalog\"\n        urlpatterns = [path(\"\", views.home, name=\"home\"), path(\"api/products/\", views.products_json, name=\"products-json\")]\n    \"\"\",\n    \"catalog/views.py\": \"\"\"\n        from django.http import JsonResponse\n        from django.shortcuts import render\n\n        PRODUCTS = [{\"id\": 1, \"name\": \"Notebook\", \"price\": 120}, {\"id\": 2, \"name\": \"Pen <b>set</b>\", \"price\": 45}]\n\n\n        def home(request):\n            return render(request, \"catalog/home.html\", {\"products\": PRODUCTS, \"shop\": \"Trail Stationery\"})\n\n\n        def products_json(request):\n            return JsonResponse({\"products\": PRODUCTS})\n    \"\"\",\n    \"catalog/templates/catalog/home.html\": \"\"\"\n        <h1>{{ shop }}</h1>\n        <ul>\n        {% for p in products %}\n          <li>{{ p.name }}: {{ p.price|floatformat:2 }}</li>\n        {% empty %}\n          <li>nothing yet</li>\n        {% endfor %}\n        </ul>\n    \"\"\",\n    \"catalog/tests.py\": \"\"\"\n        from django.test import SimpleTestCase\n        from django.urls import reverse\n\n\n        class CatalogViewTests(SimpleTestCase):\n            def test_home_renders_the_template(self):\n                response = self.client.get(reverse(\"catalog:home\"))\n                self.assertEqual(response.status_code, 200)\n                self.assertContains(response, \"<h1>Trail Stationery</h1>\")\n                self.assertContains(response, \"Notebook: 120.00\")\n\n            def test_template_escapes_html_automatically(self):\n                response = self.client.get(\"/\")\n                self.assertContains(response, \"Pen &lt;b&gt;set&lt;/b&gt;\")      # the <b> tag did not become markup\n                self.assertNotContains(response, \"<b>set</b>\")\n\n            def test_json_api(self):\n                response = self.client.get(\"/api/products/\")\n                self.assertEqual(response[\"Content-Type\"], \"application/json\")\n                self.assertEqual(response.json()[\"products\"][0][\"name\"], \"Notebook\")\n\n            def test_reverse_builds_urls_from_names(self):\n                self.assertEqual(reverse(\"catalog:products-json\"), \"/api/products/\")\n\n            def test_unknown_url_is_404(self):\n                self.assertEqual(self.client.get(\"/nope/\").status_code, 404)\n    \"\"\",\n})\n\nprint(summary(manage(\"test\")))\nprint(manage(\"check\").strip())",
+     "title": "FirstDjango.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Ran 5 tests: OK\nSystem check identified no issues (0 silenced).",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Read what happened:\n\n1. **`settings.py`** is plain Python: apps, middleware, templates, database, security. Environment-specific values (secret key, database URL, `DEBUG`) come from environment variables in real projects.\n2. **`config/urls.py`** delegates to each app's `urls.py` with `include`; **`app_name`** namespaces URL names so `reverse(\"catalog:home\")` works.\n3. **A view** is any callable taking a `request` and returning a response: here `render(...)` builds HTML from a **template**, and `JsonResponse` returns JSON.\n4. **Templates auto-escape** variables: the product named `Pen <b>set</b>` is rendered as text, not markup, which is Django's built-in defence against **cross-site scripting (XSS)**. Only mark content safe (`|safe`, `mark_safe`) when you built it yourself.\n5. **Tests** use Django's test client: `self.client.get(...)` runs the full stack (middleware, URL resolver, view) in-process, with a clean test database per run."
+    }
+   ]
+  },
+  {
+   "id": "ch-34-3",
+   "type": "concept",
+   "title": "URLs, Views and Templates in Depth",
+   "subtopicId": "34-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### URL patterns and converters"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from django.urls import path, re_path\n\nurlpatterns = [\n    path(\"products/\", views.product_list, name=\"product-list\"),\n    path(\"products/<int:pk>/\", views.product_detail, name=\"product-detail\"),            # converters: int, str, slug, uuid, path\n    path(\"blog/<slug:slug>/\", views.post, name=\"post\"),\n    path(\"archive/<int:year>/<int:month>/\", views.archive, name=\"archive\"),\n    re_path(r\"^legacy/(?P<code>[A-Z]{3})/$\", views.legacy, name=\"legacy\"),                # regular expressions when you need them\n]"
+    },
+    {
+     "type": "markdown",
+     "text": "URLs are matched **top to bottom**, first match wins, so put specific patterns before general ones. Always end URLs with a trailing slash and use names with `reverse` / `{% url %}`.\n\n### Function views and class-based views"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\nimport pathlib\nimport re\nimport subprocess\nimport sys\nimport textwrap\n\nROOT = pathlib.Path(\"shop\")\n\n\ndef write(files: dict):\n    for name, content in files.items():\n        path = ROOT / name\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(textwrap.dedent(content).lstrip(), encoding=\"utf-8\")\n\n\ndef manage(*args):\n    run = subprocess.run([sys.executable, \"manage.py\", *args], cwd=ROOT, capture_output=True, text=True, env={**os.environ, \"DJANGO_SETTINGS_MODULE\": \"config.settings\"})\n    return run.stdout + run.stderr\n\n\ndef summary(output):\n    ran = re.search(r\"Ran \\d+ tests?\", output)\n    return f\"{ran[0] if ran else 'no tests ran'}: {'OK' if re.search(r'^OK', output, re.M) else 'FAILED'}\"\n\n\nwrite({\n    \"manage.py\": \"import os, sys\\nfrom django.core.management import execute_from_command_line\\nexecute_from_command_line(sys.argv)\\n\",\n    \"config/__init__.py\": \"\",\n    \"config/settings.py\": \"\"\"\n        SECRET_KEY = \"x\"\n        DEBUG = True\n        ALLOWED_HOSTS = [\"testserver\"]\n        INSTALLED_APPS = [\"django.contrib.contenttypes\", \"django.contrib.auth\", \"shop\"]\n        MIDDLEWARE = [\"django.middleware.common.CommonMiddleware\"]\n        ROOT_URLCONF = \"config.urls\"\n        TEMPLATES = [{\"BACKEND\": \"django.template.backends.django.DjangoTemplates\", \"APP_DIRS\": True}]\n        DATABASES = {\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}}\n        DEFAULT_AUTO_FIELD = \"django.db.models.BigAutoField\"\n    \"\"\",\n    \"config/urls.py\": \"\"\"\n        from django.urls import path\n\n        from shop import views\n\n        urlpatterns = [\n            path(\"items/\", views.ItemList.as_view(), name=\"items\"),\n            path(\"items/<int:pk>/\", views.ItemDetail.as_view(), name=\"item\"),\n            path(\"hello/\", views.hello, name=\"hello\"),\n            path(\"limited/\", views.Limited.as_view(), name=\"limited\"),\n        ]\n    \"\"\",\n    \"shop/__init__.py\": \"\",\n    \"shop/models.py\": \"\"\"\n        from django.db import models\n\n\n        class Item(models.Model):\n            name = models.CharField(max_length=50)\n            price = models.PositiveIntegerField()\n\n            def __str__(self):\n                return self.name\n    \"\"\",\n    \"shop/views.py\": \"\"\"\n        from django.http import HttpResponse, HttpResponseNotAllowed\n        from django.utils.decorators import method_decorator\n        from django.views import View\n        from django.views.decorators.http import require_GET\n        from django.views.generic import DetailView, ListView\n\n        from .models import Item\n\n\n        @require_GET                                                   # a decorator on a function view\n        def hello(request):\n            return HttpResponse(f\"hello {request.GET.get('name', 'world')}\")\n\n\n        class ItemList(ListView):                                       # a generic view: queryset + template, pagination for free\n            model = Item\n            paginate_by = 2\n            template_name = \"items.html\"\n\n\n        class ItemDetail(DetailView):\n            model = Item\n            template_name = \"item.html\"                                 # a missing object becomes a 404 automatically\n\n\n        class Limited(View):                                            # a plain class view: one method per HTTP verb\n            def get(self, request):\n                return HttpResponse(\"read\")\n\n            def post(self, request):\n                return HttpResponse(\"created\", status=201)\n    \"\"\",\n    \"shop/templates/items.html\": \"{% for item in object_list %}{{ item.name }}={{ item.price }};{% endfor %} page {{ page_obj.number }} of {{ paginator.num_pages }}\",\n    \"shop/templates/item.html\": \"<h1>{{ item.name }}</h1><p>{{ item.price }}</p>\",\n    \"shop/tests.py\": \"\"\"\n        from django.test import TestCase\n\n        from .models import Item\n\n\n        class ViewTests(TestCase):\n            @classmethod\n            def setUpTestData(cls):                                    # created once per class, rolled back per test\n                for n, name in enumerate([\"pen\", \"ink\", \"pad\"], start=1):\n                    Item.objects.create(name=name, price=n * 10)\n\n            def test_list_is_paginated(self):\n                first = self.client.get(\"/items/\")\n                self.assertContains(first, \"pen=10;ink=20; page 1 of 2\")\n                self.assertContains(self.client.get(\"/items/?page=2\"), \"pad=30; page 2 of 2\")\n\n            def test_detail_and_404(self):\n                self.assertContains(self.client.get(\"/items/1/\"), \"<h1>pen</h1>\")\n                self.assertEqual(self.client.get(\"/items/99/\").status_code, 404)\n\n            def test_http_methods(self):\n                self.assertEqual(self.client.get(\"/hello/?name=asha\").content, b\"hello asha\")\n                self.assertEqual(self.client.post(\"/hello/\").status_code, 405)       # @require_GET\n                self.assertEqual(self.client.post(\"/limited/\").status_code, 201)\n\n            def test_queries_per_request(self):\n                with self.assertNumQueries(2):                          # one COUNT for pagination and one SELECT for the page\n                    self.client.get(\"/items/\")\n    \"\"\",\n})\nprint(summary(manage(\"test\")))",
+     "title": "Cbv.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Ran 4 tests: OK",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| | **Function-based view** | **Class-based view (CBV)** |\n| --- | --- | --- |\n| Shape | `def view(request, ...)` | `class V(View)` with `get`, `post`, ... |\n| Reuse | Decorators, helper functions | Inheritance and mixins (`LoginRequiredMixin`) |\n| Generic CRUD | Write by hand | `ListView`, `DetailView`, `CreateView`, `UpdateView`, `DeleteView` |\n| Readability | Explicit and simple | Concise for standard patterns, harder to trace when heavily customised |\n\nUse function views for one-off logic and CBVs where generic views remove boilerplate; both are normal. The test above also demonstrates `assertNumQueries`, a guard against N+1 regressions.\n\n### The template language"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{% extends \"base.html\" %}                              {# inherit a layout #}\n{% block content %}\n  <h1>{{ product.name|title }}</h1>                    {# variable + filter; output is auto-escaped #}\n  {% if product.stock > 0 %}In stock{% else %}Sold out{% endif %}\n  {% for tag in product.tags.all %}{{ tag }}{% if not forloop.last %}, {% endif %}{% endfor %}\n  <a href=\"{% url 'catalog:product-detail' pk=product.pk %}\">details</a>\n  {% include \"partials/price.html\" with amount=product.price %}\n  <form method=\"post\">{% csrf_token %} ... </form>     {# REQUIRED in every POST form #}\n{% endblock %}",
+     "title": "Template language"
+    },
+    {
+     "type": "markdown",
+     "text": "Keep **logic out of templates**: they are for presentation (loops, conditionals, filters). Compute in the view or model. Every HTML form that changes data needs `{% csrf_token %}`; Django's CSRF middleware rejects POSTs without it (403)."
+    }
+   ]
+  },
+  {
+   "id": "ch-34-4",
+   "type": "concept",
+   "title": "Forms and Validation",
+   "subtopicId": "34-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Django **forms** turn untrusted input (POST data, query strings) into **validated, typed Python values**, and render errors. A `ModelForm` builds a form from a model. Validation runs in layers: field type and constraints, then `clean_<field>()` per field, then `clean()` across fields."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\nimport pathlib\nimport re\nimport subprocess\nimport sys\nimport textwrap\n\nROOT = pathlib.Path(\"shop\")\n\n\ndef write(files: dict):\n    for name, content in files.items():\n        path = ROOT / name\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(textwrap.dedent(content).lstrip(), encoding=\"utf-8\")\n\n\ndef manage(*args):\n    run = subprocess.run([sys.executable, \"manage.py\", *args], cwd=ROOT, capture_output=True, text=True, env={**os.environ, \"DJANGO_SETTINGS_MODULE\": \"config.settings\"})\n    return run.stdout + run.stderr\n\n\ndef summary(output):\n    ran = re.search(r\"Ran \\d+ tests?\", output)\n    return f\"{ran[0] if ran else 'no tests ran'}: {'OK' if re.search(r'^OK', output, re.M) else 'FAILED'}\"\n\n\nwrite({\n    \"manage.py\": \"import sys\\nfrom django.core.management import execute_from_command_line\\nexecute_from_command_line(sys.argv)\\n\",\n    \"config/__init__.py\": \"\",\n    \"config/settings.py\": \"\"\"\n        SECRET_KEY = \"x\"\n        ALLOWED_HOSTS = [\"testserver\"]\n        INSTALLED_APPS = [\"django.contrib.contenttypes\", \"django.contrib.auth\", \"django.contrib.sessions\", \"signup\"]\n        MIDDLEWARE = [\"django.contrib.sessions.middleware.SessionMiddleware\", \"django.middleware.csrf.CsrfViewMiddleware\"]\n        ROOT_URLCONF = \"config.urls\"\n        TEMPLATES = [{\"BACKEND\": \"django.template.backends.django.DjangoTemplates\", \"APP_DIRS\": True}]\n        DATABASES = {\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}}\n        DEFAULT_AUTO_FIELD = \"django.db.models.BigAutoField\"\n    \"\"\",\n    \"config/urls.py\": \"from django.urls import path\\nfrom signup import views\\nurlpatterns = [path('signup/', views.signup, name='signup')]\\n\",\n    \"signup/__init__.py\": \"\",\n    \"signup/models.py\": \"\"\"\n        from django.db import models\n\n\n        class Member(models.Model):\n            email = models.EmailField(unique=True)\n            age = models.PositiveSmallIntegerField()\n    \"\"\",\n    \"signup/forms.py\": \"\"\"\n        from django import forms\n        from django.core.exceptions import ValidationError\n\n        from .models import Member\n\n\n        class SignupForm(forms.ModelForm):\n            password = forms.CharField(min_length=8, widget=forms.PasswordInput)\n            confirm = forms.CharField(widget=forms.PasswordInput)\n\n            class Meta:\n                model = Member\n                fields = [\"email\", \"age\"]\n\n            def clean_age(self):                                         # field-level rule\n                age = self.cleaned_data[\"age\"]\n                if age < 18:\n                    raise ValidationError(\"You must be at least 18.\")\n                return age\n\n            def clean(self):                                             # cross-field rule\n                cleaned = super().clean()\n                if cleaned.get(\"password\") != cleaned.get(\"confirm\"):\n                    self.add_error(\"confirm\", \"Passwords do not match.\")\n                return cleaned\n    \"\"\",\n    \"signup/views.py\": \"\"\"\n        from django.http import HttpResponse, JsonResponse\n        from django.shortcuts import render\n\n        from .forms import SignupForm\n\n\n        def signup(request):\n            form = SignupForm(request.POST or None)\n            if request.method == \"POST\":\n                if form.is_valid():\n                    form.save()                                           # ModelForm creates the Member row\n                    return JsonResponse({\"created\": form.cleaned_data[\"email\"]}, status=201)\n                return JsonResponse({\"errors\": form.errors.get_json_data()}, status=422)\n            return HttpResponse(form.as_p())\n    \"\"\",\n    \"signup/tests.py\": \"\"\"\n        from django.test import TestCase\n\n        from .models import Member\n\n\n        class SignupTests(TestCase):\n            def post(self, **overrides):\n                data = {\"email\": \"asha@example.com\", \"age\": \"29\", \"password\": \"correct-horse\", \"confirm\": \"correct-horse\", **overrides}\n                return self.client.post(\"/signup/\", data)\n\n            def test_valid_signup_creates_a_member(self):\n                response = self.post()\n                self.assertEqual((response.status_code, response.json()), (201, {\"created\": \"asha@example.com\"}))\n                self.assertEqual(Member.objects.get().age, 29)\n\n            def test_each_rule_reports_its_own_error(self):\n                errors = self.post(age=\"15\", confirm=\"different\", email=\"not-an-email\").json()[\"errors\"]\n                self.assertEqual(sorted(errors), [\"age\", \"confirm\", \"email\"])\n                self.assertEqual(errors[\"age\"][0][\"message\"], \"You must be at least 18.\")\n                self.assertEqual(Member.objects.count(), 0)\n\n            def test_duplicate_email_is_rejected_by_the_model_validation(self):\n                self.post()\n                self.assertIn(\"already exists\", self.post().json()[\"errors\"][\"email\"][0][\"message\"])\n\n            def test_forms_render_html(self):\n                self.assertContains(self.client.get(\"/signup/\"), 'type=\"password\"')\n    \"\"\",\n})\nprint(summary(manage(\"test\")))",
+     "title": "Forms.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Ran 4 tests: OK",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Forms validate; they never trust.** The same `SignupForm` renders the HTML, parses and converts the submitted strings (`\"29\"` to `29`), runs every rule, collects *all* errors (not only the first), and, as a `ModelForm`, saves the instance including **model-level validation** such as `unique=True`. Server-side validation is mandatory even if JavaScript also validates in the browser."
+    }
+   ]
+  },
+  {
+   "id": "ch-34-5",
+   "type": "concept",
+   "title": "Settings, Middleware and Environment",
+   "subtopicId": "34-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Settings change between **development**, **testing** and **production**. The rules that keep them manageable: one `settings.py` driven by **environment variables** (or a small settings package with `base.py`, `dev.py`, `prod.py`), **no secrets in the repository**, and `python manage.py check --deploy` in CI."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\nimport pathlib\nimport re\nimport subprocess\nimport sys\nimport textwrap\n\nROOT = pathlib.Path(\"shop\")\n\n\ndef write(files: dict):\n    for name, content in files.items():\n        path = ROOT / name\n        path.parent.mkdir(parents=True, exist_ok=True)\n        path.write_text(textwrap.dedent(content).lstrip(), encoding=\"utf-8\")\n\n\ndef manage(*args, **env):\n    run = subprocess.run([sys.executable, \"manage.py\", *args], cwd=ROOT, capture_output=True, text=True,\n                         env={**os.environ, \"DJANGO_SETTINGS_MODULE\": \"config.settings\", **env})\n    return run.stdout + run.stderr\n\n\ndef summary(output):\n    ran = re.search(r\"Ran \\d+ tests?\", output)\n    return f\"{ran[0] if ran else 'no tests ran'}: {'OK' if re.search(r'^OK', output, re.M) else 'FAILED'}\"\n\n\nwrite({\n    \"manage.py\": \"import sys\\nfrom django.core.management import execute_from_command_line\\nexecute_from_command_line(sys.argv)\\n\",\n    \"config/__init__.py\": \"\",\n    \"config/settings.py\": \"\"\"\n        import os\n\n        SECRET_KEY = os.environ.get(\"DJANGO_SECRET_KEY\", \"insecure-development-key\")             # real value comes from the environment\n        DEBUG = os.environ.get(\"DJANGO_DEBUG\", \"0\") == \"1\"                                       # never True in production\n        ALLOWED_HOSTS = os.environ.get(\"DJANGO_ALLOWED_HOSTS\", \"testserver\").split(\",\")\n        INSTALLED_APPS = [\"django.contrib.contenttypes\", \"django.contrib.auth\", \"core\"]\n        MIDDLEWARE = [\"core.middleware.RequestIdMiddleware\", \"core.middleware.TimingMiddleware\"]\n        ROOT_URLCONF = \"config.urls\"\n        DATABASES = {\"default\": {\"ENGINE\": \"django.db.backends.sqlite3\", \"NAME\": \":memory:\"}}\n        DEFAULT_AUTO_FIELD = \"django.db.models.BigAutoField\"\n        TEMPLATES = []\n    \"\"\",\n    \"config/urls.py\": \"from django.urls import path\\nfrom core import views\\nurlpatterns = [path('whoami/', views.whoami)]\\n\",\n    \"core/__init__.py\": \"\",\n    \"core/middleware.py\": \"\"\"\n        import uuid\n\n\n        class RequestIdMiddleware:                                       # a class-based middleware: __init__ once, __call__ per request\n            def __init__(self, get_response):\n                self.get_response = get_response\n\n            def __call__(self, request):\n                request.request_id = request.headers.get(\"X-Request-ID\") or uuid.uuid4().hex[:8]    # BEFORE the view\n                response = self.get_response(request)                                                # the view and inner middleware run here\n                response[\"X-Request-ID\"] = request.request_id                                         # AFTER the view\n                return response\n\n\n        class TimingMiddleware:\n            order = []\n\n            def __init__(self, get_response):\n                self.get_response = get_response\n\n            def __call__(self, request):\n                TimingMiddleware.order.append(\"timing: before view\")\n                response = self.get_response(request)\n                TimingMiddleware.order.append(\"timing: after view\")\n                return response\n    \"\"\",\n    \"core/views.py\": \"\"\"\n        from django.http import JsonResponse\n\n        from .middleware import TimingMiddleware\n\n\n        def whoami(request):\n            TimingMiddleware.order.append(\"view\")\n            return JsonResponse({\"request_id\": request.request_id})\n    \"\"\",\n    \"core/tests.py\": \"\"\"\n        from django.test import SimpleTestCase\n\n        from .middleware import TimingMiddleware\n\n\n        class MiddlewareTests(SimpleTestCase):\n            def test_request_id_is_available_to_views_and_returned(self):\n                response = self.client.get(\"/whoami/\", headers={\"X-Request-ID\": \"abc12345\"})\n                self.assertEqual(response.json()[\"request_id\"], \"abc12345\")\n                self.assertEqual(response[\"X-Request-ID\"], \"abc12345\")\n\n            def test_middleware_wraps_the_view_like_layers(self):\n                TimingMiddleware.order.clear()\n                self.client.get(\"/whoami/\")\n                self.assertEqual(TimingMiddleware.order, [\"timing: before view\", \"view\", \"timing: after view\"])\n    \"\"\",\n})\nprint(summary(manage(\"test\")))\nchecks = manage(\"check\", \"--deploy\", DJANGO_SECRET_KEY=\"a-long-random-value-of-more-than-fifty-characters-1234567890!\", DJANGO_ALLOWED_HOSTS=\"example.com\")\nprint(sorted(set(re.findall(r\"security\\.W\\d+\", checks))))",
+     "title": "Middleware.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Ran 2 tests: OK\n['security.W001', 'security.W002', 'security.W003']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Middleware is a chain of onions: each layer runs code **before** the view on the way in and **after** on the way out (the order of `MIDDLEWARE` is inside-out for responses). The built-in middleware provides security headers, sessions, CSRF protection, authentication and clickjacking defence. The `check --deploy` run at the end prints the warnings that remain. This tiny project installs none of the security middleware, so it reports `security.W001` to `W003` (missing `SecurityMiddleware`, `XFrameOptionsMiddleware` and CSRF middleware); a fuller project would instead see warnings such as `security.W004` (HSTS), `W008` (HTTPS redirect) or `W012` (secure session cookie). Each warning names a production hardening step."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- `DEBUG = False`; a long random `SECRET_KEY` from the environment; explicit `ALLOWED_HOSTS`.\n- `SECURE_SSL_REDIRECT = True`, `SECURE_HSTS_SECONDS`, `SESSION_COOKIE_SECURE = True`, `CSRF_COOKIE_SECURE = True`, `SECURE_PROXY_SSL_HEADER` behind a proxy.\n- A real database (PostgreSQL) with persistent connections (`CONN_MAX_AGE` or pooling), configured from `DATABASE_URL`.\n- Static files via `collectstatic` plus WhiteNoise or a CDN; media on object storage.\n- A production email and cache backend; error reporting (Sentry); structured logging to stdout.\n- `python manage.py check --deploy` clean in CI; migrations run as a separate release step.",
+     "title": "Django production settings"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Django at a Glance"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does MVT mean and how does it differ from MVC?",
+       "answer": "Model-View-Template: the Model is the data layer, the Template is the presentation (HTML), and the View is the Python function or class that handles a request and returns a response (what MVC calls the controller). Django itself plays the controller role by routing requests to views."
+      },
+      {
+       "question": "What is the difference between a Django project and an app?",
+       "answer": "A project is one site with its settings and root URLs; an app is a self-contained, reusable package (models, views, templates) that does one job. A project installs many apps (`INSTALLED_APPS`), including Django's own (`auth`, `admin`, `sessions`)."
+      },
+      {
+       "question": "Why does Django generate migration files?",
+       "answer": "Migrations are a versioned history of schema changes derived from your models. They are code you commit and review, applied in order on every environment (`migrate`) so databases evolve consistently, and they can often be reversed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### A Working Project, File by File"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does `reverse()` do and why use it instead of hard-coded URLs?",
+       "answer": "It builds a URL from a route name (and arguments) using the URLconf, so changing a URL pattern in one place updates every link, redirect and test. Templates use `{% url 'catalog:home' %}` for the same reason."
+      },
+      {
+       "question": "Why does Django escape template variables by default?",
+       "answer": "To prevent XSS: user-supplied text containing `<script>` is converted to harmless entities (`&lt;script&gt;`) when rendered. You must opt out explicitly (`|safe`) for HTML you trust, which makes dangerous places easy to find in review."
+      },
+      {
+       "question": "What is the role of `INSTALLED_APPS`?",
+       "answer": "It lists the apps Django loads: their models are registered, their templates and static files discovered, their migrations applied and their admin and management commands made available. An app that is not listed has no tables and no templates."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### URLs, Views and Templates in Depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When do you choose class-based views over function views?",
+       "answer": "When a generic view (`ListView`, `CreateView`) matches the task, or when you want to share behaviour through mixins (login required, permission checks). Function views are simpler for custom or one-off logic. Neither is \"more correct\"."
+      },
+      {
+       "question": "What is the first thing to check when a Django page unexpectedly returns 403 on a POST?",
+       "answer": "The CSRF token: the form must include `{% csrf_token %}` (or the AJAX request must send the `X-CSRFToken` header), and the cookie must be sent. Django rejects state-changing requests without a valid token."
+      },
+      {
+       "question": "How do you guard against N+1 queries in Django tests?",
+       "answer": "Use `assertNumQueries(n)` around the code (or the `django-debug-toolbar` / `nplusone` in development), and fix with `select_related` (foreign keys) or `prefetch_related` (many-to-many and reverse relations)."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Forms and Validation"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the order of form validation?",
+       "answer": "Each field's `clean()` (type, required, length), then the form's `clean_<fieldname>()` methods, then the form-level `clean()` for rules across fields, and for a `ModelForm` the model's own validation (including uniqueness). `form.errors` collects everything that failed."
+      },
+      {
+       "question": "How is a `ModelForm` different from a `Form`?",
+       "answer": "A `ModelForm` derives its fields, types and validation from a model (and `save()` creates or updates the instance); a plain `Form` is declared by hand and is for input that does not map to one model (search, contact, multi-model workflows)."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Settings, Middleware and Environment"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does middleware do and how is it ordered?",
+       "answer": "Middleware are classes (or functions) wrapping every request and response: each receives `get_response`, can act before calling it (inspect or modify the request) and after (modify the response). They run top to bottom on the way in and bottom to top on the way out, so order matters (sessions before authentication, for example)."
+      },
+      {
+       "question": "How do you keep secrets and per-environment configuration out of Django's `settings.py`?",
+       "answer": "Read them from environment variables (or a secrets manager) with safe defaults only for development, keep a separate settings module or flags per environment, never commit `.env` files or keys, and validate with `check --deploy`."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

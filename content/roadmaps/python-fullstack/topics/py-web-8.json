@@ -1,0 +1,318 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-31-1",
+   "type": "concept",
+   "title": "The Session: Lifecycle, Identity Map and Unit of Work",
+   "subtopicId": "31-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Every ORM object is in exactly one **state** relative to a session, and knowing the states explains most \"why did it not save?\" and \"DetachedInstanceError\" questions.\n\n| State | Meaning | How you get there |\n| --- | --- | --- |\n| **Transient** | A plain Python object, not in any session | `Account(...)` |\n| **Pending** | Added to a session, no row yet | `session.add(obj)` |\n| **Persistent** | Has a row and belongs to a session (the identity map holds it) | after `flush`, or loaded by a query |\n| **Detached** | Has a row, but its session is closed | `session.close()`, `session.expunge(obj)` |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from sqlalchemy import create_engine, func, inspect, select\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column\nfrom sqlalchemy.orm.exc import DetachedInstanceError\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass Account(Base):\n    __tablename__ = \"accounts\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    owner: Mapped[str]\n    balance: Mapped[int]\n\n\nengine = create_engine(\"sqlite://\")\nBase.metadata.create_all(engine)\n\n\ndef state(obj):\n    s = inspect(obj)\n    return next(name for name in (\"transient\", \"pending\", \"persistent\", \"detached\") if getattr(s, name))\n\n\naccount = Account(owner=\"asha\", balance=100)\nprint(state(account))\n\nwith Session(engine) as session:                                  # default: autoflush=True, expire_on_commit=True\n    session.add(account)\n    print(state(account), len(session.new), len(session.dirty))\n    session.flush()                                               # INSERT is sent; the transaction is still open\n    print(state(account), account.id)\n\n    account.balance += 50                                         # the unit of work notices attribute changes\n    print(\"dirty:\", account in session.dirty, session.is_modified(account))\n    print(\"sum seen by the query:\", session.scalar(select(func.sum(Account.balance))))   # autoflush sent the UPDATE first\n\n    print(\"same object per row:\", session.get(Account, account.id) is account)\n    session.commit()                                              # expire_on_commit: attributes are reloaded on next access\n    print(\"expired after commit:\", \"balance\" in inspect(account).unloaded)\n    print(\"reloaded:\", account.balance)\n\n    session.expunge(account)                                      # detach one object without closing the session\n    print(state(account))\n\nwith Session(engine) as session:\n    stale = session.get(Account, 1)\n    session.commit()                                              # expires the attributes\ndetached = stale\ntry:\n    print(detached.balance)                                       # the session is closed and the value is expired\nexcept DetachedInstanceError:\n    print(\"DetachedInstanceError: the session closed before the attribute was loaded\")\n\nwith Session(engine) as session:                                  # merge copies a detached object's state into this session\n    attached = session.merge(Account(id=1, owner=\"asha\", balance=999))\n    session.commit()\n    print(attached.balance, state(attached))",
+     "title": "SessionLifecycle.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "transient\npending 1 0\npersistent 1\ndirty: True True\nsum seen by the query: 150\nsame object per row: True\nexpired after commit: True\nreloaded: 150\ndetached\nDetachedInstanceError: the session closed before the attribute was loaded\n999 persistent",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Why these behaviours exist, and what they cost you:\n\n1. **Identity map**: one object per row per session, so `session.get(...)` twice is one query, and two references to the same row are the same Python object (no inconsistent copies).\n2. **Unit of work and autoflush**: changes are tracked on the objects and sent as one batch at `flush`; before a query the session **autoflushes** so the query sees pending changes. This is correct but can surprise you with an unexpected `IntegrityError` at query time.\n3. **`expire_on_commit=True`** (the default) clears loaded attributes at commit so you never read stale data; the cost is an extra `SELECT` on the next access, and `DetachedInstanceError` if the session is gone. Web apps that serialise after commit usually set `expire_on_commit=False`.\n4. **Session scope = unit of work = request**. Do not keep a session in a global or share it across threads or tasks: it holds state and a connection."
+    }
+   ]
+  },
+  {
+   "id": "ch-31-2",
+   "type": "concept",
+   "title": "Loading Strategies and Query Performance",
+   "subtopicId": "31-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Performance work on an ORM is **counting queries, reading plans and moving work into the database**."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import time\n\nfrom sqlalchemy import Index, create_engine, delete, exists, func, insert, select, text\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, defer, load_only, mapped_column\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass Order(Base):\n    __tablename__ = \"orders\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    customer_id: Mapped[int]\n    status: Mapped[str]\n    total: Mapped[int]\n    notes: Mapped[str]\n\n\nengine = create_engine(\"sqlite://\")\nBase.metadata.create_all(engine)\nrows = [{\"customer_id\": i % 500, \"status\": \"paid\" if i % 3 else \"new\", \"total\": i, \"notes\": \"x\" * 200} for i in range(20_000)]\n\n# ORM objects versus bulk Core inserts\nstarted = time.perf_counter()\nwith Session(engine) as session:\n    session.add_all([Order(**row) for row in rows[:5_000]])        # one object per row: identity map, change tracking, flush ordering\n    session.commit()\norm_time = time.perf_counter() - started\n\nstarted = time.perf_counter()\nwith engine.begin() as connection:\n    connection.execute(insert(Order), rows[5_000:])                # one executemany: no objects at all\nbulk_time = time.perf_counter() - started\nprint(\"Core executemany is at least 3x faster per row:\", (orm_time / 5_000) > 3 * (bulk_time / 15_000))\n\nwith Session(engine) as session:\n    print(session.scalar(select(func.count()).select_from(Order)))\n\n    # Fetch only what you need\n    full = session.scalars(select(Order).where(Order.id == 1)).one()\n    slim = session.scalars(select(Order).options(load_only(Order.id, Order.total)).where(Order.id == 2)).one()\n    deferred = session.scalars(select(Order).options(defer(Order.notes)).where(Order.id == 3)).one()\n    print(\"notes loaded:\", \"notes\" in full.__dict__, \"notes\" in slim.__dict__, \"notes\" in deferred.__dict__)\n    pairs = session.execute(select(Order.customer_id, func.sum(Order.total)).group_by(Order.customer_id).order_by(Order.customer_id).limit(2)).all()\n    print(\"aggregate in SQL, not in Python:\", [tuple(p) for p in pairs])\n    print(\"EXISTS instead of count:\", session.scalar(select(exists().where(Order.customer_id == 7, Order.status == \"new\"))))\n\n    # Stream big results instead of materialising them\n    seen = 0\n    for chunk in session.execute(select(Order.id).execution_options(yield_per=1_000)).partitions():\n        seen += len(chunk)\n    print(\"streamed rows:\", seen)\n\n\ndef plan(sql):\n    with engine.connect() as connection:\n        return \" / \".join(row[-1] for row in connection.execute(text(\"EXPLAIN QUERY PLAN \" + sql)))\n\n\nquery = \"SELECT id FROM orders WHERE customer_id = 7 AND status = 'paid'\"\nprint(\"before:\", plan(query))\nIndex(\"ix_orders_customer_status\", Order.customer_id, Order.status).create(engine)\nprint(\"after: \", plan(query))",
+     "title": "QueryPerformance.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Core executemany is at least 3x faster per row: True\n20000\nnotes loaded: True False False\naggregate in SQL, not in Python: [(0, 390000), (1, 390040)]\nEXISTS instead of count: True\nstreamed rows: 20000\nbefore: SCAN orders\nafter:  SEARCH orders USING COVERING INDEX ix_orders_customer_status (customer_id=? AND status=?)",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The recurring techniques:\n\n| Problem | Fix |\n| --- | --- |\n| N+1 queries | `selectinload` / `joinedload`; assert query counts in tests |\n| Loading whole rows for two columns | `load_only(...)`, `defer(...)`, or select columns directly (`select(Order.id, Order.total)`) |\n| Aggregating in Python | `func.sum`, `group_by`, window functions: let the database do it |\n| `count()` just to test existence | `select(exists().where(...))` |\n| Loading millions of rows | `yield_per` / server-side cursors; process in chunks |\n| Slow inserts and updates | Core `insert()` with a list (executemany), `update().where()` set-based statements, PostgreSQL `COPY` |\n| Slow filter or sort | Read the plan (`EXPLAIN` / `EXPLAIN ANALYZE`), add the right composite index (column order matters: equality columns first), avoid functions on indexed columns (`WHERE lower(email) = ...` needs an expression index) |\n| Deep `OFFSET` | Keyset pagination (`WHERE id > :last ORDER BY id LIMIT n`) |\n\nThe plan lines above are SQLite's wording and change with the SQLite version; PostgreSQL's `EXPLAIN (ANALYZE, BUFFERS)` shows real timings and is the tool to learn: look for **sequential scans on big tables, row-estimate errors and sorts that spill to disk**."
+    }
+   ]
+  },
+  {
+   "id": "ch-31-3",
+   "type": "concept",
+   "title": "Advanced Mapping: Inheritance, Hybrids, Constraints and JSON",
+   "subtopicId": "31-3",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from datetime import datetime, timezone\nfrom enum import Enum\n\nfrom sqlalchemy import CheckConstraint, JSON, String, UniqueConstraint, create_engine, select\nfrom sqlalchemy.exc import IntegrityError\nfrom sqlalchemy.ext.hybrid import hybrid_property\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass TimestampMixin:                                                 # shared columns: a mixin, not inheritance of tables\n    created_at: Mapped[datetime] = mapped_column(default=lambda: datetime(2026, 11, 4, tzinfo=timezone.utc))\n    deleted_at: Mapped[datetime | None] = mapped_column(default=None)  # soft delete: a nullable marker instead of DELETE\n\n    @hybrid_property\n    def is_deleted(self) -> bool:\n        return self.deleted_at is not None\n\n    @is_deleted.expression\n    def is_deleted(cls):                                              # the same name works in Python AND in SQL expressions\n        return cls.deleted_at.is_not(None)\n\n\nclass Status(str, Enum):\n    draft = \"draft\"\n    published = \"published\"\n\n\nclass Content(TimestampMixin, Base):                                   # single-table inheritance: one table, a discriminator column\n    __tablename__ = \"content\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    kind: Mapped[str] = mapped_column(String(20))\n    title: Mapped[str] = mapped_column(String(100))\n    status: Mapped[Status] = mapped_column(default=Status.draft)\n    meta: Mapped[dict] = mapped_column(JSON, default=dict)\n    price: Mapped[int | None]\n    __mapper_args__ = {\"polymorphic_on\": \"kind\", \"polymorphic_identity\": \"content\"}\n    __table_args__ = (UniqueConstraint(\"kind\", \"title\", name=\"uq_kind_title\"), CheckConstraint(\"price IS NULL OR price >= 0\", name=\"ck_price_non_negative\"))\n\n\nclass Article(Content):\n    __mapper_args__ = {\"polymorphic_identity\": \"article\"}\n\n\nclass Video(Content):\n    __mapper_args__ = {\"polymorphic_identity\": \"video\"}\n\n\nengine = create_engine(\"sqlite://\")\nBase.metadata.create_all(engine)\n\nwith Session(engine) as session:\n    session.add_all([Article(title=\"ASGI\", meta={\"tags\": [\"web\", \"async\"]}), Video(title=\"ASGI\", price=5), Article(title=\"Old news\")])\n    session.commit()\n    old = session.scalars(select(Article).where(Article.title == \"Old news\")).one()\n    old.deleted_at = datetime(2026, 11, 5, tzinfo=timezone.utc)\n    session.commit()\n\n    print([(type(c).__name__, c.title) for c in session.scalars(select(Content).order_by(Content.id))])    # polymorphic loading\n    print([a.title for a in session.scalars(select(Article).where(~Article.is_deleted))])                   # hybrid used in SQL\n    print(old.is_deleted, session.scalars(select(Article)).first().meta, Status.draft in {c.status for c in session.scalars(select(Content))})\n\n    for bad in (Article(title=\"ASGI\"), Video(title=\"neg\", price=-1)):                                       # constraints are enforced by the database\n        session.add(bad)\n        try:\n            session.commit()\n        except IntegrityError as error:\n            session.rollback()\n            print(\"IntegrityError:\", str(error.orig).split(\":\")[0], \"|\", str(error.orig).split(\":\")[-1].strip())",
+     "title": "Mapping.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[('Article', 'ASGI'), ('Video', 'ASGI'), ('Article', 'Old news')]\n['ASGI']\nTrue {'tags': ['web', 'async']} True\nIntegrityError: UNIQUE constraint failed | content.kind, content.title\nIntegrityError: CHECK constraint failed | ck_price_non_negative",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Choices to discuss in a design review:\n\n- **Inheritance**: *single-table* (all subclasses in one table, nullable columns; simple and fast, the usual pick), *joined-table* (a table per class joined by key; normalised, joins on every load), *concrete* (separate tables; rarely worth it). Often a `kind` column and composition beat a deep class hierarchy.\n- **Soft delete** (a `deleted_at` marker) keeps history and allows undo, but every query must filter it (put it in a default `where`, a view, or a session event) and unique constraints must account for it.\n- **Constraints belong in the database** (`UNIQUE`, `CHECK`, `NOT NULL`, foreign keys): application validation can be bypassed by a second service, a script or a race, while the constraint cannot.\n- **`JSON` columns** suit flexible, rarely queried attributes; on PostgreSQL use `JSONB` with GIN indexes if you query inside it. Anything you filter on regularly deserves a real column.\n- **Hybrid properties** define a computed attribute once for both Python instances and SQL expressions."
+    }
+   ]
+  },
+  {
+   "id": "ch-31-4",
+   "type": "concept",
+   "title": "Transactions, Isolation and Concurrency",
+   "subtopicId": "31-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Two requests updating the same row at once is where correctness bugs live. Know the tools in increasing strength:\n\n| Technique | How | Trade-off |\n| --- | --- | --- |\n| **Atomic SQL** | `UPDATE counters SET value = value + 1` | Best for counters and balances: no read-modify-write |\n| **Optimistic locking** | A version column; `UPDATE ... WHERE id = ? AND version = ?`; zero rows means someone changed it | No locks held; the loser retries or gets a 409 |\n| **Pessimistic locking** | `SELECT ... FOR UPDATE` (`with_for_update()`) | Serialises access; use for scarce resources; risk of waiting and deadlocks |\n| **Constraints** | Unique and check constraints | The database refuses invalid states even under races |\n| **Higher isolation** | `SERIALIZABLE` / `REPEATABLE READ` + retry on serialization failure | Strongest; needs retry logic |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\n\nfrom sqlalchemy import create_engine, select, update\nfrom sqlalchemy.dialects.sqlite import insert as sqlite_insert\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column\nfrom sqlalchemy.orm.exc import StaleDataError\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass Counter(Base):\n    __tablename__ = \"counters\"\n    name: Mapped[str] = mapped_column(primary_key=True)\n    value: Mapped[int] = mapped_column(default=0)\n\n\nclass Document(Base):\n    __tablename__ = \"documents\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    body: Mapped[str]\n    version: Mapped[int] = mapped_column(default=1)\n    __mapper_args__ = {\"version_id_col\": version}                      # SQLAlchemy adds \"AND version = ?\" to every UPDATE\n\n\nengine = create_engine(f\"sqlite:///{pathlib.Path('concurrency.db').resolve()}\")       # a file: two sessions get two real connections\nBase.metadata.create_all(engine)\nwith Session(engine) as s, s.begin():\n    s.add_all([Counter(name=\"hits\", value=0), Document(id=1, body=\"v1\")])\n\n# 1. The lost update: both sessions read 0, both write 1\na, b = Session(engine), Session(engine)\nca, cb = a.get(Counter, \"hits\"), b.get(Counter, \"hits\")\nca.value = ca.value + 1\na.commit()\ncb.value = cb.value + 1\nb.commit()\nprint(\"read-modify-write result:\", Session(engine).get(Counter, \"hits\").value, \"(two increments, one lost)\")\n\n# 2. The atomic version cannot lose updates\nfor _ in range(2):\n    with Session(engine) as s, s.begin():\n        s.execute(update(Counter).where(Counter.name == \"hits\").values(value=Counter.value + 1))\nprint(\"atomic UPDATE result:\", Session(engine).get(Counter, \"hits\").value)\n\n# 3. Optimistic locking: the second writer is told it is stale\na, b = Session(engine), Session(engine)\nda, db = a.get(Document, 1), b.get(Document, 1)\nda.body = \"edited by A\"\na.commit()\ndb.body = \"edited by B\"\ntry:\n    b.commit()\nexcept StaleDataError:\n    b.rollback()\n    print(\"StaleDataError: B must reload and retry; document is now\", Session(engine).get(Document, 1).body, \"version\", Session(engine).get(Document, 1).version)\n\n# 4. Upsert: insert or update in one statement, safe under concurrency\nfor _ in range(3):\n    with Session(engine) as s, s.begin():\n        stmt = sqlite_insert(Counter).values(name=\"visits\", value=1)\n        s.execute(stmt.on_conflict_do_update(index_elements=[\"name\"], set_={\"value\": Counter.value + 1}))\nprint(\"upsert result:\", Session(engine).get(Counter, \"visits\").value)",
+     "title": "Concurrency.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "read-modify-write result: 1 (two increments, one lost)\natomic UPDATE result: 3\nStaleDataError: B must reload and retry; document is now edited by A version 2\nupsert result: 3",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "On PostgreSQL the same upsert is `postgresql.insert(...).on_conflict_do_update(...)`, `with_for_update()` takes a row lock, and a `SERIALIZABLE` transaction can fail with a *serialization failure* that your code must **retry**. Whatever the mechanism, the rule is the same: **a check followed by a write is a race unless the database makes it atomic**."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Optimistic suits low-contention data (editing a profile, a document): no locks, conflicts are rare and reported as 409 or retried. Pessimistic suits high-contention scarce resources (the last seat, inventory decrement) where retries would thrash: lock the row, or better, use an atomic conditional `UPDATE ... SET stock = stock - 1 WHERE stock > 0` and check the affected row count.",
+     "title": "Optimistic or pessimistic locking?"
+    }
+   ]
+  },
+  {
+   "id": "ch-31-5",
+   "type": "concept",
+   "title": "Engines, Connection Pools and Operations",
+   "subtopicId": "31-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "An **engine** owns a **pool** of database connections. Opening a PostgreSQL connection costs milliseconds and server memory, so the pool reuses them; its limits are a capacity decision."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\n\nfrom sqlalchemy import create_engine, text\nfrom sqlalchemy.exc import TimeoutError as PoolTimeout\nfrom sqlalchemy.pool import QueuePool\n\nengine = create_engine(\n    f\"sqlite:///{pathlib.Path('pool.db').resolve()}\",\n    poolclass=QueuePool,\n    pool_size=2,              # connections kept open\n    max_overflow=1,           # extra connections allowed under burst, closed when returned\n    pool_timeout=0.2,         # seconds to wait for a free connection before failing\n    pool_pre_ping=True,       # test a connection before use: survives database restarts and idle disconnects\n    pool_recycle=1800,        # replace connections older than this (cloud proxies drop idle ones)\n)\n\nheld = [engine.connect() for _ in range(3)]                          # 2 pool + 1 overflow\nprint(engine.pool.status())\ntry:\n    engine.connect()                                                   # a fourth request has to wait, then fails\nexcept PoolTimeout as error:\n    print(\"pool exhausted:\", str(error).split(\" (\")[0])\nheld.pop().close()                                                     # returning a connection frees a slot\nwith engine.connect() as connection:\n    print(\"connection works again:\", connection.execute(text(\"SELECT 1\")).scalar())\nfor connection in held:\n    connection.close()",
+     "title": "Pooling.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Pool size: 2  Connections in pool: 0 Current Overflow: 1 Current Checked out connections: 3\npool exhausted: QueuePool limit of size 2 overflow 1 reached, connection timed out, timeout 0.20\nconnection works again: 1",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Sizing and operating rules:\n\n1. **The budget is the database's `max_connections`** (PostgreSQL default 100, and each connection costs memory). Total connections = `replicas × workers × (pool_size + max_overflow)` and must stay **below the limit** with headroom for migrations, admin tools and failover. A pooler such as **PgBouncer** (transaction mode) lets many app connections share few database connections.\n2. **Pool size is not request concurrency.** A pool of 10 can serve 1,000 requests per second if each holds a connection for 5 ms. Big pools hide slow queries and overload the database; small pools queue (watch the wait time as a metric).\n3. **A request should hold a connection only while it needs one.** Do not hold a session open across an HTTP call to another service.\n4. **`pool_pre_ping=True`** costs one cheap round trip and turns \"server closed the connection unexpectedly\" into a transparent reconnect.\n5. **Timeouts**: connection (`connect_timeout`), statement (`statement_timeout`), lock (`lock_timeout`), idle-in-transaction timeouts on the server. A query without a timeout can hold a worker forever.\n6. **Serverless** (AWS Lambda) multiplies instances: use `NullPool` with a managed proxy (RDS Proxy, PgBouncer) instead of per-instance pools.\n7. **Read replicas**: route read-only endpoints to a replica engine and accept replication lag (read your own writes from the primary).\n8. **Observe it**: pool checked-out and overflow gauges, query duration histograms, slow-query logs (`log_min_duration_statement`), and `pg_stat_statements`."
+    }
+   ]
+  },
+  {
+   "id": "ch-31-6",
+   "type": "concept",
+   "title": "Advanced Queries: CTEs, Window Functions and PostgreSQL Features",
+   "subtopicId": "31-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "SQLAlchemy's expression language covers modern SQL, so analytic queries do not need raw strings."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from sqlalchemy import Index, create_engine, func, select\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column\n\n\nclass Base(DeclarativeBase):\n    pass\n\n\nclass Sale(Base):\n    __tablename__ = \"sales\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    region: Mapped[str]\n    rep: Mapped[str]\n    amount: Mapped[int]\n\n\nengine = create_engine(\"sqlite://\")\nBase.metadata.create_all(engine)\nwith Session(engine) as s, s.begin():\n    s.add_all([Sale(region=r, rep=rep, amount=a) for r, rep, a in\n               [(\"north\", \"asha\", 500), (\"north\", \"ravi\", 700), (\"north\", \"meera\", 300), (\"south\", \"john\", 900), (\"south\", \"lena\", 400)]])\n\nwith Session(engine) as s:\n    ranked = select(Sale.region, Sale.rep, Sale.amount,\n                    func.rank().over(partition_by=Sale.region, order_by=Sale.amount.desc()).label(\"rank\"),\n                    func.sum(Sale.amount).over(partition_by=Sale.region).label(\"region_total\")).subquery()\n    top_two = s.execute(select(ranked.c.region, ranked.c.rep, ranked.c.rank, ranked.c.region_total).where(ranked.c.rank <= 2).order_by(ranked.c.region, ranked.c.rank)).all()\n    print([tuple(r) for r in top_two])\n\n    totals = select(Sale.region, func.sum(Sale.amount).label(\"total\")).group_by(Sale.region).cte(\"totals\")     # a common table expression\n    above_average = s.execute(select(totals.c.region, totals.c.total).where(totals.c.total > select(func.avg(totals.c.total)).scalar_subquery())).all()\n    print([tuple(r) for r in above_average])",
+     "title": "SqlFeatures.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[('north', 'ravi', 1, 1500), ('north', 'asha', 2, 1500), ('south', 'john', 1, 1300), ('south', 'lena', 2, 1300)]\n[('north', 1500)]",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "On PostgreSQL you would also reach for these (shown, not run here because they need a PostgreSQL server):"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from sqlalchemy import ARRAY, String\nfrom sqlalchemy.dialects.postgresql import JSONB, insert\nfrom sqlalchemy.orm import Mapped, mapped_column\n\n\nclass Product(Base):\n    __tablename__ = \"products\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    sku: Mapped[str] = mapped_column(String(40), unique=True)\n    attributes: Mapped[dict] = mapped_column(JSONB, default=dict)                  # binary JSON, indexable and queryable\n    tags: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)           # native arrays\n\n    __table_args__ = (Index(\"ix_products_attributes\", \"attributes\", postgresql_using=\"gin\"),)\n\n\nstmt = (insert(Product).values(sku=\"P-1\", attributes={\"colour\": \"red\"})\n        .on_conflict_do_update(index_elements=[\"sku\"], set_={\"attributes\": Product.attributes.op(\"||\")({\"seen\": True})})\n        .returning(Product.id))                                                     # RETURNING gives back generated values in one round trip\nred_things = select(Product).where(Product.attributes[\"colour\"].astext == \"red\")    # JSONB path query, served by the GIN index\ntagged = select(Product).where(Product.tags.contains([\"sale\"]))                      # array containment",
+     "title": "PostgreSQL features"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### The Session: Lifecycle, Identity Map and Unit of Work"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does \"autoflush\" do and when is it a problem?",
+       "answer": "Before executing a query the session flushes pending changes so the query reflects them. It makes code behave intuitively, but a flush can raise a constraint error (for example a unique violation) at an unexpected place, or cost time in loops that query repeatedly; `session.no_autoflush` disables it for a block."
+      },
+      {
+       "question": "What is a `DetachedInstanceError`?",
+       "answer": "You accessed an unloaded or expired attribute (usually a lazy relationship, or any attribute after `commit()` with `expire_on_commit=True`) on an object whose session is closed. Load what you need inside the session (eager loading), disable expiry on commit, or convert to a schema before the session closes."
+      },
+      {
+       "question": "Difference between `session.add`, `session.merge` and `session.refresh`?",
+       "answer": "`add` makes a new (or detached) object part of the session; `merge` copies the state of a possibly detached object onto the session's own persistent instance for that primary key and returns it; `refresh` reloads an object's attributes from the database, discarding in-memory changes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Loading Strategies and Query Performance"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you find out why a SQLAlchemy-backed endpoint is slow?",
+       "answer": "Log or count the statements per request (`echo=True`, an event listener, or tracing), look for N+1 patterns and repeated queries, take the slowest statements to `EXPLAIN ANALYZE`, check indexes and row estimates, and only then consider ORM overhead (object creation, large result sets). Fix at the right level: query shape first, indexes second, caching third."
+      },
+      {
+       "question": "When should you bypass the ORM for writes?",
+       "answer": "For bulk loads and set-based changes: Core `insert()` with many rows, `update().where(...)`, `COPY` on PostgreSQL. The ORM creates an object per row and tracks it, which costs memory and time that bulk operations do not need."
+      },
+      {
+       "question": "What does a composite index `(customer_id, status)` help and not help?",
+       "answer": "It serves queries that filter on `customer_id`, or on `customer_id` and `status` (the leftmost columns); it does not help a filter on `status` alone, and functions applied to indexed columns usually prevent its use. Put equality columns before range columns."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Advanced Mapping: Inheritance, Hybrids, Constraints and JSON"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Single-table versus joined-table inheritance?",
+       "answer": "Single-table stores every subclass in one table with a discriminator column: fast, no joins, but subclass-specific columns are nullable. Joined-table gives each subclass its own table linked by primary key: normalised and strict, but each load needs a join. Use single-table unless subclasses have many distinct columns."
+      },
+      {
+       "question": "Why enforce uniqueness with a database constraint and not just a check in code?",
+       "answer": "Two concurrent requests can both pass an application-level \"does it exist?\" check and both insert (a race). A unique constraint makes the database the single arbiter, and the loser gets an `IntegrityError` you can translate to a 409."
+      },
+      {
+       "question": "What is a hybrid property?",
+       "answer": "An attribute defined on the class that works on instances (Python logic) and in queries (a SQL expression), so `Article.is_deleted` can be used both as `obj.is_deleted` and in `select(...).where(Article.is_deleted)`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Transactions, Isolation and Concurrency"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you prevent lost updates in a web application?",
+       "answer": "Use atomic SQL for counters and balances, optimistic locking with a version column (or ETag with `If-Match`) for edited records, row locks or conditional updates for scarce resources, and database constraints for invariants. Never read, modify in Python and write back without one of these."
+      },
+      {
+       "question": "What does `ON CONFLICT DO UPDATE` give you?",
+       "answer": "An atomic insert-or-update on a unique key in one statement, so concurrent requests cannot both insert the same key or lose an increment. It is the right way to implement counters, idempotent writes and \"get or create\"."
+      },
+      {
+       "question": "What happens on a serialization failure under `SERIALIZABLE` isolation?",
+       "answer": "The database aborts one of the conflicting transactions with an error (PostgreSQL SQLSTATE 40001). The application must catch it and **retry the whole transaction**, so transactions must be short and free of external side effects."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Engines, Connection Pools and Operations"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you decide the pool size?",
+       "answer": "Start from the database's connection budget divided by the number of app processes, keep a margin, then measure: the pool is big enough if requests rarely wait for a connection and small enough that the database is not overloaded. Per-process size times processes must stay under `max_connections`."
+      },
+      {
+       "question": "Why use `pool_pre_ping`?",
+       "answer": "Connections sit idle in the pool and may have been closed by the server, a firewall or a failover. A pre-ping check discards dead connections and opens a new one, so a request does not fail with a stale-connection error."
+      },
+      {
+       "question": "What is PgBouncer for?",
+       "answer": "A connection pooler in front of PostgreSQL: many client connections are multiplexed over a small number of server connections, so hundreds of app processes (or serverless functions) can share a database without exhausting `max_connections`. In transaction mode, session-level features (prepared statements, advisory locks) need care."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Advanced Queries: CTEs, Window Functions and PostgreSQL Features"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why are window functions useful in application code?",
+       "answer": "They compute ranks, running totals, moving averages and \"top N per group\" inside the database in one pass, without pulling rows into Python or issuing a query per group. Many \"for each group\" loops disappear into one statement."
+      },
+      {
+       "question": "When do you choose JSONB over separate columns?",
+       "answer": "For flexible, sparsely populated, semi-structured attributes you rarely filter on; add a GIN index when you do query inside it. Fields you filter, join or constrain regularly deserve real columns with types and constraints."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

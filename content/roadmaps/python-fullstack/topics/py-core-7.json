@@ -1,0 +1,469 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-7-1",
+   "type": "concept",
+   "title": "Comprehensions",
+   "subtopicId": "7-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A comprehension builds a list, set, dictionary or generator from an iterable in one readable expression. It is Python's answer to Java streams for most everyday work."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "nums = range(10)\nprint([n * n for n in nums if n % 2 == 0])                    # list comprehension with a filter\nprint({n % 3 for n in nums})                                  # set comprehension\nprint({word: len(word) for word in [\"tea\", \"coffee\"]})        # dict comprehension\nprint([(x, y) for x in \"ab\" for y in (1, 2)])                 # nested loops, left to right\nprint([[row * col for col in range(1, 4)] for row in range(1, 4)])   # a 2-D table\nprint(sum(n for n in nums if n % 2))                          # generator expression: no list is built\n\nlabels = [\"even\" if n % 2 == 0 else \"odd\" for n in range(4)]  # conditional EXPRESSION goes before `for`\nprint(labels)\n\nimport re\nlines = [\"id=7\", \"junk\", \"id=12\"]\nprint([int(m[1]) for line in lines if (m := re.match(r\"id=(\\d+)\", line))])   # walrus: match once, use twice\n\nx = \"outer\"\nsquares = [x * x for x in range(3)]                           # the loop variable does not leak (Python 3)\nprint(squares, x)",
+     "title": "Comprehensions.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[0, 4, 16, 36, 64]\n{0, 1, 2}\n{'tea': 3, 'coffee': 6}\n[('a', 1), ('a', 2), ('b', 1), ('b', 2)]\n[[1, 2, 3], [2, 4, 6], [3, 6, 9]]\n25\n['even', 'odd', 'even', 'odd']\n[7, 12]\n[0, 1, 4] outer",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Rules: write `[expression for item in iterable if condition]`; keep it to one `for` and one `if` for readability (two nested `for` loops are the practical limit); use a normal loop when the body needs statements, side effects or several steps. Use a **generator expression** (parentheses, or bare inside a call such as `sum(...)`) when you only iterate once, because it creates items lazily and uses constant memory."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "`[f(x) for x in xs if p(x)]` is clearer than `list(map(f, filter(p, xs)))` and just as fast. Reach for `map` only with an existing named function (`map(str.strip, lines)`). Never use a comprehension just for side effects (`[print(x) for x in xs]`): it builds a throw-away list.",
+     "title": "Comprehension versus map and filter"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-2",
+   "type": "concept",
+   "title": "Lambdas, `functools` and `operator`",
+   "subtopicId": "7-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A `lambda` is an anonymous function limited to **one expression**. Use it for short throwaway callbacks (`key=`, `sorted`, GUI and event handlers); use `def` for anything you would name or test."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from functools import cache, cached_property, partial, reduce, singledispatch\nfrom operator import add, itemgetter, mul\n\nprint(reduce(add, [1, 2, 3, 4]), reduce(mul, [1, 2, 3, 4], 1), list(map(lambda x: x ** 2, [1, 2, 3])))\nprint(list(filter(None, [0, 1, \"\", \"a\", [], [0]])))              # None as predicate keeps truthy items\n\ndef power(base, exponent):\n    return base ** exponent\n\nsquare, cube = partial(power, exponent=2), partial(power, exponent=3)\nprint(square(5), cube(2), square.func is power, square.keywords)\n\n@cache                                                           # unbounded memoisation (3.9+)\ndef fib(n):\n    return n if n < 2 else fib(n - 1) + fib(n - 2)\n\nprint(fib(60), fib.cache_info().currsize)\n\n@singledispatch\ndef render(value):\n    return f\"object {value!r}\"\n\n@render.register\ndef _(value: int):\n    return f\"int {value}\"\n\n@render.register\ndef _(value: list):\n    return \"list of \" + \", \".join(render(v) for v in value)\n\nprint(render(3), render(\"x\"), render([1, \"y\"]))\n\nclass Report:\n    def __init__(self):\n        self.runs = 0\n\n    @cached_property                                             # computed once per instance, then stored\n    def expensive(self):\n        self.runs += 1\n        return 42\n\nr = Report()\nprint(r.expensive, r.expensive, r.runs)\nprint(sorted([(1, \"b\"), (2, \"a\")], key=itemgetter(1)))",
+     "title": "Functools.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "10 24 [1, 4, 9]\n[1, 'a', [0]]\n25 8 True {'exponent': 2}\n1548008755920 61\nint 3 object 'x' list of int 1, object 'y'\n42 42 1\n[(2, 'a'), (1, 'b')]",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Tool | Purpose |\n| --- | --- |\n| `functools.partial` | Fix some arguments of a function, producing a new callable |\n| `functools.reduce` | Fold an iterable into one value (prefer `sum`, `max`, `\"\".join` when they exist) |\n| `functools.cache`, `lru_cache(maxsize)` | Memoise a **pure** function; arguments must be hashable |\n| `functools.singledispatch` | Choose an implementation by the type of the first argument |\n| `functools.cached_property` | A lazy attribute computed once per instance |\n| `functools.wraps` | Keep a decorated function's name and docstring (Part 11) |\n| `operator.itemgetter`, `attrgetter`, `add`... | Function versions of operators and lookups, faster than lambdas |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`@cache` keeps every result forever, so it can leak memory on unbounded inputs; use `lru_cache(maxsize=...)`. It is correct only for **pure** functions (the same input always gives the same output, no side effects). Caching a method on `self` also keeps the instance alive.",
+     "title": "Caching has a memory cost and a purity rule"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-3",
+   "type": "concept",
+   "title": "Iterators and the Iteration Protocol",
+   "subtopicId": "7-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Two protocols power every `for` loop:\n\n- An **iterable** has `__iter__()` returning an iterator (lists, strings, dicts, files, `range`, generators).\n- An **iterator** has `__next__()` returning the next item and raising `StopIteration` when finished, and `__iter__()` returning itself.\n\nA `for` loop is shorthand for:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "numbers = [10, 20, 30]\niterator = iter(numbers)            # numbers.__iter__()\nwhile True:\n    try:\n        item = next(iterator)       # iterator.__next__()\n    except StopIteration:\n        break\n    print(item)\n\nprint(next(iterator, \"exhausted\"))  # an exhausted iterator stays exhausted\n\nclass Countdown:\n    \"\"\"An iterator class: remembers where it is.\"\"\"\n    def __init__(self, start):\n        self.current = start\n\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        if self.current <= 0:\n            raise StopIteration\n        self.current -= 1\n        return self.current + 1\n\nprint(list(Countdown(3)), sum(Countdown(4)))\nc = Countdown(2)\nprint(list(c), list(c))              # iterators are ONE-SHOT: the second pass is empty\n\nlines = iter([\"a\", \"b\", \"\", \"c\"])\nprint(list(iter(lambda: next(lines), \"\")))      # iter(callable, sentinel): call until the sentinel appears",
+     "title": "Protocol.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "10\n20\n30\nexhausted\n[3, 2, 1] 10\n[2, 1] []\n['a', 'b']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The difference between an iterable and an iterator explains a famous bug: an **iterator can be consumed only once**, but a list (an iterable) can produce a fresh iterator every time."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "data = (x * x for x in range(3))          # a generator is an iterator\nprint(sum(data), sum(data))                # the second sum sees nothing\n\nnumbers = [1, 2, 3]                        # a list is an iterable: a new iterator each time\nprint(sum(numbers), sum(numbers))\n\npairs = zip(\"ab\", [1, 2])\nprint(list(pairs), list(pairs))            # zip, map, filter, file objects, reversed: all one-shot",
+     "title": "OneShot.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "5 0\n6 6\n[('a', 1), ('b', 2)] []",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Dictionary iterators check the dict's size: adding or removing keys during a `for` raises `RuntimeError: dictionary changed size during iteration`. Iterate over a copy (`for k in list(d)`) or build a new dict. Changing a *value* for an existing key is allowed. Lists do not raise, but removing items from a list while iterating it skips elements, which is a classic bug.",
+     "title": "What happens when you iterate a dict while modifying it?"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-4",
+   "type": "concept",
+   "title": "Generators",
+   "subtopicId": "7-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **generator function** contains `yield`. Calling it does not run the body: it returns a generator object (an iterator) that runs **until the next `yield`, pauses with all local state intact, and resumes** on the following `next()`. That gives lazy evaluation with almost no code."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import sys\n\ndef countdown(n):\n    print(\"start\")\n    while n > 0:\n        yield n               # pause here, hand a value out\n        n -= 1\n    print(\"finished\")\n\ngen = countdown(3)\nprint(type(gen).__name__, \"nothing printed yet\")\nprint(next(gen), next(gen))\nprint(list(gen))              # runs the rest\n\ndef fibonacci():              # an infinite sequence in constant memory\n    a, b = 0, 1\n    while True:\n        yield a\n        a, b = b, a + b\n\nfrom itertools import islice\nprint(list(islice(fibonacci(), 10)))\n\nbig_list = [n for n in range(1_000_000)]\nbig_gen = (n for n in range(1_000_000))\nprint(sys.getsizeof(big_gen) < 1000 < sys.getsizeof(big_list))",
+     "title": "Generators.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "generator nothing printed yet\nstart\n3 2\nfinished\n[1]\n[0, 1, 1, 2, 3, 5, 8, 13, 21, 34]\nTrue",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Pipelines: process huge data in constant memory"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import io\n\nlog = io.StringIO(\"\"\"2026-11-04 INFO start\n2026-11-04 ERROR db timeout\n2026-11-04 INFO ping\n2026-11-05 ERROR disk full\n2026-11-05 ERROR db timeout\n\"\"\")\n\ndef lines(source):\n    for line in source:                      # a file object is a lazy iterator of lines\n        yield line.rstrip(\"\\n\")\n\ndef errors(rows):\n    return (r for r in rows if \" ERROR \" in r)\n\ndef messages(rows):\n    return (r.split(\" \", 2)[2] for r in rows)\n\npipeline = messages(errors(lines(log)))     # nothing has run yet\nfrom collections import Counter\nprint(Counter(pipeline))",
+     "title": "Pipeline.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Counter({'db timeout': 2, 'disk full': 1})",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Each stage pulls one item at a time from the previous one, so you can process a 50 GB log with a few kilobytes of memory, and stop early (`any`, `next`, `islice`) without reading the rest.\n\n### `send`, `yield from` and return values"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def running_average():\n    total, count, average = 0, 0, None\n    while True:\n        value = yield average                 # `yield` is also an expression: it receives sent values\n        total += value\n        count += 1\n        average = total / count\n\navg = running_average()\nnext(avg)                                     # prime: run to the first yield\nprint(avg.send(10), avg.send(20), avg.send(60))\navg.close()\n\ndef inner():\n    yield 1\n    yield 2\n    return \"inner result\"                     # becomes the value of `yield from`\n\ndef outer():\n    result = yield from inner()               # delegate: forwards values, receives the return value\n    yield f\"got {result}\"\n\nprint(list(outer()))\n\ndef flatten(items):\n    for item in items:\n        if isinstance(item, list):\n            yield from flatten(item)           # recursion with yield from\n        else:\n            yield item\n\nprint(list(flatten([1, [2, [3, [4]], 5]])))",
+     "title": "Advanced.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "10.0 15.0 30.0\n[1, 2, 'got inner result']\n[1, 2, 3, 4, 5]",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Generators that receive values with `send` are the ancestors of `async`/`await` coroutines (Part 9): both are functions that can **suspend and resume**. `yield from` delegates to a sub-generator, forwarding values and capturing its `return` value."
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "Reading a large CSV or an S3 object line by line, paging through a database cursor (`yield` rows in chunks), streaming an HTTP response (`StreamingResponse(generator)` in FastAPI), and FastAPI/pytest **dependencies with `yield`** (setup before, teardown after) are all generators. Knowing that the code after `yield` runs at cleanup is what explains those dependency lifecycles.",
+     "title": "Generators everywhere in backend code"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-5",
+   "type": "concept",
+   "title": "`itertools`: The Iterator Toolbox",
+   "subtopicId": "7-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "`itertools` provides fast, lazy building blocks written in C. They compose into pipelines without ever building intermediate lists."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import itertools as it\nfrom operator import mul\n\nprint(list(it.islice(it.count(10, 5), 4)), list(it.islice(it.cycle(\"ab\"), 5)), list(it.repeat(\"x\", 3)))\nprint(list(it.chain([1, 2], (3,), \"ab\")), list(it.chain.from_iterable([[1], [2, 3]])))\nprint(list(it.accumulate([1, 2, 3, 4])), list(it.accumulate([1, 2, 3, 4], mul)))\nprint(list(it.pairwise([1, 4, 9, 16])), list(it.batched(range(7), 3)))     # pairwise: 3.10+, batched: 3.12+\nprint(list(it.takewhile(lambda n: n < 4, range(10))), list(it.dropwhile(lambda n: n < 8, range(10))))\nprint(list(it.zip_longest(\"abc\", [1, 2], fillvalue=\"-\")))\nprint(list(it.starmap(pow, [(2, 3), (3, 2)])), list(it.compress(\"abcd\", [1, 0, 1, 0])))\n\nprint(list(it.product(\"ab\", [1, 2])))                        # cartesian product\nprint(list(it.permutations(\"abc\", 2)))                       # ordered, no repeats\nprint(list(it.combinations(\"abcd\", 2)))                      # unordered\nprint(len(list(it.combinations_with_replacement(\"ab\", 3))))\n\npeople = [(\"dev\", \"asha\"), (\"ops\", \"ravi\"), (\"dev\", \"meera\")]\nfor dept, group in it.groupby(sorted(people), key=lambda p: p[0]):   # input MUST be sorted by the key\n    print(dept, [name for _, name in group])",
+     "title": "Itertools.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[10, 15, 20, 25] ['a', 'b', 'a', 'b', 'a'] ['x', 'x', 'x']\n[1, 2, 3, 'a', 'b'] [1, 2, 3]\n[1, 3, 6, 10] [1, 2, 6, 24]\n[(1, 4), (4, 9), (9, 16)] [(0, 1, 2), (3, 4, 5), (6,)]\n[0, 1, 2, 3] [8, 9]\n[('a', 1), ('b', 2), ('c', '-')]\n[8, 9] ['a', 'c']\n[('a', 1), ('a', 2), ('b', 1), ('b', 2)]\n[('a', 'b'), ('a', 'c'), ('b', 'a'), ('b', 'c'), ('c', 'a'), ('c', 'b')]\n[('a', 'b'), ('a', 'c'), ('a', 'd'), ('b', 'c'), ('b', 'd'), ('c', 'd')]\n4\ndev ['asha', 'meera']\nops ['ravi']",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`itertools.groupby` starts a new group whenever the key changes, so unsorted input gives repeated groups (`dev`, `ops`, `dev`). Sort by the same key first, or collect into a `defaultdict(list)` when order does not matter.",
+     "title": "groupby only groups ADJACENT items"
+    },
+    {
+     "type": "markdown",
+     "text": "### Aggregations over iterators\n\n`any`, `all`, `sum`, `min`, `max`, `sorted`, `enumerate`, `zip`, `reversed` all accept any iterable and `any`/`all` short-circuit:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "nums = [3, 8, 1, 9, 4]\nprint(any(n > 8 for n in nums), all(n > 0 for n in nums), sum(n for n in nums if n % 2))\nprint(max(nums), max(nums, key=lambda n: -n), min(nums, default=None), max([], default=\"empty\"))\nprint(next((n for n in nums if n > 5), None))              # first match, or a default\nprint(dict(enumerate(\"abc\", start=1)), list(zip(*[(1, \"a\"), (2, \"b\")])))   # zip(*) transposes",
+     "title": "Aggregates.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True True 13\n9 1 1 empty\n8\n{1: 'a', 2: 'b', 3: 'c'} [(1, 2), ('a', 'b')]",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-6",
+   "type": "concept",
+   "title": "Closures and a First Look at Decorators",
+   "subtopicId": "7-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **closure** is a function that remembers variables from the scope where it was created. Closures are how functions carry configuration, and the mechanism beneath decorators."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def multiplier(factor):\n    def multiply(x):\n        return x * factor            # `factor` is remembered after multiplier() returns\n    return multiply\n\ndouble, triple = multiplier(2), multiplier(3)\nprint(double(5), triple(5), double.__closure__[0].cell_contents)\n\n# The late-binding trap: closures capture VARIABLES, not values\nadders = [lambda x: x + i for i in range(3)]\nprint([f(10) for f in adders])                 # all see the final i == 2\n\nfixed = [lambda x, i=i: x + i for i in range(3)]    # bind the current value as a default\nprint([f(10) for f in fixed])",
+     "title": "Closures.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "10 15 2\n[12, 12, 12]\n[10, 11, 12]",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "A **decorator** is a function that takes a function and returns a (usually wrapped) function. The `@name` syntax above a definition is shorthand for `func = name(func)`."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import functools\n\ndef counted(func):\n    @functools.wraps(func)                       # keep the original name and docstring\n    def wrapper(*args, **kwargs):\n        wrapper.calls += 1\n        return func(*args, **kwargs)\n    wrapper.calls = 0\n    return wrapper\n\ndef retry(times):                                # a decorator FACTORY: takes arguments\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            for attempt in range(1, times + 1):\n                try:\n                    return func(*args, **kwargs)\n                except ConnectionError as error:\n                    print(f\"attempt {attempt} failed: {error}\")\n            raise ConnectionError(\"gave up\")\n        return wrapper\n    return decorate\n\n@counted\ndef add(a, b):\n    \"\"\"Add two numbers.\"\"\"\n    return a + b\n\nfailures = iter([ConnectionError(\"reset\"), ConnectionError(\"timeout\")])\n\n@retry(times=3)\ndef fetch():\n    error = next(failures, None)\n    if error:\n        raise error\n    return \"payload\"\n\nprint(add(2, 3), add(4, 5), add.calls, add.__name__, add.__doc__)\nprint(fetch())",
+     "title": "Decorators.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "5 9 2 add Add two numbers.\nattempt 1 failed: reset\nattempt 2 failed: timeout\npayload",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Part 11 takes decorators much further (class decorators, parameterised and stateful decorators, decorators on methods, async functions). For now remember the three steps: **accept a function, define a wrapper that calls it, return the wrapper**, and always use `functools.wraps`."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"What does `[lambda: i for i in range(3)]` return when called?\" Every lambda returns `2`, because they share the same variable `i` from the enclosing scope and read it when called, not when created. Fix with a default argument (`lambda i=i: i`), `functools.partial`, or a factory function. It is one of the most frequently asked Python quirks.",
+     "title": "The late-binding closure question"
+    }
+   ]
+  },
+  {
+   "id": "ch-7-7",
+   "type": "concept",
+   "title": "Functional Style in Practice",
+   "subtopicId": "7-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Python is not a pure functional language, and idiomatic Python does not try to be. Borrow the ideas that make code safer and easier to test:\n\n1. **Prefer pure functions** (output depends only on input, no side effects) for logic; keep I/O at the edges.\n2. **Do not mutate arguments**; return new values (`sorted` over `sort`, `{**a, \"x\": 1}` over `a[\"x\"] = 1` when the caller owns `a`).\n3. **Use immutable data** (tuples, frozen dataclasses, `frozenset`) for values that are shared.\n4. **Compose small functions** with comprehensions, generators and `itertools` instead of long loops with flags.\n5. **Stop at readability**: three nested `map`/`filter`/`reduce` calls are worse than a ten-line loop."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import defaultdict\nfrom dataclasses import dataclass\nfrom functools import reduce\nfrom itertools import groupby\nfrom operator import attrgetter\n\n@dataclass(frozen=True)\nclass Order:\n    id: int\n    customer: str\n    amount: float\n    status: str\n\norders = [\n    Order(1, \"asha\", 250.0, \"paid\"), Order(2, \"ravi\", 99.5, \"cancelled\"),\n    Order(3, \"asha\", 120.0, \"paid\"), Order(4, \"meera\", 800.0, \"paid\"),\n    Order(5, \"ravi\", 40.0, \"paid\"),\n]\n\ndef is_paid(order):\n    return order.status == \"paid\"\n\npaid = [o for o in orders if is_paid(o)]\ntotals = defaultdict(float)\nfor o in paid:\n    totals[o.customer] += o.amount\n\ntop = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)\nprint(top)\n\nby_customer = {c: [o.id for o in grp] for c, grp in groupby(sorted(paid, key=attrgetter(\"customer\")), key=attrgetter(\"customer\"))}\nprint(by_customer)\n\ncompose = lambda *fs: reduce(lambda f, g: lambda x: g(f(x)), fs)\nclean = compose(str.strip, str.lower, lambda s: s.replace(\" \", \"-\"))\nprint(clean(\"  Fresh Python Course  \"))\nprint(sum(o.amount for o in paid) / len(paid))",
+     "title": "Orders.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[('meera', 800.0), ('asha', 370.0), ('ravi', 40.0)]\n{'asha': [1, 3], 'meera': [4], 'ravi': [5]}\nfresh-python-course\n302.5",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- `[expr for x in xs if cond]`, `{k: v for ...}`, `{x for ...}`, `(expr for ...)` (lazy).\n- `any`/`all`/`sum`/`min`/`max`/`next(gen, default)` consume iterables and short-circuit.\n- Iterator = one-shot; iterable = restartable. `iter()`, `next()`, `StopIteration`.\n- `yield` suspends; `yield from` delegates; generator pipelines run in O(1) memory.\n- `itertools`: `chain`, `islice`, `product`, `permutations`, `combinations`, `accumulate`, `groupby` (sorted!), `pairwise`, `batched`.\n- `functools`: `partial`, `reduce`, `cache`/`lru_cache`, `singledispatch`, `cached_property`, `wraps`.\n- Closures capture variables, not values: bind with a default argument.\n- Decorator = function in, wrapper out; always `@functools.wraps`.",
+     "title": "Functional Python cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Comprehensions"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a list comprehension and a generator expression?",
+       "answer": "Square brackets build the whole list in memory immediately; parentheses build a generator that produces one item at a time when asked. Use the generator form when you pass the result to `sum`, `any`, `max`, `join` or loop over it once, because it uses O(1) memory."
+      },
+      {
+       "question": "Does the loop variable of a comprehension leak into the enclosing scope?",
+       "answer": "Not in Python 3: a comprehension has its own scope. (In Python 2 list comprehensions leaked their variable.) PEP 709 inlines comprehensions for speed in 3.12 but keeps this isolation."
+      },
+      {
+       "question": "Write a one-liner that flattens `[[1, 2], [3], [4, 5]]`.",
+       "answer": "`[x for sub in nested for x in sub]` (read the `for` clauses in the same order as nested loops), or `list(itertools.chain.from_iterable(nested))`, which is faster and clearer for deeper use."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Lambdas, `functools` and `operator`"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When is a lambda the wrong choice?",
+       "answer": "When the logic needs more than one expression, a name for readability, a docstring, a test or a useful traceback (lambdas appear as `<lambda>`). Assigning a lambda to a name (`f = lambda x: ...`) is flagged by linters: write a `def` instead."
+      },
+      {
+       "question": "What does `functools.partial` do and when do you use it?",
+       "answer": "It returns a new callable with some arguments pre-filled: `partial(power, exponent=2)` is `square`. Use it to adapt a function to a callback interface that passes fewer arguments (`threading.Thread(target=partial(send, to=user))`) without writing a lambda."
+      },
+      {
+       "question": "Why must arguments to a function decorated with `@cache` be hashable?",
+       "answer": "The cache is a dictionary keyed by the arguments, so `list` or `dict` arguments raise `TypeError: unhashable type`. Convert to tuples or frozensets, or cache an inner function that takes hashable keys."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Iterators and the Iteration Protocol"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between an iterable and an iterator?",
+       "answer": "An iterable can produce iterators (`__iter__`) and can be looped over repeatedly. An iterator is the stateful object that yields items with `__next__`, remembers its position and is exhausted after one pass. Every iterator is also iterable (returns itself)."
+      },
+      {
+       "question": "Why does `sum(gen)` give 0 the second time?",
+       "answer": "A generator is an iterator: its state moved to the end during the first pass, so a second pass finds nothing. Re-create the generator, or store the data in a list when you need several passes."
+      },
+      {
+       "question": "How does a `for` loop work internally?",
+       "answer": "It calls `iter(obj)` once to get an iterator, then repeatedly calls `next()` on it, running the body for each value and stopping quietly when `StopIteration` is raised. A `for` over a type with only `__getitem__` falls back to the sequence protocol."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Generators"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between `return` and `yield` in a function?",
+       "answer": "`return` ends the function and gives back one value. `yield` produces a value and **suspends** the function, keeping its local variables, so it can resume later. A function with `yield` becomes a generator function whose call returns an iterator without running the body."
+      },
+      {
+       "question": "Why use a generator instead of building a list?",
+       "answer": "Lazy evaluation: items are produced on demand, so memory use is O(1), you can model infinite sequences, start processing before the data has all arrived, and stop early. The cost is single-pass access and no `len`/indexing."
+      },
+      {
+       "question": "What does `yield from` do?",
+       "answer": "It delegates to another iterable or generator: values it yields are passed through to the caller, sent values and exceptions are forwarded to it, and when it finishes, its `return` value becomes the result of the `yield from` expression. It is the clean way to compose generators and the model for `await`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### `itertools`: The Iterator Toolbox"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Which `itertools` function would you use to generate all pairs of two lists, all orderings of three items, and fixed-size chunks?",
+       "answer": "`product(a, b)` for all pairs, `permutations(items, r)` for orderings, and `batched(iterable, n)` for chunks (Python 3.12+; before that write it with `islice` in a loop)."
+      },
+      {
+       "question": "Why does `itertools.groupby` need sorted input?",
+       "answer": "It only compares each element's key with the previous one and starts a new group when the key changes. Equal keys that are not adjacent therefore form separate groups. Sort first by the same key."
+      },
+      {
+       "question": "What is `next((x for x in items if cond(x)), None)` and why is it good?",
+       "answer": "It finds the first matching element lazily and returns `None` (or any default) when there is none. It stops at the first match, unlike a list comprehension, which scans everything, and it avoids a try/except around `next`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Closures and a First Look at Decorators"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is a closure, and where do you see one without noticing?",
+       "answer": "A function that keeps references to variables of its defining scope after that scope has finished. Decorators, callbacks, `functools.partial`-like helpers and factory functions (`multiplier(3)`) are all closures; `function.__closure__` exposes the captured cells."
+      },
+      {
+       "question": "Why use `functools.wraps` in a decorator?",
+       "answer": "Without it, the wrapper replaces the original function's `__name__`, `__doc__`, annotations and signature, which breaks debugging, documentation, introspection (FastAPI reads signatures!) and tools such as `inspect`. `wraps` copies that metadata and sets `__wrapped__`."
+      },
+      {
+       "question": "How does a decorator with arguments (`@retry(times=3)`) work?",
+       "answer": "`retry(times=3)` is called first and returns the actual decorator; that decorator is then applied to the function. It is a function that returns a function that returns a wrapper: three levels of nesting."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Functional Style in Practice"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When should you prefer a for loop over a comprehension or functional pipeline?",
+       "answer": "When the body has several statements, side effects, early exits, try/except or accumulates more than one result, and whenever the one-liner would take longer to read than the loop. The goal is clarity; comprehensions are for simple transformations and filters."
+      },
+      {
+       "question": "Is Python good for functional programming?",
+       "answer": "It supports first-class functions, closures, comprehensions, generators and immutable data, but has no tail-call optimisation, limited lambdas, no persistent data structures in the standard library and mutable defaults. Idiomatic Python borrows functional ideas for clarity rather than following a pure functional style."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

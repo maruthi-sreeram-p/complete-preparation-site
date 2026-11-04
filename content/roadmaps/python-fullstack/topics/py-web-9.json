@@ -1,0 +1,311 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-32-1",
+   "type": "concept",
+   "title": "Sessions, Cookies and Tokens: Choosing a State Model",
+   "subtopicId": "32-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "HTTP is stateless, so after login the client must present **proof of who it is** on every request. There are three families, and choosing among them is a design decision, not a fashion:\n\n| Model | What the client holds | Server stores | Revocation | Fits |\n| --- | --- | --- | --- | --- |\n| **Server-side session** | An opaque id in a cookie | The session (in Redis or a database) | Instant: delete the session | Browser apps with a server-rendered or same-site front end |\n| **Signed cookie session** | The session data itself, signed (Starlette's `SessionMiddleware`) | Nothing | Hard: wait for expiry or rotate the key | Small, low-risk state (flash messages, a user id) |\n| **Self-contained token (JWT)** | A signed token with claims | Nothing (or a deny-list) | Hard: short expiry plus refresh | APIs, mobile apps, service-to-service, SPAs |\n| **Opaque access token** | A random string | A token table or cache, or ask the auth server (introspection) | Instant | APIs wanting easy revocation |\n\nCookies and `Authorization` headers have different security properties:\n\n| | Cookie | `Authorization: Bearer` header |\n| --- | --- | --- |\n| Sent automatically by the browser | **Yes**: CSRF applies | No: your code attaches it |\n| Reachable from JavaScript | Not if `HttpOnly`: XSS cannot steal it | Yes if stored in `localStorage`/memory: XSS can steal it |\n| Cross-site safety | `SameSite=Lax/Strict`, CSRF token | Not sent by other sites |\n| Works for non-browser clients | Awkward | Natural |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from fastapi import FastAPI, HTTPException, Request, Response\nfrom fastapi.testclient import TestClient\nfrom starlette.middleware.sessions import SessionMiddleware\n\napp = FastAPI()\napp.add_middleware(SessionMiddleware, secret_key=\"a-long-random-secret\", session_cookie=\"sid\", same_site=\"lax\", https_only=False, max_age=3600)\n\n\n@app.post(\"/login\")\ndef login(request: Request, user: str):\n    request.session[\"user\"] = user                                      # stored in a SIGNED cookie, not on the server\n    request.session[\"csrf\"] = \"token-123\"                               # double-submit token for state-changing requests\n    return {\"ok\": True}\n\n\n@app.post(\"/transfer\")\ndef transfer(request: Request, amount: int, x_csrf: str | None = None):\n    if \"user\" not in request.session:\n        raise HTTPException(401, \"login required\")\n    if x_csrf != request.session[\"csrf\"]:                              # a forged cross-site request cannot know this value\n        raise HTTPException(403, \"CSRF token missing or wrong\")\n    return {\"moved\": amount, \"by\": request.session[\"user\"]}\n\n\nclient = TestClient(app)\nprint(client.post(\"/transfer?amount=5\").status_code)\nlogin_response = client.post(\"/login?user=asha\")\ncookie = login_response.headers[\"set-cookie\"]\nprint(cookie.split(\";\")[0].startswith(\"sid=\"), \"httponly\" in cookie.lower(), \"samesite=lax\" in cookie.lower())\nprint(client.post(\"/transfer?amount=5\").status_code, client.post(\"/transfer?amount=5&x_csrf=token-123\").json())\n\ntampered = TestClient(app)\ntampered.cookies.set(\"sid\", \"forged-value\")\nprint(tampered.post(\"/transfer?amount=5&x_csrf=token-123\").status_code)    # a forged cookie fails signature verification",
+     "title": "Cookies.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "401\nTrue True True\n403 {'moved': 5, 'by': 'asha'}\n401",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **`HttpOnly`**: JavaScript cannot read it, so XSS cannot steal it.\n- **`Secure`**: sent only over HTTPS (set it in production).\n- **`SameSite=Lax`** (a good default) or **`Strict`**: the browser does not send it on cross-site POSTs, which blocks most CSRF; `None` requires `Secure` and reopens the risk.\n- **`Max-Age`/`Expires`**: short for sensitive sessions; **`Path`/`Domain`**: as narrow as possible; the `__Host-` cookie prefix enforces Secure, no Domain and Path `/`.\n- For cookie-authenticated state-changing endpoints also verify a **CSRF token** or the **`Origin` header**.",
+     "title": "Cookie flags that matter"
+    }
+   ]
+  },
+  {
+   "id": "ch-32-2",
+   "type": "concept",
+   "title": "JWTs Under the Microscope",
+   "subtopicId": "32-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A JWT is three base64url parts, `header.payload.signature`. Building one by hand removes the mystery and shows exactly what a signature guarantees (integrity and authenticity) and what it does not (secrecy)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import base64\nimport hashlib\nimport hmac\nimport json\n\nimport jwt\n\n\ndef b64(data: bytes) -> str:\n    return base64.urlsafe_b64encode(data).rstrip(b\"=\").decode()\n\n\ndef sign_hs256(payload: dict, secret: bytes) -> str:\n    header = {\"alg\": \"HS256\", \"typ\": \"JWT\"}\n    signing_input = b64(json.dumps(header, separators=(\",\", \":\")).encode()) + \".\" + b64(json.dumps(payload, separators=(\",\", \":\")).encode())\n    signature = hmac.new(secret, signing_input.encode(), hashlib.sha256).digest()\n    return signing_input + \".\" + b64(signature)\n\n\nclaims = {\"sub\": \"42\", \"role\": \"admin\", \"exp\": 4102444800}               # exp: year 2100\nsecret = b\"shared-secret-that-is-long-enough-for-hs256\"\nby_hand = sign_hs256(claims, secret)\nlibrary = jwt.encode(claims, secret, algorithm=\"HS256\")\nprint(by_hand.split(\".\")[0] == library.split(\".\")[0], by_hand.split(\".\")[2] == library.split(\".\")[2], jwt.decode(by_hand, secret, algorithms=[\"HS256\"])[\"role\"])\n\nheader_part, payload_part, _ = by_hand.split(\".\")\ndecoded = json.loads(base64.urlsafe_b64decode(payload_part + \"=\" * (-len(payload_part) % 4)))\nprint(decoded)                                                           # anyone can read the payload: it is encoded, not encrypted\n\nforged_payload = b64(json.dumps({**claims, \"role\": \"superadmin\"}, separators=(\",\", \":\")).encode())\nforged = f\"{header_part}.{forged_payload}.{by_hand.split('.')[2]}\"       # change the payload, keep the old signature\ntry:\n    jwt.decode(forged, secret, algorithms=[\"HS256\"])\nexcept jwt.InvalidSignatureError:\n    print(\"forged payload rejected: the signature no longer matches\")\n\nnone_token = b64(b'{\"alg\":\"none\",\"typ\":\"JWT\"}') + \".\" + payload_part + \".\"\ntry:\n    jwt.decode(none_token, secret, algorithms=[\"HS256\"])\nexcept jwt.PyJWTError as error:\n    print(\"alg=none rejected:\", type(error).__name__)",
+     "title": "JwtByHand.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True True admin\n{'sub': '42', 'role': 'admin', 'exp': 4102444800}\nforged payload rejected: the signature no longer matches\nalg=none rejected: InvalidAlgorithmError",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Asymmetric signatures, `kid` and key rotation\n\nWith **HS256** every service that verifies tokens must hold the secret that also signs them, so any of them could mint tokens. With **RS256/ES256** the auth server signs with a **private key**, and every other service verifies with the **public key**, usually fetched from a **JWKS** endpoint (`/.well-known/jwks.json`). A `kid` header says which key signed the token, which makes **rotation** painless."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import json\n\nimport jwt\nfrom cryptography.hazmat.primitives.asymmetric import rsa\nfrom jwt.algorithms import RSAAlgorithm\n\n\ndef new_key():\n    return rsa.generate_private_key(public_exponent=65537, key_size=2048)\n\n\nold_key, new_key_ = new_key(), new_key()\nsigning_keys = {\"2026-01\": old_key, \"2026-07\": new_key_}                    # the auth server keeps both while old tokens live\njwks = {\"keys\": [{**json.loads(RSAAlgorithm.to_jwk(k.public_key())), \"kid\": kid, \"alg\": \"RS256\", \"use\": \"sig\"} for kid, k in signing_keys.items()]}\nprint(sorted(key[\"kid\"] for key in jwks[\"keys\"]), [sorted(k) for k in jwks[\"keys\"]][0])                # public material only: n, e, kty, kid...\n\n\ndef issue(kid, subject):\n    return jwt.encode({\"sub\": subject, \"aud\": \"shop-api\", \"iss\": \"https://auth.example.com\", \"exp\": 4102444800}, signing_keys[kid], algorithm=\"RS256\", headers={\"kid\": kid})\n\n\ndef verify(token):                                                         # what a resource server does with the JWKS it fetched\n    kid = jwt.get_unverified_header(token)[\"kid\"]\n    jwk = next(k for k in jwks[\"keys\"] if k[\"kid\"] == kid)\n    public_key = RSAAlgorithm.from_jwk(json.dumps(jwk))\n    return jwt.decode(token, public_key, algorithms=[\"RS256\"], audience=\"shop-api\", issuer=\"https://auth.example.com\")\n\n\nprint(verify(issue(\"2026-01\", \"asha\"))[\"sub\"], verify(issue(\"2026-07\", \"ravi\"))[\"sub\"])                  # old and new tokens both verify during rotation\ntry:\n    jwt.decode(issue(\"2026-07\", \"x\"), RSAAlgorithm.from_jwk(json.dumps(jwks[\"keys\"][0])), algorithms=[\"RS256\"], audience=\"shop-api\")\nexcept jwt.InvalidSignatureError:\n    print(\"a token signed by the new key fails against the old public key, as it should\")\ntry:\n    jwt.decode(issue(\"2026-07\", \"x\"), RSAAlgorithm.from_jwk(json.dumps(jwks[\"keys\"][1])), algorithms=[\"RS256\"], audience=\"another-api\")\nexcept jwt.InvalidAudienceError:\n    print(\"wrong audience rejected: a token for one API cannot be replayed against another\")",
+     "title": "Rs256Rotation.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "['2026-01', '2026-07'] ['alg', 'e', 'key_ops', 'kid', 'kty', 'n', 'use']\nasha ravi\na token signed by the new key fails against the old public key, as it should\nwrong audience rejected: a token for one API cannot be replayed against another",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Claims to validate on every token:\n\n| Claim | Meaning | Check |\n| --- | --- | --- |\n| `exp`, `nbf`, `iat` | Expiry, not before, issued at | Required; allow a few seconds of clock skew (`leeway`) |\n| `iss` | Issuer | Must equal the auth server you trust |\n| `aud` | Audience | Must name **your** API, so tokens for another service are useless to an attacker |\n| `sub` | Subject (user id) | Stable identifier, not an email that can change |\n| `scope` / `roles` | Permissions | Coarse; re-check fine-grained rules server-side |\n| `jti` | Token id | Enables a deny-list or replay detection |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Accepting `alg: none`; letting the token pick the algorithm (RS256 public key used as an HS256 secret); not checking `aud` or `iss`; not requiring `exp`; trusting claims before verifying the signature (`verify_signature=False` in production code); storing secrets in the payload; very long lifetimes with no revocation story; and leaking the signing key. Libraries fixed most of these defaults, but you still have to ask for the checks.",
+     "title": "The JWT mistakes that become CVEs"
+    }
+   ]
+  },
+  {
+   "id": "ch-32-3",
+   "type": "concept",
+   "title": "Refresh Tokens, Rotation and Logout",
+   "subtopicId": "32-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Short access tokens (5 to 15 minutes) limit damage, but users should not log in every 15 minutes. A **refresh token** is a long-lived credential used only to obtain new access tokens. It is **opaque, stored server-side (hashed), revocable and rotated**: every refresh returns a new refresh token and invalidates the old one. If an **old token is presented again**, someone has stolen it, so the whole **token family** is revoked."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import hashlib\nimport secrets\nimport time\n\nREFRESH_TTL = 7 * 24 * 3600\n\n\nclass TokenStore:\n    \"\"\"Server-side refresh tokens. Only HASHES are stored, so a database leak does not leak usable tokens.\"\"\"\n\n    def __init__(self, clock=time.time):\n        self.clock = clock\n        self.tokens: dict[str, dict] = {}                              # hash -> record\n\n    @staticmethod\n    def _hash(token: str) -> str:\n        return hashlib.sha256(token.encode()).hexdigest()\n\n    def issue(self, user_id: int, family: str | None = None) -> str:\n        token = secrets.token_urlsafe(32)\n        self.tokens[self._hash(token)] = {\"user\": user_id, \"family\": family or secrets.token_hex(4), \"used\": False, \"revoked\": False,\n                                          \"expires\": self.clock() + REFRESH_TTL}\n        return token\n\n    def rotate(self, token: str) -> str:\n        record = self.tokens.get(self._hash(token))\n        if record is None or record[\"revoked\"] or record[\"expires\"] < self.clock():\n            raise PermissionError(\"invalid refresh token\")\n        if record[\"used\"]:                                             # REUSE DETECTED: an old token came back, so it was stolen\n            for other in self.tokens.values():\n                if other[\"family\"] == record[\"family\"]:\n                    other[\"revoked\"] = True                            # revoke the whole family: the real user must log in again\n            raise PermissionError(\"refresh token reuse detected: session revoked\")\n        record[\"used\"] = True\n        return self.issue(record[\"user\"], record[\"family\"])\n\n    def logout(self, token: str):\n        record = self.tokens.get(self._hash(token))\n        if record:\n            for other in self.tokens.values():\n                if other[\"family\"] == record[\"family\"]:\n                    other[\"revoked\"] = True\n\n\nnow = [1_000_000.0]\nstore = TokenStore(clock=lambda: now[0])\nfirst = store.issue(user_id=42)\nsecond = store.rotate(first)                                           # normal use: exchange and replace\nthird = store.rotate(second)\nprint(first != second != third, len(store.tokens), {r[\"family\"] for r in store.tokens.values()} == {next(iter(store.tokens.values()))[\"family\"]})\n\nfor label, attempt in ((\"replaying the first token (attacker)\", first), (\"the user's current token, after the revocation\", third)):\n    try:\n        store.rotate(attempt)\n    except PermissionError as error:\n        print(label, \"->\", error)\n\nfresh = store.issue(user_id=7)\nnow[0] += REFRESH_TTL + 1\ntry:\n    store.rotate(fresh)\nexcept PermissionError as error:\n    print(\"expired ->\", error)\n\nother = store.issue(user_id=9)\nstore.logout(other)\ntry:\n    store.rotate(other)\nexcept PermissionError as error:\n    print(\"after logout ->\", error)",
+     "title": "RefreshRotation.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True 3 True\nreplaying the first token (attacker) -> refresh token reuse detected: session revoked\nthe user's current token, after the revocation -> invalid refresh token\nexpired -> invalid refresh token\nafter logout -> invalid refresh token",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Design notes:\n\n- **Access token**: JWT, 5 to 15 minutes, never stored server-side; **refresh token**: opaque random value (at least 128 bits), **stored hashed**, one use, rotated.\n- **Reuse detection** converts theft into a forced logout for the whole token family, which is what OAuth 2.0 security guidance recommends for public clients.\n- **Logout** = revoke the refresh token family and let access tokens expire; for instant cut-off keep a small **deny-list** of `jti` values until their expiry, or check a per-user \"tokens valid after\" timestamp.\n- **Send the refresh token in an `HttpOnly` cookie** scoped to the refresh path where possible; never in a URL.\n- Store a **device/session record** with the family (user agent, IP, created) so users can see and revoke sessions."
+    }
+   ]
+  },
+  {
+   "id": "ch-32-4",
+   "type": "concept",
+   "title": "OAuth 2.0 and OpenID Connect",
+   "subtopicId": "32-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**OAuth 2.0** lets an application act on a user's behalf **without ever seeing their password**: the user authenticates at an **authorization server** (Google, GitHub, Auth0, Keycloak, your own) which issues tokens to the **client**. **OpenID Connect (OIDC)** adds an **ID token** (a JWT about *who the user is*) on top of OAuth's access tokens (about *what the client may do*)."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant U as User (browser)\n  participant C as Client app\n  participant A as Authorization server\n  participant R as Resource server (API)\n  C->>C: create code_verifier (random) and code_challenge = SHA256(verifier)\n  C->>U: redirect to /authorize?client_id&redirect_uri&scope&state&code_challenge\n  U->>A: log in, consent\n  A-->>U: redirect back with ?code=...&state=...\n  U->>C: code + state\n  C->>A: POST /token (code, code_verifier, client_id)\n  A->>A: SHA256(verifier) must equal the stored challenge\n  A-->>C: access token (+ ID token, refresh token)\n  C->>R: API call with Authorization: Bearer access token",
+     "title": "Authorization Code flow with PKCE"
+    },
+    {
+     "type": "markdown",
+     "text": "| Flow | Use for | Notes |\n| --- | --- | --- |\n| **Authorization Code + PKCE** | Web apps, SPAs, mobile apps (users) | The default today. PKCE protects the code even for public clients with no secret |\n| **Client Credentials** | Service-to-service, cron jobs | No user; the client authenticates with its own secret or key |\n| **Device Code** | TVs, CLIs | User approves on another device |\n| ~~Implicit~~, ~~Password~~ | Legacy | Deprecated: do not use |\n\nPKCE is small enough to verify exactly. This checks the worked example of RFC 7636:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import base64\nimport hashlib\nimport secrets\n\n\ndef code_challenge(verifier: str) -> str:\n    digest = hashlib.sha256(verifier.encode(\"ascii\")).digest()\n    return base64.urlsafe_b64encode(digest).rstrip(b\"=\").decode()          # S256: BASE64URL(SHA256(verifier))\n\n\nrfc_verifier = \"dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk\"\nprint(code_challenge(rfc_verifier) == \"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\")\n\nverifier = secrets.token_urlsafe(48)                                      # 43 to 128 characters of unguessable text\nchallenge = code_challenge(verifier)\nprint(43 <= len(verifier) <= 128, len(challenge))\n\n\ndef token_endpoint_accepts(stored_challenge: str, presented_verifier: str) -> bool:      # what the authorization server does\n    return secrets.compare_digest(code_challenge(presented_verifier), stored_challenge)\n\n\nprint(token_endpoint_accepts(challenge, verifier), token_endpoint_accepts(challenge, secrets.token_urlsafe(48)))",
+     "title": "Pkce.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True\nTrue 43\nTrue False",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "An attacker who steals the **authorization code** from the redirect cannot redeem it, because only the original client knows the `code_verifier`. Also always: validate the **`state`** parameter (CSRF protection for the redirect), use **exact-match registered redirect URIs**, request the **minimum scopes**, and verify the **ID token** (signature, `iss`, `aud`, `exp`, `nonce`)."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "OAuth 2.0 is an **authorisation** (delegation) framework: it issues access tokens that say what a client may do. **OIDC** adds **authentication**: an ID token that says who the user is and how they logged in. A common vulnerability is treating an OAuth access token as proof of identity (\"log in with\" built on plain OAuth); use the ID token (or the userinfo endpoint) from OIDC for that.",
+     "title": "Authentication versus authorisation in OAuth/OIDC"
+    }
+   ]
+  },
+  {
+   "id": "ch-32-5",
+   "type": "concept",
+   "title": "Passwords, TOTP and Multi-Factor Authentication",
+   "subtopicId": "32-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Passwords**: hash with **Argon2id** (or bcrypt/scrypt), a unique salt per password, tuned so one hash takes tens to hundreds of milliseconds on your hardware; follow the current NIST guidance (length over composition rules, allow long passphrases and password managers, no forced periodic rotation, block known-breached passwords via a k-anonymity breach-check service, rate-limit attempts). Store nothing reversible.\n\n**Multi-factor authentication** blocks most credential-stuffing and phishing of passwords. The most common second factor is **TOTP** (the 6-digit app codes): a shared secret plus the current time. It is small enough to implement and check against the RFC 6238 test vectors:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import base64\nimport hashlib\nimport hmac\nimport struct\n\n\ndef hotp(secret: bytes, counter: int, digits: int = 6, algorithm=hashlib.sha1) -> str:\n    digest = hmac.new(secret, struct.pack(\">Q\", counter), algorithm).digest()\n    offset = digest[-1] & 0x0F                                              # dynamic truncation (RFC 4226)\n    code = (struct.unpack(\">I\", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10 ** digits\n    return str(code).zfill(digits)\n\n\ndef totp(secret: bytes, timestamp: float, step: int = 30, digits: int = 6, algorithm=hashlib.sha1) -> str:\n    return hotp(secret, int(timestamp // step), digits, algorithm)\n\n\ndef verify(secret: bytes, submitted: str, timestamp: float, window: int = 1) -> bool:\n    \"\"\"Accept the current step and `window` steps either side (clock drift); compare in constant time.\"\"\"\n    return any(hmac.compare_digest(totp(secret, timestamp + drift * 30), submitted) for drift in range(-window, window + 1))\n\n\nsecret = b\"12345678901234567890\"                                            # the RFC 6238 test secret for SHA-1\nvectors = {59: \"94287082\", 1111111109: \"07081804\", 1111111111: \"14050471\", 1234567890: \"89005924\", 2000000000: \"69279037\"}\nprint(all(totp(secret, t, digits=8) == code for t, code in vectors.items()))\n\nnow = 1_700_000_000\ncode = totp(secret, now)\nprint(len(code), verify(secret, code, now), verify(secret, code, now + 31), verify(secret, code, now + 95), verify(secret, \"000000\", now))\n\nprovisioning_secret = base64.b32encode(b\"example-secret-20!!\").decode().rstrip(\"=\")      # authenticator apps expect unpadded base32\nprint(f\"otpauth://totp/Shop:asha@example.com?secret={provisioning_secret}&issuer=Shop&digits=6&period=30\")          # the QR code content",
+     "title": "Totp.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True\n6 True True False False\notpauth://totp/Shop:asha@example.com?secret=MV4GC3LQNRSS243FMNZGK5BNGIYCCII&issuer=Shop&digits=6&period=30",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Operational rules for MFA: store the TOTP secret **encrypted**, accept each code **once** (prevent replay inside its window), **rate-limit** attempts, issue **one-time recovery codes** (hashed) at enrolment, prefer **WebAuthn/passkeys** (phishing-resistant) for high-value accounts, and require MFA for admin roles and sensitive actions (**step-up authentication**)."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Argon2id for passwords; breached-password check; generic login errors; constant-time comparisons.\n- Throttle logins per account **and** per IP with backoff; alert on spikes (credential stuffing).\n- Short access tokens, rotating refresh tokens with reuse detection, logout revokes the family.\n- Verify `exp`, `iss`, `aud`, algorithm; asymmetric keys with JWKS and `kid` rotation for multi-service systems.\n- Cookies: `HttpOnly`, `Secure`, `SameSite`; CSRF tokens for cookie auth; BFF for browser apps.\n- OAuth: Authorization Code + PKCE, `state`, exact redirect URIs, minimal scopes; ID token for identity.\n- MFA (TOTP now, WebAuthn better); step-up for sensitive operations; recovery codes.\n- Audit log of logins, failures, token refreshes and permission changes (without secrets).",
+     "title": "Authentication hardening checklist"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Sessions, Cookies and Tokens: Choosing a State Model"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Where should a single-page application keep its access token?",
+       "answer": "There is no free lunch. In memory (lost on refresh, safe from persistent storage theft but readable by injected scripts), or in an `HttpOnly`, `Secure`, `SameSite` cookie set by a backend-for-frontend (BFF) so JavaScript never sees it, which is the recommended pattern for browser apps. `localStorage` is readable by any XSS payload."
+      },
+      {
+       "question": "What is CSRF and why do bearer-header APIs not suffer from it?",
+       "answer": "Cross-site request forgery makes a victim's browser send a state-changing request to your site, with the victim's cookies attached automatically. Header-based tokens are not attached automatically by the browser, so a malicious site cannot make the request authenticated. Cookie-based auth needs SameSite cookies and CSRF tokens."
+      },
+      {
+       "question": "Server-side sessions or JWT?",
+       "answer": "Sessions give instant revocation and keep secrets on the server but need shared storage (Redis); JWTs avoid a lookup and suit APIs and microservices but are hard to revoke and easy to misuse. Many systems use short-lived JWT access tokens plus server-side refresh tokens."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### JWTs Under the Microscope"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why can a JWT's payload be read by anyone but not changed?",
+       "answer": "The payload is base64url-encoded JSON, not encrypted, so anyone can decode it. The signature covers header and payload with a secret or private key, so any change invalidates it unless the attacker holds the key. Signing gives integrity and authenticity, not confidentiality."
+      },
+      {
+       "question": "HS256 or RS256 for a system with several services?",
+       "answer": "RS256 (or ES256). One auth server signs with a private key; every service only needs the public key (via JWKS), so a compromised downstream service cannot forge tokens. HS256 requires distributing the shared secret to every verifier."
+      },
+      {
+       "question": "How does key rotation work with `kid`?",
+       "answer": "The token header names the signing key's `kid`. The auth server publishes all currently valid public keys in the JWKS; verifiers pick the key by `kid`, so new tokens use the new key while tokens signed by the old key remain valid until they expire, after which the old key is removed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Refresh Tokens, Rotation and Logout"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is refresh token rotation and what attack does reuse detection catch?",
+       "answer": "Each refresh issues a new refresh token and invalidates the previous one. If a previously used token is presented again, either the attacker or the legitimate user holds a stale copy, so the server revokes the entire family and forces re-authentication, limiting the value of a stolen refresh token."
+      },
+      {
+       "question": "Why store only a hash of refresh tokens?",
+       "answer": "A database leak would otherwise hand out working credentials. Because tokens are high-entropy random values, a fast hash (SHA-256) is sufficient (unlike passwords, which need a slow, salted hash)."
+      },
+      {
+       "question": "How do you log a user out when access tokens are JWTs?",
+       "answer": "Revoke their refresh tokens and let the short-lived access token expire. For immediate revocation, keep a deny-list of token ids (or a \"valid after\" timestamp per user) that the verifier checks, which reintroduces a small amount of state."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### OAuth 2.0 and OpenID Connect"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why was PKCE added, and when is it required?",
+       "answer": "Public clients (SPAs, mobile apps) cannot keep a client secret, so an intercepted authorisation code could be redeemed by an attacker. PKCE binds the code to a random verifier that only the starting client knows. It is now recommended for all clients using the authorization code flow."
+      },
+      {
+       "question": "What is the difference between an access token and an ID token?",
+       "answer": "The access token is for the resource server: it grants access to an API with certain scopes and its contents are meant for that API. The ID token is for the client: a JWT describing the authenticated user (`sub`, `name`, `email`) and the authentication event. Do not send the ID token to APIs as an access token."
+      },
+      {
+       "question": "Which OAuth flow do two backend services use to talk to each other?",
+       "answer": "Client credentials: the calling service authenticates with its client id and secret (or a signed assertion or mTLS certificate) and receives an access token scoped to what it needs, with no user involved."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Passwords, TOTP and Multi-Factor Authentication"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is TOTP verified with a small time window?",
+       "answer": "Client and server clocks differ slightly and users type codes late, so the verifier accepts the current 30-second step plus one on either side. A wider window increases the chance of an attacker guessing a code, so keep it small and limit attempts."
+      },
+      {
+       "question": "What is step-up authentication?",
+       "answer": "Requiring a stronger or fresher proof for a sensitive action (changing the email, large transfers, admin operations) even though the user already has a session, for example by prompting for MFA again, so a stolen session alone is not enough."
+      },
+      {
+       "question": "How do you defend against credential stuffing?",
+       "answer": "Unique salted slow hashes limit offline damage, but online attacks reuse leaked passwords from other sites: rate-limit and slow logins by account and IP, detect distributed bursts, require MFA, block known-breached passwords, add CAPTCHA or bot defences at the edge, and notify users of suspicious logins."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

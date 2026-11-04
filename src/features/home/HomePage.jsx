@@ -82,9 +82,10 @@ function Home({ roadmap, progress, trees, allProgress }) {
           Start as a fresher. Learn like an experienced developer.
         </p>
         <p className="mt-3 max-w-2xl text-muted">
-          Seven trees: the full Java stack in depth, AI and cloud skills, aptitude practice with thousands of
-          questions, DSA topic by topic, the GATE CSE syllabus with cheat codes and exam-style questions,
-          cybersecurity for freshers, and the five core subjects (OS, DBMS, networks, computer organisation and OOP).
+          Eight trees: the full Java stack in depth, the same path for Python (every code example is run when the
+          site is built), AI and cloud skills, aptitude practice with thousands of questions, DSA topic by topic,
+          the GATE CSE syllabus with cheat codes and exam-style questions, cybersecurity for freshers, and the five
+          core subjects (OS, DBMS, networks, computer organisation and OOP).
           Then practise what you learn, with SQL you can run in the browser.
         </p>
 
@@ -123,7 +124,7 @@ function Home({ roadmap, progress, trees, allProgress }) {
       {/* ---- the trees ---- */}
       <section className="px-4 pt-16 lg:px-6">
         <div className="text-center">
-          <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">Three trees</h2>
+          <h2 className="font-display text-4xl font-bold tracking-tight sm:text-5xl">Eight trees</h2>
           <p className="mt-3 text-muted">Separate maps with separate progress. Work on them side by side.</p>
         </div>
         <div className="mt-8 grid gap-4 md:grid-cols-3">

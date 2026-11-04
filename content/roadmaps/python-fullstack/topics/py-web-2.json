@@ -1,0 +1,298 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-25-1",
+   "type": "concept",
+   "title": "A CRUD API, Done Properly",
+   "subtopicId": "25-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A **REST API** exposes **resources** (nouns) at URLs and uses HTTP methods and status codes to say what to do and what happened. A well-designed CRUD resource looks the same everywhere:\n\n| Operation | Method and URL | Success | Typical errors |\n| --- | --- | --- | --- |\n| List | `GET /items` | 200 + list | 400/422 bad filters |\n| Read one | `GET /items/{id}` | 200 | 404 |\n| Create | `POST /items` | **201** + `Location` header + the created item | 409 duplicate, 422 invalid |\n| Replace | `PUT /items/{id}` | 200 (or 204) | 404, 422 |\n| Partial update | `PATCH /items/{id}` | 200 | 404, 422 |\n| Delete | `DELETE /items/{id}` | **204 No Content** | 404 (or 204 again: delete is idempotent) |\n\nThe pattern that keeps APIs clean is **three Pydantic models per resource**: what a client may *send* to create, what it may send to update, and what the server *returns* (which adds server-owned fields such as `id` and timestamps and hides secrets)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from datetime import datetime, timezone\nfrom decimal import Decimal\nfrom typing import Annotated\n\nfrom fastapi import FastAPI, HTTPException, Response, status\nfrom fastapi.testclient import TestClient\nfrom pydantic import BaseModel, Field\n\n\nclass ItemCreate(BaseModel):                                           # what a client may send to create\n    name: Annotated[str, Field(min_length=1, max_length=80)]\n    price: Annotated[Decimal, Field(gt=0, max_digits=10, decimal_places=2)]\n    in_stock: bool = True\n\n\nclass ItemUpdate(BaseModel):                                           # PATCH: every field optional\n    name: Annotated[str | None, Field(min_length=1, max_length=80)] = None\n    price: Annotated[Decimal | None, Field(gt=0, max_digits=10, decimal_places=2)] = None\n    in_stock: bool | None = None\n\n\nclass ItemRead(ItemCreate):                                            # what the server returns: adds server-owned fields\n    id: int\n    created_at: datetime\n\n\napp = FastAPI()\nDB: dict[int, dict] = {}\nNEXT_ID = {\"value\": 1}\n\n\n@app.post(\"/items\", response_model=ItemRead, status_code=status.HTTP_201_CREATED)\ndef create_item(payload: ItemCreate, response: Response):\n    item_id = NEXT_ID[\"value\"]\n    NEXT_ID[\"value\"] += 1\n    DB[item_id] = {\"id\": item_id, \"created_at\": datetime(2026, 11, 4, tzinfo=timezone.utc), **payload.model_dump()}\n    response.headers[\"Location\"] = f\"/items/{item_id}\"                 # tell the client where the new resource lives\n    return DB[item_id]\n\n\n@app.get(\"/items/{item_id}\", response_model=ItemRead)\ndef read_item(item_id: int):\n    if item_id not in DB:\n        raise HTTPException(status_code=404, detail=f\"item {item_id} not found\")\n    return DB[item_id]\n\n\n@app.put(\"/items/{item_id}\", response_model=ItemRead)\ndef replace_item(item_id: int, payload: ItemCreate):                  # PUT replaces the whole representation\n    read_item(item_id)\n    DB[item_id].update(payload.model_dump())\n    return DB[item_id]\n\n\n@app.patch(\"/items/{item_id}\", response_model=ItemRead)\ndef patch_item(item_id: int, payload: ItemUpdate):\n    read_item(item_id)\n    DB[item_id].update(payload.model_dump(exclude_unset=True))          # only the fields the client actually sent\n    return DB[item_id]\n\n\n@app.delete(\"/items/{item_id}\", status_code=status.HTTP_204_NO_CONTENT)\ndef delete_item(item_id: int):\n    DB.pop(item_id, None)                                              # idempotent: deleting twice is not an error here\n\n\nclient = TestClient(app)\ncreated = client.post(\"/items\", json={\"name\": \"pen\", \"price\": \"12.50\"})\nprint(created.status_code, created.headers[\"location\"], created.json())\nprint(client.post(\"/items\", json={\"name\": \"\", \"price\": -1}).json()[\"detail\"][0][\"msg\"])\nprint(client.patch(\"/items/1\", json={\"in_stock\": False}).json()[\"in_stock\"], client.get(\"/items/1\").json()[\"name\"])\nprint(client.patch(\"/items/1\", json={\"price\": \"15\"}).json()[\"price\"], client.put(\"/items/1\", json={\"name\": \"ink\", \"price\": \"9.99\"}).json()[\"name\"])\nprint(client.delete(\"/items/1\").status_code, client.get(\"/items/1\").status_code, client.delete(\"/items/1\").status_code)",
+     "title": "Crud.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "201 /items/1 {'name': 'pen', 'price': '12.50', 'in_stock': True, 'id': 1, 'created_at': '2026-11-04T00:00:00Z'}\nString should have at least 1 character\nFalse pen\n15 ink\n204 404 204",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Points worth remembering:\n\n- **`response_model`** filters and documents what is returned. Return a dict or ORM object with extra fields (a password hash!) and only the declared fields reach the client.\n- **`exclude_unset=True`** is what makes PATCH work: it distinguishes \"field not sent\" from \"field sent as null\".\n- **`PUT` replaces** the representation (all fields required); **`PATCH` changes** the fields sent. Many APIs only offer PATCH.\n- Return **201 with a `Location` header** for creation and **204** with no body for deletion.\n- Money is a `Decimal` (or an integer in minor units), never `float`."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "`PUT` is a full replacement and is idempotent; `PATCH` is a partial update (idempotent only if the patch is absolute rather than \"increment by 1\"). Say which you offer and why. For PATCH, handle the difference between a field that is **absent** (leave unchanged) and one that is explicitly `null` (clear it): `model_dump(exclude_unset=True)` preserves that distinction.",
+     "title": "PUT versus PATCH"
+    }
+   ]
+  },
+  {
+   "id": "ch-25-2",
+   "type": "concept",
+   "title": "Validation Errors and a Consistent Error Format",
+   "subtopicId": "25-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "FastAPI returns `422` with a `detail` list for invalid input. Clients and operators benefit from **one error format across the whole API**. The standard is **RFC 9457 \"Problem Details\"** (`application/problem+json`): `type`, `title`, `status`, `detail`, and extension members."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from fastapi import FastAPI, Request\nfrom fastapi.exceptions import RequestValidationError\nfrom fastapi.responses import JSONResponse\nfrom fastapi.testclient import TestClient\nfrom pydantic import BaseModel, Field\nfrom starlette.exceptions import HTTPException as StarletteHTTPException\n\n\nclass DomainError(Exception):                                          # raised by the service layer, knows nothing about HTTP\n    status = 400\n    title = \"Bad request\"\n\n    def __init__(self, detail: str):\n        super().__init__(detail)\n        self.detail = detail\n\n\nclass NotFound(DomainError):\n    status, title = 404, \"Resource not found\"\n\n\nclass Conflict(DomainError):\n    status, title = 409, \"Conflict\"\n\n\ndef problem(status: int, title: str, detail: str, request: Request, **extra):\n    body = {\"type\": \"about:blank\", \"title\": title, \"status\": status, \"detail\": detail, \"instance\": request.url.path, **extra}\n    return JSONResponse(body, status_code=status, media_type=\"application/problem+json\")\n\n\napp = FastAPI()\n\n\n@app.exception_handler(DomainError)\nasync def domain_error_handler(request: Request, exc: DomainError):    # one place maps domain errors to HTTP\n    return problem(exc.status, exc.title, exc.detail, request)\n\n\n@app.exception_handler(RequestValidationError)\nasync def validation_handler(request: Request, exc: RequestValidationError):\n    errors = [{\"field\": \".\".join(str(part) for part in e[\"loc\"][1:]), \"message\": e[\"msg\"]} for e in exc.errors()]\n    return problem(422, \"Validation failed\", \"one or more fields are invalid\", request, errors=errors)\n\n\n@app.exception_handler(StarletteHTTPException)\nasync def http_handler(request: Request, exc: StarletteHTTPException):\n    return problem(exc.status_code, \"HTTP error\", str(exc.detail), request)\n\n\n@app.exception_handler(Exception)\nasync def unexpected(request: Request, exc: Exception):                # last resort: never leak internals to the client\n    return problem(500, \"Internal server error\", \"something went wrong\", request)\n\n\nclass UserCreate(BaseModel):\n    email: str = Field(pattern=r\"^[^@\\s]+@[^@\\s]+$\")\n    age: int = Field(ge=18)\n\n\nUSERS = {\"asha@example.com\"}\n\n\n@app.post(\"/users\", status_code=201)\ndef create_user(user: UserCreate):\n    if user.email in USERS:\n        raise Conflict(f\"{user.email} is already registered\")\n    USERS.add(user.email)\n    return {\"email\": user.email}\n\n\n@app.get(\"/users/{email}\")\ndef get_user(email: str):\n    if email not in USERS:\n        raise NotFound(f\"no user {email}\")\n    return {\"email\": email}\n\n\n@app.get(\"/boom\")\ndef boom():\n    raise RuntimeError(\"secret database password in the message\")\n\n\nclient = TestClient(app, raise_server_exceptions=False)\nfor response in (client.post(\"/users\", json={\"email\": \"bad\", \"age\": 5}), client.post(\"/users\", json={\"email\": \"asha@example.com\", \"age\": 30}),\n                 client.get(\"/users/zed@example.com\"), client.get(\"/nothing\"), client.get(\"/boom\")):\n    print(response.status_code, response.headers[\"content-type\"], response.json())",
+     "title": "Errors.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "422 application/problem+json {'type': 'about:blank', 'title': 'Validation failed', 'status': 422, 'detail': 'one or more fields are invalid', 'instance': '/users', 'errors': [{'field': 'email', 'message': \"String should match pattern '^[^@\\\\s]+@[^@\\\\s]+$'\"}, {'field': 'age', 'message': 'Input should be greater than or equal to 18'}]}\n409 application/problem+json {'type': 'about:blank', 'title': 'Conflict', 'status': 409, 'detail': 'asha@example.com is already registered', 'instance': '/users'}\n404 application/problem+json {'type': 'about:blank', 'title': 'Resource not found', 'status': 404, 'detail': 'no user zed@example.com', 'instance': '/users/zed@example.com'}\n404 application/problem+json {'type': 'about:blank', 'title': 'HTTP error', 'status': 404, 'detail': 'Not Found', 'instance': '/nothing'}\n500 application/problem+json {'type': 'about:blank', 'title': 'Internal server error', 'status': 500, 'detail': 'something went wrong', 'instance': '/boom'}",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Design rules for errors:\n\n1. **Domain code raises domain exceptions**; **one handler** maps them to HTTP. Services stay free of `HTTPException`, so a CLI or worker can reuse them.\n2. **Same shape everywhere**, including validation failures and 404s from the router, so clients write one error parser.\n3. **Never leak internals** in 500 responses (stack traces, SQL, paths); log the details server-side with a correlation ID the client can quote.\n4. **Be precise with the status**: 400 malformed request, 401 not authenticated, 403 not allowed, 404 not found, 409 conflict with current state, 422 well-formed but invalid, 429 too many requests."
+    }
+   ]
+  },
+  {
+   "id": "ch-25-3",
+   "type": "concept",
+   "title": "Pagination, Filtering and Sorting",
+   "subtopicId": "25-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Never return an unbounded list. Two pagination styles dominate:\n\n| Style | Request | Pros | Cons |\n| --- | --- | --- | --- |\n| **Offset / limit (page)** | `?page=3&size=20` | Simple; jump to any page; total count | Slow for large offsets; rows shift while paging |\n| **Cursor (keyset)** | `?limit=20&after=<opaque cursor>` | Stable and fast on large, changing data | No random access; the cursor must be opaque and signed |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import base64\nimport json\nfrom enum import Enum\nfrom typing import Annotated\n\nfrom fastapi import FastAPI, Query\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\nITEMS = [{\"id\": i, \"name\": f\"item-{i:02d}\", \"price\": 10 + i % 5, \"category\": \"pen\" if i % 2 else \"ink\"} for i in range(1, 26)]\n\n\nclass SortField(str, Enum):\n    id = \"id\"\n    price = \"price\"\n    name = \"name\"\n\n\n@app.get(\"/items\")\ndef list_items(\n    page: Annotated[int, Query(ge=1)] = 1,\n    size: Annotated[int, Query(ge=1, le=50)] = 10,\n    category: Annotated[str | None, Query(max_length=20)] = None,\n    min_price: Annotated[float | None, Query(ge=0)] = None,\n    sort: SortField = SortField.id,\n    descending: bool = False,\n    tag: Annotated[list[str] | None, Query()] = None,                     # repeated parameter: ?tag=a&tag=b\n):\n    rows = [i for i in ITEMS if (category is None or i[\"category\"] == category) and (min_price is None or i[\"price\"] >= min_price)]\n    rows.sort(key=lambda i: (i[sort.value], i[\"id\"]), reverse=descending)\n    total, start = len(rows), (page - 1) * size\n    return {\"items\": rows[start:start + size], \"page\": page, \"size\": size, \"total\": total, \"pages\": -(-total // size), \"tags\": tag}\n\n\ndef encode_cursor(last_id: int) -> str:                                    # opaque to clients: they must not parse it\n    return base64.urlsafe_b64encode(json.dumps({\"after\": last_id}).encode()).decode()\n\n\ndef decode_cursor(cursor: str) -> int:\n    return json.loads(base64.urlsafe_b64decode(cursor.encode()))[\"after\"]\n\n\n@app.get(\"/feed\")\ndef feed(limit: Annotated[int, Query(ge=1, le=20)] = 5, after: str | None = None):\n    last_id = decode_cursor(after) if after else 0\n    rows = [i for i in ITEMS if i[\"id\"] > last_id][: limit + 1]            # fetch one extra row to know if there is a next page\n    has_more = len(rows) > limit\n    rows = rows[:limit]\n    return {\"items\": [r[\"id\"] for r in rows], \"next\": encode_cursor(rows[-1][\"id\"]) if has_more else None}\n\n\nclient = TestClient(app)\npage = client.get(\"/items?page=2&size=10&sort=price&descending=true&category=pen\").json()\nprint(page[\"total\"], page[\"pages\"], [i[\"id\"] for i in page[\"items\"]], page[\"page\"])\nprint(client.get(\"/items?sort=colour\").status_code, client.get(\"/items?size=500\").status_code, client.get(\"/items?tag=a&tag=b&size=1\").json()[\"tags\"])\n\nfirst = client.get(\"/feed?limit=10\").json()\nsecond = client.get(f\"/feed?limit=10&after={first['next']}\").json()\nthird = client.get(f\"/feed?limit=10&after={second['next']}\").json()\nprint(first[\"items\"][-1], second[\"items\"], third[\"items\"], third[\"next\"])",
+     "title": "Pagination.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "13 2 [25, 15, 5] 2\n422 422 ['a', 'b']\n10 [11, 12, 13, 14, 15, 16, 17, 18, 19, 20] [21, 22, 23, 24, 25] None",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Cursor pagination uses **keyset** logic (`WHERE id > :last_id ORDER BY id LIMIT n`), which uses the index and does not slow down on page 10,000, unlike `OFFSET 200000`. Fetching `limit + 1` rows tells you whether a next page exists without a separate count query."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`size` needs an upper bound (`le=50`), sort fields should come from an **enum** or allow-list (never put a client string into `ORDER BY`), and filters must be parameters, not string-built SQL. These are the classic sources of denial-of-service and injection bugs in list endpoints.",
+     "title": "Always cap and validate"
+    }
+   ]
+  },
+  {
+   "id": "ch-25-4",
+   "type": "concept",
+   "title": "Forms, Files and Background Work",
+   "subtopicId": "25-4",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import Annotated\n\nfrom fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, UploadFile\nfrom fastapi.responses import FileResponse\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\nSENT, SEEN_KEYS = [], {}\nMAX_BYTES = 1_000\nALLOWED = {\"image/png\", \"text/plain\"}\n\n\ndef send_email(to: str, subject: str):                                  # runs AFTER the response has been sent\n    SENT.append((to, subject))\n\n\n@app.post(\"/signup\")\ndef signup(email: Annotated[str, Form()], password: Annotated[str, Form(min_length=8)], tasks: BackgroundTasks):\n    tasks.add_task(send_email, email, \"Welcome!\")                       # fast for the client, work happens afterwards\n    return {\"email\": email}\n\n\n@app.post(\"/upload\")\nasync def upload(file: Annotated[UploadFile, File()], title: Annotated[str, Form()] = \"untitled\"):\n    if file.content_type not in ALLOWED:\n        raise HTTPException(415, f\"unsupported type {file.content_type}\")\n    data = await file.read(MAX_BYTES + 1)                                # never read an unbounded upload fully\n    if len(data) > MAX_BYTES:\n        raise HTTPException(413, \"file too large\")\n    return {\"filename\": file.filename, \"type\": file.content_type, \"size\": len(data), \"title\": title}\n\n\n@app.post(\"/payments\", status_code=201)\ndef pay(amount: int, idempotency_key: Annotated[str, Header()]):\n    if idempotency_key in SEEN_KEYS:                                     # a retry of the same request: replay the first result\n        return SEEN_KEYS[idempotency_key]\n    result = {\"payment_id\": len(SEEN_KEYS) + 1, \"amount\": amount}\n    SEEN_KEYS[idempotency_key] = result\n    return result\n\n\nclient = TestClient(app)\nprint(client.post(\"/signup\", data={\"email\": \"a@x.com\", \"password\": \"longenough\"}).json(), SENT)\nprint(client.post(\"/signup\", data={\"email\": \"a@x.com\", \"password\": \"short\"}).status_code)\nprint(client.post(\"/upload\", files={\"file\": (\"note.txt\", b\"hello\", \"text/plain\")}, data={\"title\": \"greeting\"}).json())\nprint(client.post(\"/upload\", files={\"file\": (\"x.exe\", b\"MZ\", \"application/octet-stream\")}).status_code,\n      client.post(\"/upload\", files={\"file\": (\"big.txt\", b\"x\" * 2000, \"text/plain\")}).status_code)\nfirst = client.post(\"/payments?amount=500\", headers={\"Idempotency-Key\": \"abc-1\"}).json()\nretry = client.post(\"/payments?amount=500\", headers={\"Idempotency-Key\": \"abc-1\"}).json()\nprint(first == retry, len(SEEN_KEYS))",
+     "title": "FormsFiles.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'email': 'a@x.com'} [('a@x.com', 'Welcome!')]\n422\n{'filename': 'note.txt', 'type': 'text/plain', 'size': 5, 'title': 'greeting'}\n415 413\nTrue 1",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "- **`Form()`** reads `application/x-www-form-urlencoded` or multipart fields; **`UploadFile`** streams the upload to a spooled temp file (not memory). Validate **size, type and name** (never trust the filename or the client's content type: check magic bytes for sensitive cases, store under a generated name, outside the web root).\n- **`BackgroundTasks`** runs short work after the response (sending an email, writing an audit row). It runs **in the same process**: if the process dies the task is lost, so anything important or slow belongs in a real queue (Celery, Arq, a message broker; later in this tree).\n- An **idempotency key** header lets clients safely retry a non-idempotent `POST` (payments, orders): store the key with the first result and replay it."
+    }
+   ]
+  },
+  {
+   "id": "ch-25-5",
+   "type": "concept",
+   "title": "Cross-Cutting HTTP: CORS, Caching, Compression and Rate Limits",
+   "subtopicId": "25-5",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import hashlib\nimport json\n\nfrom fastapi import Depends, FastAPI, HTTPException, Request, Response\nfrom fastapi.middleware.cors import CORSMiddleware\nfrom fastapi.middleware.gzip import GZipMiddleware\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\napp.add_middleware(CORSMiddleware, allow_origins=[\"https://app.example.com\"], allow_methods=[\"GET\", \"POST\"], allow_headers=[\"Authorization\", \"Content-Type\"],\n                   allow_credentials=True, max_age=600)                  # list origins explicitly; never \"*\" together with credentials\napp.add_middleware(GZipMiddleware, minimum_size=500)\n\nDOC = {\"id\": 1, \"title\": \"Handbook\", \"body\": \"text \" * 400}\n\n\n@app.get(\"/docs/1\")\ndef get_doc(request: Request, response: Response):\n    etag = '\"' + hashlib.sha256(json.dumps(DOC, sort_keys=True).encode()).hexdigest()[:16] + '\"'\n    if request.headers.get(\"if-none-match\") == etag:                     # the client already has this version\n        return Response(status_code=304, headers={\"ETag\": etag})\n    response.headers[\"ETag\"] = etag\n    response.headers[\"Cache-Control\"] = \"private, max-age=60\"\n    return DOC\n\n\nclass RateLimiter:                                                       # a fixed-window limiter as a dependency\n    def __init__(self, limit: int):\n        self.limit, self.hits = limit, {}\n\n    def __call__(self, request: Request, response: Response):\n        key = request.client.host\n        self.hits[key] = self.hits.get(key, 0) + 1\n        response.headers[\"X-RateLimit-Remaining\"] = str(max(0, self.limit - self.hits[key]))\n        if self.hits[key] > self.limit:\n            raise HTTPException(429, \"too many requests\", headers={\"Retry-After\": \"30\"})\n\n\nlimiter = RateLimiter(limit=2)\n\n\n@app.get(\"/search\", dependencies=[Depends(limiter)])\ndef search(q: str):\n    return {\"q\": q}\n\n\nclient = TestClient(app)\npreflight = client.options(\"/search\", headers={\"Origin\": \"https://app.example.com\", \"Access-Control-Request-Method\": \"GET\"})\nprint(preflight.status_code, preflight.headers[\"access-control-allow-origin\"], preflight.headers[\"access-control-allow-methods\"])\nblocked = client.options(\"/search\", headers={\"Origin\": \"https://evil.example\", \"Access-Control-Request-Method\": \"GET\"})\nprint(blocked.status_code, \"access-control-allow-origin\" in blocked.headers)\n\nfirst = client.get(\"/docs/1\", headers={\"Accept-Encoding\": \"gzip\"})\nprint(first.status_code, first.headers[\"content-encoding\"], first.headers[\"cache-control\"])\nagain = client.get(\"/docs/1\", headers={\"If-None-Match\": first.headers[\"etag\"]})\nprint(again.status_code, again.content)\n\nprint([client.get(\"/search?q=x\").status_code for _ in range(3)], client.get(\"/search?q=x\").headers.get(\"retry-after\"))",
+     "title": "HttpConcerns.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "200 https://app.example.com GET, POST\n400 False\n200 gzip private, max-age=60\n304 b''\n[200, 200, 429] 30",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Concern | Tool | Remember |\n| --- | --- | --- |\n| **CORS** | `CORSMiddleware` | Browsers only. List allowed origins explicitly; `\"*\"` cannot be combined with credentials; preflight `OPTIONS` requests are answered by the middleware |\n| **Caching** | `ETag` + `If-None-Match` (304), `Cache-Control` | Conditional requests save bandwidth and let clients revalidate cheaply |\n| **Compression** | `GZipMiddleware` | Worth it for large JSON; a reverse proxy often does it instead |\n| **Rate limiting** | Dependency, or at the gateway / reverse proxy / Redis | In-memory counters are per process: use Redis (atomic `INCR` + `EXPIRE`) when you run several workers |\n| **Versioning** | `/v1/...` in the path, or a header | Version only for breaking changes; keep old versions working and announce a deprecation date |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Fill in `summary`, `description`, `tags`, `responses={404: {\"model\": ProblemDetail}}` and examples (`Field(examples=[...])`, `model_config = {\"json_schema_extra\": {...}}`). A good schema generates a client SDK, drives contract tests and cuts support questions. Treat a change in `openapi.json` in a pull request like a change in a public interface.",
+     "title": "OpenAPI is part of the product"
+    }
+   ]
+  },
+  {
+   "id": "ch-25-6",
+   "type": "concept",
+   "title": "REST API Design Checklist",
+   "subtopicId": "25-6",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Nouns, plural, lower-case, hyphenated**: `/orders/42/items`, not `/getOrder?id=42`. Nest only one level; use filters for the rest.\n- **Methods mean things**: `GET` safe and cacheable, `POST` create (not idempotent), `PUT` replace, `PATCH` partial, `DELETE` remove.\n- **Status codes**: 200, 201 + `Location`, 204, 400, 401, 403, 404, 409, 422, 429, 500, 503.\n- **Three models per resource** (create, update, read); never expose database models or secrets.\n- **One error format** (Problem Details) for every failure, with a correlation ID.\n- **Paginate every list**, cap the size, allow-list sort and filter fields.\n- **Idempotency keys** for non-idempotent POSTs that clients will retry.\n- **Version in the path** only for breaking changes; deprecate with a header and a date.\n- **Document with OpenAPI**; treat the schema as a contract and test it.\n- **Security basics**: HTTPS only, authenticate every request, authorise every resource, validate every input (Part 4).",
+     "title": "Design rules that survive code review"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### A CRUD API, Done Properly"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why use separate Create, Update and Read models?",
+       "answer": "They differ: the create model must not accept server-owned fields (`id`, `created_at`, `role`), the update model makes fields optional, and the read model adds those server-owned fields and hides secrets. Using one model for all three invites mass assignment (a client setting `is_admin`) and awkward optionality."
+      },
+      {
+       "question": "Which status codes do you return for create and delete?",
+       "answer": "`201 Created` with a `Location` header (and the created resource) for a successful `POST`, and `204 No Content` for a successful `DELETE`. `404` for a missing resource on read, update and delete if you want strictness, or `204` for an idempotent delete."
+      },
+      {
+       "question": "What does `response_model` do besides documentation?",
+       "answer": "It validates and filters the returned object: fields not declared in the model are dropped, and types are serialised. It is a safety net against leaking internal fields such as password hashes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Validation Errors and a Consistent Error Format"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between 401 and 403?",
+       "answer": "`401 Unauthorized` means the request lacks valid credentials (authenticate and retry); `403 Forbidden` means the caller is authenticated but not allowed to do this. Returning 404 instead of 403 for resources a user must not even know about is a deliberate choice that avoids revealing their existence."
+      },
+      {
+       "question": "Why raise domain exceptions and map them in one handler?",
+       "answer": "The service layer stays independent of HTTP (reusable from jobs and CLIs), the mapping lives in one place, and the error format is consistent. Scattering `HTTPException` through business logic couples the layers and produces inconsistent responses."
+      },
+      {
+       "question": "What is Problem Details (RFC 9457)?",
+       "answer": "A standard JSON error format (`application/problem+json`) with `type`, `title`, `status`, `detail` and `instance`, plus extension members such as a list of field errors. A single machine-readable format makes clients and monitoring simpler."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Pagination, Filtering and Sorting"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is cursor pagination better than offset pagination for large tables?",
+       "answer": "`OFFSET n` makes the database walk and discard n rows, so deep pages get slower, and rows inserted or deleted while a client pages cause duplicates or skips. Keyset pagination seeks directly to the position using an index (`WHERE id > last`) and is stable under changes."
+      },
+      {
+       "question": "How do you let clients choose the sort order safely?",
+       "answer": "Accept an enum or an allow-listed field name and a direction, and map them to column objects in code. Never interpolate the client's string into an `ORDER BY` clause."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Forms, Files and Background Work"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When is `BackgroundTasks` enough and when do you need Celery?",
+       "answer": "`BackgroundTasks` suits short, best-effort work tied to a request (send a welcome email). Use a task queue when work is long, must survive restarts, needs retries, scheduling, rate control or running on other machines, since background tasks live and die with the web process."
+      },
+      {
+       "question": "What is an idempotency key and how does a server implement it?",
+       "answer": "A client-generated unique key sent with a non-idempotent request. The server stores the key with the response (atomically with the side effect); if the same key arrives again it returns the stored response instead of repeating the action. It makes retries after timeouts safe."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Cross-Cutting HTTP: CORS, Caching, Compression and Rate Limits"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does CORS exist and how do you configure it correctly?",
+       "answer": "Browsers block a page from reading responses of another origin unless that server opts in through CORS headers. Configure `CORSMiddleware` with an explicit list of allowed origins, methods and headers; do not use `*` with credentials. It protects users' browsers, not your API: non-browser clients ignore it."
+      },
+      {
+       "question": "How do ETags reduce load?",
+       "answer": "The server sends a validator (`ETag`) with a resource; the client sends it back in `If-None-Match`; if the resource is unchanged the server replies `304 Not Modified` with no body. The work to produce the body and transfer it is skipped."
+      },
+      {
+       "question": "Why is an in-memory rate limiter wrong for a multi-worker deployment?",
+       "answer": "Each worker process has its own counters, so the effective limit is multiplied by the number of workers and resets on restart. Keep the counters in shared storage (Redis with atomic increments and expiry) or enforce limits at a gateway."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### REST API Design Checklist"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How would you design an endpoint to cancel an order?",
+       "answer": "Model the action as a state transition: `POST /orders/42/cancellation` (creates a cancellation) or `PATCH /orders/42` with `{\"status\": \"cancelled\"}`, validating that the transition is allowed (409 if the order has shipped). Return the updated order, make it idempotent (cancelling a cancelled order returns the same state), and record who and why."
+      },
+      {
+       "question": "Why shouldn't a REST API expose database tables one-to-one?",
+       "answer": "The API is a public contract that should model the domain and stay stable, while tables change with the implementation. One-to-one exposure leaks internals (surrogate keys, join tables, audit columns), couples clients to the schema and encourages chatty or insecure access."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

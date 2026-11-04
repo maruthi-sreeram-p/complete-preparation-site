@@ -1,0 +1,442 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-18-1",
+   "type": "concept",
+   "title": "Prefix Sum and Difference Array",
+   "subtopicId": "18-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "**Idea.** Precompute running totals once, then answer any \"sum of a range\" in O(1): `sum(nums[i..j]) = prefix[j+1] - prefix[i]`. Combined with a hash map of earlier prefix values it counts subarrays with a given sum in one pass. The **difference array** is the inverse: it applies many range updates in O(1) each and rebuilds the array once at the end.\n\n**Signals.** \"Sum of a range\", \"number of subarrays whose sum is k\", \"apply +x to indexes i..j many times\"."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "class RangeSum:\n    \"\"\"Immutable array, many range-sum queries: O(n) to build, O(1) per query.\"\"\"\n    def __init__(self, nums):\n        self.prefix = [0]\n        for n in nums:\n            self.prefix.append(self.prefix[-1] + n)\n\n    def query(self, left, right):                  # inclusive indexes\n        return self.prefix[right + 1] - self.prefix[left]\n\n\ndef subarray_sum(nums, k):\n    \"\"\"Number of contiguous subarrays with sum k. prefix[j] - prefix[i] == k  <=>  prefix[i] == prefix[j] - k.\"\"\"\n    count, running, seen = 0, 0, {0: 1}                # the empty prefix has sum 0\n    for n in nums:\n        running += n\n        count += seen.get(running - k, 0)\n        seen[running] = seen.get(running, 0) + 1\n    return count\n\n\ndef longest_balanced(nums):\n    \"\"\"Longest subarray with equally many 0s and 1s: treat 0 as -1 and look for a repeated prefix sum.\"\"\"\n    first, running, best = {0: -1}, 0, 0\n    for i, n in enumerate(nums):\n        running += 1 if n else -1\n        if running in first:\n            best = max(best, i - first[running])\n        else:\n            first[running] = i\n    return best\n\n\ndef flight_bookings(n, bookings):\n    \"\"\"Difference array: each booking is two O(1) updates, then one pass of running sums.\"\"\"\n    diff = [0] * (n + 2)\n    for first, last, seats in bookings:\n        diff[first] += seats\n        diff[last + 1] -= seats\n    out, running = [], 0\n    for i in range(1, n + 1):\n        running += diff[i]\n        out.append(running)\n    return out\n\n\nq = RangeSum([-2, 0, 3, -5, 2, -1])\nassert (q.query(0, 2), q.query(2, 5), q.query(0, 5)) == (1, -1, -3)\nassert subarray_sum([1, 1, 1], 2) == 2 and subarray_sum([1, 2, 3], 3) == 2 and subarray_sum([1, -1, 0], 0) == 3\nassert longest_balanced([0, 1]) == 2 and longest_balanced([0, 1, 0]) == 2 and longest_balanced([1, 1, 1]) == 0\nassert flight_bookings(5, [[1, 2, 10], [2, 3, 20], [2, 5, 25]]) == [10, 55, 45, 25, 25]\nprint(\"prefix sums ok\")",
+     "title": "Prefix.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "prefix sums ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The `seen = {0: 1}` seed is the classic detail: it counts subarrays that start at index 0. Prefix sums with a hash map work with **negative numbers**, unlike a sliding window."
+    }
+   ]
+  },
+  {
+   "id": "ch-18-2",
+   "type": "concept",
+   "title": "Two Pointers",
+   "subtopicId": "18-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Two indexes move through the data, usually from both ends of a sorted array or at different speeds, so one pass replaces a nested loop: O(n²) becomes O(n) (after an O(n log n) sort if needed).\n\n**Signals.** Sorted array and a pair/triple with a target; in-place removal or partitioning; palindromes; \"container\" problems."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def two_sum_sorted(nums, target):\n    lo, hi = 0, len(nums) - 1\n    while lo < hi:\n        s = nums[lo] + nums[hi]\n        if s == target:\n            return [lo, hi]\n        if s < target:\n            lo += 1                                    # need a larger sum\n        else:\n            hi -= 1                                    # need a smaller sum\n    return []\n\n\ndef three_sum(nums):\n    nums.sort()\n    result = []\n    for i in range(len(nums) - 2):\n        if i and nums[i] == nums[i - 1]:\n            continue                                   # skip duplicate first elements\n        lo, hi = i + 1, len(nums) - 1\n        while lo < hi:\n            s = nums[i] + nums[lo] + nums[hi]\n            if s < 0:\n                lo += 1\n            elif s > 0:\n                hi -= 1\n            else:\n                result.append([nums[i], nums[lo], nums[hi]])\n                lo, hi = lo + 1, hi - 1\n                while lo < hi and nums[lo] == nums[lo - 1]:\n                    lo += 1                            # skip duplicate second elements\n    return result\n\n\ndef max_area(heights):\n    lo, hi, best = 0, len(heights) - 1, 0\n    while lo < hi:\n        best = max(best, (hi - lo) * min(heights[lo], heights[hi]))\n        if heights[lo] < heights[hi]:                  # the shorter wall limits the area: move it\n            lo += 1\n        else:\n            hi -= 1\n    return best\n\n\ndef remove_duplicates(nums):                           # sorted, in place: returns the new length\n    write = 1\n    for read in range(1, len(nums)):\n        if nums[read] != nums[write - 1]:\n            nums[write] = nums[read]\n            write += 1\n    return write\n\n\ndef trap(height):                                      # trapping rain water in O(1) space\n    lo, hi, left_max, right_max, water = 0, len(height) - 1, 0, 0, 0\n    while lo < hi:\n        if height[lo] < height[hi]:\n            left_max = max(left_max, height[lo])\n            water += left_max - height[lo]\n            lo += 1\n        else:\n            right_max = max(right_max, height[hi])\n            water += right_max - height[hi]\n            hi -= 1\n    return water\n\n\nassert two_sum_sorted([2, 7, 11, 15], 9) == [0, 1] and two_sum_sorted([1, 2], 7) == []\nassert three_sum([-1, 0, 1, 2, -1, -4]) == [[-1, -1, 2], [-1, 0, 1]] and three_sum([0, 0, 0, 0]) == [[0, 0, 0]] and three_sum([1, 2]) == []\nassert max_area([1, 8, 6, 2, 5, 4, 8, 3, 7]) == 49 and max_area([1, 1]) == 1\ndata = [0, 0, 1, 1, 1, 2, 2, 3]\nassert remove_duplicates(data) == 4 and data[:4] == [0, 1, 2, 3]\nassert trap([0, 1, 0, 2, 1, 0, 1, 3, 2, 1, 2, 1]) == 6 and trap([4, 2, 0, 3, 2, 5]) == 9\nprint(\"two pointers ok\")",
+     "title": "TwoPointers.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "two pointers ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Why moving the shorter wall is safe in `max_area`: the area is limited by the shorter wall, so any container that keeps it and shrinks the width is strictly worse; discarding it loses nothing. Proving that the pointer move is safe is what interviewers want to hear."
+    }
+   ]
+  },
+  {
+   "id": "ch-18-3",
+   "type": "concept",
+   "title": "Sliding Window: Fixed Size",
+   "subtopicId": "18-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Keep a window of exactly k elements and update its aggregate as it slides: add the entering element and remove the leaving one, O(1) per step, O(n) overall instead of O(nk)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import Counter\n\n\ndef max_sum_k(nums, k):\n    window = sum(nums[:k])\n    best = window\n    for i in range(k, len(nums)):\n        window += nums[i] - nums[i - k]                # slide: add the new element, drop the old one\n        best = max(best, window)\n    return best\n\n\ndef find_anagrams(s, p):\n    \"\"\"Start indexes of anagrams of p inside s: a fixed window of len(p) with letter counts.\"\"\"\n    need, window, out = Counter(p), Counter(), []\n    for i, ch in enumerate(s):\n        window[ch] += 1\n        if i >= len(p):\n            left = s[i - len(p)]\n            window[left] -= 1\n            if window[left] == 0:\n                del window[left]                       # keep the counters comparable\n        if window == need:\n            out.append(i - len(p) + 1)\n    return out\n\n\ndef check_inclusion(s1, s2):\n    return bool(find_anagrams(s2, s1))\n\n\ndef max_vowels(s, k):\n    vowels, count = set(\"aeiou\"), 0\n    best = 0\n    for i, ch in enumerate(s):\n        count += ch in vowels\n        if i >= k:\n            count -= s[i - k] in vowels\n        best = max(best, count)\n    return best\n\n\nassert max_sum_k([2, 1, 5, 1, 3, 2], 3) == 9 and max_sum_k([4], 1) == 4\nassert find_anagrams(\"cbaebabacd\", \"abc\") == [0, 6] and find_anagrams(\"abab\", \"ab\") == [0, 1, 2]\nassert check_inclusion(\"ab\", \"eidbaooo\") and not check_inclusion(\"ab\", \"eidboaoo\")\nassert max_vowels(\"abciiidef\", 3) == 3 and max_vowels(\"leetcode\", 3) == 2\nprint(\"fixed windows ok\")",
+     "title": "WindowFixed.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "fixed windows ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-4",
+   "type": "concept",
+   "title": "Sliding Window: Variable Size",
+   "subtopicId": "18-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Expand `right` one element at a time; while the window violates the condition, shrink from `left`. Every element enters and leaves at most once, so the work is O(n) even though there is a loop inside a loop.\n\n**Signals.** \"Longest / shortest substring or subarray such that ...\" with a condition that is maintained incrementally and that becomes **false when the window grows** (or true when it shrinks)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import Counter, defaultdict\n\n\ndef min_subarray_len(target, nums):                    # positive numbers: shortest window with sum >= target\n    left, total, best = 0, 0, float(\"inf\")\n    for right, n in enumerate(nums):\n        total += n\n        while total >= target:\n            best = min(best, right - left + 1)\n            total -= nums[left]\n            left += 1\n    return 0 if best == float(\"inf\") else best\n\n\ndef longest_k_distinct(s, k):\n    counts, left, best = defaultdict(int), 0, 0\n    for right, ch in enumerate(s):\n        counts[ch] += 1\n        while len(counts) > k:                         # too many distinct characters: shrink\n            counts[s[left]] -= 1\n            if counts[s[left]] == 0:\n                del counts[s[left]]\n            left += 1\n        best = max(best, right - left + 1)\n    return best\n\n\ndef character_replacement(s, k):\n    \"\"\"Longest substring that becomes one repeated letter with at most k replacements.\"\"\"\n    counts, left, best, top = Counter(), 0, 0, 0\n    for right, ch in enumerate(s):\n        counts[ch] += 1\n        top = max(top, counts[ch])                     # the most frequent letter seen in any window so far\n        while (right - left + 1) - top > k:\n            counts[s[left]] -= 1\n            left += 1\n        best = max(best, right - left + 1)\n    return best\n\n\ndef min_window(s, t):\n    need, missing, left = Counter(t), len(t), 0\n    best = (float(\"inf\"), 0, 0)\n    for right, ch in enumerate(s):\n        if need[ch] > 0:\n            missing -= 1\n        need[ch] -= 1\n        while missing == 0:                            # the window contains every needed character\n            if right - left + 1 < best[0]:\n                best = (right - left + 1, left, right + 1)\n            need[s[left]] += 1\n            if need[s[left]] > 0:\n                missing += 1\n            left += 1\n    return \"\" if best[0] == float(\"inf\") else s[best[1]:best[2]]\n\n\nassert min_subarray_len(7, [2, 3, 1, 2, 4, 3]) == 2 and min_subarray_len(100, [1, 2]) == 0\nassert longest_k_distinct(\"eceba\", 2) == 3 and longest_k_distinct(\"aa\", 1) == 2 and longest_k_distinct(\"\", 3) == 0\nassert character_replacement(\"AABABBA\", 1) == 4 and character_replacement(\"ABAB\", 2) == 4\nassert min_window(\"ADOBECODEBANC\", \"ABC\") == \"BANC\" and min_window(\"a\", \"aa\") == \"\" and min_window(\"a\", \"a\") == \"a\"\nprint(\"variable windows ok\")",
+     "title": "WindowVariable.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "variable windows ok",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "`left = 0; for right in range(n): add s[right]; while window is invalid: remove s[left]; left += 1; update the answer`. For \"longest\" you update after the shrink loop (the window is valid); for \"shortest\" you update inside the loop while it is valid. Say that distinction aloud: it shows you understand the pattern rather than a memorised solution.",
+     "title": "Template for a variable window"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-5",
+   "type": "concept",
+   "title": "Hash Map and Frequency Counting",
+   "subtopicId": "18-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Trade O(n) memory for O(1) lookups: store what you have seen, counts, first positions or complements, and the brute-force inner loop disappears."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import Counter\n\n\ndef longest_consecutive(nums):\n    \"\"\"O(n) by only starting a count at the beginning of a run (x - 1 is absent).\"\"\"\n    values, best = set(nums), 0\n    for x in values:\n        if x - 1 not in values:\n            end = x\n            while end + 1 in values:\n                end += 1\n            best = max(best, end - x + 1)\n    return best\n\n\ndef first_unique_char(s):\n    counts = Counter(s)\n    for i, ch in enumerate(s):\n        if counts[ch] == 1:\n            return i\n    return -1\n\n\ndef four_sum_count(a, b, c, d):\n    \"\"\"Pairs (A+B) in a map, then look up -(C+D): O(n^2) instead of O(n^4).\"\"\"\n    pair_sums = Counter(x + y for x in a for y in b)\n    return sum(pair_sums[-(x + y)] for x in c for y in d)\n\n\ndef is_isomorphic(s, t):\n    forward, backward = {}, {}\n    for a, b in zip(s, t):\n        if forward.setdefault(a, b) != b or backward.setdefault(b, a) != a:\n            return False\n    return True\n\n\ndef contains_nearby_duplicate(nums, k):\n    last = {}\n    for i, n in enumerate(nums):\n        if n in last and i - last[n] <= k:\n            return True\n        last[n] = i\n    return False\n\n\nassert longest_consecutive([100, 4, 200, 1, 3, 2]) == 4 and longest_consecutive([]) == 0 and longest_consecutive([0, 3, 7, 2, 5, 8, 4, 6, 0, 1]) == 9\nassert first_unique_char(\"leetcode\") == 0 and first_unique_char(\"loveleetcode\") == 2 and first_unique_char(\"aabb\") == -1\nassert four_sum_count([1, 2], [-2, -1], [-1, 2], [0, 2]) == 2\nassert is_isomorphic(\"egg\", \"add\") and not is_isomorphic(\"foo\", \"bar\") and not is_isomorphic(\"ab\", \"aa\")\nassert contains_nearby_duplicate([1, 2, 3, 1], 3) and not contains_nearby_duplicate([1, 2, 3, 1, 2, 3], 2)\nprint(\"hash maps ok\")",
+     "title": "HashMaps.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "hash maps ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Question | Store in the map |\n| --- | --- |\n| \"Have I seen the complement?\" (two-sum) | value to index |\n| \"How many times?\" | element to count (`Counter`) |\n| \"Where did I first see this?\" | element or prefix sum to first index |\n| \"Are these two things the same shape?\" | a canonical key: sorted letters, tuple of counts, normalised tuple |\n| \"Is this in the set?\" | a `set`, for O(1) membership |"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-6",
+   "type": "concept",
+   "title": "Binary Search on Sorted Data",
+   "subtopicId": "18-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Halve the search space each step by comparing the middle element: O(log n). The core skill is maintaining a **loop invariant** and choosing the right boundary updates."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def search_rotated(nums, target):\n    \"\"\"Sorted array rotated at an unknown pivot: one half is always sorted.\"\"\"\n    lo, hi = 0, len(nums) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if nums[mid] == target:\n            return mid\n        if nums[lo] <= nums[mid]:                      # the left half is sorted\n            if nums[lo] <= target < nums[mid]:\n                hi = mid - 1\n            else:\n                lo = mid + 1\n        else:                                          # the right half is sorted\n            if nums[mid] < target <= nums[hi]:\n                lo = mid + 1\n            else:\n                hi = mid - 1\n    return -1\n\n\ndef find_min_rotated(nums):\n    lo, hi = 0, len(nums) - 1\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if nums[mid] > nums[hi]:\n            lo = mid + 1                               # the minimum is to the right of mid\n        else:\n            hi = mid                                   # mid could be the minimum\n    return nums[lo]\n\n\ndef find_peak(nums):\n    lo, hi = 0, len(nums) - 1\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if nums[mid] < nums[mid + 1]:\n            lo = mid + 1                               # climb to the right\n        else:\n            hi = mid\n    return lo\n\n\ndef search_matrix(matrix, target):                     # rows and columns sorted: treat it as one sorted list\n    rows, cols = len(matrix), len(matrix[0])\n    lo, hi = 0, rows * cols - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        value = matrix[mid // cols][mid % cols]\n        if value == target:\n            return True\n        if value < target:\n            lo = mid + 1\n        else:\n            hi = mid - 1\n    return False\n\n\nassert search_rotated([4, 5, 6, 7, 0, 1, 2], 0) == 4 and search_rotated([4, 5, 6, 7, 0, 1, 2], 3) == -1 and search_rotated([1], 0) == -1\nassert find_min_rotated([3, 4, 5, 1, 2]) == 1 and find_min_rotated([11, 13, 15, 17]) == 11 and find_min_rotated([2, 1]) == 1\nassert find_peak([1, 2, 3, 1]) == 2 and find_peak([1]) == 0 and find_peak([1, 2, 1, 3, 5, 6, 4]) in (1, 5)\nassert search_matrix([[1, 3, 5, 7], [10, 11, 16, 20], [23, 30, 34, 60]], 3) and not search_matrix([[1, 3, 5, 7], [10, 11, 16, 20], [23, 30, 34, 60]], 13)\nprint(\"binary search ok\")",
+     "title": "BinarySearch.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "binary search ok",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Find an exact value**: `while lo <= hi`, `mid = (lo + hi) // 2`, move with `mid + 1` and `mid - 1`; return inside the loop, `-1` after it.\n- **Find a boundary** (first true, minimum): `while lo < hi`, `hi = mid` when `mid` could be the answer, `lo = mid + 1` otherwise; the answer is `lo` after the loop.\n- Python integers never overflow, so `(lo + hi) // 2` is safe (in Java use `lo + (hi - lo) / 2`).",
+     "title": "Two loop shapes"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-7",
+   "type": "concept",
+   "title": "Binary Search on the Answer",
+   "subtopicId": "18-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** When you are asked for the **smallest (or largest) value that makes a condition true**, and the condition is **monotonic** (once true, it stays true as the value increases), binary search the value itself. You need a `feasible(x)` function; the search range is the possible answers.\n\n**Signals.** \"Minimum capacity / speed / time such that ...\", \"maximise the minimum\", \"split into k parts to minimise the largest sum\"."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import math\n\n\ndef first_true(lo, hi, feasible):\n    \"\"\"Smallest x in [lo, hi] with feasible(x) True, assuming feasible is monotonic (False...False True...True).\"\"\"\n    while lo < hi:\n        mid = (lo + hi) // 2\n        if feasible(mid):\n            hi = mid\n        else:\n            lo = mid + 1\n    return lo\n\n\ndef min_eating_speed(piles, hours):                    # Koko eating bananas\n    return first_true(1, max(piles), lambda speed: sum(math.ceil(p / speed) for p in piles) <= hours)\n\n\ndef ship_within_days(weights, days):\n    def can_ship(capacity):\n        needed, load = 1, 0\n        for w in weights:\n            if load + w > capacity:\n                needed, load = needed + 1, 0\n            load += w\n        return needed <= days\n    return first_true(max(weights), sum(weights), can_ship)\n\n\ndef split_array_largest_sum(nums, k):\n    def can_split(limit):\n        parts, current = 1, 0\n        for n in nums:\n            if current + n > limit:\n                parts, current = parts + 1, 0\n            current += n\n        return parts <= k\n    return first_true(max(nums), sum(nums), can_split)\n\n\ndef integer_sqrt(x):\n    return first_true(0, x, lambda r: (r + 1) * (r + 1) > x)       # the first r whose next square exceeds x\n\n\nassert min_eating_speed([3, 6, 7, 11], 8) == 4 and min_eating_speed([30, 11, 23, 4, 20], 5) == 30\nassert ship_within_days([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5) == 15 and ship_within_days([3, 2, 2, 4, 1, 4], 3) == 6\nassert split_array_largest_sum([7, 2, 5, 10, 8], 2) == 18\nassert [integer_sqrt(n) for n in (0, 1, 8, 16, 99)] == [0, 1, 2, 4, 9]\nprint(\"binary search on the answer ok\")",
+     "title": "BinaryAnswer.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "binary search on the answer ok",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The recipe: (1) decide what the answer is a number of; (2) bound it (`lo` = smallest possible, `hi` = largest); (3) write `feasible(x)` as an O(n) greedy check; (4) run `first_true`. Total cost is O(n log range)."
+    }
+   ]
+  },
+  {
+   "id": "ch-18-8",
+   "type": "concept",
+   "title": "Sorting-Based Problems and Intervals",
+   "subtopicId": "18-8",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** Sorting (O(n log n)) often turns a hard-looking problem into a linear scan: after sorting by start time, only neighbouring intervals can overlap. For \"how many resources are needed at once\", a min-heap of end times does the bookkeeping."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import heapq\nfrom bisect import bisect_left\n\n\ndef insert_interval(intervals, new):\n    result, i, n = [], 0, len(intervals)\n    while i < n and intervals[i][1] < new[0]:          # entirely before\n        result.append(intervals[i]); i += 1\n    while i < n and intervals[i][0] <= new[1]:         # overlapping: absorb into new\n        new = [min(new[0], intervals[i][0]), max(new[1], intervals[i][1])]; i += 1\n    result.append(new)\n    return result + intervals[i:]                      # entirely after\n\n\ndef min_meeting_rooms(meetings):\n    rooms = []                                         # min-heap of end times of rooms in use\n    for start, end in sorted(meetings):\n        if rooms and rooms[0] <= start:\n            heapq.heapreplace(rooms, end)              # reuse the room that frees up first\n        else:\n            heapq.heappush(rooms, end)                 # need one more room\n    return len(rooms)\n\n\ndef erase_overlap_intervals(intervals):\n    \"\"\"Minimum removals so none overlap: greedy, keep the interval that ends earliest.\"\"\"\n    removed, last_end = 0, float(\"-inf\")\n    for start, end in sorted(intervals, key=lambda iv: iv[1]):\n        if start >= last_end:\n            last_end = end\n        else:\n            removed += 1\n    return removed\n\n\ndef can_attend_all(meetings):\n    ordered = sorted(meetings)\n    return all(a[1] <= b[0] for a, b in zip(ordered, ordered[1:]))\n\n\ndef kth_largest(nums, k):\n    return sorted(nums, reverse=True)[k - 1]           # O(n log n); a heap or quickselect improves it (Part 5)\n\n\nassert insert_interval([[1, 3], [6, 9]], [2, 5]) == [[1, 5], [6, 9]]\nassert insert_interval([[1, 2], [3, 5], [6, 7], [8, 10], [12, 16]], [4, 8]) == [[1, 2], [3, 10], [12, 16]]\nassert min_meeting_rooms([[0, 30], [5, 10], [15, 20]]) == 2 and min_meeting_rooms([[7, 10], [2, 4]]) == 1\nassert erase_overlap_intervals([[1, 2], [2, 3], [3, 4], [1, 3]]) == 1 and erase_overlap_intervals([[1, 2], [1, 2], [1, 2]]) == 2\nassert can_attend_all([[7, 10], [2, 4]]) and not can_attend_all([[0, 30], [5, 10]])\nassert kth_largest([3, 2, 1, 5, 6, 4], 2) == 5\nprint(\"intervals ok\")",
+     "title": "Intervals.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "intervals ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-9",
+   "type": "concept",
+   "title": "Kadane, Greedy Scans and In-Place Tricks",
+   "subtopicId": "18-9",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Idea.** One pass with a couple of variables carrying the best answer so far; or rearranging the array in place with swaps, reversals and pointers, in O(1) extra space."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def max_profit(prices):                                # buy once, sell once\n    low, best = float(\"inf\"), 0\n    for p in prices:\n        low = min(low, p)\n        best = max(best, p - low)\n    return best\n\n\ndef can_jump(nums):                                    # greedy: the furthest index reachable so far\n    reach = 0\n    for i, jump in enumerate(nums):\n        if i > reach:\n            return False\n        reach = max(reach, i + jump)\n    return True\n\n\ndef jump_game_ii(nums):                                # minimum jumps: BFS by \"layers\" of reachable indexes\n    jumps, current_end, farthest = 0, 0, 0\n    for i in range(len(nums) - 1):\n        farthest = max(farthest, i + nums[i])\n        if i == current_end:\n            jumps, current_end = jumps + 1, farthest\n    return jumps\n\n\ndef sort_colors(nums):                                 # Dutch national flag: three regions, one pass\n    low, mid, high = 0, 0, len(nums) - 1\n    while mid <= high:\n        if nums[mid] == 0:\n            nums[low], nums[mid] = nums[mid], nums[low]\n            low, mid = low + 1, mid + 1\n        elif nums[mid] == 1:\n            mid += 1\n        else:\n            nums[mid], nums[high] = nums[high], nums[mid]\n            high -= 1                                  # do not advance mid: the swapped-in value is unchecked\n\n\ndef rotate(nums, k):                                   # rotate right by k in place: reverse all, then the two parts\n    n = len(nums)\n    k %= n\n\n    def reverse(i, j):\n        while i < j:\n            nums[i], nums[j] = nums[j], nums[i]\n            i, j = i + 1, j - 1\n\n    reverse(0, n - 1); reverse(0, k - 1); reverse(k, n - 1)\n\n\ndef majority_element(nums):                            # Boyer-Moore voting: O(1) space\n    candidate, count = None, 0\n    for n in nums:\n        if count == 0:\n            candidate = n\n        count += 1 if n == candidate else -1\n    return candidate\n\n\nassert max_profit([7, 1, 5, 3, 6, 4]) == 5 and max_profit([7, 6, 4, 3, 1]) == 0\nassert can_jump([2, 3, 1, 1, 4]) and not can_jump([3, 2, 1, 0, 4])\nassert jump_game_ii([2, 3, 1, 1, 4]) == 2 and jump_game_ii([2, 3, 0, 1, 4]) == 2 and jump_game_ii([0]) == 0\ncolors = [2, 0, 2, 1, 1, 0]\nsort_colors(colors)\nassert colors == [0, 0, 1, 1, 2, 2]\nrotated = [1, 2, 3, 4, 5, 6, 7]\nrotate(rotated, 3)\nassert rotated == [5, 6, 7, 1, 2, 3, 4]\nassert majority_element([2, 2, 1, 1, 1, 2, 2]) == 2\nprint(\"greedy scans ok\")",
+     "title": "Scans.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "greedy scans ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-18-10",
+   "type": "concept",
+   "title": "Matrix and String Patterns",
+   "subtopicId": "18-10",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def spiral_order(matrix):\n    result = []\n    top, bottom, left, right = 0, len(matrix) - 1, 0, len(matrix[0]) - 1\n    while top <= bottom and left <= right:\n        result += matrix[top][left:right + 1]\n        result += [matrix[r][right] for r in range(top + 1, bottom + 1)]\n        if top < bottom:\n            result += matrix[bottom][left:right][::-1]\n        if left < right:\n            result += [matrix[r][left] for r in range(bottom - 1, top, -1)]\n        top, bottom, left, right = top + 1, bottom - 1, left + 1, right - 1\n    return result\n\n\ndef rotate_image(matrix):                              # 90 degrees clockwise in place: transpose, then reverse each row\n    n = len(matrix)\n    for i in range(n):\n        for j in range(i + 1, n):\n            matrix[i][j], matrix[j][i] = matrix[j][i], matrix[i][j]\n    for row in matrix:\n        row.reverse()\n\n\ndef set_zeroes(matrix):                                # O(m + n) marker sets (O(1) space versions use the first row/column)\n    zero_rows = {i for i, row in enumerate(matrix) if 0 in row}\n    zero_cols = {j for row in matrix for j, v in enumerate(row) if v == 0}\n    for i in range(len(matrix)):\n        for j in range(len(matrix[0])):\n            if i in zero_rows or j in zero_cols:\n                matrix[i][j] = 0\n\n\ndef longest_palindrome(s):                             # expand around each centre: O(n^2) time, O(1) space\n    best = \"\"\n    for centre in range(len(s)):\n        for lo, hi in ((centre, centre), (centre, centre + 1)):      # odd and even lengths\n            while lo >= 0 and hi < len(s) and s[lo] == s[hi]:\n                lo, hi = lo - 1, hi + 1\n            if hi - lo - 1 > len(best):\n                best = s[lo + 1:hi]\n    return best\n\n\ndef kmp_search(text, pattern):                         # O(n + m): never re-reads text characters\n    if not pattern:\n        return 0\n    lps, length = [0] * len(pattern), 0                # longest proper prefix that is also a suffix\n    for i in range(1, len(pattern)):\n        while length and pattern[i] != pattern[length]:\n            length = lps[length - 1]\n        if pattern[i] == pattern[length]:\n            length += 1\n        lps[i] = length\n    j = 0\n    for i, ch in enumerate(text):\n        while j and ch != pattern[j]:\n            j = lps[j - 1]\n        if ch == pattern[j]:\n            j += 1\n        if j == len(pattern):\n            return i - j + 1\n    return -1\n\n\ndef compress(chars):\n    out, i = [], 0\n    while i < len(chars):\n        j = i\n        while j < len(chars) and chars[j] == chars[i]:\n            j += 1\n        out.append(chars[i] + (str(j - i) if j - i > 1 else \"\"))\n        i = j\n    return \"\".join(out)\n\n\ngrid = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]\nassert spiral_order(grid) == [1, 2, 3, 6, 9, 8, 7, 4, 5] and spiral_order([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]) == [1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7]\nrotate_image(grid)\nassert grid == [[7, 4, 1], [8, 5, 2], [9, 6, 3]]\nzeros = [[1, 1, 1], [1, 0, 1], [1, 1, 1]]\nset_zeroes(zeros)\nassert zeros == [[1, 0, 1], [0, 0, 0], [1, 0, 1]]\nassert longest_palindrome(\"babad\") in (\"bab\", \"aba\") and longest_palindrome(\"cbbd\") == \"bb\" and longest_palindrome(\"a\") == \"a\"\nassert kmp_search(\"hello world\", \"o w\") == 4 and kmp_search(\"aaaaab\", \"aab\") == 3 and kmp_search(\"abc\", \"d\") == -1 and kmp_search(\"abc\", \"\") == 0\nassert compress(\"aabcccccaaa\") == \"a2bc5a3\"\nprint(\"matrix and strings ok\")",
+     "title": "MatrixStrings.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "matrix and strings ok",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Prefix Sum and Difference Array"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why can't a sliding window solve \"subarrays with sum k\" when numbers can be negative?",
+       "answer": "A window relies on monotonic behaviour (growing it increases the sum, shrinking decreases it). Negative numbers break that, so you cannot decide which end to move. Prefix sums with a hash map make no such assumption."
+      },
+      {
+       "question": "When do you use a difference array?",
+       "answer": "When there are many range updates (\"add x to every element from i to j\") and the array is read only afterwards: each update is O(1) and one final pass reconstructs everything in O(n), instead of O(n) per update."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Two Pointers"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does the two-pointer approach to two-sum need a sorted array?",
+       "answer": "Sortedness tells you which pointer to move: if the sum is too small only moving the left pointer can increase it; if too big only moving the right can decrease it. Without order, that decision has no justification."
+      },
+      {
+       "question": "How do you handle duplicates in 3Sum?",
+       "answer": "Sort, skip equal values for the first element (`nums[i] == nums[i-1]`), and after recording a triple advance the left pointer past equal values. Otherwise the same triple is reported many times."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Sliding Window: Fixed Size"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between a fixed and a variable sliding window?",
+       "answer": "A fixed window has a given length k, so it moves one element in and one out per step. A variable window changes size to satisfy a condition (the longest or shortest window that is valid), expanding the right end and shrinking the left end as needed."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Sliding Window: Variable Size"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is a sliding window O(n) even though it has a `while` inside a `for`?",
+       "answer": "`left` and `right` each move forward at most n times in total and never go back, so the inner loop's total iterations across the whole outer loop are at most n. The cost is 2n, not n²."
+      },
+      {
+       "question": "When does the sliding window technique fail?",
+       "answer": "When the condition is not monotonic with window size, for example sums with negative numbers (growing the window can decrease the sum). Use prefix sums with a hash map, or DP, instead."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Hash Map and Frequency Counting"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why is `longest_consecutive` O(n) and not O(n²) despite the inner `while`?",
+       "answer": "The inner loop runs only for the first number of each run (those with no predecessor in the set), and each number belongs to exactly one run, so every element is stepped over once in total."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Binary Search on Sorted Data"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you find the minimum in a rotated sorted array in O(log n)?",
+       "answer": "Compare `nums[mid]` with `nums[hi]`: if mid is larger, the minimum lies right of mid (`lo = mid + 1`); otherwise it is at mid or to its left (`hi = mid`). Loop while `lo < hi`."
+      },
+      {
+       "question": "What is the invariant of a binary search for an exact value?",
+       "answer": "If the target is present, it lies in `nums[lo..hi]`. Each step discards half the range that cannot contain it, so the range shrinks until it is found or empty."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Binary Search on the Answer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you know a problem can be solved by binary searching the answer?",
+       "answer": "The answer is a number in a known range and feasibility is monotonic: if value x works, every larger (or smaller) value works too. Then \"find the minimum feasible x\" is a boundary search, and checking feasibility is usually a simple greedy pass."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Sorting-Based Problems and Intervals"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why do you sort intervals by start time to merge, but by end time to maximise the number kept?",
+       "answer": "To merge, you scan left to right and only the previous merged interval can overlap the next start, so order by start. To keep as many non-overlapping intervals as possible, the interval that **ends earliest** leaves the most room for the rest (the classic exchange argument), so order by end."
+      },
+      {
+       "question": "How does a heap solve \"minimum meeting rooms\"?",
+       "answer": "Process meetings by start time and keep a min-heap of the end times of rooms in use. If the earliest-ending room is free by the new start, reuse it; otherwise add a room. The heap size at the end is the answer: O(n log n)."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Kadane, Greedy Scans and In-Place Tricks"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does Kadane's algorithm work?",
+       "answer": "The best subarray ending at position i is either the element alone or the best ending at i-1 plus the element; if the running sum goes negative it can only hurt, so restart. Tracking the best seen over all i gives the answer in O(n)."
+      },
+      {
+       "question": "In the Dutch national flag partition, why isn't `mid` advanced after swapping with `high`?",
+       "answer": "The value that arrives from the high end has not been examined yet and could be 0 or 2, so it must be processed on the next iteration. After swapping with `low`, the value that arrives is known to be 1, so `mid` can advance."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Matrix and String Patterns"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does rotating a matrix 90 degrees clockwise equal \"transpose, then reverse each row\"?",
+       "answer": "A transpose swaps rows and columns (element (i, j) goes to (j, i)); reversing each row then maps (j, i) to (j, n-1-i), which is exactly the clockwise rotation of (i, j). It uses O(1) extra space."
+      },
+      {
+       "question": "What problem does KMP solve and what is its key idea?",
+       "answer": "Substring search in O(n + m) instead of O(nm). It precomputes for each prefix of the pattern the length of the longest proper prefix that is also a suffix (the failure function), so after a mismatch the pattern pointer jumps back to that length instead of restarting, and the text pointer never moves backwards."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

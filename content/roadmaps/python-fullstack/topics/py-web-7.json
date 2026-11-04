@@ -1,0 +1,295 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-30-1",
+   "type": "concept",
+   "title": "ASGI From Scratch",
+   "subtopicId": "30-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "FastAPI is a thin layer on **Starlette**, which is a thin layer on **ASGI**. Understanding ASGI removes the magic: a web application is just **an async callable that receives a `scope` and two channels, `receive` and `send`**."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import asyncio\nimport json\n\nimport httpx\n\n\nasync def app(scope, receive, send):\n    if scope[\"type\"] == \"lifespan\":                                    # the server tells the app when it starts and stops\n        while True:\n            message = await receive()\n            if message[\"type\"] == \"lifespan.startup\":\n                await send({\"type\": \"lifespan.startup.complete\"})\n            elif message[\"type\"] == \"lifespan.shutdown\":\n                await send({\"type\": \"lifespan.shutdown.complete\"})\n                return\n\n    assert scope[\"type\"] == \"http\"                                      # also \"websocket\" for WebSocket connections\n    body = b\"\"\n    while True:                                                         # the request body arrives as one or more events\n        message = await receive()\n        body += message.get(\"body\", b\"\")\n        if not message.get(\"more_body\"):\n            break\n\n    payload = {\"method\": scope[\"method\"], \"path\": scope[\"path\"], \"query\": scope[\"query_string\"].decode(),\n               \"headers\": {k.decode(): v.decode() for k, v in scope[\"headers\"] if k == b\"x-demo\"}, \"body\": body.decode()}\n    data = json.dumps(payload).encode()\n    await send({\"type\": \"http.response.start\", \"status\": 200, \"headers\": [(b\"content-type\", b\"application/json\"), (b\"content-length\", str(len(data)).encode())]})\n    await send({\"type\": \"http.response.body\", \"body\": data})\n\n\nasync def main():\n    transport = httpx.ASGITransport(app=app)                            # httpx can call an ASGI app in-process: no server needed\n    async with httpx.AsyncClient(transport=transport, base_url=\"http://test\") as client:\n        response = await client.post(\"/hello?x=1\", content=b\"ping\", headers={\"X-Demo\": \"yes\"})\n        print(response.status_code, response.headers[\"content-type\"])\n        print(response.json())\n\n\nasyncio.run(main())",
+     "title": "RawAsgi.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "200 application/json\n{'method': 'POST', 'path': '/hello', 'query': 'x=1', 'headers': {'x-demo': 'yes'}, 'body': 'ping'}",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Everything a framework does is built on those events:\n\n| Piece | What it is |\n| --- | --- |\n| **`scope`** | A dictionary describing the connection: `type` (`http`, `websocket`, `lifespan`), `method`, `path`, `query_string`, `headers` (a list of byte pairs), `client`, `server`, and anything middleware adds |\n| **`receive()`** | An awaitable returning events from the client: `http.request` (body chunks), `http.disconnect`, `websocket.receive` |\n| **`send(event)`** | Sends events to the client: `http.response.start` (status, headers), then `http.response.body` (chunks; `more_body` for streaming) |\n| **lifespan** | A special connection that carries start-up and shutdown, which is what `FastAPI(lifespan=...)` plugs into |\n| **Server** | Uvicorn, Hypercorn or Granian: parses HTTP off the socket, builds the scope, calls `await app(scope, receive, send)` for every request |\n\n### Middleware is just a wrapper around an ASGI app"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import asyncio\nimport time\n\nimport httpx\nfrom fastapi import FastAPI\n\n\nclass TimingMiddleware:\n    \"\"\"A PURE ASGI middleware: wraps send() to add a header. Faster and safer than BaseHTTPMiddleware.\"\"\"\n\n    def __init__(self, app):\n        self.app = app\n\n    async def __call__(self, scope, receive, send):\n        if scope[\"type\"] != \"http\":                                      # pass websockets and lifespan straight through\n            await self.app(scope, receive, send)\n            return\n        started = time.perf_counter()\n\n        async def send_with_header(message):\n            if message[\"type\"] == \"http.response.start\":\n                headers = list(message.get(\"headers\", []))\n                headers.append((b\"x-handled-by\", b\"pure-asgi\"))\n                message = {**message, \"headers\": headers}\n            await send(message)\n\n        await self.app(scope, receive, send_with_header)\n\n\napp = FastAPI()\napp.add_middleware(TimingMiddleware)\n\n\n@app.get(\"/ping\")\nasync def ping():\n    return {\"pong\": True}\n\n\nasync def main():\n    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=\"http://test\") as client:\n        response = await client.get(\"/ping\")\n        print(response.json(), response.headers[\"x-handled-by\"])\n        print(type(app.middleware_stack).__name__ if app.middleware_stack else \"built on first request\", app.user_middleware[0].cls.__name__)\n\n\nasyncio.run(main())",
+     "title": "AsgiMiddleware.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'pong': True} pure-asgi\nServerErrorMiddleware TimingMiddleware",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "`@app.middleware(\"http\")` (and `BaseHTTPMiddleware`) is convenient but wraps each request in extra machinery: it cannot be combined easily with streaming bodies, background tasks and some context-variable patterns. **Pure ASGI middleware** like the one above has none of those limits and is what high-quality libraries ship. Middleware order is outside-in for requests and inside-out for responses: the last one added is the outermost."
+    }
+   ]
+  },
+  {
+   "id": "ch-30-2",
+   "type": "concept",
+   "title": "Starlette and the FastAPI Request Lifecycle",
+   "subtopicId": "30-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Starlette** provides the routing, `Request`/`Response` objects, middleware, WebSockets, background tasks and the test client. **FastAPI** subclasses it and adds what makes it special: type-driven parameter parsing, dependency injection, Pydantic validation and OpenAPI generation. The life of one request:"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  S[\"Uvicorn: parse HTTP, build scope\"] --> M[\"Middleware stack<br/>(CORS, GZip, yours), outside in\"]\n  M --> R[\"Router: match method + path template\"]\n  R --> D[\"Solve dependencies<br/>(Depends graph, cached per request)\"]\n  D --> P[\"Parse and validate parameters<br/>path, query, headers, cookies, body (Pydantic)\"]\n  P --> E[\"Your endpoint function<br/>(async: on the loop; def: in a thread pool)\"]\n  E --> V[\"response_model: validate and filter, serialise\"]\n  V --> B[\"Run background tasks after sending\"]\n  V --> U[\"Middleware (inside out) then Uvicorn writes the response\"]\n  P -. \"invalid\" .-> X[\"RequestValidationError to 422 handler\"]\n  E -. \"exception\" .-> H[\"Exception handlers to error response\"]",
+     "title": "One request through FastAPI"
+    },
+    {
+     "type": "markdown",
+     "text": "You can look at what FastAPI built for an endpoint. Each route has a **dependant**: a tree describing every parameter and sub-dependency that FastAPI will resolve (this is internal API, so treat it as a debugging aid rather than something to build on):"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import Annotated\n\nfrom fastapi import Depends, FastAPI, Header, Query\nfrom fastapi.routing import APIRoute\nfrom fastapi.testclient import TestClient\nfrom pydantic import BaseModel\n\napp = FastAPI()\ntrace = []\n\n\ndef get_db():\n    trace.append(\"db open\")\n    yield \"db\"\n    trace.append(\"db close\")\n\n\ndef get_user(db: Annotated[str, Depends(get_db)], x_user: Annotated[str, Header()]):\n    trace.append(\"user\")\n    return x_user\n\n\ndef get_audit(db: Annotated[str, Depends(get_db)], user: Annotated[str, Depends(get_user)]):\n    trace.append(\"audit\")                                          # get_db is shared: it runs ONCE for this request\n    return f\"audit:{user}\"\n\n\nclass Order(BaseModel):\n    sku: str\n    qty: int = 1\n\n\n@app.post(\"/orders/{order_id}\")\ndef create(order_id: int, order: Order, audit: Annotated[str, Depends(get_audit)], note: Annotated[str | None, Query()] = None):\n    trace.append(\"endpoint\")\n    return {\"id\": order_id, \"order\": order, \"audit\": audit}\n\n\nroute = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == \"/orders/{order_id}\")\n\n\ndef show(dependant, depth=0):\n    kinds = {\"path\": [p.name for p in dependant.path_params], \"query\": [p.name for p in dependant.query_params],\n             \"header\": [p.name for p in dependant.header_params], \"body\": [p.name for p in dependant.body_params]}\n    print(\"  \" * depth + (getattr(dependant.call, \"__name__\", \"endpoint\") if dependant.call else \"root\"), {k: v for k, v in kinds.items() if v})\n    for sub in dependant.dependencies:\n        show(sub, depth + 1)\n\n\nshow(route.dependant)\nresponse = TestClient(app).post(\"/orders/5?note=x\", json={\"sku\": \"pen\"}, headers={\"X-User\": \"asha\"})\nprint(response.json(), trace)",
+     "title": "Lifecycle.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "create {'path': ['order_id'], 'query': ['note'], 'body': ['order']}\n  get_audit {}\n    get_db {}\n    get_user {'header': ['x_user']}\n      get_db {}\n{'id': 5, 'order': {'sku': 'pen', 'qty': 1}, 'audit': 'audit:asha'} ['db open', 'user', 'audit', 'endpoint', 'db close']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "What the output tells you: dependencies resolve **depth first**, a dependency used twice (`get_db`) is **executed once and shared** for the request (the cache), the `yield` clean-up runs **after** the endpoint, and the body model, path and query parameters are collected from the signature into one description that also feeds the OpenAPI schema."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "The `dependant` tree is why FastAPI's documentation, validation and parameter handling can never disagree: all three are generated from the same function signature. When behaviour surprises you (a parameter treated as a query instead of a body), look at the type annotation first, then print the dependant.",
+     "title": "A single source of truth"
+    }
+   ]
+  },
+  {
+   "id": "ch-30-3",
+   "type": "concept",
+   "title": "Pydantic v2 in Depth",
+   "subtopicId": "30-3",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import json\nfrom typing import Annotated, Generic, Literal, TypeVar, Union\n\nfrom pydantic import BaseModel, ConfigDict, Field, ValidationError, field_serializer, model_validator\n\nT = TypeVar(\"T\")\n\n\nclass Page(BaseModel, Generic[T]):                                    # a reusable generic response envelope\n    items: list[T]\n    total: int\n    page: int = 1\n\n\nclass Card(BaseModel):\n    kind: Literal[\"card\"]\n    last4: Annotated[str, Field(pattern=r\"^\\d{4}$\")]\n\n\nclass Upi(BaseModel):\n    kind: Literal[\"upi\"]\n    handle: str\n\n\nclass Payment(BaseModel):                                              # a DISCRIMINATED union: `kind` picks the model directly\n    method: Annotated[Union[Card, Upi], Field(discriminator=\"kind\")]\n    amount_paise: int\n\n\nclass Event(BaseModel):\n    model_config = ConfigDict(populate_by_name=True)\n    id: int\n    secret_token: str = Field(exclude=True)                           # never serialised\n\n    @field_serializer(\"id\")\n    def pad(self, value: int) -> str:\n        return f\"EV-{value:05d}\"\n\n\nprint(Page[int](items=[1, 2], total=2).model_dump(), Page[Card].model_json_schema()[\"properties\"][\"items\"][\"items\"][\"$ref\"])\n\nok = Payment.model_validate({\"method\": {\"kind\": \"upi\", \"handle\": \"asha@bank\"}, \"amount_paise\": 500})\nprint(type(ok.method).__name__, ok.model_dump(mode=\"json\"))\ntry:\n    Payment.model_validate({\"method\": {\"kind\": \"card\", \"last4\": \"12\"}, \"amount_paise\": 500})\nexcept ValidationError as error:\n    print(error.errors()[0][\"loc\"], error.errors()[0][\"type\"])        # the error names the chosen branch, not \"no union member matched\"\n\nevent = Event(id=7, secret_token=\"hidden\")\nprint(event.model_dump(), json.loads(event.model_dump_json()))\nprint(sorted(Payment.model_json_schema()[\"$defs\"]), Payment.model_json_schema()[\"properties\"][\"method\"][\"discriminator\"][\"propertyName\"])\n\n# model_construct skips validation: only for data you have ALREADY validated\ntrusted = Card.model_construct(kind=\"card\", last4=\"not-checked\")\nprint(trusted.last4, Card.model_fields[\"last4\"].annotation.__name__ if hasattr(Card.model_fields[\"last4\"].annotation, \"__name__\") else \"str\")",
+     "title": "PydanticDeep.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'items': [1, 2], 'total': 2, 'page': 1} #/$defs/Card\nUpi {'method': {'kind': 'upi', 'handle': 'asha@bank'}, 'amount_paise': 500}\n('method', 'card', 'last4') string_pattern_mismatch\n{'id': 'EV-00007'} {'id': 'EV-00007'}\n['Card', 'Upi'] kind\nnot-checked str",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Pydantic v2 features worth knowing for design discussions:\n\n- **Generic models** (`Page[T]`) give typed envelopes for lists; FastAPI documents each concrete form in OpenAPI.\n- **Discriminated unions** (`Field(discriminator=\"kind\")`) pick the right model from one field: faster, with precise errors, and they produce `oneOf` + `discriminator` in the schema for client generators.\n- **Serialisation is configurable**: `exclude`, `@field_serializer`, `mode=\"json\"` (turns `Decimal`, `datetime`, `UUID` into JSON-safe values), `by_alias`, `exclude_none`.\n- **`model_json_schema()`** gives the JSON Schema that OpenAPI embeds; it is a contract you can snapshot-test.\n- **Performance**: the validator is compiled once per model (Rust core). Avoid re-validating data you already validated, build models once at import time, use `TypeAdapter` for bulk validation of lists (`TypeAdapter(list[Order])`), and use `model_construct` only for trusted data."
+    }
+   ]
+  },
+  {
+   "id": "ch-30-4",
+   "type": "concept",
+   "title": "WebSockets, Streaming and Server-Sent Events",
+   "subtopicId": "30-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "HTTP request/response cannot push data. For live updates there are three options:\n\n| Mechanism | Direction | Use for |\n| --- | --- | --- |\n| **Polling** | client asks repeatedly | Simple, low-frequency updates |\n| **Server-sent events (SSE)** | server to client over one HTTP response | Notifications, progress, LLM token streams; works through proxies, auto-reconnect |\n| **WebSocket** | both directions, one persistent connection | Chat, collaboration, games, live dashboards |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import asyncio\n\nfrom fastapi import FastAPI, WebSocket, WebSocketDisconnect\nfrom fastapi.responses import StreamingResponse\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\n\n\nclass Room:\n    \"\"\"Tracks the live connections of one chat room.\"\"\"\n\n    def __init__(self):\n        self.members: dict[str, WebSocket] = {}\n\n    async def broadcast(self, text: str):\n        for socket in list(self.members.values()):\n            await socket.send_text(text)\n\n\nroom = Room()\n\n\n@app.websocket(\"/ws/{name}\")\nasync def chat(websocket: WebSocket, name: str):\n    await websocket.accept()\n    room.members[name] = websocket\n    await room.broadcast(f\"{name} joined\")\n    try:\n        while True:\n            text = await websocket.receive_text()                        # wait for the next message from this client\n            await room.broadcast(f\"{name}: {text}\")\n    except WebSocketDisconnect:\n        del room.members[name]                                           # always clean up on disconnect\n        await room.broadcast(f\"{name} left\")\n\n\nasync def events():\n    for i in range(3):\n        yield f\"data: tick {i}\\n\\n\"                                       # the SSE wire format: \"data: ...\", blank line between events\n        await asyncio.sleep(0)\n\n\n@app.get(\"/stream\")\nasync def stream():\n    return StreamingResponse(events(), media_type=\"text/event-stream\")\n\n\nclient = TestClient(app)\nwith client.websocket_connect(\"/ws/asha\") as asha:\n    print(asha.receive_text())\n    with client.websocket_connect(\"/ws/ravi\") as ravi:\n        print(ravi.receive_text(), \"|\", asha.receive_text())\n        ravi.send_text(\"hello everyone\")\n        print(asha.receive_text())\nprint(sorted(room.members))\nprint(client.get(\"/stream\").text.replace(\"\\n\\n\", \" | \"))",
+     "title": "Live.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "asha joined\nravi joined | ravi joined\nravi: hello everyone\n[]\ndata: tick 0 | data: tick 1 | data: tick 2 | ",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Production notes: a WebSocket server holds **one connection per client** for a long time, so check connection limits and idle timeouts at every proxy; authenticate during the handshake (a token in the first message or the query string over TLS) because browsers cannot set headers on `WebSocket`; and when you run **several workers or replicas**, a client on worker A cannot receive a message published on worker B, so fan out through **Redis pub/sub** (or a broker) instead of an in-process `Room`."
+    }
+   ]
+  },
+  {
+   "id": "ch-30-5",
+   "type": "concept",
+   "title": "HTTP Clients: httpx in Production",
+   "subtopicId": "30-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Services call other services, and the HTTP client is where most outages are born: missing timeouts, unbounded concurrency and no connection reuse. `httpx` provides sync and async clients with the same API."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import asyncio\n\nimport httpx\n\ncalls = {\"count\": 0}\n\n\ndef flaky_upstream(request: httpx.Request) -> httpx.Response:\n    calls[\"count\"] += 1\n    if request.url.path == \"/slow\":\n        raise httpx.ReadTimeout(\"upstream did not answer in time\", request=request)\n    if calls[\"count\"] <= 2:\n        return httpx.Response(503, json={\"error\": \"try again\"}, headers={\"Retry-After\": \"0\"})\n    return httpx.Response(200, json={\"ok\": True, \"attempt\": calls[\"count\"]})\n\n\nasync def get_with_retries(client: httpx.AsyncClient, url: str, attempts: int = 4):\n    for attempt in range(1, attempts + 1):\n        try:\n            response = await client.get(url)\n            if response.status_code not in (502, 503, 504):             # retry only transient server-side failures\n                return response\n        except (httpx.ConnectTimeout, httpx.ReadTimeout):\n            pass\n        await asyncio.sleep(0.01 * 2 ** attempt)                        # exponential backoff (add jitter in real code)\n    raise RuntimeError(f\"gave up after {attempts} attempts\")\n\n\nasync def main():\n    timeout = httpx.Timeout(5.0, connect=2.0, pool=1.0)                  # separate limits for connect, read/write and pool wait\n    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)\n    async with httpx.AsyncClient(base_url=\"https://api.test\", timeout=timeout, limits=limits, transport=httpx.MockTransport(flaky_upstream),\n                                 headers={\"User-Agent\": \"shop-api/1.0\"}) as client:\n        response = await get_with_retries(client, \"/items\")\n        print(response.status_code, response.json(), \"calls:\", calls[\"count\"])\n\n        try:\n            await client.get(\"/slow\")\n        except httpx.ReadTimeout as error:\n            print(type(error).__name__, \"->\", error)\n\n        results = await asyncio.gather(*(client.get(f\"/items?page={i}\") for i in range(3)))\n        print([r.status_code for r in results], client.timeout.connect, client.timeout.read)\n\n\nasyncio.run(main())",
+     "title": "HttpxDeep.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "200 {'ok': True, 'attempt': 3} calls: 3\nReadTimeout -> upstream did not answer in time\n[200, 200, 200] 2.0 5.0",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Practice | Why |\n| --- | --- |\n| **One long-lived client** per upstream (created at start-up in `lifespan`) | Connection pooling and keep-alive; a client per request pays TCP and TLS every time |\n| **Explicit timeouts** (connect, read, write, pool) | The default of \"wait forever\" turns one slow dependency into an outage for everyone |\n| **Retry only idempotent, transient failures** with exponential backoff and jitter, and a **retry budget** | Retrying `POST` payments or retrying a struggling server in lockstep makes things worse |\n| **Limit concurrency** (`httpx.Limits`, a semaphore) | Protects the upstream and your own connection pool |\n| **Circuit breaker** around calls to unreliable services (Part 11) | Fail fast instead of piling up waiting requests |\n| **Propagate correlation IDs and deadlines** | Debuggable, bounded calls across services |\n| **Test with `MockTransport` / `ASGITransport`** | No network in tests, and failure modes (timeouts, 503s) are easy to simulate |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`requests` is synchronous: calling it from `async def` blocks the loop. In async services use `httpx.AsyncClient` (or `aiohttp`); in sync services (Django, Flask, `def` endpoints) `requests` or `httpx.Client` is fine. Whichever you use, set a timeout: `requests.get(url)` has **no** timeout by default.",
+     "title": "requests inside async code"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### ASGI From Scratch"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What are `scope`, `receive` and `send` in ASGI?",
+       "answer": "`scope` is a dict describing the connection (type, method, path, headers); `receive` is an async function that yields incoming events (request body chunks, disconnects); `send` is an async function the app calls with outgoing events (response start with status and headers, then body chunks). An ASGI app is `async def app(scope, receive, send)`."
+      },
+      {
+       "question": "Why is pure ASGI middleware preferred over `BaseHTTPMiddleware` in libraries?",
+       "answer": "It wraps the raw callables without copying the request or response through extra streams, supports websockets and streaming correctly, and avoids known issues with background tasks and context variables. `BaseHTTPMiddleware` is easier to write for application code but has these limitations."
+      },
+      {
+       "question": "How does a server like Uvicorn relate to the framework?",
+       "answer": "Uvicorn owns the socket and the HTTP protocol: it parses requests, builds the ASGI scope and calls the application for each connection, writing back whatever events the app sends. The framework only implements the ASGI interface, so servers and frameworks are interchangeable."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Starlette and the FastAPI Request Lifecycle"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does FastAPI avoid running the same dependency twice in one request?",
+       "answer": "It caches each dependency's result per request by the callable (`use_cache=True` by default), so `get_db` used by several sub-dependencies runs once and they all receive the same object. Pass `Depends(fn, use_cache=False)` to force a fresh call."
+      },
+      {
+       "question": "In which order are dependencies and their clean-up executed?",
+       "answer": "Depth first, parents before children: a dependency's own dependencies are resolved before it runs. `yield` dependencies clean up in reverse order after the endpoint has produced its response."
+      },
+      {
+       "question": "Where do validation errors and exceptions go?",
+       "answer": "Parameter and body validation failures raise `RequestValidationError`, handled by the 422 exception handler. Exceptions from your code go to registered handlers (`HTTPException`, your own types) or become a 500 response through the server's error middleware."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Pydantic v2 in Depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why use a discriminated union instead of a plain `Union[A, B]`?",
+       "answer": "The discriminator field tells Pydantic which model to validate against, so validation is faster, errors point at the chosen model's fields instead of listing failures for every member, and the OpenAPI schema carries the discriminator so generated clients can model it."
+      },
+      {
+       "question": "What does `model_construct` do and why is it dangerous?",
+       "answer": "It builds a model instance **without validation** or coercion, which is faster but means invalid or unconverted data can sit inside a \"typed\" object. Use it only for data you have just validated or loaded from a trusted store."
+      },
+      {
+       "question": "How do you stop a field from appearing in responses?",
+       "answer": "Use `Field(exclude=True)` on the model, a `response_model` that does not declare it, or `response_model_exclude`. Prefer separate read schemas that simply do not contain sensitive fields."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### WebSockets, Streaming and Server-Sent Events"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When do you choose SSE over WebSockets?",
+       "answer": "When data flows only from server to client (notifications, progress bars, streaming text): SSE is plain HTTP, passes proxies easily, reconnects automatically and is simpler to scale. Use WebSockets when the client also sends frequent messages, as in chat or collaborative editing."
+      },
+      {
+       "question": "How do you scale WebSocket broadcasts across multiple server processes?",
+       "answer": "Each process only knows its own connections, so publish messages to a shared channel (Redis pub/sub or Streams, a message broker) and have every process forward them to its local connections."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### HTTP Clients: httpx in Production"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why should an HTTP client be created once and reused?",
+       "answer": "It keeps a pool of open connections (and negotiated TLS sessions), so later requests skip the TCP and TLS handshakes. Creating a client per request is slow and can exhaust sockets and file descriptors."
+      },
+      {
+       "question": "What timeouts should every outbound call have?",
+       "answer": "At least connect and read timeouts (httpx also has write and pool timeouts), set deliberately below your own request deadline so a slow dependency fails fast and cannot hold your worker. A call without a timeout can wait forever."
+      },
+      {
+       "question": "Which failures are safe to retry?",
+       "answer": "Network errors and 502/503/504 on **idempotent** operations (GET, PUT, DELETE, or POST with an idempotency key), with exponential backoff, jitter and a cap. Never blindly retry non-idempotent operations or 4xx client errors."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

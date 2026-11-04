@@ -1,0 +1,237 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-28-1",
+   "type": "concept",
+   "title": "Plan and Scaffold",
+   "subtopicId": "28-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Build a small library-lending service the way you would at work: requirements first, then a data model, endpoints, business rules, security and tests.\n\n**Requirements**\n\n| Actor | Can do |\n| --- | --- |\n| Anyone | List and search books, see how many copies are available |\n| Member (logged in) | Borrow a book, return it, see their own loans |\n| Librarian (logged in) | Add books, see all loans |\n\n**Business rules** (these are what interviews and code reviews ask about):\n\n1. A member may have at most **3 active loans**.\n2. A member cannot borrow a book they already have, and cannot borrow when **no copy is available**.\n3. A loan lasts **14 days**; returning late costs **2 per day** overdue.\n4. A member sees and returns **only their own** loans; a librarian sees all.\n5. ISBNs are unique; invalid input returns **422**, business-rule violations **409**, missing things **404**, bad credentials **401**, missing role **403**.\n\n**Data model**"
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "erDiagram\n  USER ||--o{ LOAN : borrows\n  BOOK ||--o{ LOAN : \"is lent in\"\n  USER { int id PK\n         string email UK\n         string password_hash\n         string role }\n  BOOK { int id PK\n         string title\n         string author\n         string isbn UK\n         int copies }\n  LOAN { int id PK\n         int book_id FK\n         int user_id FK\n         date loaned_on\n         date due_on\n         date returned_on }",
+     "title": "Library data model"
+    },
+    {
+     "type": "markdown",
+     "text": "**Endpoints**\n\n| Method and path | Role | Result |\n| --- | --- | --- |\n| `POST /auth/login` | public | access token (JWT) |\n| `GET /books?q=&limit=&offset=` | public | books with `available` count |\n| `POST /books` | librarian | 201 + the book; 409 duplicate ISBN |\n| `POST /loans` (`{\"book_id\": 1}`) | member | 201 + the loan |\n| `POST /loans/{id}/return` | owner or librarian | the loan and the late fee |\n| `GET /loans/mine` | member | the caller's loans |\n| `GET /loans` | librarian | every loan |\n\n**Layers and files** (in a real repository each section of the single-file program below is its own module):"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "library-api/\n  pyproject.toml\n  src/library/\n    main.py            # create_app(): routers, exception handlers, lifespan\n    config.py          # Settings (secret, loan rules)\n    db.py              # engine, SessionLocal, get_session\n    models.py          # User, Book, Loan\n    schemas.py         # BookIn, BookOut, LoanOut, Token\n    service.py         # Library: borrow, give_back, add_book  (the rules; no HTTP)\n    security.py        # password hashing, JWT, current_user, require_librarian\n    errors.py          # LibraryError hierarchy and the problem+json handler\n    routers/{auth,books,loans}.py\n  tests/               # test_rules.py (service), test_api.py (HTTP), conftest.py",
+     "title": "Layout"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "(1) models and the service with its rules, tested directly; (2) the schemas and routes; (3) errors; (4) security; (5) pagination and polish; (6) Docker and CI. Each step ends with green tests. The rules in the service are the product; HTTP is a thin layer over them.",
+     "title": "Build in this order"
+    }
+   ]
+  },
+  {
+   "id": "ch-28-2",
+   "type": "concept",
+   "title": "The Complete Application",
+   "subtopicId": "28-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The whole project in one file, with an end-to-end check at the bottom that exercises **every rule above through HTTP** (the same calls a client would make). It runs when this page is built, so it works."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from datetime import date, datetime, timedelta, timezone\nfrom typing import Annotated\n\nimport jwt\nfrom fastapi import Depends, FastAPI, HTTPException, Query, Request, status\nfrom fastapi.responses import JSONResponse\nfrom fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm\nfrom fastapi.testclient import TestClient\nfrom pwdlib import PasswordHash\nfrom pydantic import BaseModel, ConfigDict, Field\nfrom sqlalchemy import ForeignKey, String, create_engine, func, select\nfrom sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker\nfrom sqlalchemy.pool import StaticPool\n\n# ======================================================================== config.py\nSECRET, ALGORITHM, TOKEN_MINUTES = \"dev-secret-change-me\", \"HS256\", 30\nLOAN_DAYS, MAX_LOANS, FEE_PER_DAY = 14, 3, 2\nhasher = PasswordHash.recommended()\n\n\n# ======================================================================== models.py\nclass Base(DeclarativeBase):\n    pass\n\n\nclass User(Base):\n    __tablename__ = \"users\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    email: Mapped[str] = mapped_column(String(120), unique=True)\n    password_hash: Mapped[str]\n    role: Mapped[str] = mapped_column(String(20))                                  # \"librarian\" or \"member\"\n\n\nclass Book(Base):\n    __tablename__ = \"books\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    title: Mapped[str] = mapped_column(String(200), index=True)\n    author: Mapped[str] = mapped_column(String(120))\n    isbn: Mapped[str] = mapped_column(String(13), unique=True)\n    copies: Mapped[int]\n\n\nclass Loan(Base):\n    __tablename__ = \"loans\"\n    id: Mapped[int] = mapped_column(primary_key=True)\n    book_id: Mapped[int] = mapped_column(ForeignKey(\"books.id\"), index=True)\n    user_id: Mapped[int] = mapped_column(ForeignKey(\"users.id\"), index=True)\n    loaned_on: Mapped[date]\n    due_on: Mapped[date]\n    returned_on: Mapped[date | None]\n\n\n# ======================================================================== errors.py\nclass LibraryError(Exception):\n    status, title = 400, \"Bad request\"\n\n    def __init__(self, detail: str):\n        super().__init__(detail)\n        self.detail = detail\n\n\nclass NotFound(LibraryError):\n    status, title = 404, \"Not found\"\n\n\nclass Conflict(LibraryError):\n    status, title = 409, \"Business rule violated\"\n\n\ndef problem(request: Request, status_code: int, title: str, detail: str, **extra) -> JSONResponse:\n    body = {\"type\": \"about:blank\", \"title\": title, \"status\": status_code, \"detail\": detail, \"instance\": request.url.path, **extra}\n    return JSONResponse(body, status_code=status_code, media_type=\"application/problem+json\")\n\n\n# ======================================================================== service.py  (the rules: no HTTP in here)\nclass Library:\n    def __init__(self, session: Session, today: date):\n        self.session, self.today = session, today\n\n    def add_book(self, title: str, author: str, isbn: str, copies: int) -> Book:\n        if self.session.scalar(select(Book).where(Book.isbn == isbn)):\n            raise Conflict(f\"a book with ISBN {isbn} already exists\")\n        book = Book(title=title, author=author, isbn=isbn, copies=copies)\n        self.session.add(book)\n        self.session.flush()\n        return book\n\n    def available(self, book: Book) -> int:\n        lent = self.session.scalar(select(func.count()).select_from(Loan).where(Loan.book_id == book.id, Loan.returned_on.is_(None)))\n        return book.copies - (lent or 0)\n\n    def borrow(self, user: User, book_id: int) -> Loan:\n        book = self.session.get(Book, book_id, with_for_update=True)             # lock the row on PostgreSQL: two borrowers cannot both take the last copy\n        if book is None:\n            raise NotFound(f\"book {book_id} does not exist\")\n        active = list(self.session.scalars(select(Loan).where(Loan.user_id == user.id, Loan.returned_on.is_(None))))\n        if len(active) >= MAX_LOANS:\n            raise Conflict(f\"loan limit reached: {MAX_LOANS} active loans\")\n        if any(loan.book_id == book_id for loan in active):\n            raise Conflict(\"you already have this book\")\n        if self.available(book) <= 0:\n            raise Conflict(\"no copies available\")\n        loan = Loan(book_id=book_id, user_id=user.id, loaned_on=self.today, due_on=self.today + timedelta(days=LOAN_DAYS))\n        self.session.add(loan)\n        self.session.flush()\n        return loan\n\n    def give_back(self, user: User, loan_id: int) -> tuple[Loan, int]:\n        loan = self.session.get(Loan, loan_id)\n        if loan is None or (loan.user_id != user.id and user.role != \"librarian\"):\n            raise NotFound(f\"loan {loan_id} does not exist\")                      # 404, not 403: do not reveal other people's loans\n        if loan.returned_on is not None:\n            raise Conflict(\"this loan was already returned\")\n        loan.returned_on = self.today\n        return loan, max(0, (self.today - loan.due_on).days) * FEE_PER_DAY\n\n\n# ======================================================================== schemas.py\nclass BookIn(BaseModel):\n    title: str = Field(min_length=1, max_length=200)\n    author: str = Field(min_length=1, max_length=120)\n    isbn: str = Field(pattern=r\"^\\d{10}(\\d{3})?$\")\n    copies: int = Field(ge=1, le=100)\n\n\nclass BookOut(BookIn):\n    id: int\n    available: int\n\n\nclass LoanOut(BaseModel):\n    model_config = ConfigDict(from_attributes=True)\n    id: int\n    book_id: int\n    loaned_on: date\n    due_on: date\n    returned_on: date | None\n\n\nclass ReturnOut(BaseModel):\n    loan: LoanOut\n    fee: int\n\n\nclass Token(BaseModel):\n    access_token: str\n    token_type: str = \"bearer\"\n\n\n# ======================================================================== db.py and security.py\nengine = create_engine(\"sqlite://\", connect_args={\"check_same_thread\": False}, poolclass=StaticPool)     # tests only; PostgreSQL in production\nSessionLocal = sessionmaker(engine, expire_on_commit=False)\noauth2 = OAuth2PasswordBearer(tokenUrl=\"/auth/login\")\n\n\ndef get_session():\n    with SessionLocal() as session:\n        try:\n            yield session\n            session.commit()\n        except Exception:\n            session.rollback()\n            raise\n\n\ndef get_today() -> date:                                                          # a dependency, so tests can move the calendar\n    return date.today()\n\n\nSessionDep = Annotated[Session, Depends(get_session)]\n\n\ndef get_library(session: SessionDep, today: Annotated[date, Depends(get_today)]) -> Library:\n    return Library(session, today)\n\n\nLibraryDep = Annotated[Library, Depends(get_library)]\n\n\ndef current_user(token: Annotated[str, Depends(oauth2)], session: SessionDep) -> User:\n    unauthorised = HTTPException(status.HTTP_401_UNAUTHORIZED, \"invalid or expired token\", headers={\"WWW-Authenticate\": \"Bearer\"})\n    try:\n        claims = jwt.decode(token, SECRET, algorithms=[ALGORITHM], options={\"require\": [\"exp\", \"sub\"]})\n    except jwt.PyJWTError:\n        raise unauthorised from None\n    user = session.get(User, int(claims[\"sub\"]))\n    if user is None:\n        raise unauthorised\n    return user\n\n\nUserDep = Annotated[User, Depends(current_user)]\n\n\ndef require_librarian(user: UserDep) -> User:\n    if user.role != \"librarian\":\n        raise HTTPException(status.HTTP_403_FORBIDDEN, \"librarians only\")\n    return user\n\n\n# ======================================================================== main.py  (routes)\napp = FastAPI(title=\"Library API\", version=\"1.0.0\")\n\n\n@app.exception_handler(LibraryError)\nasync def library_error_handler(request: Request, exc: LibraryError):\n    return problem(request, exc.status, exc.title, exc.detail)\n\n\n@app.post(\"/auth/login\", response_model=Token)\ndef login(form: Annotated[OAuth2PasswordRequestForm, Depends()], session: SessionDep):\n    user = session.scalar(select(User).where(User.email == form.username))\n    if user is None or not hasher.verify(form.password, user.password_hash):\n        raise HTTPException(status.HTTP_401_UNAUTHORIZED, \"incorrect email or password\", headers={\"WWW-Authenticate\": \"Bearer\"})\n    claims = {\"sub\": str(user.id), \"role\": user.role, \"exp\": datetime.now(timezone.utc) + timedelta(minutes=TOKEN_MINUTES)}\n    return Token(access_token=jwt.encode(claims, SECRET, algorithm=ALGORITHM))\n\n\ndef book_out(library: Library, book: Book) -> BookOut:\n    return BookOut(id=book.id, title=book.title, author=book.author, isbn=book.isbn, copies=book.copies, available=library.available(book))\n\n\n@app.get(\"/books\", response_model=list[BookOut])\ndef list_books(session: SessionDep, library: LibraryDep, q: str | None = None, limit: Annotated[int, Query(ge=1, le=50)] = 10, offset: Annotated[int, Query(ge=0)] = 0):\n    stmt = select(Book).order_by(Book.id).limit(limit).offset(offset)\n    if q:\n        stmt = stmt.where(Book.title.ilike(f\"%{q}%\") | Book.author.ilike(f\"%{q}%\"))\n    return [book_out(library, b) for b in session.scalars(stmt)]\n\n\n@app.post(\"/books\", response_model=BookOut, status_code=201, dependencies=[Depends(require_librarian)])\ndef create_book(payload: BookIn, library: LibraryDep):\n    return book_out(library, library.add_book(**payload.model_dump()))\n\n\n@app.post(\"/loans\", response_model=LoanOut, status_code=201)\ndef borrow(body: dict, user: UserDep, library: LibraryDep):\n    if not isinstance(body.get(\"book_id\"), int):\n        raise HTTPException(422, \"book_id (integer) is required\")\n    return library.borrow(user, body[\"book_id\"])\n\n\n@app.post(\"/loans/{loan_id}/return\", response_model=ReturnOut)\ndef give_back(loan_id: int, user: UserDep, library: LibraryDep):\n    loan, fee = library.give_back(user, loan_id)\n    return ReturnOut(loan=LoanOut.model_validate(loan), fee=fee)\n\n\n@app.get(\"/loans/mine\", response_model=list[LoanOut])\ndef my_loans(user: UserDep, session: SessionDep):\n    return list(session.scalars(select(Loan).where(Loan.user_id == user.id).order_by(Loan.id)))\n\n\n@app.get(\"/loans\", response_model=list[LoanOut], dependencies=[Depends(require_librarian)])\ndef all_loans(session: SessionDep):\n    return list(session.scalars(select(Loan).order_by(Loan.id)))\n\n\n# ======================================================================== seed data and the end-to-end check\nBase.metadata.create_all(engine)\nwith SessionLocal() as s, s.begin():\n    s.add_all([User(email=\"lib@example.com\", password_hash=hasher.hash(\"lib-pass\"), role=\"librarian\"),\n               User(email=\"asha@example.com\", password_hash=hasher.hash(\"asha-pass\"), role=\"member\"),\n               User(email=\"ravi@example.com\", password_hash=hasher.hash(\"ravi-pass\"), role=\"member\"),\n               User(email=\"meera@example.com\", password_hash=hasher.hash(\"meera-pass\"), role=\"member\")])\n\nclient = TestClient(app)\ntoday = [date(2026, 11, 4)]\napp.dependency_overrides[get_today] = lambda: today[0]                              # the test controls \"today\"\n\n\ndef headers_for(email: str, password: str) -> dict:\n    token = client.post(\"/auth/login\", data={\"username\": email, \"password\": password}).json()[\"access_token\"]\n    return {\"Authorization\": f\"Bearer {token}\"}\n\n\nlibrarian = headers_for(\"lib@example.com\", \"lib-pass\")\nasha, ravi, meera = (headers_for(\"asha@example.com\", \"asha-pass\"), headers_for(\"ravi@example.com\", \"ravi-pass\"),\n                     headers_for(\"meera@example.com\", \"meera-pass\"))\nchecks = []\n\n\ndef check(label: str, condition: bool):\n    assert condition, label\n    checks.append(label)\n\n\n# authentication and roles\ncheck(\"bad password is 401\", client.post(\"/auth/login\", data={\"username\": \"asha@example.com\", \"password\": \"x\"}).status_code == 401)\ncheck(\"no token is 401\", client.get(\"/loans/mine\").status_code == 401)\ncheck(\"a member cannot add books (403)\", client.post(\"/books\", headers=asha, json={\"title\": \"T\", \"author\": \"A\", \"isbn\": \"1234567890\", \"copies\": 1}).status_code == 403)\n\n# books: create, validate, duplicate, search\ncreated = client.post(\"/books\", headers=librarian, json={\"title\": \"Python Internals\", \"author\": \"Asha Rao\", \"isbn\": \"9781234567897\", \"copies\": 2})\ncheck(\"librarian creates a book (201)\", created.status_code == 201 and created.json()[\"available\"] == 2)\ncheck(\"invalid ISBN is 422\", client.post(\"/books\", headers=librarian, json={\"title\": \"X\", \"author\": \"Y\", \"isbn\": \"abc\", \"copies\": 1}).status_code == 422)\nduplicate = client.post(\"/books\", headers=librarian, json={\"title\": \"Other\", \"author\": \"Z\", \"isbn\": \"9781234567897\", \"copies\": 1})\ncheck(\"duplicate ISBN is 409 problem+json\", duplicate.status_code == 409 and duplicate.headers[\"content-type\"].startswith(\"application/problem+json\"))\nfor n, title in enumerate([\"Async Patterns\", \"Django Cookbook\", \"SQL Tuning\"], start=2):\n    client.post(\"/books\", headers=librarian, json={\"title\": title, \"author\": \"Various\", \"isbn\": f\"978000000{n:04d}\", \"copies\": 1})\ncheck(\"search finds by title, case-insensitively\", [b[\"title\"] for b in client.get(\"/books?q=django\").json()] == [\"Django Cookbook\"])\ncheck(\"pagination limits the page\", len(client.get(\"/books?limit=2\").json()) == 2)\n\n# borrowing rules\nfirst = client.post(\"/loans\", headers=asha, json={\"book_id\": 1})\ncheck(\"member borrows (201), due in 14 days\", first.status_code == 201 and first.json()[\"due_on\"] == \"2026-11-18\")\ncheck(\"available copies drop\", client.get(\"/books?q=internals\").json()[0][\"available\"] == 1)\ncheck(\"cannot borrow the same book twice (409)\", client.post(\"/loans\", headers=asha, json={\"book_id\": 1}).status_code == 409)\nclient.post(\"/loans\", headers=asha, json={\"book_id\": 2})\nclient.post(\"/loans\", headers=asha, json={\"book_id\": 3})\ncheck(\"fourth active loan is refused (409)\", client.post(\"/loans\", headers=asha, json={\"book_id\": 4}).status_code == 409)\nclient.post(\"/loans\", headers=ravi, json={\"book_id\": 1})                              # book 1 has two copies: asha and ravi hold them\nnone_left = client.post(\"/loans\", headers=meera, json={\"book_id\": 1})\ncheck(\"no copies left is refused (409)\", none_left.status_code == 409 and \"no copies\" in none_left.json()[\"detail\"])\ncheck(\"an unknown book is 404\", client.post(\"/loans\", headers=meera, json={\"book_id\": 99}).status_code == 404)\n\n# returning: ownership and late fees\ncheck(\"other members cannot return someone's loan (404)\", client.post(\"/loans/1/return\", headers=ravi).status_code == 404)\ntoday[0] = date(2026, 11, 10)                                                         # 6 days into a 14-day loan\ncheck(\"on-time return is free\", client.post(\"/loans/3/return\", headers=asha).json()[\"fee\"] == 0)\ntoday[0] = date(2026, 12, 8)                                                          # 34 days after the loan: 20 days overdue\nlate = client.post(\"/loans/1/return\", headers=asha).json()\ncheck(\"late return costs 20 days x 2 = 40\", late[\"fee\"] == 40 and late[\"loan\"][\"returned_on\"] == \"2026-12-08\")\ncheck(\"returning twice is refused (409)\", client.post(\"/loans/1/return\", headers=asha).status_code == 409)\ncheck(\"a librarian can return a member's loan\", client.post(\"/loans/2/return\", headers=librarian).status_code == 200)\n\n# listing\ncheck(\"members see only their loans\", {loan[\"id\"] for loan in client.get(\"/loans/mine\", headers=ravi).json()} == {4})\ncheck(\"librarian sees every loan\", len(client.get(\"/loans\", headers=librarian).json()) == 4)\ncheck(\"members cannot list all loans (403)\", client.get(\"/loans\", headers=asha).status_code == 403)\n\nprint(f\"{len(checks)} end-to-end checks passed\")\nprint(\"endpoints:\", sorted(f\"{m} {p}\" for p, ops in client.get(\"/openapi.json\").json()[\"paths\"].items() for m in ops))",
+     "title": "LibraryApi.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "22 end-to-end checks passed\nendpoints: ['get /books', 'get /loans', 'get /loans/mine', 'post /auth/login', 'post /books', 'post /loans', 'post /loans/{loan_id}/return']",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-28-3",
+   "type": "concept",
+   "title": "Domain, Repository and Service Walkthrough",
+   "subtopicId": "28-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "The **`Library` service** is the heart of the project. Read `borrow` as a checklist, in the order that gives the clearest error:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "def borrow(self, user, book_id):\n    book = self.session.get(Book, book_id, with_for_update=True)     # 1. does it exist? (and lock the row)\n    if book is None:\n        raise NotFound(...)                                           # 404\n    active = list(self.session.scalars(select(Loan).where(Loan.user_id == user.id, Loan.returned_on.is_(None))))\n    if len(active) >= MAX_LOANS:                                      # 2. the member's limit\n        raise Conflict(...)\n    if any(loan.book_id == book_id for loan in active):               # 3. no duplicate loans\n        raise Conflict(...)\n    if self.available(book) <= 0:                                     # 4. a copy must be free\n        raise Conflict(...)\n    loan = Loan(book_id=book_id, user_id=user.id, loaned_on=self.today, due_on=self.today + timedelta(days=LOAN_DAYS))\n    self.session.add(loan)\n    self.session.flush()                                              # id assigned; the dependency commits at the end\n    return loan",
+     "title": "borrow() rule order"
+    },
+    {
+     "type": "markdown",
+     "text": "Design decisions worth explaining in an interview:\n\n1. **Availability is derived, not stored.** `copies - active loans` can never drift out of sync, unlike a stored `available` counter that two requests can corrupt. (The price is one `COUNT` query; for hot paths you would add an index on `(book_id, returned_on)` or cache it.)\n2. **Time is injected** (`today`). A function that calls `date.today()` inside is untestable for late fees; passing the date in (here through a `get_today` dependency) lets the check above move the calendar forward by weeks.\n3. **Concurrency.** Two members borrowing the last copy at the same moment can both pass the availability check (a **race condition**, check-then-act). The row lock (`with_for_update=True`, honoured by PostgreSQL, ignored by SQLite) serialises borrowers of one book; the alternative is a database constraint (a unique partial index or a `CHECK` through a counter) so the database itself refuses the second loan. **Application checks alone are never enough under concurrency.**\n4. **Money as integers** (`FEE_PER_DAY = 2` in minor units), never floats.\n5. **The service raises `Conflict`/`NotFound`, not `HTTPException`**: the HTTP layer maps them in one handler, so the same service could run in a CLI.\n6. **404 for someone else's loan** hides its existence: object-level authorisation (Part 4)."
+    }
+   ]
+  },
+  {
+   "id": "ch-28-4",
+   "type": "concept",
+   "title": "REST Layer, Validation and Error Handling Walkthrough",
+   "subtopicId": "28-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Every rule has one **error class** and one **status code**, and the handler turns them into `application/problem+json`:\n\n| Situation | Raised as | HTTP |\n| --- | --- | --- |\n| Unknown book or someone else's loan | `NotFound` | 404 |\n| Loan limit, duplicate, no copies, already returned, duplicate ISBN | `Conflict` | 409 |\n| Invalid ISBN, missing field, bad type | Pydantic validation (automatic) | 422 |\n| No or bad token | `HTTPException(401)` + `WWW-Authenticate` | 401 |\n| Wrong role | `HTTPException(403)` | 403 |\n\nPoints to notice in the routes:\n\n- **Input schemas** (`BookIn`) validate everything at the boundary: the ISBN regex, `copies` range, lengths. `BookOut` inherits from `BookIn` and adds `id` and the computed `available`, so the response shape is explicit.\n- **`response_model`** controls the output: `User.password_hash` can never leak because no route returns a `User`.\n- **Dependencies compose**: `require_librarian` is attached with `dependencies=[Depends(...)]` when it needs no value, and `UserDep` is injected when the user object is needed.\n- **Pagination is capped** (`le=50` and `min(limit, 50)`), and search uses parameters (`ilike` with a bound pattern), never string-built SQL."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "Refresh tokens and logout, password reset and email verification, rate limiting on `/auth/login`, structured logging with request IDs, migrations (it uses `create_all`), a real PostgreSQL, and retry-safe idempotency keys for `POST /loans`. Each has a section earlier in this tree; adding them is the best follow-up exercise.",
+     "title": "What this project deliberately leaves out"
+    }
+   ]
+  },
+  {
+   "id": "ch-28-5",
+   "type": "concept",
+   "title": "Security and Tests Walkthrough",
+   "subtopicId": "28-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Authentication is the JWT flow of Part 4: Argon2 hashes, a 30-minute access token with `sub` (user id) and `exp`, verified on every request with the algorithm list pinned. Authorisation lives in two dependencies (`require_librarian` for role) and inside the service (ownership of loans).\n\nThe end-to-end block is a **test suite in miniature**. In the real repository the same checks become two layers of `pytest` tests:\n\n| Layer | What it tests | Tools |\n| --- | --- | --- |\n| **Service tests** | The rules, directly: borrow limits, fees, availability. Fast, no HTTP | `Library(session, today)` with an in-memory database and a fixed date |\n| **API tests** | Status codes, auth, validation and error shapes through the real app | `TestClient`, `dependency_overrides` for `get_today` and `get_session` |\n| **Contract test** | `openapi.json` did not change by accident | Compare against a committed snapshot |\n| **Migration test** | Upgrade from empty and downgrade work | Alembic against PostgreSQL in CI |\n\nA good habit is to name each test after the rule (`test_fourth_active_loan_is_refused`), so that a failing test reads like a bug report."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pytest\n\n\n@pytest.mark.parametrize(\"copies, borrowers, expected_statuses\", [\n    (1, 2, [201, 409]),          # the second borrower finds no copy\n    (2, 2, [201, 201]),\n    (3, 4, [201, 201, 201, 409]),\n])\ndef test_availability_is_enforced(client, librarian, members, copies, borrowers, expected_statuses):\n    book_id = client.post(\"/books\", headers=librarian, json=make_book(copies=copies)).json()[\"id\"]\n    statuses = [client.post(\"/loans\", headers=members[i], json={\"book_id\": book_id}).status_code for i in range(borrowers)]\n    assert statuses == expected_statuses",
+     "title": "Parametrised rule tests"
+    }
+   ]
+  },
+  {
+   "id": "ch-28-6",
+   "type": "concept",
+   "title": "Run It and Call It",
+   "subtopicId": "28-6",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "uv run uvicorn library.main:app --reload             # http://127.0.0.1:8000, interactive docs at /docs\n\n# 1. log in (form-encoded) and keep the token\nTOKEN=$(curl -s -X POST localhost:8000/auth/login -d \"username=asha@example.com&password=asha-pass\" | python -c \"import sys, json; print(json.load(sys.stdin)['access_token'])\")\n\n# 2. browse and borrow\ncurl -s \"localhost:8000/books?q=python\"\ncurl -s -X POST localhost:8000/loans -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" -d '{\"book_id\": 1}'\ncurl -s localhost:8000/loans/mine -H \"Authorization: Bearer $TOKEN\"\n\n# 3. return it and see the fee\ncurl -s -X POST localhost:8000/loans/1/return -H \"Authorization: Bearer $TOKEN\"",
+     "title": "Run the API"
+    },
+    {
+     "type": "markdown",
+     "text": "Open `/docs`, press **Authorize**, log in with the form, and call each endpoint from the browser. Then try to break your own API: another user's loan id, a negative `limit`, a 10,000-character title, an expired token. Each should produce a clean, specific error.\n\n**Where to take it next**\n\n1. Move the in-memory SQLite to PostgreSQL with Alembic migrations and a Docker Compose file.\n2. Add refresh tokens and a request-ID log middleware.\n3. Add a React front end against this API (the frontend stage covers the integration).\n4. Add a background job (Celery) that emails members whose books are due tomorrow.\n5. Deploy it (the delivery stage) and add a dashboard from its `/metrics`."
+    },
+    {
+     "type": "callout",
+     "variant": "keypoints",
+     "title": "Key points",
+     "text": "- Rules live in a service, HTTP is a thin layer\n- Derive availability, do not store it\n- Inject time and sessions so tests control them\n- One error class per rule, mapped in one handler\n- Check ownership on every object\n- Concurrency needs locks or constraints, not just checks"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Plan and Scaffold"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why are the business rules in a service class and not in the route functions?",
+       "answer": "Rules in a plain class can be tested without HTTP or a server, reused from a CLI or background job, and read in one place. Route functions then only translate between HTTP and the service: parse input, call, map errors to status codes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Domain, Repository and Service Walkthrough"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How would you make `borrow` safe if two requests arrive at the same instant for the last copy?",
+       "answer": "Lock the book row (`SELECT ... FOR UPDATE`) inside the transaction so the second request waits and then sees the updated availability, or enforce the rule in the database (a constraint or a counter updated with a conditional `UPDATE ... WHERE available > 0` and checking the affected row count). Application-level checks alone leave a check-then-act race."
+      },
+      {
+       "question": "Why compute `available` from the loans table instead of storing a counter?",
+       "answer": "A derived value cannot be inconsistent with the loans it summarises, whereas a stored counter must be updated atomically with every borrow, return and deletion and can drift after a bug or a crash. Cache or denormalise only when measurement shows the query is too slow."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### REST Layer, Validation and Error Handling Walkthrough"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does the check at the bottom override `get_today`?",
+       "answer": "So the test can set the date: the loan is created on a known day and returned 34 days later to assert a late fee of exactly 40 (20 days overdue at 2 a day). Without injecting the clock the test would depend on the real calendar and be unreliable."
+      },
+      {
+       "question": "Where would you add rate limiting for login attempts, and why there?",
+       "answer": "On `POST /auth/login` (and password-reset endpoints) at the reverse proxy or with a Redis-backed limiter dependency keyed by IP and account, to slow credential stuffing and brute force. Login is the endpoint attackers hit most because it is cheap to automate and valuable to win."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Security and Tests Walkthrough"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you test the late-fee rule without waiting 20 days?",
+       "answer": "Inject the clock: the service takes `today` as a parameter and the API gets it from a dependency, so the test overrides it with a fixed or advancing date. Time is a dependency like the database."
+      },
+      {
+       "question": "What should a code reviewer look for in this project?",
+       "answer": "Missing ownership checks (BOLA), rules enforced only in the application under concurrency, floats for money, `HTTPException` leaking into the service, unbounded list endpoints, secrets in code, and tests that depend on the clock, the network or each other's data."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Run It and Call It"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How would you extend the API so members can reserve a book that has no free copy?",
+       "answer": "Add a `Reservation` table (book, user, created_at, status) with a queue per book; when a loan is returned, the service offers the copy to the first waiting reservation (a notification and a hold window), and borrowing is allowed for that member first. Model the states explicitly (waiting, ready, expired, fulfilled) and test the transitions."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

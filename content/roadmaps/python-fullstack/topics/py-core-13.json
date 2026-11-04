@@ -1,0 +1,276 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-13-1",
+   "type": "concept",
+   "title": "Design Patterns the Pythonic Way",
+   "subtopicId": "13-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "The classic Gang of Four patterns were written for languages without first-class functions, modules or duck typing. Many patterns **shrink to a language feature** in Python. Knowing which, and being able to name the pattern anyway, is what interviews test.\n\n| Pattern | Java-style solution | Pythonic form |\n| --- | --- | --- |\n| Singleton | Private constructor, static instance | A **module** (imported once), or `functools.cache` on a factory function |\n| Factory method | Interface plus subclasses | A function or `@classmethod` returning instances; a dict of constructors |\n| Builder | Fluent builder class | Keyword arguments with defaults; a dataclass; `dataclasses.replace` |\n| Strategy | Interface plus classes | **Pass a function** (`key=len`, `sorted`, `callback`) |\n| Observer | Listener interfaces | A list of callables; signals (`blinker`, Django signals) |\n| Command | Command objects | A callable; `functools.partial` |\n| Iterator | `Iterator` interface | `__iter__` or a **generator** |\n| Template method | Abstract base class | Same, or pass the varying step as a function |\n| Decorator (structural) | Wrapper class | A wrapper object, or the `@decorator` syntax for functions |\n| Adapter | Adapter class | A small wrapper, often a function or class with the expected methods |\n| RAII / try-with-resources | `AutoCloseable` | **Context manager** (`with`) |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from dataclasses import dataclass, replace\nfrom functools import cache\n\n\n# Singleton: a cached factory (module-level objects work too)\n@cache\ndef settings():\n    print(\"loading settings once\")\n    return {\"debug\": False}\n\nassert settings() is settings()\n\n\n# Factory: a registry of constructors instead of an if/elif chain\nclass Exporter:\n    registry = {}\n\n    def __init_subclass__(cls, kind, **kw):\n        super().__init_subclass__(**kw)\n        Exporter.registry[kind] = cls\n\n    @classmethod\n    def create(cls, kind):\n        try:\n            return cls.registry[kind]()\n        except KeyError:\n            raise ValueError(f\"unknown exporter {kind!r}; choose from {sorted(cls.registry)}\") from None\n\n    def export(self, rows):\n        raise NotImplementedError\n\n\nclass CsvExporter(Exporter, kind=\"csv\"):\n    def export(self, rows):\n        return \"\\n\".join(\",\".join(map(str, r)) for r in rows)\n\n\nclass JsonExporter(Exporter, kind=\"json\"):\n    def export(self, rows):\n        import json\n        return json.dumps(rows)\n\n\nprint(Exporter.create(\"csv\").export([(1, \"a\"), (2, \"b\")]).replace(\"\\n\", \" | \"))\nprint(Exporter.create(\"json\").export([[1, \"a\"]]))\ntry:\n    Exporter.create(\"xml\")\nexcept ValueError as error:\n    print(error)\n\n\n# Builder: a frozen dataclass with defaults replaces a fluent builder\n@dataclass(frozen=True)\nclass Request:\n    url: str\n    method: str = \"GET\"\n    timeout: float = 5.0\n    retries: int = 0\n\nbase = Request(\"https://api.example.com/items\")\nslow = replace(base, timeout=30.0, retries=3)\nprint(base, slow, sep=\"\\n\")",
+     "title": "Creational.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "loading settings once\n1,a | 2,b\n[[1, \"a\"]]\nunknown exporter 'xml'; choose from ['csv', 'json']\nRequest(url='https://api.example.com/items', method='GET', timeout=5.0, retries=0)\nRequest(url='https://api.example.com/items', method='GET', timeout=30.0, retries=3)",
+     "title": "Output"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from collections import defaultdict\nfrom functools import partial\nfrom typing import Callable\n\n\n# Strategy: behaviour passed as a function, no class hierarchy\ndef percent_off(rate):\n    return lambda price: price * (1 - rate)\n\ndef flat_off(amount):\n    return lambda price: max(0, price - amount)\n\ndef checkout(price, *discounts: Callable[[float], float]):\n    for discount in discounts:\n        price = discount(price)\n    return round(price, 2)\n\nprint(checkout(1000, percent_off(0.10), flat_off(50)))\n\n\n# Observer: an event bus is a dict of lists of callables\nclass EventBus:\n    def __init__(self):\n        self.handlers = defaultdict(list)\n\n    def subscribe(self, event, handler):\n        self.handlers[event].append(handler)\n\n    def publish(self, event, **payload):\n        for handler in self.handlers[event]:\n            handler(**payload)\n\nbus = EventBus()\nlog = []\nbus.subscribe(\"order.paid\", lambda order_id, **_: log.append(f\"email for {order_id}\"))\nbus.subscribe(\"order.paid\", lambda order_id, amount, **_: log.append(f\"ledger +{amount}\"))\nbus.publish(\"order.paid\", order_id=7, amount=250)\nprint(log)\n\n\n# Command + undo: callables stored in a history\nclass Editor:\n    def __init__(self):\n        self.text, self.history = \"\", []\n\n    def run(self, do, undo):\n        do()\n        self.history.append(undo)\n\n    def undo(self):\n        self.history.pop()()\n\n    def append(self, s):\n        self.run(partial(self._append, s), partial(self._truncate, len(s)))\n\n    def _append(self, s):\n        self.text += s\n\n    def _truncate(self, n):\n        self.text = self.text[:-n]\n\neditor = Editor()\neditor.append(\"Hello\")\neditor.append(\", world\")\nprint(editor.text)\neditor.undo()\nprint(editor.text)\n\n\n# State machine: a table of allowed transitions beats scattered if statements\nTRANSITIONS = {\"new\": {\"paid\", \"cancelled\"}, \"paid\": {\"shipped\", \"refunded\"}, \"shipped\": {\"delivered\"}}\n\ndef move(state, target):\n    if target not in TRANSITIONS.get(state, set()):\n        raise ValueError(f\"cannot go from {state} to {target}\")\n    return target\n\nstate = move(move(\"new\", \"paid\"), \"shipped\")\nprint(state)\ntry:\n    move(\"shipped\", \"new\")\nexcept ValueError as error:\n    print(error)",
+     "title": "Behavioural.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "850.0\n['email for 7', 'ledger +250']\nHello, world\nHello\nshipped\ncannot go from shipped to new",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Two structural patterns are worth drawing by hand in an interview:\n\n- **Adapter / facade**: wrap an awkward or third-party API in a small class with the interface *you* want, so the rest of the code (and your tests) depend on your interface, not theirs. The repository pattern for databases and a `PaymentGateway` wrapper are the usual examples.\n- **Proxy**: an object with the same interface that adds behaviour (caching, lazy loading, access checks, logging); `__getattr__` makes a generic one in a few lines."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Pass collaborators in instead of constructing them inside (`OrderService(repo, notifier)`), so tests can pass fakes. In Python you rarely need a container: constructor parameters and default values are enough. FastAPI's `Depends` provides injection per request, which is the same idea with a framework that builds and caches the dependencies for you.",
+     "title": "What is dependency injection in Python, and do you need a framework?"
+    }
+   ]
+  },
+  {
+   "id": "ch-13-2",
+   "type": "concept",
+   "title": "Pythonic Idioms and Effective Practices",
+   "subtopicId": "13-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**The Zen of Python** in practice: readability counts; explicit beats implicit; simple beats complex; errors should never pass silently. Concretely:\n\n| Instead of | Write |\n| --- | --- |\n| `for i in range(len(xs)): xs[i]` | `for x in xs:` or `for i, x in enumerate(xs):` |\n| `if x == True`, `if len(xs) > 0` | `if x:`, `if xs:` |\n| `if x == None` | `if x is None` |\n| Manual open/close | `with open(path, encoding=\"utf-8\") as f:` |\n| `s = \"\"; for p in parts: s += p` | `\"\".join(parts)` |\n| `d.has_key(k)` then index | `d.get(k, default)`, `setdefault`, `defaultdict` |\n| `list(map(lambda x: x*2, xs))` | `[x * 2 for x in xs]` |\n| `isinstance(x, list) or isinstance(x, tuple)` | `isinstance(x, (list, tuple))` |\n| Returning a tuple of 5 things | A dataclass or `NamedTuple` |\n| `try: ... except: pass` | Catch the specific error, handle or log |\n| Class with only `__init__` and one method | A function |\n| `from module import *` | Import names explicitly |\n| Mutable default argument | `None` sentinel |\n| String-built paths | `pathlib.Path` |\n| `print` for diagnostics | `logging` |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "# BEFORE: nested conditions, a flag, a mutable default, and a magic number\ndef process_old(orders, results=[]):\n    ok = False\n    for o in orders:\n        if o is not None:\n            if o[\"status\"] == \"paid\":\n                if o[\"amount\"] > 0:\n                    if o[\"amount\"] > 10000:\n                        results.append(o[\"id\"] + \":review\")\n                    else:\n                        results.append(o[\"id\"] + \":ship\")\n                    ok = True\n    return results if ok else None\n\n\n# AFTER: guard clauses, named constants, no flag, no shared state, returns a list\nREVIEW_THRESHOLD = 10_000\n\ndef decide(order):\n    if order[\"status\"] != \"paid\" or order[\"amount\"] <= 0:\n        return None\n    return \"review\" if order[\"amount\"] > REVIEW_THRESHOLD else \"ship\"\n\ndef process(orders):\n    decisions = ((o[\"id\"], decide(o)) for o in orders if o)\n    return [f\"{order_id}:{action}\" for order_id, action in decisions if action]\n\n\norders = [\n    {\"id\": \"A\", \"status\": \"paid\", \"amount\": 500},\n    None,\n    {\"id\": \"B\", \"status\": \"paid\", \"amount\": 20_000},\n    {\"id\": \"C\", \"status\": \"cancelled\", \"amount\": 100},\n    {\"id\": \"D\", \"status\": \"paid\", \"amount\": 0},\n]\nassert process(orders) == [\"A:ship\", \"B:review\"]\nassert process_old(orders, []) == process(orders)       # same behaviour, much easier to read and test\nassert process([]) == []\nprint(process(orders))",
+     "title": "Refactor.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "['A:ship', 'B:review']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Code smells to recognise\n\n| Smell | Symptom | Usual fix |\n| --- | --- | --- |\n| Long function | Scrolls past a screen; several levels of nesting | Guard clauses, extract functions with names that state intent |\n| God class | One class that knows everything | Split by responsibility; compose |\n| Primitive obsession | Strings and ints standing for money, emails, ids | Value objects (frozen dataclasses, `NewType`) |\n| Boolean flag parameters | `process(order, True, False)` | Keyword-only parameters, separate functions, enums |\n| Mutable default or global state | Surprising state shared between calls | `None` default; pass state explicitly |\n| Stringly-typed code | `if status == \"paid\"` repeated everywhere | `Enum` |\n| Comments that explain what | `# increment i` | Better names; keep comments for **why** |\n| Catch-all `except` | Swallowed bugs | Narrow exceptions, log |\n| Copy-paste | The same logic in three places | Extract a function or generator |\n| No tests around changes | Fear of refactoring | Characterisation tests first (like the asserts above) |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Before changing messy code, pin its current behaviour with a few asserts or tests (as the `process_old` comparison does), refactor in small steps, and run the tests after each step. A refactor that changes behaviour is a rewrite.",
+     "title": "Refactor with a safety net"
+    }
+   ]
+  },
+  {
+   "id": "ch-13-3",
+   "type": "concept",
+   "title": "Secure Coding in Python",
+   "subtopicId": "13-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Most vulnerabilities in Python services come from a short list of mistakes, all of which this tree has met before. The OWASP Top 10 is the checklist; these are the Python forms.\n\n### Injection: never build queries or commands from strings"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import sqlite3\nimport subprocess\nimport sys\n\ndb = sqlite3.connect(\":memory:\")\ndb.executescript(\"\"\"\n    CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, secret TEXT);\n    INSERT INTO users (name, secret) VALUES ('asha', 'a-secret'), ('ravi', 'r-secret');\n\"\"\")\n\nattacker_input = \"x' OR '1'='1\"\n\nvulnerable = f\"SELECT name, secret FROM users WHERE name = '{attacker_input}'\"       # string-built SQL\nprint(\"vulnerable ->\", db.execute(vulnerable).fetchall())\n\nsafe = db.execute(\"SELECT name, secret FROM users WHERE name = ?\", (attacker_input,)).fetchall()   # parameterised\nprint(\"parameterised ->\", safe)\n\nfilename = \"report.txt && echo INJECTED\"          # attacker-controlled \"file name\"\nshell_style = subprocess.run(f'\"{sys.executable}\" -c \"import sys; print(sys.argv[1:])\" {filename}', shell=True, capture_output=True, text=True)\nlist_style = subprocess.run([sys.executable, \"-c\", \"import sys; print(sys.argv[1:])\", filename], capture_output=True, text=True)\nprint(\"shell=True  ->\", shell_style.stdout.replace(\"\\r\\n\", \" | \").replace(\"\\n\", \" | \").strip())\nprint(\"list of args ->\", list_style.stdout.strip())",
+     "title": "Injection.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "vulnerable -> [('asha', 'a-secret'), ('ravi', 'r-secret')]\nparameterised -> []\nshell=True  -> ['report.txt'] | INJECTED |\nlist of args -> ['report.txt && echo INJECTED']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The query with `?` placeholders sends the **code** and the **data** separately, so the data can never become code; ORMs (SQLAlchemy, Django) do this for you unless you drop to raw string SQL. The shell version ran `echo INJECTED` as a second command (`&&` chains commands in both `cmd.exe` and POSIX shells); the list version treated the whole text as one harmless argument.\n\n### Secrets, passwords and randomness"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import hmac\nimport secrets\nfrom hashlib import sha256\n\nfrom pwdlib import PasswordHash\n\nhasher = PasswordHash.recommended()                  # Argon2: a slow, salted, memory-hard password hash\nstored = hasher.hash(\"correct horse battery staple\")\nprint(stored.startswith(\"$argon2id$\"), hasher.verify(\"correct horse battery staple\", stored), hasher.verify(\"guess\", stored))\nprint(stored != hasher.hash(\"correct horse battery staple\"))      # a random salt makes every hash different\n\ntoken = secrets.token_urlsafe(32)                    # unguessable: for sessions, reset links, API keys\nprint(len(token) >= 43, secrets.token_urlsafe(32) != token)\n\nsignature = hmac.new(b\"server-secret\", b\"user=7\", sha256).hexdigest()\nprint(hmac.compare_digest(signature, hmac.new(b\"server-secret\", b\"user=7\", sha256).hexdigest()))   # constant-time comparison",
+     "title": "Secrets.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True True False\nTrue\nTrue True\nTrue",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Validating where URLs and paths come from"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import ipaddress\nfrom urllib.parse import urlparse\n\n\ndef is_safe_outbound_url(url: str) -> bool:\n    \"\"\"Refuse internal addresses so a user-supplied URL cannot reach your own network (SSRF).\"\"\"\n    parts = urlparse(url)\n    if parts.scheme not in {\"http\", \"https\"} or not parts.hostname:\n        return False\n    try:\n        ip = ipaddress.ip_address(parts.hostname)\n    except ValueError:\n        return True                                  # a hostname: ALSO resolve it and check every returned address in real code\n    return not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)\n\n\nfor url in (\"https://example.com/hook\", \"http://169.254.169.254/latest/meta-data\", \"http://127.0.0.1:8080/admin\",\n            \"http://10.0.0.5/internal\", \"file:///etc/passwd\", \"https://93.184.216.34/\"):\n    print(f\"{url:<45} {is_safe_outbound_url(url)}\")",
+     "title": "Ssrf.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "https://example.com/hook                      True\nhttp://169.254.169.254/latest/meta-data       False\nhttp://127.0.0.1:8080/admin                   False\nhttp://10.0.0.5/internal                      False\nfile:///etc/passwd                            False\nhttps://93.184.216.34/                        True",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Injection**: parameterised SQL; `subprocess.run([...])` without `shell=True`; autoescaped templates; never `eval`/`exec` on input.\n- **Deserialisation**: no `pickle.loads` or `yaml.load` on untrusted data; use JSON + validation.\n- **Secrets**: from environment or a secret manager; never in code, logs or URLs; rotate. Use `secrets`, not `random`.\n- **Passwords**: Argon2 / bcrypt / scrypt via a maintained library; never MD5/SHA-1/plain SHA-256 alone.\n- **Files and URLs**: resolve and confine paths; validate and restrict outbound URLs (SSRF); size limits on uploads.\n- **TLS**: never `verify=False`; keep CA bundles updated; set timeouts.\n- **Dependencies**: pin and audit; review new packages; least-privilege containers.\n- **Errors**: return generic messages to clients, log details server-side; `assert` is not validation.\n- **Regex and parsers**: bound input size; use `defusedxml` for XML.",
+     "title": "Python security checklist"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`eval(\"1 + 2\")` executes arbitrary Python (`__import__(\"os\").system(...)`). For user-supplied expressions use `ast.literal_eval` (literals only), `json.loads`, a real parser, or a restricted expression library. `yaml.load` without `SafeLoader`, `pickle`, `marshal` and `shelve` on untrusted data are the same class of bug.",
+     "title": "eval is never the answer for parsing"
+    }
+   ]
+  },
+  {
+   "id": "ch-13-4",
+   "type": "concept",
+   "title": "Designing APIs and Libraries",
+   "subtopicId": "13-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Whether you ship a package to PyPI or a module used by ten teammates, an API is a promise.\n\n1. **Make the common case short and the dangerous case explicit.** Defaults for the safe behaviour; keyword-only parameters for options (`def fetch(url, *, timeout=5.0, retries=0)`).\n2. **Be consistent**: naming, argument order, return types (return `list` always, not `list` or `None`; raise for errors rather than returning error codes).\n3. **Define the public surface**: `__all__`, a leading underscore for internals, a `py.typed` marker so type checkers read your hints, and docstrings with examples.\n4. **Raise your own exception hierarchy** rooted in one base class, and document what each function raises.\n5. **Evolve without breaking**: deprecate with `warnings.warn(..., DeprecationWarning, stacklevel=2)` for at least one release, follow semantic versioning, and keep a changelog.\n6. **Do not do work at import time**: no network calls, no reading config, no starting threads in module top level."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import warnings\n\n\ndef old_total(prices):\n    warnings.warn(\"old_total() is deprecated, use total()\", DeprecationWarning, stacklevel=2)\n    return total(prices)\n\n\ndef total(prices, *, tax=0.0):\n    return round(sum(prices) * (1 + tax), 2)\n\n\nwith warnings.catch_warnings(record=True) as caught:\n    warnings.simplefilter(\"always\")\n    result = old_total([10, 20])\nprint(result, caught[0].category.__name__, str(caught[0].message))",
+     "title": "Deprecation.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "30.0 DeprecationWarning old_total() is deprecated, use total()",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Design Patterns the Pythonic Way"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Which classic design patterns are unnecessary in Python and why?",
+       "answer": "Singleton (modules are singletons), Strategy and Command (functions are first-class), Iterator (generators), Factory and Builder in their heavy forms (functions, classmethods, keyword arguments and dataclasses), and RAII wrappers (context managers). The idea of each pattern remains; the class machinery usually does not."
+      },
+      {
+       "question": "How do you implement a singleton in Python?",
+       "answer": "The simplest is a module-level object, since a module is imported and executed once. Alternatives: a cached factory function (`@functools.cache`), or `__new__` returning one instance. Prefer injecting a single instance explicitly, which stays testable."
+      },
+      {
+       "question": "When would you use the State pattern?",
+       "answer": "When an object's behaviour depends on a lifecycle (order: new, paid, shipped). A transition table (dict of allowed moves), or an `Enum` with methods, makes legal transitions explicit and testable; separate state classes help only when each state has substantial behaviour."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Pythonic Idioms and Effective Practices"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does \"Pythonic\" mean?",
+       "answer": "Code that uses the language's idioms and conventions: iteration over items, comprehensions and generators, context managers, EAFP, duck typing, standard-library tools and readable names. It is code a Python expert reads without friction, not code that is clever."
+      },
+      {
+       "question": "Why are guard clauses preferred to deep nesting?",
+       "answer": "Returning early for invalid or special cases keeps the main path unindented and the conditions next to their reasons, which reduces cognitive load and bugs. Each branch is a small, testable check."
+      },
+      {
+       "question": "How do you avoid boolean flag arguments?",
+       "answer": "Make the flag keyword-only (`ship(order, *, express=True)`) so call sites read well, use an `Enum` when there are more than two modes, or split into two functions with clear names."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Secure Coding in Python"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you prevent SQL injection in Python?",
+       "answer": "Use parameterised queries (`cursor.execute(\"... WHERE id = %s\", (value,))` or `?` placeholders) or an ORM/query builder, never string formatting, concatenation or f-strings. Parameters keep data out of the SQL text. Also give the database user least privilege."
+      },
+      {
+       "question": "How should passwords be stored?",
+       "answer": "Hashed with a slow, salted, memory-hard algorithm (Argon2id, bcrypt, scrypt) through a maintained library, verifying with the library's constant-time check. Never encrypt them reversibly, never use a fast hash such as SHA-256 alone, and never log them."
+      },
+      {
+       "question": "What is SSRF and how does it relate to Python code?",
+       "answer": "Server-side request forgery: your server fetches a user-supplied URL and is tricked into calling internal services (cloud metadata endpoints, admin ports). In Python it appears in webhooks, URL previews and image fetchers. Restrict schemes, resolve hostnames and block private and link-local addresses, ideally through an allow-list and an egress proxy."
+      },
+      {
+       "question": "Why is `assert` unsuitable for input validation?",
+       "answer": "Assertions are removed when Python runs with `-O`, and they raise `AssertionError`, which is not meant for client errors. Validate explicitly and raise a domain or `ValueError`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Designing APIs and Libraries"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you deprecate a function without breaking users?",
+       "answer": "Keep it working, emit a `DeprecationWarning` with a clear replacement and `stacklevel=2` so the warning points at the caller, document it in the changelog, and remove it in a later major version. Tests should run with warnings as errors so you notice your own use of deprecated APIs."
+      },
+      {
+       "question": "Why prefer keyword-only parameters for options?",
+       "answer": "Call sites become self-documenting (`fetch(url, timeout=3)`), the order of optional parameters can change without breaking callers, and new options can be added later without ambiguity."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

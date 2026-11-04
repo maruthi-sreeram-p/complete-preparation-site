@@ -1,0 +1,275 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-27-1",
+   "type": "concept",
+   "title": "Authentication: Passwords, Tokens and `get_current_user`",
+   "subtopicId": "27-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "**Authentication** answers \"who is this?\"; **authorisation** answers \"may they do this?\". A typical JSON API authenticates with a **bearer token**: the client logs in once with credentials, receives a short-lived signed token (a **JWT**), and sends `Authorization: Bearer <token>` on later requests. The server verifies the signature and expiry without a database lookup, and loads the user only if it needs more than the token's claims."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "sequenceDiagram\n  participant C as Client\n  participant A as API\n  participant D as Database\n  C->>A: POST /auth/login (email, password)\n  A->>D: find user, verify Argon2 hash\n  A-->>C: 200 access_token (JWT, expires in 15 min)\n  C->>A: GET /me  Authorization: Bearer token\n  A->>A: verify signature, exp, issuer\n  A-->>C: 200 profile\n  C->>A: GET /me (expired or tampered token)\n  A-->>C: 401 WWW-Authenticate: Bearer",
+     "title": "Login and token flow"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from datetime import datetime, timedelta, timezone\nfrom typing import Annotated\n\nimport jwt\nfrom fastapi import Depends, FastAPI, HTTPException, status\nfrom fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm\nfrom fastapi.testclient import TestClient\nfrom pwdlib import PasswordHash\nfrom pydantic import BaseModel, EmailStr\n\nSECRET_KEY = \"change-me-in-production-use-a-long-random-value\"      # from the environment in real code\nALGORITHM, ACCESS_MINUTES = \"HS256\", 15\npassword_hasher = PasswordHash.recommended()                          # Argon2id: slow, salted, memory-hard\noauth2 = OAuth2PasswordBearer(tokenUrl=\"/auth/login\")                 # also makes the docs show an \"Authorize\" button\n\nUSERS: dict[str, dict] = {}                                           # a stand-in for the users table\n\n\nclass Register(BaseModel):\n    email: EmailStr\n    password: str\n\n\nclass Token(BaseModel):\n    access_token: str\n    token_type: str = \"bearer\"\n\n\ndef create_token(subject: str, role: str, expires: timedelta) -> str:\n    now = datetime.now(timezone.utc)\n    claims = {\"sub\": subject, \"role\": role, \"iat\": now, \"exp\": now + expires, \"iss\": \"shop-api\"}\n    return jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)\n\n\ndef current_user(token: Annotated[str, Depends(oauth2)]) -> dict:\n    unauthorised = HTTPException(status.HTTP_401_UNAUTHORIZED, \"invalid or expired token\", headers={\"WWW-Authenticate\": \"Bearer\"})\n    try:\n        claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], issuer=\"shop-api\",          # ALWAYS pass the allowed algorithms\n                            options={\"require\": [\"exp\", \"sub\", \"iss\"]})\n    except jwt.PyJWTError:\n        raise unauthorised from None\n    user = USERS.get(claims[\"sub\"])\n    if user is None:\n        raise unauthorised\n    return user\n\n\ndef require_role(*roles: str):                                        # a dependency factory\n    def check(user: Annotated[dict, Depends(current_user)]):\n        if user[\"role\"] not in roles:\n            raise HTTPException(status.HTTP_403_FORBIDDEN, \"insufficient role\")\n        return user\n    return check\n\n\napp = FastAPI()\n\n\n@app.post(\"/auth/register\", status_code=201)\ndef register(data: Register):\n    if data.email in USERS:\n        raise HTTPException(409, \"email already registered\")\n    USERS[data.email] = {\"email\": data.email, \"hash\": password_hasher.hash(data.password), \"role\": \"admin\" if not USERS else \"user\"}\n    return {\"email\": data.email}\n\n\n@app.post(\"/auth/login\", response_model=Token)\ndef login(form: Annotated[OAuth2PasswordRequestForm, Depends()]):    # form fields: username and password\n    user = USERS.get(form.username)\n    # verify against a dummy hash too when the user is unknown, so response time does not reveal which emails exist\n    stored = user[\"hash\"] if user else password_hasher.hash(\"dummy-password\")\n    if not password_hasher.verify(form.password, stored) or user is None:\n        raise HTTPException(status.HTTP_401_UNAUTHORIZED, \"incorrect email or password\", headers={\"WWW-Authenticate\": \"Bearer\"})\n    return Token(access_token=create_token(user[\"email\"], user[\"role\"], timedelta(minutes=ACCESS_MINUTES)))\n\n\n@app.get(\"/me\")\ndef me(user: Annotated[dict, Depends(current_user)]):\n    return {\"email\": user[\"email\"], \"role\": user[\"role\"]}\n\n\n@app.get(\"/admin/users\", dependencies=[Depends(require_role(\"admin\"))])\ndef list_users():\n    return sorted(USERS)\n\n\nclient = TestClient(app)\nclient.post(\"/auth/register\", json={\"email\": \"admin@example.com\", \"password\": \"correct horse\"})\nclient.post(\"/auth/register\", json={\"email\": \"asha@example.com\", \"password\": \"battery staple\"})\nprint(USERS[\"asha@example.com\"][\"hash\"].startswith(\"$argon2id$\"), client.post(\"/auth/register\", json={\"email\": \"asha@example.com\", \"password\": \"x\"}).status_code)\n\nbad = client.post(\"/auth/login\", data={\"username\": \"asha@example.com\", \"password\": \"wrong\"})\nprint(bad.status_code, bad.headers[\"www-authenticate\"], client.post(\"/auth/login\", data={\"username\": \"ghost@example.com\", \"password\": \"x\"}).json())\n\ntoken = client.post(\"/auth/login\", data={\"username\": \"asha@example.com\", \"password\": \"battery staple\"}).json()[\"access_token\"]\nauth = {\"Authorization\": f\"Bearer {token}\"}\nprint(client.get(\"/me\", headers=auth).json(), client.get(\"/me\").status_code)\nprint(client.get(\"/admin/users\", headers=auth).status_code)\n\nadmin_token = client.post(\"/auth/login\", data={\"username\": \"admin@example.com\", \"password\": \"correct horse\"}).json()[\"access_token\"]\nprint(client.get(\"/admin/users\", headers={\"Authorization\": f\"Bearer {admin_token}\"}).json())\n\nexpired = create_token(\"asha@example.com\", \"user\", timedelta(minutes=-1))                   # already expired\ntampered = token[:-4] + (\"AAAA\" if not token.endswith(\"AAAA\") else \"BBBB\")                   # signature no longer matches\nforged = jwt.encode({\"sub\": \"asha@example.com\", \"role\": \"admin\", \"exp\": datetime.now(timezone.utc) + timedelta(hours=1), \"iss\": \"shop-api\"}, \"wrong-key\", algorithm=\"HS256\")\nfor name, bad_token in ((\"expired\", expired), (\"tampered\", tampered), (\"forged\", forged), (\"garbage\", \"abc.def.ghi\")):\n    print(name, client.get(\"/me\", headers={\"Authorization\": f\"Bearer {bad_token}\"}).status_code)\nclaims = jwt.decode(token, options={\"verify_signature\": False})                              # a JWT is only SIGNED, not encrypted\nprint(sorted(claims), claims[\"role\"])",
+     "title": "AuthApp.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True 409\n401 Bearer {'detail': 'incorrect email or password'}\n{'email': 'asha@example.com', 'role': 'user'} 401\n403\n['admin@example.com', 'asha@example.com']\nexpired 401\ntampered 401\nforged 401\ngarbage 401\n['exp', 'iat', 'iss', 'role', 'sub'] user",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The decisions in this code, and why they matter:\n\n1. **Hash passwords with Argon2id** (or bcrypt/scrypt) through a maintained library; never store or log plaintext, never use MD5/SHA-1/plain SHA-256. `pwdlib.PasswordHash.recommended()` picks a safe default and each hash carries its own random salt and parameters.\n2. **JWT claims**: `sub` (who), `exp` (expiry: keep access tokens **short**, 5 to 15 minutes), `iat`, `iss` (issuer), and a role if you need one. **Verify on every request**: signature, `exp` and `iss`.\n3. **Pass `algorithms=[...]` explicitly** when decoding. Libraries that trust the token's own `alg` header have suffered the \"alg: none\" and algorithm-confusion attacks.\n4. **A JWT is signed, not encrypted**: anyone can read the claims (the last line decodes them without the key), so put no secrets in it.\n5. **Do not reveal which part was wrong**: \"incorrect email or password\", the same message and similar timing for unknown users, and a 401 with `WWW-Authenticate: Bearer`.\n6. **HS256 uses one shared secret** (fine when one service both issues and verifies); with several services or third-party issuers use **asymmetric keys** (RS256/ES256): the issuer signs with a private key, everyone else verifies with the public key (JWKS)."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "`SECRET_KEY` must come from the environment or a secret manager, be long and random (`secrets.token_urlsafe(64)`), and never be committed. Leaking it lets an attacker mint valid tokens for any user. Plan for **rotation**: accept the old and new key for one token lifetime (the `kid` header names the key).",
+     "title": "Where the secret key lives"
+    }
+   ]
+  },
+  {
+   "id": "ch-27-2",
+   "type": "concept",
+   "title": "Authorisation: Roles, Ownership and Object-Level Checks",
+   "subtopicId": "27-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Authentication gets you a user; most real vulnerabilities are **authorisation** mistakes. The top API risk in OWASP's API Security Top 10 is **Broken Object Level Authorization (BOLA)**: the endpoint checks that you are logged in but not that *this object is yours* (`GET /orders/1042` works for every user's order id)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import Annotated\n\nfrom fastapi import Depends, FastAPI, Header, HTTPException\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\nORDERS = {1: {\"id\": 1, \"owner\": \"asha\", \"total\": 500}, 2: {\"id\": 2, \"owner\": \"ravi\", \"total\": 900}}\nROLES = {\"asha\": \"user\", \"ravi\": \"user\", \"meera\": \"support\"}\n\n\ndef current_user(x_user: Annotated[str | None, Header()] = None) -> str:       # stands in for the JWT dependency\n    if x_user not in ROLES:\n        raise HTTPException(401, \"authentication required\")\n    return x_user\n\n\ndef get_owned_order(order_id: int, user: Annotated[str, Depends(current_user)]) -> dict:\n    order = ORDERS.get(order_id)\n    if order is None or (order[\"owner\"] != user and ROLES[user] != \"support\"):\n        raise HTTPException(404, \"order not found\")       # 404, not 403: do not reveal that other users' orders exist\n    return order\n\n\n@app.get(\"/orders/{order_id}\")\ndef read_order(order: Annotated[dict, Depends(get_owned_order)]):\n    return order\n\n\n@app.get(\"/orders\")\ndef list_orders(user: Annotated[str, Depends(current_user)]):\n    return [o[\"id\"] for o in ORDERS.values() if o[\"owner\"] == user or ROLES[user] == \"support\"]        # filter in the query, too\n\n\nclient = TestClient(app)\nas_asha, as_ravi, as_support = {\"X-User\": \"asha\"}, {\"X-User\": \"ravi\"}, {\"X-User\": \"meera\"}\nprint(client.get(\"/orders/1\", headers=as_asha).status_code, client.get(\"/orders/1\", headers=as_ravi).status_code,\n      client.get(\"/orders/1\", headers=as_support).status_code, client.get(\"/orders/1\").status_code)\nprint(client.get(\"/orders\", headers=as_asha).json(), client.get(\"/orders\", headers=as_support).json())",
+     "title": "Authorization.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "200 404 200 401\n[1] [1, 2]",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- **Deny by default**: every endpoint needs an explicit rule; a missing check is a hole.\n- **Check the object, not only the role** (BOLA/IDOR): load the resource through a dependency that includes the ownership filter, and apply the same filter to list queries.\n- **Prefer 404 over 403** for objects the caller must not know about.\n- **Mass assignment**: use separate input schemas; never let clients set `role`, `owner_id`, `is_admin`.\n- **Centralise decisions** (a dependency, a policy function) so rules are reviewed in one place, and test them: write tests where user A tries user B's resource.\n- Tokens carry **identity and coarse roles**; fine-grained, changing permissions belong in the database or a policy service, not frozen in a 15-minute token.",
+     "title": "Authorisation rules"
+    }
+   ]
+  },
+  {
+   "id": "ch-27-3",
+   "type": "concept",
+   "title": "Web Security Essentials for APIs",
+   "subtopicId": "27-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "| Risk | What it looks like | Defence in FastAPI/Python |\n| --- | --- | --- |\n| **Broken authentication** | Weak passwords, no lockout, tokens that never expire | Argon2, rate-limit login, short tokens, MFA for sensitive roles |\n| **Injection** | SQL built from strings, shell commands, template injection | ORM or parameters, `subprocess` with lists, validate input |\n| **Excessive data exposure** | Returning the ORM object with `password_hash` | `response_model`, separate schemas |\n| **Mass assignment** | Client sets `is_admin` | Separate create/update schemas, `extra=\"forbid\"` |\n| **Missing rate limits** | Credential stuffing, scraping, expensive endpoints | Gateway or Redis-backed limiter, pagination caps |\n| **SSRF** | Server fetches a user-supplied URL (metadata service!) | Allow-list hosts, block private ranges (Core Python Part 13) |\n| **Security misconfiguration** | Debug on, open CORS, default secrets, verbose errors | Settings validation, explicit CORS origins, generic 500s |\n| **Vulnerable dependencies** | An old library with a known CVE | `pip-audit`, Dependabot, lock files |\n| **Insufficient logging** | No trail of logins, denials, changes | Structured audit logs (without secrets) |\n| **CSRF** | A malicious site makes the browser send your cookie | Not an issue for header-bearer APIs; **is** for cookie sessions: SameSite cookies + CSRF tokens |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from fastapi import FastAPI, Request\nfrom fastapi.middleware.trustedhost import TrustedHostMiddleware\nfrom fastapi.responses import JSONResponse\nfrom fastapi.testclient import TestClient\n\napp = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)               # do not publish docs publicly in production\napp.add_middleware(TrustedHostMiddleware, allowed_hosts=[\"api.example.com\", \"testserver\"])\n\n\n@app.middleware(\"http\")\nasync def security_headers(request: Request, call_next):\n    response = await call_next(request)\n    response.headers.update({\n        \"X-Content-Type-Options\": \"nosniff\",                                   # the browser must not guess content types\n        \"X-Frame-Options\": \"DENY\",                                             # no embedding in frames (clickjacking)\n        \"Referrer-Policy\": \"no-referrer\",\n        \"Strict-Transport-Security\": \"max-age=31536000; includeSubDomains\",    # HTTPS only (set when you terminate TLS)\n        \"Cache-Control\": \"no-store\",                                           # API responses with personal data must not be cached\n    })\n    return response\n\n\n@app.get(\"/ping\")\ndef ping():\n    return {\"pong\": True}\n\n\nclient = TestClient(app)\nr = client.get(\"/ping\")\nprint(r.status_code, {k: v for k, v in r.headers.items() if k.startswith((\"x-\", \"strict\", \"referrer\"))})\nprint(client.get(\"/ping\", headers={\"Host\": \"evil.example\"}).status_code, client.get(\"/docs\").status_code, client.get(\"/openapi.json\").status_code)",
+     "title": "Hardening.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "200 {'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'strict-transport-security': 'max-age=31536000; includeSubDomains'}\n400 404 404",
+     "title": "Output"
+    }
+   ]
+  },
+  {
+   "id": "ch-27-4",
+   "type": "concept",
+   "title": "Observability Basics: Logs, Health Checks and Metrics",
+   "subtopicId": "27-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "You cannot operate what you cannot see. The three signals are **logs** (events), **metrics** (numbers over time) and **traces** (a request's path across services). Start with **structured logs carrying a request ID**, a **health endpoint**, and a few **metrics**."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import json\nimport logging\nimport sys\nimport time\nimport uuid\nfrom contextvars import ContextVar\n\nfrom fastapi import FastAPI, Request, Response\nfrom fastapi.testclient import TestClient\nfrom prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest\n\nrequest_id: ContextVar[str] = ContextVar(\"request_id\", default=\"-\")\n\n\nclass JsonFormatter(logging.Formatter):                                      # one JSON object per line: machines can parse it\n    def format(self, record: logging.LogRecord) -> str:\n        entry = {\"level\": record.levelname, \"logger\": record.name, \"message\": record.getMessage(), \"request_id\": request_id.get()}\n        entry.update(getattr(record, \"extra_fields\", {}))\n        return json.dumps(entry, sort_keys=True)\n\n\nhandler = logging.StreamHandler(sys.stdout)\nhandler.setFormatter(JsonFormatter())\nlog = logging.getLogger(\"shop\")\nlog.addHandler(handler)\nlog.setLevel(logging.INFO)\n\nregistry = CollectorRegistry()\nREQUESTS = Counter(\"http_requests_total\", \"Requests handled\", [\"method\", \"path\", \"status\"], registry=registry)\nLATENCY = Histogram(\"http_request_seconds\", \"Request latency\", [\"path\"], buckets=(0.05, 0.5, 5), registry=registry)\n\napp = FastAPI()\n\n\n@app.middleware(\"http\")\nasync def observe(request: Request, call_next):\n    rid = request.headers.get(\"X-Request-ID\") or uuid.uuid4().hex[:8]            # honour an incoming id, or create one\n    token = request_id.set(rid)\n    try:\n        started = time.perf_counter()\n        response = await call_next(request)\n        route = request.scope.get(\"route\")\n        template = route.path if route else \"unmatched\"                            # label by route TEMPLATE: /orders/{order_id}, not /orders/7\n        REQUESTS.labels(request.method, template, str(response.status_code)).inc()    # (raw URLs would create unbounded label cardinality)\n        LATENCY.labels(template).observe(time.perf_counter() - started)\n        response.headers[\"X-Request-ID\"] = rid                                    # return it so users can quote it in bug reports\n        return response\n    finally:\n        request_id.reset(token)\n\n\n@app.get(\"/orders/{order_id}\")\ndef get_order(order_id: int):\n    log.info(\"order requested\", extra={\"extra_fields\": {\"order_id\": order_id}})\n    return {\"id\": order_id}\n\n\n@app.get(\"/healthz\")                                                             # liveness: the process is up (no dependencies!)\ndef healthz():\n    return {\"status\": \"ok\"}\n\n\n@app.get(\"/readyz\")                                                              # readiness: dependencies are reachable\ndef readyz(response: Response):\n    checks = {\"database\": True, \"cache\": True}\n    if not all(checks.values()):\n        response.status_code = 503\n    return {\"status\": \"ready\" if all(checks.values()) else \"degraded\", \"checks\": checks}\n\n\n@app.get(\"/metrics\")\ndef metrics():\n    return Response(generate_latest(registry), media_type=\"text/plain; version=0.0.4\")\n\n\nclient = TestClient(app)\nclient.get(\"/orders/7\", headers={\"X-Request-ID\": \"abc12345\"})\nclient.get(\"/orders/8\", headers={\"X-Request-ID\": \"def67890\"})          # fixed ids keep the printed log lines reproducible\nclient.get(\"/healthz\")\nprint(client.get(\"/readyz\").json())\nlines = client.get(\"/metrics\").text.splitlines()\nprint([line for line in lines if line.startswith(\"http_requests_total{\")])\nprint([line for line in lines if line.startswith(\"http_request_seconds_count\")])",
+     "title": "Observability.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{\"level\": \"INFO\", \"logger\": \"shop\", \"message\": \"order requested\", \"order_id\": 7, \"request_id\": \"abc12345\"}\n{\"level\": \"INFO\", \"logger\": \"shop\", \"message\": \"order requested\", \"order_id\": 8, \"request_id\": \"def67890\"}\n{'status': 'ready', 'checks': {'database': True, 'cache': True}}\n['http_requests_total{method=\"GET\",path=\"/orders/{order_id}\",status=\"200\"} 2.0', 'http_requests_total{method=\"GET\",path=\"/healthz\",status=\"200\"} 1.0', 'http_requests_total{method=\"GET\",path=\"/readyz\",status=\"200\"} 1.0']\n['http_request_seconds_count{path=\"/orders/{order_id}\"} 2.0', 'http_request_seconds_count{path=\"/healthz\"} 1.0', 'http_request_seconds_count{path=\"/readyz\"} 1.0']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Signal | Tool | The questions it answers |\n| --- | --- | --- |\n| **Logs** | `logging` with JSON (`structlog`, `python-json-logger`), shipped to Loki, ELK or CloudWatch | What happened to this request? Include request ID, user ID, no secrets |\n| **Metrics** | `prometheus_client` (or OpenTelemetry), scraped by Prometheus, shown in Grafana | How many, how fast, how many errors (the RED method: **R**ate, **E**rrors, **D**uration)? |\n| **Traces** | OpenTelemetry (`opentelemetry-instrumentation-fastapi`) | Where did the time go across services? |\n| **Health** | `/healthz` liveness, `/readyz` readiness | Should the orchestrator restart me? Should it send me traffic? |"
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Kubernetes restarts a container when **liveness** fails and stops routing traffic when **readiness** fails. A liveness probe that checks the database turns a database outage into a restart storm of every pod. Keep liveness trivial; put dependency checks in readiness.",
+     "title": "Liveness versus readiness"
+    }
+   ]
+  },
+  {
+   "id": "ch-27-5",
+   "type": "concept",
+   "title": "Shipping: Running FastAPI in Production",
+   "subtopicId": "27-5",
+   "blocks": [
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "# development\nfastapi dev src/shop/main.py                         # auto-reload, debug-friendly\nuvicorn shop.main:app --reload                       # the same through uvicorn directly\n\n# production: several worker PROCESSES to use all cores, each with its own event loop\nuvicorn shop.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips=\"*\"\n# or run one process per container and let Kubernetes scale replicas (common): uvicorn shop.main:app --host 0.0.0.0 --port 8000",
+     "title": "Running the app"
+    },
+    {
+     "type": "markdown",
+     "text": "A production checklist:\n\n| Area | Do this |\n| --- | --- |\n| **Process model** | A few worker processes per host (about one per core) or one per container with many replicas. Threads do not give CPU parallelism (Core Python Part 8) |\n| **Reverse proxy / load balancer** | TLS termination, compression, request size limits, timeouts and rate limits at nginx, Envoy or the cloud load balancer; run uvicorn with `--proxy-headers` so client IPs and schemes are correct |\n| **Configuration** | Environment variables validated at start-up (`pydantic-settings`); secrets from a secret manager; no `.env` in images |\n| **Graceful shutdown** | Handle `SIGTERM`: stop accepting, finish in-flight requests (Uvicorn does), close pools in `lifespan`; set a termination grace period longer than your slowest request |\n| **Timeouts everywhere** | Server, client calls (`httpx` timeout), database statement timeouts |\n| **Health checks** | `/healthz` and `/readyz` wired to the platform |\n| **Database** | Migrations run as a separate release step, not on every container start; pool sizing: `workers × pool_size` must stay below the database's `max_connections` |\n| **Observability** | JSON logs to stdout, metrics, tracing, error tracking (Sentry) with request IDs |\n| **Security** | Docs disabled or protected, CORS origins explicit, dependencies audited and pinned, non-root user in the container |\n| **Docker image** | Small base (`python:3.13-slim`), multi-stage build with `uv`, non-root, `PYTHONUNBUFFERED=1`, a `HEALTHCHECK` (full Dockerfile in the delivery stage) |"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "FROM python:3.13-slim AS build\nCOPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv\nWORKDIR /app\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen --no-dev --no-install-project\nCOPY src ./src\nRUN uv sync --frozen --no-dev\n\nFROM python:3.13-slim\nRUN useradd --create-home app\nWORKDIR /app\nCOPY --from=build /app /app\nENV PATH=\"/app/.venv/bin:$PATH\" PYTHONUNBUFFERED=1\nUSER app\nEXPOSE 8000\nCMD [\"uvicorn\", \"shop.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]",
+     "title": "Dockerfile sketch"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "There is no magic number. For a sync (thread pool) workload: processes ≈ cores, each with a thread pool sized for the I/O wait; for an async workload: processes ≈ cores, each handling thousands of connections on one loop. Then **measure** with a load test, watch CPU, event-loop lag and database connections, and remember each worker has its own connection pool, so pool size times workers must fit the database limit.",
+     "title": "\"How many workers should I run?\""
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Authentication: Passwords, Tokens and `get_current_user`"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why use short-lived access tokens, and how do users stay logged in?",
+       "answer": "A stolen JWT is valid until it expires, and it cannot easily be revoked, so keep its lifetime short. Long sessions use a **refresh token**: an opaque, revocable, rotating token stored server-side that is exchanged for new access tokens. Part 9 of this stage covers it in depth."
+      },
+      {
+       "question": "What is the difference between 401 and 403 in this API?",
+       "answer": "401: no valid credentials (missing, expired or forged token; the response says how to authenticate with `WWW-Authenticate`). 403: the user is authenticated but the role or permission does not allow the action."
+      },
+      {
+       "question": "Why must `jwt.decode` be given the list of allowed algorithms?",
+       "answer": "So the verifier decides which algorithms are acceptable rather than trusting the token's own header. Otherwise an attacker can choose `none` or switch an RSA public key into an HMAC secret and forge tokens."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Authorisation: Roles, Ownership and Object-Level Checks"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is BOLA/IDOR and how do you prevent it?",
+       "answer": "Broken object-level authorisation (insecure direct object reference): an authenticated user reads or changes another user's object by guessing or incrementing an id. Prevent it by checking ownership or permission for **every** object access, loading objects through ownership-aware queries, using unpredictable ids where sensible, and testing cross-user access."
+      },
+      {
+       "question": "Role-based or attribute-based access control?",
+       "answer": "RBAC grants permissions to roles (admin, support, user) and is simple and enough for many systems; ABAC decides from attributes of the user, the resource and the context (\"a manager can approve orders under 10,000 in their own region\"). Real systems combine them: roles for coarse access, attribute rules for object-level decisions."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Web Security Essentials for APIs"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Does a bearer-token API need CSRF protection?",
+       "answer": "Not when the token is sent in the `Authorization` header by your own JavaScript: a malicious site cannot make the browser attach it. CSRF is a problem for **cookie-based** authentication, where the browser sends the cookie automatically; use `SameSite=Lax/Strict`, CSRF tokens and verify the `Origin` header."
+      },
+      {
+       "question": "Why prefer returning generic error messages and 404 for denied objects?",
+       "answer": "Detailed errors (SQL, stack traces, \"user exists\") help attackers enumerate users and internals. Return stable, minimal messages to clients, keep details in server logs with a correlation ID, and avoid confirming that a forbidden resource exists."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Observability Basics: Logs, Health Checks and Metrics"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is a request ID and why do you propagate it?",
+       "answer": "A unique id attached to each incoming request, included in every log line, returned in a response header and forwarded to downstream calls. It lets you find all logs for one user problem, across services, from one string."
+      },
+      {
+       "question": "What is the difference between a liveness and a readiness probe?",
+       "answer": "Liveness says the process is alive (failure means restart it); readiness says it can serve traffic now (failure means remove it from the load balancer without restarting). Readiness checks dependencies; liveness should not."
+      },
+      {
+       "question": "Which metrics would you put on every API?",
+       "answer": "The RED metrics: request **rate**, **errors** (by status class) and **duration** (latency histogram, so you can compute p50, p95, p99), labelled by route template (not raw URL, which explodes cardinality), plus saturation signals such as pool usage and queue depth."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Shipping: Running FastAPI in Production"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why run migrations as a separate step instead of at container start-up?",
+       "answer": "With several replicas starting together, each would try to migrate concurrently (locks, races), a failed migration would crash-loop every pod, and rolling back code would not roll back the schema. A single, deliberate release step (a job or pipeline stage) runs migrations once, before or after the rollout as planned."
+      },
+      {
+       "question": "Why do you need a reverse proxy in front of uvicorn?",
+       "answer": "To terminate TLS, handle slow clients and request-size limits, serve static files, compress, balance across processes and replicas, and apply timeouts and rate limits, so the Python process only does application work. Run uvicorn with `--proxy-headers` so it trusts the forwarded client information from your proxy."
+      },
+      {
+       "question": "What does graceful shutdown involve?",
+       "answer": "On `SIGTERM` the server stops accepting new connections, finishes in-flight requests, runs the `lifespan` shutdown code (close pools and clients), then exits before the platform's grace period expires. Without it, deployments drop requests."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,240 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-14-1",
+   "type": "concept",
+   "title": "How to Work Through the Projects",
+   "subtopicId": "14-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Reading teaches recognition; **building** teaches recall. Each project below is a complete, small program with a specification, a reference solution and a test suite (as `assert`s, so every listing is verified when this page is built). Use them like this:\n\n1. **Read the requirements only.** Close the page and build your own version in a new folder. Time-box it: 60 to 90 minutes.\n2. **Write the tests first for the tricky rules** (overdraft, expiry, ordering), then the code.\n3. **Compare with the reference solution.** Do not copy: note what differs and why.\n4. **Do the extensions.** They are what turns the exercise into interview material.\n5. **Explain the design aloud** for five minutes, as if to an interviewer: data structures, invariants, failure modes, complexity, what you would change at 100x the scale.\n\n| Project | Skills it exercises | Part |\n| --- | --- | --- |\n| A. Bank account manager | Classes, dataclasses, exceptions, money as integers, atomic transfers | 2, 3, 5 |\n| B. Log file analyzer | Files, regex, generators, `Counter`, statistics, formatting | 4, 5, 6, 7 |\n| C. Concurrent order processor | Threads, locks, queues, idempotency, invariants | 8 |\n| D. In-memory key-value store | Data structures, time, TTL and LRU eviction, snapshots, a command parser | 6, 3 |\n\nEach project is a single file so it is easy to run: `python bank.py`. In a real repository you would split it into a package with a `tests/` folder and run `pytest` (Part 12)."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Type-hint public functions. Use `dataclass(frozen=True)` for records. Raise specific exceptions with helpful messages. Keep I/O at the edges, logic in pure functions. Inject the clock and random source so tests are deterministic. Write the `assert`s as a test list before the implementation.",
+     "title": "Habits to practise in every project"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-2",
+   "type": "concept",
+   "title": "Project A: A Bank Account Manager",
+   "subtopicId": "14-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Requirements.** Accounts have an id, an owner and a balance. Operations: deposit, withdraw, transfer, statement. Rules: amounts are positive; a withdrawal may not take the balance below zero unless the account has an agreed overdraft limit; a transfer either completes completely or changes nothing; every successful operation is recorded in an immutable transaction log. **Never use floats for money**: store integer paise."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from dataclasses import dataclass, field\nfrom itertools import count\nfrom threading import RLock\n\n\nclass BankError(Exception):\n    \"\"\"Base class: callers can catch every banking failure with one except.\"\"\"\n\n\nclass InsufficientFunds(BankError):\n    def __init__(self, account_id, needed, available):\n        super().__init__(f\"account {account_id}: need {needed / 100:.2f}, available {available / 100:.2f}\")\n\n\nclass UnknownAccount(BankError):\n    pass\n\n\n@dataclass(frozen=True)\nclass Transaction:\n    number: int\n    kind: str                # \"deposit\", \"withdraw\", \"transfer-in\", \"transfer-out\"\n    amount: int              # paise\n    balance_after: int\n\n\n@dataclass\nclass Account:\n    id: str\n    owner: str\n    overdraft_limit: int = 0\n    balance: int = 0\n    history: list[Transaction] = field(default_factory=list)\n\n    def _record(self, number, kind, amount):\n        self.history.append(Transaction(number, kind, amount, self.balance))\n\n    def statement(self):\n        lines = [f\"{t.number:>3} {t.kind:<13} {t.amount / 100:>10.2f} {t.balance_after / 100:>10.2f}\" for t in self.history]\n        return \"\\n\".join([f\"Statement for {self.owner} ({self.id})\", *lines])\n\n\nclass Bank:\n    def __init__(self):\n        self._accounts: dict[str, Account] = {}\n        self._numbers = count(1)\n        self._lock = RLock()                                  # one lock keeps multi-account operations atomic\n\n    def open(self, account_id, owner, overdraft_limit=0):\n        with self._lock:\n            if account_id in self._accounts:\n                raise BankError(f\"account {account_id} already exists\")\n            self._accounts[account_id] = Account(account_id, owner, overdraft_limit)\n            return self._accounts[account_id]\n\n    def _get(self, account_id):\n        try:\n            return self._accounts[account_id]\n        except KeyError:\n            raise UnknownAccount(account_id) from None\n\n    @staticmethod\n    def _positive(amount):\n        if not isinstance(amount, int) or amount <= 0:\n            raise ValueError(\"amount must be a positive integer number of paise\")\n\n    def deposit(self, account_id, amount):\n        self._positive(amount)\n        with self._lock:\n            account = self._get(account_id)\n            account.balance += amount\n            account._record(next(self._numbers), \"deposit\", amount)\n\n    def withdraw(self, account_id, amount):\n        self._positive(amount)\n        with self._lock:\n            account = self._get(account_id)\n            if account.balance - amount < -account.overdraft_limit:\n                raise InsufficientFunds(account_id, amount, account.balance + account.overdraft_limit)\n            account.balance -= amount\n            account._record(next(self._numbers), \"withdraw\", amount)\n\n    def transfer(self, source_id, target_id, amount):\n        self._positive(amount)\n        with self._lock:                                      # validate everything BEFORE changing anything\n            source, target = self._get(source_id), self._get(target_id)\n            if source is target:\n                raise BankError(\"cannot transfer to the same account\")\n            if source.balance - amount < -source.overdraft_limit:\n                raise InsufficientFunds(source_id, amount, source.balance + source.overdraft_limit)\n            number = next(self._numbers)\n            source.balance -= amount\n            target.balance += amount\n            source._record(number, \"transfer-out\", amount)\n            target._record(number, \"transfer-in\", amount)\n\n    def total(self):\n        with self._lock:\n            return sum(a.balance for a in self._accounts.values())\n\n\nbank = Bank()\nasha = bank.open(\"A-1\", \"Asha\")\nravi = bank.open(\"R-1\", \"Ravi\", overdraft_limit=50_00)\nbank.deposit(\"A-1\", 1000_00)\nbank.withdraw(\"A-1\", 250_50)\nbank.transfer(\"A-1\", \"R-1\", 300_00)\nbank.withdraw(\"R-1\", 340_00)                                  # uses the overdraft: balance -40.00\n\nassert (asha.balance, ravi.balance) == (449_50, -40_00)\nassert bank.total() == 1000_00 - 250_50 - 340_00          # transfers move money, only deposits and withdrawals change the total\n\nfor bad in (lambda: bank.withdraw(\"A-1\", 10_000_00), lambda: bank.withdraw(\"R-1\", 20_00),\n            lambda: bank.transfer(\"A-1\", \"X-9\", 1_00), lambda: bank.deposit(\"A-1\", -5), lambda: bank.deposit(\"A-1\", 12.5)):\n    try:\n        bad()\n        raise AssertionError(\"expected a failure\")\n    except (BankError, ValueError):\n        pass\n\nbefore = (asha.balance, ravi.balance)\ntry:\n    bank.transfer(\"A-1\", \"R-1\", 9_999_00)\nexcept InsufficientFunds as error:\n    print(\"rejected:\", error)\nassert (asha.balance, ravi.balance) == before                 # a failed transfer changed nothing\nassert [t.kind for t in asha.history] == [\"deposit\", \"withdraw\", \"transfer-out\"]\nprint(asha.statement())",
+     "title": "Bank.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "rejected: account A-1: need 9999.00, available 449.50\nStatement for Asha (A-1)\n  1 deposit          1000.00    1000.00\n  2 withdraw          250.50     749.50\n  3 transfer-out      300.00     449.50",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Design notes.** Integers avoid float drift; validation happens **before** mutation, so a failed transfer cannot leave half an update; an `RLock` around every mutation makes the operations atomic across threads; the transaction log is append-only and immutable; one `BankError` base lets an API layer map all domain errors to a single HTTP 4xx handler.\n\n**Extensions.** (1) Interest: add `apply_monthly_interest()` using `Decimal` and banker's rounding, and explain why. (2) Idempotent transfers: accept an `idempotency_key` and make repeats a no-op. (3) Persist accounts to SQLite through a repository interface and run the same tests against the fake and the real one. (4) Expose it as a FastAPI service (web stage) with `POST /transfers`. (5) Deadlock thought-experiment: if you used one lock **per account** instead of one global lock, how would you order acquisition?"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"How do you make a money transfer safe?\" Validate first, mutate second, in one atomic unit (a lock here; a **database transaction** in a real system); never use floats; record an immutable ledger; make retries idempotent; and explain that with two services you need a saga or outbox, since one lock no longer spans both.",
+     "title": "The question behind this project"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-3",
+   "type": "concept",
+   "title": "Project B: A Log File Analyzer",
+   "subtopicId": "14-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Requirements.** Read a web-server log, one entry per line, `timestamp level service message [key=value ...]`. Report: entries per level; the five most frequent error messages; the slowest five requests (`latency=...ms`); p50 and p95 latency; errors per service; and the busiest minute. It must **stream** the file (it may be gigabytes) and ignore malformed lines while counting them."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import io\nimport re\nimport statistics\nfrom collections import Counter, defaultdict\nfrom dataclasses import dataclass\nfrom typing import Iterable, Iterator\n\nLINE = re.compile(r\"^(?P<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}):\\d{2} (?P<level>[A-Z]+) (?P<service>[\\w-]+) (?P<message>.*?)(?: latency=(?P<latency>\\d+)ms)?$\")\n\n\n@dataclass(frozen=True)\nclass Entry:\n    minute: str\n    level: str\n    service: str\n    message: str\n    latency_ms: int | None\n\n\ndef parse(lines: Iterable[str], bad: list[str]) -> Iterator[Entry]:\n    \"\"\"A generator: constant memory however large the input.\"\"\"\n    for line in lines:\n        match = LINE.match(line.rstrip(\"\\n\"))\n        if not match:\n            if line.strip():\n                bad.append(line.strip())\n            continue\n        latency = match[\"latency\"]\n        yield Entry(match[\"ts\"], match[\"level\"], match[\"service\"], match[\"message\"], int(latency) if latency else None)\n\n\ndef analyse(entries: Iterable[Entry]):\n    levels, errors, per_minute = Counter(), Counter(), Counter()\n    by_service_errors = defaultdict(int)\n    latencies, requests = [], []\n    for e in entries:                                   # ONE pass over the data\n        levels[e.level] += 1\n        per_minute[e.minute] += 1\n        if e.level == \"ERROR\":\n            errors[e.message] += 1\n            by_service_errors[e.service] += 1\n        if e.latency_ms is not None:\n            latencies.append(e.latency_ms)\n            requests.append(e)\n    cuts = statistics.quantiles(latencies, n=100, method=\"inclusive\")\n    return {\n        \"levels\": dict(levels),\n        \"top_errors\": errors.most_common(2),\n        \"errors_by_service\": dict(by_service_errors),\n        \"p50\": cuts[49], \"p95\": cuts[94],\n        \"slowest\": [(e.message, e.latency_ms) for e in sorted(requests, key=lambda r: r.latency_ms, reverse=True)[:3]],\n        \"busiest_minute\": per_minute.most_common(1)[0],\n    }\n\n\nLOG = \"\"\"\\\n2026-11-04 10:00:01 INFO api GET /items latency=42ms\n2026-11-04 10:00:07 INFO api GET /items/7 latency=35ms\n2026-11-04 10:00:12 ERROR payments timeout calling bank\n2026-11-04 10:01:03 INFO api POST /orders latency=310ms\nthis line is garbage\n2026-11-04 10:01:09 ERROR payments timeout calling bank\n2026-11-04 10:01:15 WARN api slow response GET /search latency=900ms\n2026-11-04 10:01:44 ERROR api database connection reset\n2026-11-04 10:02:00 INFO api GET /items latency=40ms\n2026-11-04 10:02:30 INFO api GET /health latency=3ms\n\"\"\"\n\nbad: list[str] = []\nreport = analyse(parse(io.StringIO(LOG), bad))\n\nassert report[\"levels\"] == {\"INFO\": 5, \"ERROR\": 3, \"WARN\": 1}\nassert report[\"top_errors\"][0] == (\"timeout calling bank\", 2)\nassert report[\"errors_by_service\"] == {\"payments\": 2, \"api\": 1}\nassert report[\"slowest\"][0] == (\"slow response GET /search\", 900)\nassert report[\"busiest_minute\"] == (\"2026-11-04 10:01\", 4)\nassert bad == [\"this line is garbage\"]\nassert 3 < report[\"p95\"] <= 900\n\nfor key, value in report.items():\n    print(f\"{key:<18} {value}\")\nprint(\"malformed lines skipped:\", len(bad))",
+     "title": "LogAnalyzer.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "levels             {'INFO': 5, 'ERROR': 3, 'WARN': 1}\ntop_errors         [('timeout calling bank', 2), ('database connection reset', 1)]\nerrors_by_service  {'payments': 2, 'api': 1}\np50                41.0\np95                752.5\nslowest            [('slow response GET /search', 900), ('POST /orders', 310), ('GET /items', 42)]\nbusiest_minute     ('2026-11-04 10:01', 4)\nmalformed lines skipped: 1",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Design notes.** `parse` is a generator and `analyse` consumes it once, so memory is O(distinct messages), not O(lines). The regex has **named groups** and one optional trailing group; `Counter.most_common`, `defaultdict` and `statistics.quantiles` replace hand-written loops. Malformed input is *counted and reported*, never silently dropped and never fatal.\n\n**Extensions.** (1) Add a command line (`argparse`: file path, `--since`, `--level`, `--format json|table`) and read `-` as standard input. (2) Handle gzip files (`gzip.open(path, \"rt\")`) and rotate through several files lazily. (3) Compute p95 in constant memory with a streaming algorithm (t-digest or a fixed histogram) and compare with the exact value. (4) Parse in parallel with `ProcessPoolExecutor` by splitting the file on line boundaries, and measure when it helps. (5) Emit Prometheus metrics instead of a report."
+    }
+   ]
+  },
+  {
+   "id": "ch-14-4",
+   "type": "concept",
+   "title": "Project C: A Concurrent Order Processor",
+   "subtopicId": "14-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Requirements.** Orders arrive on a queue from many producers; a pool of workers processes them. A worker reserves stock, charges (simulated) payment and records the result. Rules: **never oversell**; the same order delivered twice (at-least-once delivery) must be processed **once** (idempotency); failures of the payment step must **release** the reserved stock; shutdown must drain the queue."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import queue\nimport random\nimport threading\nfrom collections import Counter\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Order:\n    id: str\n    sku: str\n    quantity: int\n\n\nclass Inventory:\n    def __init__(self, stock):\n        self._stock = dict(stock)\n        self._lock = threading.Lock()\n\n    def reserve(self, sku, quantity):\n        with self._lock:                                 # check-then-act must be ONE critical section\n            if self._stock.get(sku, 0) < quantity:\n                return False\n            self._stock[sku] -= quantity\n            return True\n\n    def release(self, sku, quantity):\n        with self._lock:\n            self._stock[sku] += quantity\n\n    def snapshot(self):\n        with self._lock:\n            return dict(self._stock)\n\n\nclass Processor:\n    def __init__(self, inventory, payment, workers=4):\n        self.inventory, self.payment = inventory, payment\n        self.orders = queue.Queue()\n        self.results = {}                                # order id -> outcome\n        self.duplicates = []\n        self._lock = threading.Lock()\n        self._threads = [threading.Thread(target=self._work) for _ in range(workers)]\n\n    def start(self):\n        for t in self._threads:\n            t.start()\n\n    def submit(self, order):\n        self.orders.put(order)\n\n    def stop(self):\n        for _ in self._threads:\n            self.orders.put(None)                        # one poison pill per worker\n        for t in self._threads:\n            t.join()                                     # the queue is drained before the workers exit\n\n    def _work(self):\n        while (order := self.orders.get()) is not None:\n            with self._lock:                             # idempotency: claim the order id atomically\n                if order.id in self.results:                     # duplicate delivery: keep the first outcome\n                    self.duplicates.append(order.id)\n                    continue\n                self.results[order.id] = \"processing\"\n            outcome = self._process(order)\n            with self._lock:\n                self.results[order.id] = outcome\n\n    def _process(self, order):\n        if not self.inventory.reserve(order.sku, order.quantity):\n            return \"out-of-stock\"\n        try:\n            self.payment(order)\n        except Exception:\n            self.inventory.release(order.sku, order.quantity)       # compensate: never leak reserved stock\n            return \"payment-failed\"\n        return \"confirmed\"\n\n\ninitial = {\"pen\": 50, \"ink\": 10}\ninventory = Inventory(initial)\nrng = random.Random(7)                                    # seeded: the same orders every run\n\n\ndef flaky_payment(order):\n    if order.id.endswith(\"13\"):\n        raise RuntimeError(\"card declined\")\n\n\nprocessor = Processor(inventory, flaky_payment, workers=4)\nprocessor.start()\norders = [Order(f\"O-{i}\", rng.choice([\"pen\", \"ink\"]), rng.randint(1, 3)) for i in range(60)]\nfor order in orders:\n    processor.submit(order)\nfor order in orders[:5]:                                  # at-least-once delivery: the first five arrive twice\n    processor.submit(order)\nprocessor.stop()\n\noutcomes = Counter(processor.results.values())\nsold = Counter()\nfor order in orders:\n    if processor.results[order.id] == \"confirmed\":\n        sold[order.sku] += order.quantity\nremaining = inventory.snapshot()\n\nassert len(processor.results) == 60 and \"processing\" not in outcomes\nassert all(remaining[sku] >= 0 for sku in initial)                         # never oversold\nassert all(sold[sku] + remaining[sku] == initial[sku] for sku in initial)  # every unit is accounted for\nassert sorted(processor.duplicates) == sorted(o.id for o in orders[:5])              # duplicates were ignored, not re-processed\nassert processor.results[\"O-13\"] in {\"payment-failed\", \"out-of-stock\"}          # which one depends on timing, never \"confirmed\"\nassert outcomes[\"out-of-stock\"] > 0                                         # demand exceeds stock, so some orders must lose\nprint(\"some orders confirmed, some lost the race for stock:\", {\"confirmed\", \"out-of-stock\"} <= set(outcomes))\nprint(\"never oversold:\", all(remaining[s] >= 0 for s in initial), \"| units conserved:\", all(sold[s] + remaining[s] == initial[s] for s in initial))\nprint(\"duplicate deliveries ignored:\", len(processor.duplicates))",
+     "title": "OrderProcessor.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "some orders confirmed, some lost the race for stock: True\nnever oversold: True | units conserved: True\nduplicate deliveries ignored: 5",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The program prints **invariants**, not which orders won the last units, because that depends on thread timing; a concurrent program is verified by properties that must hold on **every** interleaving. Notice the design choices: one lock makes each stock check-and-decrement atomic; the order id is *claimed* before processing (idempotency); the compensation (`release`) runs when payment fails; poison pills let workers drain and exit.\n\n**Extensions.** (1) Replace threads with `asyncio` and `asyncio.Queue`, using an `asyncio.Lock`, and compare. (2) Add a retry with exponential backoff and jitter for transient payment errors only. (3) Add a **dead-letter queue** for orders that fail repeatedly. (4) Make the idempotency store durable (SQLite or Redis `SET NX`), and discuss why an in-memory dictionary is not enough across restarts. (5) Run 8 workers under a stress loop and prove the invariants still hold; remove the lock and watch them fail."
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "Replace the `queue.Queue` with a Kafka or RabbitMQ consumer and the code is an order service: at-least-once delivery means duplicates, so handlers must be idempotent; failed steps need compensation; shutdown must drain in-flight work. The Kafka and Celery parts of this tree build on exactly this structure.",
+     "title": "This is the shape of every message consumer"
+    }
+   ]
+  },
+  {
+   "id": "ch-14-5",
+   "type": "concept",
+   "title": "Project D: An In-Memory Key-Value Store",
+   "subtopicId": "14-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Requirements.** A Redis-like store: `SET`, `GET`, `DEL`, `INCR`, `EXPIRE`/`TTL`, a maximum size with **LRU eviction**, `SNAPSHOT` to disk and restore, and a text command interface (`execute(\"SET name asha\")`). It must be thread-safe, and its time source must be **injectable** so expiry is testable without sleeping."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import json\nimport threading\nimport time\nfrom collections import OrderedDict\nfrom pathlib import Path\nfrom typing import Callable\n\n\nclass KeyValueStore:\n    def __init__(self, max_items: int = 1000, clock: Callable[[], float] = time.monotonic):\n        self._data: OrderedDict[str, str] = OrderedDict()      # order = recency: oldest first\n        self._expires: dict[str, float] = {}\n        self._max, self._clock = max_items, clock\n        self._lock = threading.RLock()\n\n    # ---- internals (call with the lock held)\n    def _alive(self, key):\n        deadline = self._expires.get(key)\n        if deadline is not None and self._clock() >= deadline:\n            self._data.pop(key, None)\n            del self._expires[key]                            # lazy expiry: removed when touched\n            return False\n        return key in self._data\n\n    # ---- commands\n    def set(self, key, value, ttl: float | None = None):\n        with self._lock:\n            self._data[key] = str(value)\n            self._data.move_to_end(key)\n            if ttl is None:\n                self._expires.pop(key, None)\n            else:\n                self._expires[key] = self._clock() + ttl\n            while len(self._data) > self._max:                # evict the least recently used\n                oldest, _ = self._data.popitem(last=False)\n                self._expires.pop(oldest, None)\n\n    def get(self, key):\n        with self._lock:\n            if not self._alive(key):\n                return None\n            self._data.move_to_end(key)\n            return self._data[key]\n\n    def delete(self, key):\n        with self._lock:\n            existed = self._alive(key)\n            self._data.pop(key, None)\n            self._expires.pop(key, None)\n            return existed\n\n    def incr(self, key, by=1):\n        with self._lock:                                      # read-modify-write in ONE critical section\n            current = int(self.get(key) or 0)\n            self.set(key, current + by, None if key not in self._expires else self._expires[key] - self._clock())\n            return current + by\n\n    def ttl(self, key):\n        with self._lock:\n            if not self._alive(key):\n                return -2                                     # Redis convention: -2 missing, -1 no expiry\n            deadline = self._expires.get(key)\n            return -1 if deadline is None else round(deadline - self._clock())\n\n    def snapshot(self, path: Path):\n        with self._lock:\n            now = self._clock()\n            live = {k: self._data[k] for k in list(self._data) if self._alive(k)}      # list(): _alive may delete entries\n            ttls = {k: self._expires[k] - now for k in live if k in self._expires}\n            path.write_text(json.dumps({\"data\": live, \"ttl\": ttls}), encoding=\"utf-8\")\n\n    @classmethod\n    def restore(cls, path: Path, **kwargs):\n        store = cls(**kwargs)\n        saved = json.loads(path.read_text(encoding=\"utf-8\"))\n        for key, value in saved[\"data\"].items():\n            store.set(key, value, saved[\"ttl\"].get(key))\n        return store\n\n    def execute(self, line: str) -> str:\n        \"\"\"A tiny text protocol: SET k v [EX seconds] | GET k | DEL k | INCR k | TTL k\"\"\"\n        command, *args = line.split()\n        match command.upper(), args:\n            case \"SET\", [key, value]:\n                self.set(key, value)\n                return \"OK\"\n            case \"SET\", [key, value, \"EX\", seconds]:\n                self.set(key, value, float(seconds))\n                return \"OK\"\n            case \"GET\", [key]:\n                value = self.get(key)\n                return \"(nil)\" if value is None else value\n            case \"DEL\", [key]:\n                return str(int(self.delete(key)))\n            case \"INCR\", [key]:\n                return str(self.incr(key))\n            case \"TTL\", [key]:\n                return str(self.ttl(key))\n            case _:\n                return f\"ERR unknown or malformed command: {line!r}\"\n\n\nclass FakeClock:                                               # tests move time forward without sleeping\n    def __init__(self):\n        self.now = 1000.0\n\n    def __call__(self):\n        return self.now\n\n\nclock = FakeClock()\nkv = KeyValueStore(max_items=3, clock=clock)\n\nassert kv.execute(\"SET name asha\") == \"OK\" and kv.execute(\"GET name\") == \"asha\"\nassert kv.execute(\"INCR visits\") == \"1\" and kv.execute(\"INCR visits\") == \"2\"\nassert kv.execute(\"DEL missing\") == \"0\" and kv.execute(\"GET missing\") == \"(nil)\"\nassert kv.execute(\"FLY away\").startswith(\"ERR\")\n\nkv.execute(\"SET session abc EX 30\")\nassert kv.execute(\"TTL session\") == \"30\"\nclock.now += 31\nassert kv.execute(\"GET session\") == \"(nil)\" and kv.execute(\"TTL session\") == \"-2\"        # expired without sleeping\n\nkv.set(\"a\", 1); kv.set(\"b\", 2); kv.set(\"c\", 3)\nkv.get(\"a\")                                                    # \"a\" becomes the most recently used\nkv.set(\"d\", 4)                                                 # over capacity: \"b\" is the least recently used\nassert kv.get(\"b\") is None and kv.get(\"a\") == \"1\" and kv.get(\"d\") == \"4\"\n\nkv.set(\"temp\", \"x\", ttl=100)\npath = Path(\"dump.json\")\nkv.snapshot(path)\nclone = KeyValueStore.restore(path, max_items=10, clock=clock)\nassert clone.get(\"temp\") == \"x\" and clone.ttl(\"temp\") == 100\n\nthreads = [threading.Thread(target=lambda: [clone.incr(\"counter\") for _ in range(500)]) for _ in range(4)]\nfor t in threads: t.start()\nfor t in threads: t.join()\nassert clone.get(\"counter\") == \"2000\"                          # no lost updates\n\nfor command in (\"SET city pune\", \"INCR hits\", \"INCR hits\", \"GET city\", \"GET hits\", \"TTL city\"):\n    print(f\"> {command:<14} {clone.execute(command)}\")\nprint(\"all checks passed\")",
+     "title": "KeyValueStore.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "> SET city pune  OK\n> INCR hits      1\n> INCR hits      2\n> GET city       pune\n> GET hits       2\n> TTL city       -1\nall checks passed",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Design notes.** An `OrderedDict` is both the dictionary and the recency list, so `get` and `set` are O(1) with `move_to_end` and eviction is `popitem(last=False)`. **Lazy expiry** (check on access) is how Redis starts; real Redis also samples keys in the background so memory from untouched expired keys is reclaimed. The injected clock makes time-dependent behaviour fast and deterministic to test. One re-entrant lock keeps `incr` atomic.\n\n**Extensions.** (1) Add a **write-ahead log**: append every mutation to a file before applying it, and rebuild state on start by replaying; discuss `fsync` cost versus durability. (2) Add `LPUSH`/`LRANGE` list values and `HSET` hashes with a type-error rule. (3) Serve the protocol over TCP with `asyncio.start_server` (Part 9) and try it with `telnet`. (4) Implement active expiry with a background `asyncio` task or a min-heap of deadlines. (5) Shard keys across several stores with consistent hashing and discuss rebalancing."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "\"Design an LRU cache\" (here), \"Design a rate limiter\" (a TTL counter per key), \"Design a distributed cache\" (shard with consistent hashing, replicate for availability, choose eviction and expiry), \"How does Redis expire keys?\" (lazy plus sampled active expiry), \"How does Redis persist?\" (RDB snapshots and the append-only log, which is the snapshot and write-ahead log extensions above).",
+     "title": "Design questions this project prepares for"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Project A: A Bank Account Manager"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why store money as integers?",
+       "answer": "Binary floats cannot represent most decimal amounts exactly, so totals drift and rounding differs between systems. Integers of the smallest unit (paise, cents) or `Decimal` give exact arithmetic that reconciles with the ledger."
+      },
+      {
+       "question": "How would you make `transfer` safe if each account had its own lock?",
+       "answer": "Acquire both locks in a global order (for example sorted by account id) so two opposite transfers cannot each hold one lock and wait for the other, release in a `finally`, and keep validation and mutation inside the locked section."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Project B: A Log File Analyzer"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why write `parse` as a generator?",
+       "answer": "A generator reads and yields one line at a time, so memory stays constant for any file size, processing starts immediately, and stages compose (parse, filter, aggregate) without intermediate lists. A list-returning function would load the whole file."
+      },
+      {
+       "question": "How would you compute the p95 of latency over billions of entries?",
+       "answer": "You cannot keep every value. Use a streaming quantile sketch (t-digest, HdrHistogram) or fixed-width histogram buckets, accept a small bounded error, and merge sketches from parallel workers. Exact quantiles need sorting or selection over all data."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Project C: A Concurrent Order Processor"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does the program check invariants instead of exact outcomes?",
+       "answer": "Thread scheduling is non-deterministic, so which order grabs the last unit varies between runs. Correctness for concurrent code is expressed as properties that must always hold (no overselling, conservation of units, no duplicate processing), and tests assert those."
+      },
+      {
+       "question": "How do you make a consumer idempotent?",
+       "answer": "Record each processed message id (or a natural idempotency key) in durable storage atomically with the side effect, and skip ids already seen. Use a unique constraint or a conditional write (`INSERT ... ON CONFLICT DO NOTHING`, Redis `SET NX`) so two workers cannot both claim it."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Project D: An In-Memory Key-Value Store"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What data structures give O(1) get, set and LRU eviction?",
+       "answer": "A hash map for lookup combined with a doubly linked list ordered by recency, so a touched key moves to one end and the other end is evicted. `OrderedDict` provides both in one structure in Python."
+      },
+      {
+       "question": "Why inject the clock into the store?",
+       "answer": "Tests can set the time instead of sleeping, so expiry tests are instant and deterministic, and the behaviour at exact boundaries (the instant a key expires) can be checked precisely. The same trick applies to randomness, UUIDs and any non-deterministic dependency."
+      },
+      {
+       "question": "What is lazy versus active expiry?",
+       "answer": "Lazy expiry checks a key's deadline when it is accessed and removes it then; it costs nothing for keys nobody reads but leaves their memory occupied. Active expiry runs a background process that scans or samples keys (or uses a heap of deadlines) and reclaims memory proactively. Real systems combine both."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

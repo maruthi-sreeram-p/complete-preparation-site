@@ -1,0 +1,399 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-24-1",
+   "type": "concept",
+   "title": "What a Web Framework Does",
+   "subtopicId": "24-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "A web framework turns **HTTP requests into Python function calls** and **return values into HTTP responses**. Underneath, a client sends a request (method, path, headers, optional body); a server program parses it and hands it to your code; your code returns a status code, headers and a body."
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "GET /items/42?verbose=true HTTP/1.1          <- request line: method, path, query string\nHost: api.example.com                        <- headers\nAccept: application/json\n                                              <- blank line, then an optional body\nHTTP/1.1 200 OK                              <- status line\nContent-Type: application/json               <- response headers\n{\"id\": 42, \"name\": \"pen\"}                    <- response body"
+    },
+    {
+     "type": "markdown",
+     "text": "| Concept | Meaning |\n| --- | --- |\n| **Method** | `GET` read, `POST` create, `PUT` replace, `PATCH` partial update, `DELETE` remove. `GET` must be safe (no side effects) |\n| **Status codes** | 2xx success (200 OK, 201 Created, 204 No Content), 3xx redirect, **4xx client error** (400, 401, 403, 404, 409, 422, 429), **5xx server error** (500, 502, 503) |\n| **Headers** | Metadata: `Content-Type`, `Authorization`, `Cache-Control`, `ETag` |\n| **Idempotent** | Repeating the call has the same effect as once: `GET`, `PUT`, `DELETE` are; `POST` is not |\n\n### WSGI and ASGI: how Python servers talk to frameworks\n\nA Python web **server** (Gunicorn, Uvicorn) and a **framework** (Django, Flask, FastAPI) need a shared contract:\n\n| Standard | Style | Servers | Frameworks |\n| --- | --- | --- | --- |\n| **WSGI** (PEP 3333) | Synchronous: one request per worker thread or process, a plain function `app(environ, start_response)` | Gunicorn, uWSGI, Waitress | Flask, Django (classic) |\n| **ASGI** | Asynchronous: coroutines, **WebSockets** and long-lived connections, `async def app(scope, receive, send)` | Uvicorn, Hypercorn, Daphne, Granian | **FastAPI**, Starlette, Django (async), Quart |\n\n### Choosing a framework\n\n| | **FastAPI** | **Django** | **Flask** |\n| --- | --- | --- | --- |\n| Style | API-first, async-friendly, type-hint driven | \"Batteries included\": ORM, admin, auth, templates, forms | Micro-framework: you pick the pieces |\n| Validation and docs | **Automatic** from type hints (Pydantic) and OpenAPI | Forms, DRF serializers | Manual or extensions |\n| Database | Your choice (SQLAlchemy usual) | Built-in ORM and migrations | Your choice |\n| Best for | JSON APIs, microservices, ML back ends | Full web apps, CMS, admin-heavy products, large teams | Small services, prototypes, learning |\n| Learning curve | Low to medium | Medium (many concepts) | Low |\n\nThis tree teaches **FastAPI first** (the modern API default), then Django and Flask. The ideas (routing, validation, dependency injection, persistence, security, testing) carry across all three."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Two reasons. It runs on ASGI with an event loop, so one process serves many concurrent I/O-bound requests (Part 9 of Core Python), and Pydantic v2's validation core is written in Rust. But the framework's speed is rarely your bottleneck: database queries and external calls are. \"Fast to develop\" (types give you validation, serialisation and docs for free) is the bigger win.",
+     "title": "Why is FastAPI fast?"
+    }
+   ]
+  },
+  {
+   "id": "ch-24-2",
+   "type": "concept",
+   "title": "Your First FastAPI App",
+   "subtopicId": "24-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Install and run (the app below is exercised with `TestClient`, which calls the ASGI app in-process, so no server is needed in tests):"
+    },
+    {
+     "type": "code",
+     "language": "bash",
+     "code": "uv add fastapi \"uvicorn[standard]\"          # or: python -m pip install fastapi \"uvicorn[standard]\"\nuv run uvicorn main:app --reload            # http://127.0.0.1:8000   docs at /docs",
+     "title": "Install and run"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from fastapi import FastAPI\nfrom fastapi.testclient import TestClient\n\napp = FastAPI(title=\"Shop API\", version=\"1.0.0\")\n\n\n@app.get(\"/\")\ndef root():\n    return {\"message\": \"hello\"}                          # a dict becomes JSON automatically\n\n\n@app.get(\"/items/{item_id}\")                              # a path parameter, converted to int from the annotation\ndef read_item(item_id: int, verbose: bool = False, q: str | None = None):\n    item = {\"id\": item_id, \"name\": f\"item-{item_id}\"}    # `verbose` and `q` come from the query string\n    if verbose:\n        item[\"q\"] = q\n    return item\n\n\n@app.post(\"/echo\", status_code=201)\nasync def echo(payload: dict):                            # `async def` runs on the event loop; `def` runs in a thread pool\n    return {\"received\": payload}\n\n\nclient = TestClient(app)\n\nprint(client.get(\"/\").json())\nprint(client.get(\"/items/42\").json())\nprint(client.get(\"/items/42?verbose=true&q=pen\").json())\nprint(client.get(\"/items/abc\").status_code, client.get(\"/items/abc\").json()[\"detail\"][0][\"msg\"])\nresponse = client.post(\"/echo\", json={\"a\": 1})\nprint(response.status_code, response.json())\nprint(client.get(\"/nope\").status_code, client.get(\"/nope\").json())\nprint(client.post(\"/\").status_code, client.post(\"/\").json())",
+     "title": "FirstApp.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'message': 'hello'}\n{'id': 42, 'name': 'item-42'}\n{'id': 42, 'name': 'item-42', 'q': 'pen'}\n422 Input should be a valid integer, unable to parse string as an integer\n201 {'received': {'a': 1}}\n404 {'detail': 'Not Found'}\n405 {'detail': 'Method Not Allowed'}",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "What happened, in order:\n\n1. `@app.get(path)` registers the function as the handler for that method and path.\n2. `{item_id}` in the path is a **path parameter**; its annotation `int` makes FastAPI convert it, and a value like `abc` is rejected with **422 Unprocessable Entity** and a precise error, without your code running.\n3. Parameters that are **not** in the path become **query parameters** (`?verbose=true`), with defaults making them optional. `bool` accepts `true`, `1`, `yes`, `on`.\n4. A `dict` (or Pydantic model, list...) return value is serialised to JSON with `Content-Type: application/json`.\n5. Unknown paths give `404`, and a wrong method on a known path gives `405 Method Not Allowed`.\n\n### Parameter sources at a glance\n\n| Declared as | Comes from | Example |\n| --- | --- | --- |\n| Name in the path template | **Path** | `/items/{item_id}` |\n| Simple type, not in the path | **Query string** | `?limit=10` |\n| Pydantic model or `Body()` | **JSON body** | `{\"name\": \"pen\"}` |\n| `Header()` | Request header | `User-Agent`, `X-Request-ID` |\n| `Cookie()` | Cookie | session id |\n| `Depends(...)` | A dependency | database session, current user |\n| `File()`, `Form()` | Multipart / form data | uploads (Part 2) |\n\n### The automatic documentation\n\nFastAPI builds an **OpenAPI** description from your code and serves it as JSON at `/openapi.json`, with interactive Swagger UI at `/docs` and ReDoc at `/redoc`:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from fastapi import FastAPI\nfrom fastapi.testclient import TestClient\n\napp = FastAPI(title=\"Shop API\", version=\"1.0.0\")\n\n\n@app.get(\"/items/{item_id}\", summary=\"Read one item\", tags=[\"items\"])\ndef read_item(item_id: int, verbose: bool = False):\n    \"\"\"Return the item with this id.\"\"\"                  # the docstring becomes the endpoint's description\n    return {\"id\": item_id}\n\n\nschema = TestClient(app).get(\"/openapi.json\").json()\noperation = schema[\"paths\"][\"/items/{item_id}\"][\"get\"]\nprint(schema[\"info\"], sorted(schema[\"paths\"]))\nprint(operation[\"summary\"], operation[\"tags\"], operation[\"description\"])\nprint([(p[\"name\"], p[\"in\"], p[\"required\"], p[\"schema\"][\"type\"]) for p in operation[\"parameters\"]])",
+     "title": "OpenApi.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'title': 'Shop API', 'version': '1.0.0'} ['/items/{item_id}']\nRead one item ['items'] Return the item with this id.\n[('item_id', 'path', True, 'integer'), ('verbose', 'query', False, 'boolean')]",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "note",
+     "text": "`TestClient` is built on `httpx`. Recent Starlette releases print a deprecation warning saying the test client should run on `httpx2` instead; the tests still pass. Install whichever package your Starlette version asks for (see its release notes) and pin it in the dev dependencies, so upgrades do not surprise your CI.",
+     "title": "Test client and httpx versions"
+    },
+    {
+     "type": "markdown",
+     "text": "That schema is a **contract**: client SDK generators, API gateways, Postman and contract tests all consume it, and it stays in sync with the code because it is generated from it."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Use `async def` when the body awaits async libraries (an async database driver, `httpx.AsyncClient`). Use plain `def` when it calls blocking code (a synchronous ORM, `requests`, file I/O): FastAPI runs it in a worker thread so it does not block the event loop. The one forbidden combination is **blocking calls inside `async def`** (Part 9 of Core Python).",
+     "title": "def or async def?"
+    }
+   ]
+  },
+  {
+   "id": "ch-24-3",
+   "type": "concept",
+   "title": "Pydantic Models and Validation",
+   "subtopicId": "24-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "**Pydantic** turns type annotations into **parsing and validation at run time**. FastAPI uses it for request bodies, query parameters and responses. A `BaseModel` is a class whose fields are annotated; building an instance validates and converts the input, or raises a `ValidationError` listing everything wrong."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from datetime import date\nfrom decimal import Decimal\nfrom typing import Annotated\n\nfrom pydantic import BaseModel, EmailStr, Field, ValidationError, computed_field, field_validator, model_validator\n\n\nclass Address(BaseModel):\n    city: str\n    pin: Annotated[str, Field(pattern=r\"^\\d{6}$\")]\n\n\nclass Customer(BaseModel):\n    name: Annotated[str, Field(min_length=2, max_length=50)]\n    email: EmailStr\n    age: Annotated[int, Field(ge=18, le=120)]\n    balance: Decimal = Decimal(\"0.00\")\n    joined: date | None = None\n    tags: list[str] = []\n    address: Address | None = None\n\n    @field_validator(\"name\")\n    @classmethod\n    def title_case(cls, value: str) -> str:                       # runs after the type conversion\n        return value.strip().title()\n\n    @model_validator(mode=\"after\")\n    def tags_unique(self):\n        if len(set(self.tags)) != len(self.tags):\n            raise ValueError(\"tags must be unique\")\n        return self\n\n    @computed_field\n    @property\n    def domain(self) -> str:\n        return self.email.split(\"@\")[1]\n\n\ngood = Customer.model_validate({\"name\": \"  asha rao \", \"email\": \"asha@example.com\", \"age\": \"29\",        # \"29\" is coerced to 29\n                                \"balance\": \"10.50\", \"joined\": \"2026-11-04\", \"tags\": [\"vip\"], \"address\": {\"city\": \"Pune\", \"pin\": \"411001\"}})\nprint(good.name, good.age, good.balance, good.joined, good.domain)\nprint(good.model_dump(exclude={\"address\"}))\nprint(good.model_dump_json(include={\"name\", \"domain\"}))\n\ntry:\n    Customer(name=\"A\", email=\"not-an-email\", age=15, tags=[\"x\", \"x\"], address={\"city\": \"Pune\", \"pin\": \"12\"})\nexcept ValidationError as error:\n    for problem in error.errors():\n        print(problem[\"loc\"], \"->\", problem[\"msg\"])",
+     "title": "Pydantic.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Asha Rao 29 10.50 2026-11-04 example.com\n{'name': 'Asha Rao', 'email': 'asha@example.com', 'age': 29, 'balance': Decimal('10.50'), 'joined': datetime.date(2026, 11, 4), 'tags': ['vip'], 'domain': 'example.com'}\n{\"name\":\"Asha Rao\",\"domain\":\"example.com\"}\n('name',) -> String should have at least 2 characters\n('email',) -> value is not a valid email address: An email address must have an @-sign.\n('age',) -> Input should be greater than or equal to 18\n('address', 'pin') -> String should match pattern '^\\d{6}$'",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Key behaviours:\n\n- **Coercion (\"lax\" mode)**: `\"29\"` becomes `29`, `\"2026-11-04\"` a `date`, `\"10.50\"` a `Decimal`. Use `strict=True` (per field or model) to refuse such conversions.\n- **Constraints** go in `Field(...)` (`ge`, `le`, `min_length`, `pattern`) or in `Annotated` types; custom rules in `@field_validator` and `@model_validator`.\n- **Errors are structured**: each has a location path (`(\"address\", \"pin\")`), a message and a type, which FastAPI returns to clients in the 422 body.\n- **Serialisation**: `model_dump()` gives a dict, `model_dump_json()` a JSON string; `exclude`, `include`, `exclude_unset` and `by_alias` shape the output.\n- **Validation is separate from type hints**: this is what plain dataclasses and `typing` do **not** do (Core Python, Part 12)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError\n\n\nclass Item(BaseModel):\n    model_config = ConfigDict(extra=\"forbid\", frozen=True, str_strip_whitespace=True)    # reject unknown fields; immutable instances\n\n    id: int\n    name: str\n    unit_price: float = Field(alias=\"unitPrice\")                  # accept camelCase JSON, use snake_case in Python\n\n\nitem = Item.model_validate({\"id\": 1, \"name\": \" pen \", \"unitPrice\": 2.5})\nprint(item, item.model_dump(by_alias=True))\n\ntry:\n    Item.model_validate({\"id\": 1, \"name\": \"pen\", \"unitPrice\": 2.5, \"colour\": \"blue\"})\nexcept ValidationError as error:\n    print(error.errors()[0][\"type\"], error.errors()[0][\"loc\"])\n\nints = TypeAdapter(list[int])                                     # validate things that are not models\nprint(ints.validate_python([\"1\", 2, 3.0]), ints.validate_json(\"[4, 5]\"))",
+     "title": "TypeAdapter.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "id=1 name='pen' unit_price=2.5 {'id': 1, 'name': 'pen', 'unitPrice': 2.5}\nextra_forbidden ('colour',)\n[1, 2, 3] [4, 5]",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "At a **trust boundary** (HTTP bodies, config files, messages from other services) use Pydantic: it validates and converts. Inside your domain logic, plain dataclasses or Pydantic are both fine; avoid re-validating data you already validated. `TypedDict` only annotates dictionaries for the type checker and validates nothing.",
+     "title": "Pydantic model, dataclass or TypedDict?"
+    }
+   ]
+  },
+  {
+   "id": "ch-24-4",
+   "type": "concept",
+   "title": "Dependency Injection with `Depends`",
+   "subtopicId": "24-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **dependency** is a callable that FastAPI runs **before** your endpoint and whose result it passes in as an argument. It is how you share a database session, the current user, pagination parameters or settings across endpoints, without globals, and how tests replace them."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from typing import Annotated\n\nfrom fastapi import Depends, FastAPI, Header, HTTPException, Query\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\nevents = []                                                       # records the order of set-up and tear-down for the demo\n\n\nclass Pagination:                                                  # a class dependency: its __init__ parameters are query parameters\n    def __init__(self, page: Annotated[int, Query(ge=1)] = 1, size: Annotated[int, Query(ge=1, le=100)] = 10):\n        self.page, self.size = page, size\n\n    @property\n    def offset(self) -> int:\n        return (self.page - 1) * self.size\n\n\ndef get_db():                                                      # a dependency with `yield`: set-up before, clean-up after the response\n    events.append(\"open db\")\n    db = {\"items\": [\"pen\", \"ink\", \"pad\", \"clip\", \"tape\"]}\n    try:\n        yield db\n    finally:\n        events.append(\"close db\")\n\n\ndef current_user(x_user: Annotated[str | None, Header()] = None):   # a sub-dependency: reads a header\n    if not x_user:\n        raise HTTPException(status_code=401, detail=\"missing X-User header\")\n    return x_user\n\n\ndef require_admin(user: Annotated[str, Depends(current_user)]):     # depends on another dependency\n    if user != \"admin\":\n        raise HTTPException(status_code=403, detail=\"admins only\")\n    return user\n\n\n@app.get(\"/items\")\ndef list_items(db: Annotated[dict, Depends(get_db)], pagination: Annotated[Pagination, Depends()]):\n    events.append(\"handler\")\n    return db[\"items\"][pagination.offset:pagination.offset + pagination.size]\n\n\n@app.delete(\"/items/{name}\")\ndef delete_item(name: str, db: Annotated[dict, Depends(get_db)], admin: Annotated[str, Depends(require_admin)]):\n    db[\"items\"].remove(name)\n    return {\"deleted\": name, \"by\": admin}\n\n\nclient = TestClient(app)\nprint(client.get(\"/items?page=2&size=2\").json(), events)\nprint(client.get(\"/items?size=500\").status_code)\nprint(client.delete(\"/items/pen\").status_code, client.delete(\"/items/pen\", headers={\"X-User\": \"ravi\"}).status_code)\nprint(client.delete(\"/items/pen\", headers={\"X-User\": \"admin\"}).json())\n\n# Tests replace dependencies instead of patching globals\napp.dependency_overrides[get_db] = lambda: {\"items\": [\"fake-1\", \"fake-2\"]}\nprint(client.get(\"/items\").json())\napp.dependency_overrides.clear()",
+     "title": "Dependencies.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "['pad', 'clip'] ['open db', 'handler', 'close db']\n422\n401 403\n{'deleted': 'pen', 'by': 'admin'}\n['fake-1', 'fake-2']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "How to read this:\n\n- **Parameters of a dependency are declared like endpoint parameters** (here `page` and `size` come from the query string, and `x_user` from a header), so dependencies are validated and documented too.\n- **Dependencies can depend on dependencies** (`require_admin` uses `current_user`); FastAPI builds the graph and runs each dependency once per request (it caches by default).\n- **`yield` dependencies** run their `finally` block **after the response is produced**: the standard way to open and close a database session or connection per request.\n- **`app.dependency_overrides`** swaps any dependency for a test double; this is why FastAPI code needs no mocking framework to test.\n- The `Annotated[T, Depends(...)]` spelling is the current recommended style, and lets you name a dependency once and reuse it: `DbDep = Annotated[Session, Depends(get_db)]`."
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "`get_db` (a session per request, committed or rolled back at the end), `get_current_user` (parses the token and loads the user, or raises 401), and `get_settings` (cached configuration). Authorisation (`require_admin`), pagination, rate limiting and request IDs are further dependencies layered on top.",
+     "title": "The three dependencies in nearly every service"
+    }
+   ]
+  },
+  {
+   "id": "ch-24-5",
+   "type": "concept",
+   "title": "Configuration, Routers and Project Layout",
+   "subtopicId": "24-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Settings from the environment\n\nTwelve-factor apps read configuration from **environment variables**. `pydantic-settings` loads and validates them into a typed object once, so a missing or malformed value fails at start-up instead of in production."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import os\nfrom functools import lru_cache\n\nfrom pydantic import Field, ValidationError\nfrom pydantic_settings import BaseSettings, SettingsConfigDict\n\n\nclass Settings(BaseSettings):\n    model_config = SettingsConfigDict(env_prefix=\"SHOP_\", env_file=\".env\", extra=\"ignore\")\n\n    database_url: str = \"sqlite:///./shop.db\"\n    debug: bool = False\n    port: int = Field(default=8000, ge=1, le=65535)\n    allowed_origins: list[str] = [\"http://localhost:5173\"]\n    secret_key: str                                              # required: no default, so it must be provided\n\n\n@lru_cache                                                       # build once, share everywhere (use as a dependency)\ndef get_settings() -> Settings:\n    return Settings()\n\n\ntry:\n    Settings()\nexcept ValidationError as error:\n    print(\"missing:\", [e[\"loc\"][0] for e in error.errors()])\n\nos.environ.update({\"SHOP_SECRET_KEY\": \"s3cret\", \"SHOP_DEBUG\": \"true\", \"SHOP_PORT\": \"9000\", \"SHOP_ALLOWED_ORIGINS\": '[\"https://app.example.com\"]'})\nsettings = get_settings()\nprint(settings.debug, settings.port, settings.allowed_origins, settings.database_url)\nprint(get_settings() is settings, \"secret_key\" in settings.model_dump())",
+     "title": "Settings.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "missing: ['secret_key']\nTrue 9000 ['https://app.example.com'] sqlite:///./shop.db\nTrue True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Never commit real secrets: `.env` goes in `.gitignore`; production values come from the platform (Kubernetes secrets, a secret manager). Use `SecretStr` for values that must not appear in logs.\n\n### Routers and an application factory\n\nSplit an app into **routers**, one per feature, each with its own prefix and tags, and assemble them in one place. A `lifespan` function runs start-up and shutdown code (open pools, warm caches, close clients) once per process."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "from contextlib import asynccontextmanager\n\nfrom fastapi import APIRouter, Depends, FastAPI, Request\nfrom fastapi.testclient import TestClient\n\nlog = []\n\n\n@asynccontextmanager\nasync def lifespan(app: FastAPI):\n    log.append(\"startup: create pool\")\n    app.state.pool = {\"connections\": 5}                        # shared resources live on app.state\n    yield\n    log.append(\"shutdown: close pool\")\n\n\nusers = APIRouter(prefix=\"/users\", tags=[\"users\"])\norders = APIRouter(prefix=\"/orders\", tags=[\"orders\"])\n\n\n@users.get(\"/{user_id}\")\ndef get_user(user_id: int):\n    return {\"id\": user_id}\n\n\n@orders.get(\"/\")\ndef list_orders(request: Request):\n    return {\"pool\": request.app.state.pool, \"orders\": []}\n\n\ndef create_app() -> FastAPI:                                     # an app factory: tests can build fresh apps\n    app = FastAPI(title=\"Shop\", lifespan=lifespan)\n    app.include_router(users)\n    app.include_router(orders, prefix=\"/v1\")                    # routers can be mounted under another prefix\n    return app\n\n\nwith TestClient(create_app()) as client:                         # the `with` block runs lifespan start-up and shutdown\n    print(client.get(\"/users/7\").json(), client.get(\"/v1/orders/\").json())\n    print(sorted(path for path in client.get(\"/openapi.json\").json()[\"paths\"]))          # the routes, as the OpenAPI schema lists them\nprint(log)",
+     "title": "Routers.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'id': 7} {'pool': {'connections': 5}, 'orders': []}\n['/users/{user_id}', '/v1/orders/']\n['startup: create pool', 'shutdown: close pool']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "A typical project layout:"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop-api/\n  pyproject.toml            # dependencies and tool config (uv.lock next to it)\n  src/shop/\n    main.py                 # create_app(), includes the routers\n    config.py               # Settings\n    deps.py                 # get_db, get_current_user, ...\n    models.py               # SQLAlchemy ORM models\n    schemas.py              # Pydantic request and response models\n    repositories.py         # database access\n    services.py             # business logic\n    routers/\n      users.py\n      orders.py\n  tests/\n    conftest.py             # fixtures: app, client, in-memory database\n    test_orders.py\n  Dockerfile",
+     "title": "Project layout"
+    },
+    {
+     "type": "markdown",
+     "text": "The separation **router (HTTP) to service (rules) to repository (database)** keeps HTTP details out of business logic and makes each layer testable: the same idea as controller, service and repository in Spring."
+    }
+   ]
+  },
+  {
+   "id": "ch-24-6",
+   "type": "concept",
+   "title": "Requests, Responses and Middleware",
+   "subtopicId": "24-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Most of the time you return plain data and FastAPI builds the response, but you can reach the underlying objects when you need headers, cookies, custom status codes or streaming."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import time\nfrom typing import Annotated\n\nfrom fastapi import Cookie, FastAPI, Header, Request, Response\nfrom fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, StreamingResponse\nfrom fastapi.testclient import TestClient\n\napp = FastAPI()\n\n\n@app.middleware(\"http\")                                           # runs around EVERY request\nasync def add_timing_header(request: Request, call_next):\n    started = time.perf_counter()\n    response = await call_next(request)\n    response.headers[\"X-Process-Time\"] = f\"{(time.perf_counter() - started) * 1000:.0f}ms\"\n    response.headers[\"X-Request-Path\"] = request.url.path\n    return response\n\n\n@app.get(\"/headers\")\ndef read_headers(request: Request, user_agent: Annotated[str | None, Header()] = None, session: Annotated[str | None, Cookie()] = None):\n    return {\"user_agent\": user_agent, \"session\": session, \"client_host\": request.client.host, \"query\": dict(request.query_params)}\n\n\n@app.get(\"/set-cookie\")\ndef set_cookie(response: Response):\n    response.set_cookie(\"session\", \"abc123\", httponly=True, samesite=\"lax\", max_age=3600)\n    response.headers[\"Cache-Control\"] = \"no-store\"\n    return {\"ok\": True}\n\n\n@app.get(\"/custom\")\ndef custom():\n    return JSONResponse({\"detail\": \"teapot\"}, status_code=418, headers={\"X-Reason\": \"demo\"})\n\n\n@app.get(\"/text\", response_class=PlainTextResponse)\ndef text():\n    return \"plain text\"\n\n\n@app.get(\"/old\", include_in_schema=False)\ndef old():\n    return RedirectResponse(\"/text\", status_code=307)\n\n\n@app.get(\"/stream\")\ndef stream():\n    def generate():\n        for chunk in (\"a\", \"b\", \"c\"):\n            yield chunk + \"\\n\"\n    return StreamingResponse(generate(), media_type=\"text/plain\")\n\n\nclient = TestClient(app)\nr = client.get(\"/headers?x=1\", headers={\"User-Agent\": \"demo/1.0\"}, cookies={\"session\": \"s-1\"})\nprint(r.json(), r.headers[\"x-request-path\"], r.headers[\"x-process-time\"].endswith(\"ms\"))\nr = client.get(\"/set-cookie\")\nprint(r.json(), r.headers[\"set-cookie\"].split(\";\")[0], r.headers[\"cache-control\"])\nr = client.get(\"/custom\")\nprint(r.status_code, r.headers[\"x-reason\"], r.json())\nprint(client.get(\"/text\").text, client.get(\"/old\", follow_redirects=False).status_code, client.get(\"/stream\").text.split())",
+     "title": "ResponsesDemo.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "{'user_agent': 'demo/1.0', 'session': 's-1', 'client_host': 'testclient', 'query': {'x': '1'}} /headers True\n{'ok': True} session=abc123 no-store\n418 demo {'detail': 'teapot'}\nplain text 307 ['a', 'b', 'c']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "**Middleware** wraps the whole request: use it for cross-cutting concerns (timing, request IDs, security headers, compression, CORS), not for business logic. Keep it light: it runs on every call. Built-in middleware includes `CORSMiddleware`, `GZipMiddleware` and `TrustedHostMiddleware`."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- `@app.get/post/put/patch/delete(\"/path/{id}\")`; path params from the template; other simple types are query params; a Pydantic model is the body.\n- `422` means validation failed before your code ran; `HTTPException(status_code, detail)` for your own errors.\n- Pydantic: `BaseModel`, `Field(ge=, le=, min_length=, pattern=)`, `field_validator`, `model_validator`, `model_validate`, `model_dump`, `extra=\"forbid\"`.\n- `Depends(callable)` injects; `yield` dependencies clean up; `app.dependency_overrides` for tests.\n- `APIRouter(prefix=, tags=)` + `include_router`; `lifespan` for start-up and shutdown; `pydantic-settings` for configuration.\n- `def` endpoints run in a thread pool; `async def` endpoints must not block the loop.\n- `TestClient(app)` tests in-process; `/docs` and `/openapi.json` are generated.",
+     "title": "FastAPI foundations cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### What a Web Framework Does"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is the difference between WSGI and ASGI?",
+       "answer": "WSGI is the synchronous Python web standard: one blocking call per request. ASGI is the asynchronous successor: it supports `async`/`await`, WebSockets, server-sent events and long-lived connections. FastAPI and Starlette are ASGI; classic Flask and Django are WSGI (Django also supports ASGI)."
+      },
+      {
+       "question": "Which HTTP methods are idempotent, and why does it matter?",
+       "answer": "`GET`, `PUT`, `DELETE` (and `HEAD`, `OPTIONS`); `POST` is not. Clients, proxies and retry logic can safely repeat idempotent requests after a timeout; repeating a `POST` may create duplicates unless you add an idempotency key."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Your First FastAPI App"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does FastAPI decide whether a function parameter is a path, query or body parameter?",
+       "answer": "If its name appears in the path template it is a path parameter; if it is a Pydantic model (or declared with `Body`) it comes from the JSON body; otherwise a simple type becomes a query parameter. `Header`, `Cookie`, `Form`, `File` and `Depends` change the source explicitly."
+      },
+      {
+       "question": "What is returned when a client sends a path parameter that cannot be converted to the annotated type?",
+       "answer": "A `422 Unprocessable Entity` with a JSON body listing the location, message and error type of each problem. Your function is never called."
+      },
+      {
+       "question": "Where do `/docs` and `/openapi.json` come from?",
+       "answer": "FastAPI generates an OpenAPI document from the routes, type hints, docstrings and Pydantic models at start-up and serves it with Swagger UI and ReDoc, so documentation cannot drift from the code."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Pydantic Models and Validation"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does Pydantic add over type hints?",
+       "answer": "Run-time parsing and validation: converting types (`\"29\"` to `29`), enforcing constraints (ranges, patterns, lengths), producing structured error reports and serialising to dicts and JSON. Type hints alone are only checked by external tools."
+      },
+      {
+       "question": "How do you reject unknown fields in a request body?",
+       "answer": "Set `model_config = ConfigDict(extra=\"forbid\")` on the model: any field that is not declared makes validation fail with an `extra_forbidden` error. The default is to ignore extras."
+      },
+      {
+       "question": "What is the difference between `field_validator` and `model_validator`?",
+       "answer": "A field validator checks or transforms one field's value; a model validator sees the whole model (mode `\"before\"` for raw input, `\"after\"` for the built instance) and is used for rules across several fields, such as \"end date after start date\"."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Dependency Injection with `Depends`"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is dependency injection and what does `Depends` give you?",
+       "answer": "Passing collaborators into a function instead of creating them inside. `Depends` lets an endpoint declare what it needs (database session, current user, settings); FastAPI creates it per request, handles sub-dependencies and cleanup, validates its parameters, documents them in OpenAPI and lets tests override it."
+      },
+      {
+       "question": "How does a `yield` dependency differ from a normal one?",
+       "answer": "A normal dependency returns a value. A `yield` dependency yields the value for the endpoint and resumes after the response is sent, so the code after `yield` (in `finally`) does clean-up such as closing a session or releasing a connection."
+      },
+      {
+       "question": "How do you test an endpoint that uses a database dependency?",
+       "answer": "Set `app.dependency_overrides[get_db] = override` with a function that returns a test session (an in-memory SQLite database or a fake repository), call the endpoint through `TestClient`, and clear the overrides afterwards."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Configuration, Routers and Project Layout"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does the `lifespan` function do?",
+       "answer": "It is an async context manager run when the application starts and stops: code before `yield` runs at start-up (create connection pools, load models), code after at shutdown (close them). It replaces the older `@app.on_event(\"startup\")` handlers."
+      },
+      {
+       "question": "Why read configuration through a `Settings` class instead of `os.environ` everywhere?",
+       "answer": "It validates and converts everything once at start-up (types, ranges, required values), gives IDE completion and a single place to see all settings, supports `.env` files in development, and can be overridden in tests."
+      },
+      {
+       "question": "Why separate routers, services and repositories?",
+       "answer": "Each layer has one job: routers translate HTTP to Python calls and back, services hold business rules, repositories talk to the database. You can test rules without HTTP, swap the database, and reuse a service from a CLI or a background worker."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Requests, Responses and Middleware"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is middleware and when should you use it?",
+       "answer": "A function that wraps every request and response (it receives the request and a `call_next`). Use it for cross-cutting behaviour such as timing, request and correlation IDs, security headers, compression and CORS; do not put business rules there."
+      },
+      {
+       "question": "How do you set a cookie or a custom header from an endpoint?",
+       "answer": "Add a `response: Response` parameter and call `response.set_cookie(...)` or modify `response.headers`, then return your data as usual; or return a `JSONResponse(..., headers={...})` yourself."
+      },
+      {
+       "question": "Which response class do you use to stream a large file or generated data?",
+       "answer": "`StreamingResponse` with a (sync or async) generator, or `FileResponse` for a file on disk. The body is sent in chunks without being held in memory."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

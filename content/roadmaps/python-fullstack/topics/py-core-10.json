@@ -1,0 +1,337 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-10-1",
+   "type": "concept",
+   "title": "Objects in Memory",
+   "subtopicId": "10-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Every Python value is a **heap-allocated object**. In CPython each object begins with a small header: a **reference count** and a pointer to its **type object**. Variable-size objects (`list`, `tuple`, `int`, `str`) add a length field. After the header comes the data. A name never holds a value; it holds a **pointer** to an object."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart LR\n  subgraph OBJ[\"list object (56 bytes when empty)\"]\n    H1[\"ob_refcnt<br/>reference count\"]\n    H2[\"ob_type<br/>pointer to list\"]\n    H3[\"ob_size<br/>length\"]\n    H4[\"ob_item<br/>pointer to array\"]\n  end\n  H4 --> ARR[\"array of pointers<br/>(8 bytes each, spare capacity)\"]\n  ARR --> I1[\"int 10\"]\n  ARR --> I2[\"int 20\"]\n  ARR --> I3[\"str 'x'\"]",
+     "title": "What an object looks like in CPython"
+    },
+    {
+     "type": "markdown",
+     "text": "Consequences you can measure:\n\n- A list holds **pointers**, so `[1, 2, 3]` is one list object plus three int objects (small ints are shared). The list itself costs 8 bytes per slot plus the objects.\n- An instance of an ordinary class has a `__dict__` for its attributes; CPython shares the *key* table between instances of the same class (\"key-sharing dictionaries\") to keep it small. `__slots__` removes the dictionary entirely.\n- `sys.getsizeof(x)` returns the **shallow** size of one object, not what it references. To measure a structure you add up its parts, or use `tracemalloc` (below) or a tool such as `pympler.asizeof`."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import sys\nimport tracemalloc\nfrom array import array\n\n\nclass Plain:\n    def __init__(self):\n        self.a, self.b = 1, 2\n\n\nclass Slotted:\n    __slots__ = (\"a\", \"b\")\n\n    def __init__(self):\n        self.a, self.b = 1, 2\n\n\nprint(\"shallow sizes:\", sys.getsizeof(1), sys.getsizeof([]), sys.getsizeof([1, 2, 3]), sys.getsizeof((1, 2, 3)))\nprint(\"a list holds pointers: its size does not depend on its items:\", sys.getsizeof([1] * 3) == sys.getsizeof([\"x\" * 100] * 3))\nprint(\"Plain has a __dict__:\", hasattr(Plain(), \"__dict__\"), \"| Slotted has:\", hasattr(Slotted(), \"__dict__\"))\nprint(\"None is immortal (3.12+), its refcount never changes:\", sys.getrefcount(None) > 10_000)\n\n\ndef measure(make):\n    tracemalloc.start()\n    kept = make()                                  # keep a reference, or the memory is freed again\n    current, _ = tracemalloc.get_traced_memory()\n    tracemalloc.stop()\n    return current, kept\n\n\nas_list, kept_list = measure(lambda: list(range(100_000, 200_000)))\nas_array, kept_array = measure(lambda: array(\"i\", range(100_000, 200_000)))\nprint(\"100,000 ints: list uses more than 5x the memory of array('i'):\", as_list > 5 * as_array)\n\nobjects, _ = measure(lambda: [Plain() for _ in range(10_000)])\nslotted, _ = measure(lambda: [Slotted() for _ in range(10_000)])\nprint(\"10,000 instances: __slots__ saves more than 30%:\", slotted < 0.7 * objects)",
+     "title": "Layout.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shallow sizes: 28 56 88 64\na list holds pointers: its size does not depend on its items: True\nPlain has a __dict__: True | Slotted has: False\nNone is immortal (3.12+), its refcount never changes: True\n100,000 ints: list uses more than 5x the memory of array('i'): True\n10,000 instances: __slots__ saves more than 30%: True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Where the memory comes from\n\nCPython's allocator, **pymalloc**, serves objects up to 512 bytes from **arenas** (large blocks of about a megabyte, obtained from the operating system), carved into **pools** of equal-sized blocks. Larger objects go to the C library's `malloc`. Two facts matter in production:\n\n1. **Fragmentation.** A pool or arena can return to the OS only when *every* block in it is free. A few surviving small objects scattered across arenas keep them all, so a process's resident memory (RSS) often does not shrink after you free a big structure, even though the memory is reusable by Python.\n2. **Free lists and caches.** Small integers (-5 to 256), interned strings, and recycled floats, tuples and frames are reused instead of reallocated. That makes many short-lived allocations cheap.\n\nSizes and arena parameters are implementation details that change between versions; treat the numbers on this page as illustrations and measure your own build."
+    },
+    {
+     "type": "callout",
+     "variant": "tip",
+     "text": "Millions of small records: `@dataclass(slots=True)` or `__slots__`, or tuples/NamedTuples. Millions of numbers: `array`, NumPy or `bytes`/`bytearray`. Many repeated strings: `sys.intern` or categorical encodings. Large streams: generators instead of lists (Part 7). Often the biggest win is simply not holding everything in memory at once.",
+     "title": "Cut memory by choosing the structure"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-2",
+   "type": "concept",
+   "title": "Reference Counting and the Garbage Collector",
+   "subtopicId": "10-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "CPython uses **two mechanisms** to reclaim memory:\n\n1. **Reference counting** (immediate, deterministic). Each object counts how many references point to it. `x = obj`, putting it in a list, passing it to a function: the count goes up. When a reference disappears (name rebound, `del`, container destroyed, function returns) the count goes down, and at **zero the object is freed immediately** and its `__del__` runs.\n2. **A cyclic garbage collector** (periodic). Reference counts alone cannot free objects that reference each other, because each keeps the other's count above zero. The `gc` module finds unreachable cycles and frees them."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import gc\nimport weakref\n\n\nclass Node:\n    def __init__(self, name):\n        self.name = name\n        self.other = None\n\n    def __del__(self):\n        print(\"freed\", self.name)\n\n\n# 1. Reference counting frees at once\na = Node(\"a\")\ndel a                                  # count drops to zero: \"freed a\" appears here, immediately\n\n# 2. A cycle is not freed by counting\nx, y = Node(\"x\"), Node(\"y\")\nx.other, y.other = y, x\ndel x, y                               # both still have count 1 (from each other): nothing printed\nprint(\"after del, cycle still alive\")\nfound = gc.collect()                   # the cycle detector finds and frees them\nprint(\"collector found unreachable objects:\", found >= 2)\n\n# 3. Weak references do not keep an object alive\ntarget = Node(\"target\")\nalias = weakref.ref(target)\nprint(alias() is target)\ndel target\nprint(alias())                         # None: the object is gone\n\nprint(\"thresholds (generation 0, 1, 2) on this build:\", gc.get_threshold())",
+     "title": "Gc.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "freed a\nafter del, cycle still alive\nfreed x\nfreed y\ncollector found unreachable objects: True\nTrue\nfreed target\nNone\nthresholds (generation 0, 1, 2) on this build: (700, 10, 10)",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The collector is **generational**: new objects start in generation 0, which is scanned often; survivors move to older generations, which are scanned less often, based on the observation that most objects die young. A collection of generation 0 runs when the number of allocations minus deallocations of container objects exceeds the first threshold (700 by default in this build; versions differ, and Python 3.14 reworked the collector to be incremental, so check the `gc` documentation for yours)."
+    },
+    {
+     "type": "diagram",
+     "format": "mermaid",
+     "code": "flowchart TD\n  N[\"object created<br/>refcount = 1\"] --> U{\"references drop to 0?\"}\n  U -->|yes| F[\"freed immediately<br/>__del__ runs\"]\n  U -->|no| C{\"part of an unreachable cycle?\"}\n  C -->|no, still referenced| L[\"stays alive\"]\n  C -->|yes| G[\"found by gc.collect()<br/>(generations 0, 1, 2)\"]\n  G --> F",
+     "title": "How an object lives and dies"
+    },
+    {
+     "type": "markdown",
+     "text": "Practical consequences:\n\n- **Do not rely on `__del__`.** It runs at an unpredictable moment for objects in cycles, may never run at interpreter exit, and exceptions in it are ignored. Use context managers (`with`) for resources.\n- **Weak references** (`weakref.ref`, `WeakValueDictionary`, `WeakSet`) are how caches and observer lists avoid keeping objects alive.\n- `gc.disable()` is sometimes used in short-lived, allocation-heavy scripts, and `gc.freeze()` before a `fork` helps pre-forking servers share memory. Both are optimisations to measure, never defaults.\n- **Immortal objects** (3.12+, PEP 683): `None`, `True`, small ints and interned strings have a fixed, non-counting reference count, which avoids needless writes (good for copy-on-write after `fork`) and helps per-interpreter GILs."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Counting frees memory immediately and predictably (a file or lock object dies the moment its last reference goes), but costs a write on every reference change, cannot free cycles by itself, and is a reason the GIL exists. A tracing collector (the JVM's) handles cycles, reclaims in batches, and lets threads run in parallel, but frees at unpredictable times. CPython uses counting **plus** a cycle detector.",
+     "title": "Reference counting versus a tracing GC"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-3",
+   "type": "concept",
+   "title": "Memory Leaks and Finding Them",
+   "subtopicId": "10-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Python has no manual memory management, but **leaks** still happen: memory that is still *referenced* but no longer *needed*, so it can never be freed. The usual suspects:\n\n| Cause | Example | Fix |\n| --- | --- | --- |\n| Unbounded cache or global | `CACHE = {}` that only grows; `functools.cache` on user-supplied inputs | Bound it: `lru_cache(maxsize=...)`, `cachetools.TTLCache`, eviction |\n| Growing collection | A list of every request ever handled; an events list never cleared | Bounded `deque(maxlen=...)`, periodic cleanup |\n| Closures or bound methods in registries | Callbacks registered and never unregistered keep their instances alive | `weakref`, explicit unregister |\n| Cycles with `__del__` or big objects | Large graphs kept until the next collection | Break cycles, use weak back-references |\n| Per-request state in module globals or thread-locals | Request objects retained after the request | Pass state explicitly; use `ContextVar` |\n| Caching on methods | `@lru_cache` on a method keeps every `self` alive | Cache module-level functions, or use `cached_property` |\n| C extensions | A native library forgetting to release memory | Upgrade, reproduce in isolation, tools like `memray` |\n\nFind a leak by **comparing snapshots over time** with `tracemalloc`, which records where each allocation was made:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import tracemalloc\n\nCACHE = {}                                   # the leak: it only ever grows\n\n\ndef handle(request_id):\n    CACHE[request_id] = \"x\" * 10_000         # keeps 10 KB per request forever\n\n\ndef run(count, offset):\n    for i in range(count):\n        handle(offset + i)\n\n\ntracemalloc.start(10)\nrun(100, 0)                                  # warm up\nbefore = tracemalloc.take_snapshot()\nrun(1_000, 1_000)                            # the suspected workload\nafter = tracemalloc.take_snapshot()\n\ntop = after.compare_to(before, \"lineno\")[0]  # biggest growth, by source line\ngrew = top.size_diff\nprint(\"biggest growth comes from the handle() line:\", top.traceback[0].lineno)\nprint(\"growth is about 10 MB:\", 8_000_000 < grew < 12_000_000)\n\nCACHE.clear()",
+     "title": "Leak.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "biggest growth comes from the handle() line: 7\ngrowth is about 10 MB: True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The method: **reproduce under load, take a snapshot, run the workload, take another, and diff**. The line that grows is where objects are allocated; then ask *who still references them* (`gc.get_referrers`, `objgraph.show_backrefs`) to find the owner that should have let go.\n\n| Tool | Use |\n| --- | --- |\n| `tracemalloc` (standard library) | Where allocations happen; snapshot diffs |\n| `memray` | Fast allocation profiler, including native code, flame graphs |\n| `objgraph`, `gc.get_objects()` | Count objects by type, trace who holds them |\n| `psutil.Process().memory_info().rss` | Process-level memory over time (alert on growth) |\n| `resource` / container limits | Know the limit: containers are OOM-killed rather than raising `MemoryError` |"
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "A common production symptom is RSS climbing steadily until the orchestrator kills the container. Before blaming Python, check for an unbounded cache, a growing list or a metrics label with unlimited cardinality. As a safety net, many deployments recycle workers (`--max-requests 1000 --max-requests-jitter 100`), which hides a slow leak but does not fix it: still find the cause.",
+     "title": "A gunicorn worker that grows until it is killed"
+    }
+   ]
+  },
+  {
+   "id": "ch-10-4",
+   "type": "concept",
+   "title": "Bytecode and the Interpreter Loop",
+   "subtopicId": "10-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "CPython compiles each function to bytecode and runs it on a **stack machine**. The `dis` module shows the instructions, and since Python 3.11 the interpreter is **adaptive**: after a function has run a few times it **specialises** hot instructions in place, replacing a generic `BINARY_OP` with a fast `BINARY_OP_ADD_INT` when it keeps seeing integers (PEP 659). You can watch it happen:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import dis\n\n\ndef add(a, b):\n    return a + b\n\n\nprint(\"--- first look (generic instructions) ---\")\ndis.dis(add, adaptive=True)\n\nfor _ in range(2000):                  # warm up with ints: the interpreter specialises\n    add(1, 2)\n\nprint(\"--- after warm-up (specialised) ---\")\ndis.dis(add, adaptive=True)",
+     "title": "Adaptive.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "--- first look (generic instructions) ---\n  4           0 RESUME                   0\n\n  5           2 LOAD_FAST__LOAD_FAST     0 (a)\n              4 LOAD_FAST                1 (b)\n              6 BINARY_OP                0 (+)\n             10 RETURN_VALUE\n--- after warm-up (specialised) ---\n  4           0 RESUME                   0\n\n  5           2 LOAD_FAST__LOAD_FAST     0 (a)\n              4 LOAD_FAST                1 (b)\n              6 BINARY_OP_ADD_INT        0 (+)\n             10 RETURN_VALUE",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The specialised names (`..._ADD_INT`, `LOAD_ATTR_INSTANCE_VALUE`, `LOAD_GLOBAL_BUILTIN`) depend on the version and may differ on yours; the point is that **the same bytecode gets faster when the types it sees are stable**, and that code which keeps changing the types at one site (a function called with ints, then strings, then floats) cannot benefit. This is part of the \"Faster CPython\" work (3.11 onward), which also made exceptions free when none is raised and made Python-to-Python calls cheaper.\n\n### Things the compiler does for you"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import dis\n\ndef constant_folding():\n    return 60 * 60 * 24 + 1            # folded at compile time into one constant\n\ndef local_vs_global(items):\n    total = 0\n    for x in items:\n        total += x                      # `total` and `x` are locals: fast array slots\n    return total\n\nprint(constant_folding.__code__.co_consts)\ndis.dis(local_vs_global)",
+     "title": "Compile.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "(None, 86401)\n  6           0 RESUME                   0\n\n  7           2 LOAD_CONST               1 (0)\n              4 STORE_FAST               1 (total)\n\n  8           6 LOAD_FAST                0 (items)\n              8 GET_ITER\n        >>   10 FOR_ITER                 7 (to 28)\n             14 STORE_FAST               2 (x)\n\n  9          16 LOAD_FAST                1 (total)\n             18 LOAD_FAST                2 (x)\n             20 BINARY_OP               13 (+=)\n             24 STORE_FAST               1 (total)\n             26 JUMP_BACKWARD            9 (to 10)\n\n  8     >>   28 END_FOR\n\n 10          30 LOAD_FAST                1 (total)\n             32 RETURN_VALUE",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Reading the listing: `LOAD_FAST` / `STORE_FAST` are **local variables** (indexed array slots), the cheapest access. `LOAD_GLOBAL` does a dictionary lookup (cached by the adaptive interpreter), and `LOAD_ATTR` follows the object-attribute lookup rules. That is why assigning a hot global or attribute to a local name inside a tight loop can help, though measure before doing it."
+    }
+   ]
+  },
+  {
+   "id": "ch-10-5",
+   "type": "concept",
+   "title": "Profiling, the JIT and Performance Rules",
+   "subtopicId": "10-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "### Measure first\n\n**Never optimise without measuring.** Three tools cover most needs:\n\n| Tool | Answers | How |\n| --- | --- | --- |\n| `timeit` | \"Which of these two snippets is faster?\" | `python -m timeit \"...\"` or `timeit.timeit` |\n| `cProfile` + `pstats` | \"Where does the time go, by function?\" | `python -m cProfile -s cumtime app.py` |\n| Sampling profilers (`py-spy`, `pyinstrument`, `scalene`) | \"Where is a running service spending time?\" without stopping it | `py-spy top --pid <pid>` / `py-spy record` |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import cProfile\nimport io\nimport pstats\n\n\ndef slow_distinct(items):\n    result = []\n    for item in items:\n        if item not in result:          # O(n) membership test on a list: O(n^2) overall\n            result.append(item)\n    return result\n\n\ndef fast_distinct(items):\n    return list(dict.fromkeys(items))   # O(n)\n\n\ndata = [i % 500 for i in range(5000)]\n\nprofiler = cProfile.Profile()\nprofiler.enable()\na = slow_distinct(data)\nb = fast_distinct(data)\nprofiler.disable()\n\nstats = pstats.Stats(profiler, stream=io.StringIO())\ncalls = {name: ncalls for (_, _, name), (_, ncalls, *_) in stats.stats.items() if name in (\"slow_distinct\", \"fast_distinct\")}\nprint(a == b, calls)\n\nimport timeit\nslow = timeit.timeit(lambda: slow_distinct(data), number=5)\nfast = timeit.timeit(lambda: fast_distinct(data), number=5)\nprint(\"fast_distinct is more than 10x faster:\", slow > 10 * fast)",
+     "title": "Profile.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "True {'slow_distinct': 1, 'fast_distinct': 1}\nfast_distinct is more than 10x faster: True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The profile tells you **which function** is hot; the fix here was algorithmic (a set-like structure instead of a list scan), which beats any micro-optimisation.\n\n### The JIT and the roadmap\n\n- **3.11-3.12**: the specialising interpreter described above; no JIT.\n- **3.13**: an **experimental JIT compiler** (PEP 744, \"copy-and-patch\") that is off by default and must be enabled and built in; modest gains. The **free-threaded build** (Part 8) is also experimental.\n- **3.14**: a faster interpreter dispatch on some platforms (tail calls with a recent compiler), free-threaded builds officially supported, an incremental garbage collector, and safer remote debugging hooks. Check the \"What's New\" page of your version for exact status.\n- **PyPy** is a mature tracing JIT for long-running pure-Python workloads; `numba` JITs numeric functions; Cython and mypyc compile typed Python to C.\n\n### Performance rules of thumb\n\n1. **Algorithm and data structure first** (Part 6): list scan to set lookup, nested loops to a dictionary join, repeated sort to a heap.\n2. **Use built-ins and the standard library** (`sum`, `min`, `sorted`, `str.join`, `itertools`, `collections`): they run in C.\n3. **Vectorise** numeric work with NumPy or pandas; avoid Python loops over millions of elements.\n4. **Do less work**: cache pure results (`lru_cache`), stream instead of materialising, stop early (`any`, `next`), batch I/O.\n5. **Move waiting off the critical path**: concurrency for I/O (Parts 8 and 9), a task queue for slow work.\n6. **Hoist invariant work out of loops** and use local names in genuinely hot paths.\n7. **Only then** reach for Cython, mypyc, PyPy or rewriting a hot function in Rust or C."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import timeit\n\nnumbers = list(range(1_000_000))\n\n\ndef manual():\n    total = 0\n    for n in numbers:\n        total += n\n    return total\n\n\nbuiltin = timeit.timeit(lambda: sum(numbers), number=5)\nloop = timeit.timeit(manual, number=5)\nprint(\"sum() is more than 2x faster than the Python loop:\", loop > 2 * builtin)\nprint(\"same answer:\", manual() == sum(numbers))",
+     "title": "Builtins.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "sum() is more than 2x faster than the Python loop: True\nsame answer: True",
+     "title": "Output"
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- Every value is a heap object: header (refcount, type) plus data; names are pointers; `sys.getsizeof` is shallow.\n- Memory: refcount hits 0 means freed now; cycles are found by the generational `gc`; pymalloc arenas rarely return memory to the OS.\n- Weak references and context managers beat `__del__`.\n- Leak = still referenced but not needed. Find it with `tracemalloc` snapshot diffs.\n- Bytecode is a version-specific stack machine; 3.11+ specialises hot instructions; `dis` shows both.\n- Measure: `timeit` (A or B), `cProfile` (which function), `py-spy` (a live service).\n- Fix the algorithm before the constant factor; use C-backed built-ins, NumPy, and concurrency for waiting.",
+     "title": "CPython internals cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Objects in Memory"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Why does a Python list of a million ints use so much more memory than a Java `int[]`?",
+       "answer": "The list stores a million 8-byte pointers to a million separate `int` objects (about 28 bytes each, minus shared small ints), whereas a Java `int[]` stores 4 bytes per value inline. For numeric data use `array`, NumPy or other compact containers."
+      },
+      {
+       "question": "What does `sys.getsizeof` measure and what does it miss?",
+       "answer": "The shallow size of the object itself, including its own header and internal buffers, but not the objects it references. The size of a list of 1,000 strings excludes the strings. Use `tracemalloc` or a deep-size library to account for the whole graph."
+      },
+      {
+       "question": "Why might a Python process keep high memory after you delete a large object?",
+       "answer": "The memory returns to Python's allocator, not necessarily to the operating system: arenas are released only when completely empty, and fragmentation keeps many partly used. The memory is reused for new Python objects, so it is usually not a leak unless usage keeps growing."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Reference Counting and the Garbage Collector"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does CPython manage memory?",
+       "answer": "Mostly by reference counting: when an object's count reaches zero it is freed immediately. A generational cyclic collector (`gc`) periodically finds and frees groups of objects that only reference each other. A specialised allocator (pymalloc) serves small objects from arenas and pools."
+      },
+      {
+       "question": "What is a reference cycle and how does Python collect it?",
+       "answer": "Objects that refer to each other (parent and child with back-references, closures that capture themselves) so that their counts never reach zero. The cycle detector traverses container objects, finds sets that are unreachable from outside, and frees them."
+      },
+      {
+       "question": "When are weak references useful?",
+       "answer": "To refer to an object without keeping it alive: caches keyed by large objects, parent back-references in trees, listener registries. When the last strong reference disappears the object is freed and the weak reference returns `None` (or the entry vanishes from a `WeakValueDictionary`)."
+      },
+      {
+       "question": "Why avoid `__del__` for cleanup?",
+       "answer": "Timing is not guaranteed (cycles, other interpreters, interpreter shutdown), exceptions inside it are swallowed, and resurrecting objects is subtle. Deterministic cleanup belongs in `with` blocks, `try/finally` or `weakref.finalize`."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Memory Leaks and Finding Them"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is a memory leak in a garbage-collected language?",
+       "answer": "Memory that is still reachable (referenced by a global, a cache, a registry, a long-lived container) but never used again, so the collector is correct not to free it. It shows as steadily growing memory and is fixed by removing or bounding the reference."
+      },
+      {
+       "question": "How would you find a memory leak in a running Python service?",
+       "answer": "Observe RSS over time, reproduce with a load test, enable `tracemalloc`, take snapshots before and after a workload and compare them by source line, then inspect what references the growing objects. In production, `memray` or sampling profilers can be attached with less overhead."
+      },
+      {
+       "question": "Why is `@lru_cache` on an instance method a leak risk?",
+       "answer": "The cache keys include `self`, so every instance that called the method stays referenced by the cache (until evicted or forever with `@cache`), even after the rest of the program dropped it. Cache a module-level function keyed on the identifying data, or store the cache on the instance."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Bytecode and the Interpreter Loop"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "Is Python bytecode the same across versions?",
+       "answer": "No. The instruction set changes with almost every release (new instructions, removed ones, different encodings), which is why `.pyc` files carry the version and why code that parses bytecode is fragile. Use `ast` for source-level tooling."
+      },
+      {
+       "question": "What is the specialising adaptive interpreter?",
+       "answer": "From 3.11, CPython counts executions of each bytecode instruction and, once an instruction is hot and sees consistent types, rewrites it to a specialised, cheaper variant (for example integer addition). If the assumption stops holding it falls back. It speeds up typical code without any change by the programmer."
+      },
+      {
+       "question": "Why are local variables faster than globals?",
+       "answer": "Locals live in a fixed array in the frame and are addressed by index. Globals and attributes need a dictionary or type lookup, which the interpreter has to guard and cache. In hot loops, locals (and local aliases for functions) avoid repeated lookups."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Profiling, the JIT and Performance Rules"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you decide where to optimise a slow Python program?",
+       "answer": "Profile it (`cProfile` for functions, a sampling profiler for services, `tracemalloc` for memory), find the few functions that dominate, and fix the algorithmic or I/O problem there first. Micro-optimising code that is not on the hot path wastes effort and hurts readability."
+      },
+      {
+       "question": "Is the JIT going to make Python as fast as Java?",
+       "answer": "Not by itself. The interpreter speed-ups of 3.11 onward and the experimental JIT of 3.13 give moderate gains on typical code; dynamic typing and the object model limit what a JIT can remove. The practical route to speed remains native libraries, better algorithms, concurrency and, for hot spots, compiled extensions or PyPy."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

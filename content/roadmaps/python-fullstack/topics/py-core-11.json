@@ -1,0 +1,419 @@
+{
+ "source": {
+  "document": "Written for this site (November 2026)"
+ },
+ "sections": [
+  {
+   "id": "ch-11-1",
+   "type": "concept",
+   "title": "Decorators in Depth",
+   "subtopicId": "11-1",
+   "blocks": [
+    {
+     "type": "callout",
+     "variant": "note",
+     "title": "About this page",
+     "text": "Written for this site as of November 2026 for a fresher who wants experienced-level depth, in the style of the Java Full Stack guides. Every example titled `*.py` was run when this page was built, on Python 3.12.13 with FastAPI 0.162.0, Pydantic 2.14.2, SQLAlchemy 2.1.8, Django 6.1.3, and the output shown is what it really printed. Python and its libraries change quickly (and some examples need servers that a build cannot start, so those are only syntax-checked): check the official documentation for anything newer before relying on a detail."
+    },
+    {
+     "type": "markdown",
+     "text": "Part 7 introduced decorators as \"function in, wrapper out\". The full picture has four variants, and every serious framework uses all of them (`@app.get`, `@pytest.fixture`, `@dataclass`, `@property`, `@login_required`)."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import functools\n\n\n# 1. Function decorator with arguments (a decorator FACTORY)\ndef log_calls(prefix):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*args, **kwargs):\n            print(f\"{prefix} -> {func.__name__}{args}\")\n            result = func(*args, **kwargs)\n            print(f\"{prefix} <- {result!r}\")\n            return result\n        return wrapper\n    return decorate\n\n\n# 2. Class-based decorator: keeps state on an instance\nclass CountCalls:\n    def __init__(self, func):\n        functools.update_wrapper(self, func)\n        self.func, self.calls = func, 0\n\n    def __call__(self, *args, **kwargs):\n        self.calls += 1\n        return self.func(*args, **kwargs)\n\n\n# 3. Decorator that REGISTERS and returns the function unchanged (the Flask / FastAPI style)\nROUTES = {}\n\ndef route(path):\n    def register(func):\n        ROUTES[path] = func\n        return func\n    return register\n\n\n# 4. Class decorator: receives and returns a class\ndef add_repr(cls):\n    fields = [n for n in cls.__init__.__code__.co_varnames[1:cls.__init__.__code__.co_argcount]]\n    cls.__repr__ = lambda self: f\"{cls.__name__}(\" + \", \".join(f\"{f}={getattr(self, f)!r}\" for f in fields) + \")\"\n    return cls\n\n\n@log_calls(\"[trace]\")\ndef add(a, b):\n    return a + b\n\n@CountCalls\ndef ping():\n    return \"pong\"\n\n@route(\"/health\")\ndef health():\n    return \"ok\"\n\n@add_repr\nclass Point:\n    def __init__(self, x, y):\n        self.x, self.y = x, y\n\n\nadd(2, 3)\nping(); ping()\nprint(ping.calls, ping.__name__, list(ROUTES), ROUTES[\"/health\"](), Point(1, 2))\n\n\n# Stacking: decorators apply from the bottom up, and run from the top down\ndef tag(name):\n    def decorate(func):\n        @functools.wraps(func)\n        def wrapper(*a, **k):\n            return f\"<{name}>{func(*a, **k)}</{name}>\"\n        return wrapper\n    return decorate\n\n@tag(\"b\")\n@tag(\"i\")\ndef text():\n    return \"hello\"\n\nprint(text())",
+     "title": "Decorators.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "[trace] -> add(2, 3)\n[trace] <- 5\n2 ping ['/health'] ok Point(x=1, y=2)\n<b><i>hello</i></b>",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Rules for decorators you will be asked to write:\n\n1. **Always `functools.wraps`**: it preserves `__name__`, `__doc__`, `__wrapped__` and the signature, which FastAPI, pytest, Sphinx and debuggers read. Class-based decorators use `functools.update_wrapper`.\n2. **Forward `*args, **kwargs`** and the return value.\n3. **Decorating methods works naturally** because `self` is just the first argument; a *class-based* decorator on a method needs a `__get__` (descriptors, next chapter) to bind it.\n4. **Async functions** need an `async def wrapper` that `await`s the wrapped call; a sync wrapper around a coroutine function would return an un-awaited coroutine.\n5. **Order matters** when stacking: the decorator nearest the function is applied first (`@tag(\"i\")` wraps `text`, then `@tag(\"b\")` wraps that), as the output shows."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Check `inspect.iscoroutinefunction(func)` and return an `async def wrapper` that records `time.perf_counter()` around `await func(...)`; otherwise a sync wrapper. Mention `functools.wraps`, use `try/finally` so the time is recorded on exceptions too, and that for production you would emit a metric (Prometheus histogram) rather than print.",
+     "title": "Write a decorator that times a function, then make it work with async functions"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-2",
+   "type": "concept",
+   "title": "Descriptors and the Attribute Machinery",
+   "subtopicId": "11-2",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A **descriptor** is an object with `__get__`, and optionally `__set__` and `__delete__`, stored as a **class attribute**. When an attribute is looked up on an instance, Python checks the class for a descriptor first and calls its methods. This one mechanism implements `property`, methods, `classmethod`, `staticmethod`, `__slots__` and the fields of Django and SQLAlchemy models."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "class Positive:\n    \"\"\"A reusable validated field.\"\"\"\n\n    def __set_name__(self, owner, name):          # called once when the class is created\n        self.private = \"_\" + name\n\n    def __get__(self, instance, owner):\n        if instance is None:                       # accessed on the class itself\n            return self\n        return getattr(instance, self.private)\n\n    def __set__(self, instance, value):\n        if value <= 0:\n            raise ValueError(f\"{self.private[1:]} must be positive, got {value}\")\n        setattr(instance, self.private, value)\n\n\nclass Product:\n    price = Positive()                             # one descriptor object shared by all instances\n    quantity = Positive()\n\n    def __init__(self, price, quantity):\n        self.price, self.quantity = price, quantity   # these go through Positive.__set__\n\n\np = Product(9.99, 3)\nprint(p.price, p.quantity, vars(p))\ntry:\n    p.quantity = -1\nexcept ValueError as error:\n    print(\"ValueError:\", error)\n\n# Functions are non-data descriptors: that is how methods get bound\nclass Greeter:\n    def hi(self):\n        return \"hi\"\n\ng = Greeter()\nprint(type(Greeter.__dict__[\"hi\"]).__name__, Greeter.hi.__get__(g, Greeter)(), g.hi.__self__ is g)",
+     "title": "Descriptors.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "9.99 3 {'_price': 9.99, '_quantity': 3}\nValueError: quantity must be positive, got -1\nfunction hi True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Kind | Defines | Lookup precedence |\n| --- | --- | --- |\n| **Data descriptor** | `__get__` and `__set__` (or `__delete__`) | Beats the instance `__dict__` |\n| **Non-data descriptor** | only `__get__` (functions, `classmethod`, `cached_property`) | The instance `__dict__` wins over it |\n| Plain class attribute | no descriptor methods | Instance `__dict__` wins |\n\n### `__getattr__`, `__getattribute__` and `__setattr__`"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "class Config:\n    def __init__(self, **values):\n        self.__dict__[\"_values\"] = dict(values)\n\n    def __getattr__(self, name):                   # called ONLY when normal lookup fails\n        try:\n            return self._values[name]\n        except KeyError:\n            raise AttributeError(f\"no setting {name!r}\") from None\n\n    def __setattr__(self, name, value):            # called for EVERY assignment\n        print(f\"set {name}\")\n        self._values[name] = value\n\n\nc = Config(host=\"localhost\")\nprint(c.host)\nc.port = 8000\nprint(c.port, hasattr(c, \"missing\"))",
+     "title": "Hooks.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "localhost\nset port\n8000 False",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "`__getattr__` is a **fallback** for missing attributes (proxies, lazy loading, dynamic APIs); `__getattribute__` runs for **every** access and is easy to make infinitely recursive, so use it only when you must. Reading `self.x` inside them needs care: go through `object.__getattribute__` or `self.__dict__`."
+    },
+    {
+     "type": "callout",
+     "variant": "realworld",
+     "text": "Django model fields (`name = models.CharField()`), SQLAlchemy columns (`Mapped[str]`), Pydantic and dataclass fields, `@property`, `@cached_property`, `functools.partialmethod` and every bound method are all descriptors. When a framework \"magically\" turns a class attribute into per-instance data and per-class metadata, a descriptor (often with `__set_name__`) is how.",
+     "title": "Where descriptors hide"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-3",
+   "type": "concept",
+   "title": "Classes Are Objects: `type`, `__init_subclass__` and Metaclasses",
+   "subtopicId": "11-3",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "A class is an instance of its **metaclass**; by default `type`. The `class` statement is a convenient way to call `type(name, bases, namespace)`, which you can also do by hand to create classes at run time:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "# The two spellings are equivalent\ndef hello(self):\n    return \"hello\"\n\nDynamic = type(\"Dynamic\", (object,), {\"hello\": hello, \"kind\": \"generated\"})\nprint(Dynamic().hello(), Dynamic.kind, type(Dynamic).__name__, Dynamic.__name__)\n\n\n# 1. The modern, simple hook: __init_subclass__ runs when a subclass is DEFINED\nclass Plugin:\n    registry = {}\n\n    def __init_subclass__(cls, name=None, **kwargs):\n        super().__init_subclass__(**kwargs)\n        cls.registry[name or cls.__name__.lower()] = cls\n\n\nclass CsvExporter(Plugin, name=\"csv\"):\n    pass\n\nclass JsonExporter(Plugin):\n    pass\n\nprint(sorted(Plugin.registry), Plugin.registry[\"csv\"] is CsvExporter)\n\n\n# 2. A metaclass changes how classes are built; here it enforces a rule at class-creation time\nclass RequireDocstrings(type):\n    def __new__(mcls, name, bases, namespace):\n        for key, value in namespace.items():\n            if callable(value) and not key.startswith(\"_\") and not value.__doc__:\n                raise TypeError(f\"{name}.{key} needs a docstring\")\n        return super().__new__(mcls, name, bases, namespace)\n\n\nclass Documented(metaclass=RequireDocstrings):\n    def ok(self):\n        \"\"\"Has a docstring.\"\"\"\n\ntry:\n    class Sloppy(metaclass=RequireDocstrings):\n        def missing(self):\n            return 1\nexcept TypeError as error:\n    print(\"TypeError:\", error)\n\nprint(type(Documented).__name__, isinstance(Documented, type))",
+     "title": "Metaclass.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "hello generated type Dynamic\n['csv', 'jsonexporter'] True\nTypeError: Sloppy.missing needs a docstring\nRequireDocstrings True",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "| Tool | When |\n| --- | --- |\n| **Class decorator** | Modify or register a class after it is built. Simplest |\n| **`__init_subclass__`** | React to subclassing: plugin registries, validation, default attributes. Covers most \"metaclass\" needs |\n| **`__set_name__`** | A descriptor learns its attribute name |\n| **Metaclass** | Change class *creation* itself: control the namespace (`__prepare__`), inject methods, build a model from field declarations (Django ORM, SQLAlchemy declarative, `Enum`, `ABCMeta`) |"
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "\"Metaclasses are deeper magic than 99% of users should ever worry about\" (Tim Peters). They complicate inheritance (conflicting metaclasses), debugging and tool support. Reach for a decorator, `__init_subclass__` or composition first. You need to *understand* them because frameworks use them, not because your code should.",
+     "title": "Metaclasses are a last resort"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-4",
+   "type": "concept",
+   "title": "Introspection and Reflection",
+   "subtopicId": "11-4",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Python lets a program inspect itself, which is the basis of dependency injection, serialisation, ORMs, test discovery and API frameworks."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import inspect\nfrom dataclasses import dataclass, fields\nfrom typing import Annotated, get_type_hints\n\n\ndef create_user(name: str, age: int = 18, *tags: str, active: bool = True) -> dict:\n    \"\"\"Create a user.\"\"\"\n\n\nsig = inspect.signature(create_user)\nfor param in sig.parameters.values():\n    default = \"required\" if param.default is inspect.Parameter.empty else param.default\n    print(f\"{param.name:<8} {param.kind.name:<17} annotation={getattr(param.annotation, '__name__', param.annotation)} default={default}\")\nprint(sig.return_annotation.__name__, get_type_hints(create_user)[\"age\"])\n\n\n@dataclass\nclass Item:\n    name: str\n    price: float = 0.0\n\n    def total(self, qty: int) -> float:\n        return self.price * qty\n\nprint([f.name for f in fields(Item)], [n for n, _ in inspect.getmembers(Item, inspect.isfunction)][:3])\nitem = Item(\"pen\", 2.5)\nmethod = getattr(item, \"total\")                       # attribute access by NAME at run time\nprint(method(4), hasattr(item, \"colour\"), getattr(item, \"colour\", \"none\"))\nsetattr(item, \"colour\", \"blue\")\nprint(vars(item), type(item).__mro__[0].__name__, callable(method), inspect.isclass(Item))\n\n# How a framework decides what to inject: it reads the signature of YOUR function\ndef handler(request, user_id: int, db):\n    pass\n\nprint([p for p in inspect.signature(handler).parameters])",
+     "title": "Introspection.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "name     POSITIONAL_OR_KEYWORD annotation=str default=required\nage      POSITIONAL_OR_KEYWORD annotation=int default=18\ntags     VAR_POSITIONAL    annotation=str default=required\nactive   KEYWORD_ONLY      annotation=bool default=True\ndict <class 'int'>\n['name', 'price'] ['__eq__', '__init__', '__repr__']\n10.0 False none\n{'name': 'pen', 'price': 2.5, 'colour': 'blue'} Item True True\n['request', 'user_id', 'db']",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "The last lines are the idea behind **FastAPI**: it calls `inspect.signature` on your endpoint, reads each parameter's name, annotation and default, and decides whether it comes from the path, the query string, the body or a dependency. That is why `functools.wraps` matters in decorators (it keeps the signature visible), and why type hints are a runtime API as well as documentation.\n\n| Function | Purpose |\n| --- | --- |\n| `type(x)`, `isinstance`, `issubclass` | Type tests |\n| `dir(x)`, `vars(x)`, `x.__dict__` | Names available; instance attributes |\n| `getattr`, `setattr`, `hasattr`, `delattr` | Attribute access by string |\n| `inspect.signature`, `getmembers`, `getsource`, `iscoroutinefunction` | Structure of callables and modules |\n| `typing.get_type_hints(obj)` | Resolved annotations (including forward references) |\n| `importlib.metadata.entry_points()` | Plugins registered by installed packages |"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-5",
+   "type": "concept",
+   "title": "Modules and the Import System",
+   "subtopicId": "11-5",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "`import shop.orders` does four things: look the name up in `sys.modules` (a cache), and if absent **find** the module (finders walk `sys.path`), **load** it (compile or read `.pyc`, execute the top-level code **once**) and **bind** the result. Because the module object is cached, a module is effectively a **singleton**, and top-level code is the right place for definitions but the wrong place for side effects."
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import importlib\nimport pathlib\nimport sys\n\nroot = pathlib.Path(\"demo\")\n(root / \"shop\").mkdir(parents=True)\n(root / \"shop\" / \"__init__.py\").write_text(\"print('shop package imported')\\nVERSION = '1.0'\\n\")\n(root / \"shop\" / \"orders.py\").write_text(\"print('orders module executed')\\ndef count():\\n    return 3\\n\")\n(root / \"shop\" / \"util.py\").write_text(\"from . import orders          # relative import\\ndef twice():\\n    return orders.count() * 2\\n\")\nsys.path.insert(0, str(root))\n\nimport shop.orders                                  # runs shop/__init__.py, then orders.py\nimport shop.orders as again                         # second import: served from sys.modules, nothing printed\nprint(shop.orders is again, \"shop.orders\" in sys.modules, shop.VERSION)\n\nfrom shop.util import twice\nprint(twice())\n\nmodule = importlib.import_module(\"shop.\" + \"orders\")   # import by name computed at run time\nprint(module.__name__, module.__file__.endswith(\"orders.py\"), module.__package__)\n\n(root / \"shop\" / \"orders.py\").write_text(\"print('orders v2')\\ndef count():\\n    return 30\\n\")\nimportlib.invalidate_caches()\nprint(shop.orders.count())                          # unchanged: the module object is cached\nimportlib.reload(shop.orders)                       # explicit re-execution (rarely a good idea)\nprint(shop.orders.count())\n\nnamespace = root / \"ns_pkg\"                         # a folder WITHOUT __init__.py is a namespace package\nnamespace.mkdir()\n(namespace / \"a.py\").write_text(\"X = 1\\n\")\nimport ns_pkg.a\nprint(ns_pkg.a.X, ns_pkg.__file__)",
+     "title": "Imports.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "shop package imported\norders module executed\nTrue True 1.0\n6\nshop.orders True shop\n3\norders v2\n30\n1 None",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "### Circular imports\n\nTwo modules that import each other at the top level can fail, because the first is only **partially initialised** when the second asks for it:"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import pathlib\nimport sys\n\npathlib.Path(\"a.py\").write_text(\"from b import b_func\\n\\ndef a_func():\\n    return 'a'\\n\")\npathlib.Path(\"b.py\").write_text(\"from a import a_func\\n\\ndef b_func():\\n    return 'b'\\n\")\nsys.path.insert(0, \".\")\n\ntry:\n    import a\nexcept ImportError as error:\n    print(\"ImportError:\", str(error).split(\" (\")[0])\n\n# Fix 1: import the MODULE and use the attribute later; Fix 2: import inside the function; Fix 3: move shared code to a third module\npathlib.Path(\"c.py\").write_text(\"import d\\n\\ndef c_func():\\n    return 'c' + d.d_func()\\n\")\npathlib.Path(\"d.py\").write_text(\"def d_func():\\n    import c                      # deferred import: runs only when called\\n    return 'd'\\n\")\nimport c\nprint(c.c_func())",
+     "title": "Circular.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "ImportError: cannot import name 'a_func' from partially initialized module 'a'\ncd",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "Import rules for large codebases: use **absolute imports** at module top; **relative imports** only inside a package; no `from x import *` (it hides where names come from and defeats linters); put an `__all__` list in a package's public module to define its API; keep top-level code free of I/O, and move heavy imports (pandas, torch) inside the functions that need them when start-up time matters (`python -X importtime -c \"import app\"` shows the cost of each import). Python 3.15 is expected to add an explicit *lazy import* syntax (PEP 810); until then, deferred imports inside functions are the tool."
+    },
+    {
+     "type": "callout",
+     "variant": "cheat",
+     "text": "- `sys.modules` caches modules: top-level code runs once; a module is a singleton.\n- `sys.path` is searched in order: script folder, `PYTHONPATH`, standard library, `site-packages`.\n- Package = folder with `__init__.py` (or a namespace package without it). Absolute imports by default; `from . import x` inside a package.\n- Circular imports: import the module not the name, defer the import into the function, or extract shared code.\n- Never name a file after a library (`random.py`, `email.py`); never `import *`.\n- `importlib.import_module(name)` for dynamic imports; `importlib.metadata.entry_points` for plugins; `-X importtime` for start-up cost.",
+     "title": "Import system cheat sheet"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-6",
+   "type": "concept",
+   "title": "Calling Native Code: ctypes, struct and C Extensions",
+   "subtopicId": "11-6",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Python often wraps C: NumPy, `cryptography`, `lxml`, `psycopg`, `orjson`, `uvloop`, PyTorch. You meet native code in three ways:\n\n| Approach | What it is | When |\n| --- | --- | --- |\n| **`ctypes`** (standard library) | Call functions in shared libraries directly from Python, describe C structs | Quick bindings to an existing library, no compiler |\n| **`cffi`** | Cleaner foreign-function interface from C declarations | Larger bindings, PyPy-friendly |\n| **C extension / Cython / pybind11 / PyO3 (Rust)** | Compiled modules using the CPython C API | Performance-critical code, new native libraries |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import ctypes\nimport struct\n\nclass Point(ctypes.Structure):                       # a C struct in memory\n    _fields_ = [(\"x\", ctypes.c_int32), (\"y\", ctypes.c_int32)]\n\np = Point(3, 4)\nprint(ctypes.sizeof(p), p.x + p.y, bytes(p).hex())\n\nbuffer = ctypes.create_string_buffer(b\"hello\", 16)    # a mutable C char[16]\nprint(len(buffer), buffer.value, buffer.raw[:6])\n\npacked = struct.pack(\"<I H 4s\", 258, 7, b\"abcd\")      # fixed binary layouts: network and file formats\nprint(packed.hex(), struct.unpack(\"<I H 4s\", packed), struct.calcsize(\"<IH4s\"))\n\nview = memoryview(bytearray(b\"abcdef\"))               # zero-copy slices of a buffer\npart = view[2:5]\npart[0] = ord(\"X\")\nprint(bytes(view))",
+     "title": "Native.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "8 7 0300000004000000\n16 b'hello' b'hello\\x00'\n02010000070061626364 (258, 7, b'abcd') 10\nb'abXdef'",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "`struct` packs and unpacks fixed binary layouts (network protocols, file headers); `memoryview` exposes the **buffer protocol** so that slicing does not copy; `ctypes` maps C types. Calling a real library function is `ctypes.CDLL(\"libname\").function`, with `argtypes` and `restype` set explicitly, because a wrong signature crashes the interpreter instead of raising an exception."
+    },
+    {
+     "type": "callout",
+     "variant": "warning",
+     "text": "A bad pointer in `ctypes`, or a bug in a C extension, produces a segmentation fault that no `try/except` can catch, taking down the worker. Enable `faulthandler` (below) in production so a crash leaves a Python traceback, pin extension versions, and isolate risky native work in a subprocess.",
+     "title": "Native code can crash the whole process"
+    }
+   ]
+  },
+  {
+   "id": "ch-11-7",
+   "type": "concept",
+   "title": "Troubleshooting Playbook and Diagnostics Toolbox",
+   "subtopicId": "11-7",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "Most production problems fall into a few shapes. Match the symptom to the tool:\n\n| Symptom | First look | Tools |\n| --- | --- | --- |\n| Exception in logs | The last traceback line, then the frame in your code | `logger.exception`, Sentry, `traceback` |\n| Wrong result | Reproduce minimally; print intermediate values | `breakpoint()`, `pdb`, tests, `repr()` |\n| Hangs / stuck request | Where is every thread right now? | `py-spy dump --pid`, `faulthandler.dump_traceback_later(30)` |\n| High CPU | Which function? | `py-spy top`, `cProfile`, `pyinstrument` |\n| Memory growing | Who allocates, who holds | `tracemalloc`, `memray`, `objgraph` |\n| Slow start-up | Which imports? | `python -X importtime` |\n| Crash with no traceback | A native fault | `faulthandler` / `python -X faulthandler`, core dump |\n| Works locally, fails in the container | Different Python, packages or encoding | `python -VV`, `pip freeze`, `sys.path`, `locale`, `PYTHONUTF8` |\n| Warnings you ignore | They become errors in the next release | `python -W error`, `-X dev` |"
+    },
+    {
+     "type": "code",
+     "language": "python",
+     "code": "import faulthandler\nimport sys\n\n\ndef inner():\n    faulthandler.dump_traceback(file=sys.stdout, all_threads=False)   # what every thread is doing, right now\n\n\ndef outer():\n    inner()\n\n\nouter()",
+     "title": "Faulthandler.py"
+    },
+    {
+     "type": "code",
+     "language": "text",
+     "code": "Stack (most recent call first):\n  File \"main.py\", line 6 in inner\n  File \"main.py\", line 10 in outer\n  File \"main.py\", line 13 in <module>",
+     "title": "Output"
+    },
+    {
+     "type": "markdown",
+     "text": "`faulthandler.dump_traceback_later(30, repeat=True)` prints every thread's stack if the program is still running after 30 seconds, which is the cheapest way to see **why a process is hung**; `python -X faulthandler` or `faulthandler.enable()` also dumps the traceback on a crash. Add `-X dev` (or `PYTHONDEVMODE=1`) in tests to enable extra runtime checks, such as resource warnings for unclosed files and the asyncio debug mode.\n\n### A short debugging method\n\n1. **Read the whole traceback** from the bottom; identify the first frame in *your* code.\n2. **Reproduce** with the smallest input; write it as a failing test.\n3. **Form one hypothesis** and test it (a print, a `breakpoint()`, an assertion), instead of changing things at random.\n4. **Check assumptions about the environment**: which interpreter, which versions, which environment variables.\n5. **Fix the cause**, keep the test, and add logging or a metric if the failure was hard to see."
+    },
+    {
+     "type": "callout",
+     "variant": "interview",
+     "text": "Get a stack dump of the live process without restarting it (`py-spy dump --pid <pid>` or a `faulthandler` timer or signal handler), look for threads blocked on locks, sockets or queues, and for an event loop stuck in a blocking call. Check external dependencies (database locks, a call without a timeout), then thread and connection pool saturation. Fix with timeouts, bounded pools and, for asyncio, removing blocking calls. Then add the signal that would have caught it: a latency alert, a health check that exercises the dependency.",
+     "title": "\"A Python service hangs in production. What do you do?\""
+    }
+   ]
+  },
+  {
+   "id": "practice",
+   "type": "practice",
+   "title": "Practice questions",
+   "blocks": [
+    {
+     "type": "markdown",
+     "text": "#### Decorators in Depth"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What does `@decorator` do exactly?",
+       "answer": "It is syntax for `func = decorator(func)` executed once, when the function is defined. For `@decorator(args)` Python first calls `decorator(args)` and applies the returned callable to the function. Class decorators work the same way on a class."
+      },
+      {
+       "question": "Why does a decorated function show the wrong name without `functools.wraps`?",
+       "answer": "The returned wrapper is a different function named `wrapper`, so `__name__`, `__doc__` and the signature belong to it. `wraps` copies the original metadata onto the wrapper (and sets `__wrapped__`), so tools see what you expect."
+      },
+      {
+       "question": "How would you apply the same behaviour to every method of a class?",
+       "answer": "Use a class decorator that loops over the class namespace and wraps each callable (`for name, value in vars(cls).items(): ...setattr(cls, name, deco(value))`), or implement `__init_subclass__` or a metaclass. Think twice: explicit decoration is usually clearer."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Descriptors and the Attribute Machinery"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is a descriptor and where is it stored?",
+       "answer": "An object implementing `__get__` (and optionally `__set__`/`__delete__`) that is stored as an attribute of a **class**. Attribute access on instances is routed through it, which is how properties, methods, `classmethod` and ORM fields are implemented."
+      },
+      {
+       "question": "What is the difference between a data and a non-data descriptor?",
+       "answer": "A data descriptor defines `__set__` or `__delete__` as well as `__get__` and takes precedence over the instance dictionary; a non-data descriptor only defines `__get__`, so an instance attribute of the same name overrides it. Functions are non-data descriptors, which is why you can shadow a method on one instance."
+      },
+      {
+       "question": "When is `__getattr__` called, compared with `__getattribute__`?",
+       "answer": "`__getattribute__` is called for every attribute access; `__getattr__` is called only after normal lookup (instance, class, bases) has raised `AttributeError`. Implement `__getattr__` for fallbacks; override `__getattribute__` rarely and carefully."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Classes Are Objects: `type`, `__init_subclass__` and Metaclasses"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What is a metaclass?",
+       "answer": "The class of a class: the callable that builds a class object from its name, bases and namespace. By default it is `type`. A custom metaclass can validate or transform the class body, register classes or add methods; `ABCMeta` and `EnumMeta` are examples in the standard library."
+      },
+      {
+       "question": "How can you create a class dynamically?",
+       "answer": "Call `type(name, bases, namespace)` (or `types.new_class` for more control). It returns a class object just like the `class` statement would."
+      },
+      {
+       "question": "When would you choose `__init_subclass__` over a metaclass?",
+       "answer": "Whenever you only need to run code when a subclass is defined (register it, validate attributes, set defaults). It is simpler, composes with multiple inheritance and does not create metaclass conflicts."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Introspection and Reflection"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How does FastAPI know which arguments of your function come from the request?",
+       "answer": "It inspects the function's signature (`inspect.signature` and type hints): parameters that match path placeholders come from the path, parameters with simple types from the query string, Pydantic model types from the body, and parameters whose default is `Depends(...)` from a dependency. The annotations are read at run time."
+      },
+      {
+       "question": "When is `getattr(obj, name)` better than `obj.name`?",
+       "answer": "When the attribute name is data (from configuration, a request or a loop): dispatching to `handle_<command>` methods, serialising fields by name, plugin lookup. Never pass untrusted names to `getattr`/`setattr`, since they can reach internal attributes."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Modules and the Import System"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "What happens when you import a module twice?",
+       "answer": "The first import finds, compiles and executes it, then stores the module object in `sys.modules`. The second import returns that cached object, so the top-level code does not run again. `importlib.reload` re-executes it explicitly."
+      },
+      {
+       "question": "Why do circular imports fail and how do you fix them?",
+       "answer": "When `a` imports `b` during its own initialisation and `b` imports names from `a`, the module `a` exists in `sys.modules` but has not defined those names yet. Fix by restructuring (move shared code into a third module), importing the module instead of the name, or importing inside the function that needs it."
+      },
+      {
+       "question": "What is the difference between a regular package and a namespace package?",
+       "answer": "A regular package has an `__init__.py` and lives in one directory. A namespace package has no `__init__.py` and can be spread over several directories on `sys.path`, which lets separately installed distributions contribute to one package name."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Calling Native Code: ctypes, struct and C Extensions"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "When would you write a C extension or use Cython instead of staying in Python?",
+       "answer": "When profiling shows a small hot loop dominating run time that cannot be vectorised with NumPy or sped up algorithmically, or when you need to wrap an existing C/C++/Rust library. Cython, pybind11 and PyO3 make this far less painful than hand-written C API code."
+      },
+      {
+       "question": "What is the buffer protocol and why does it matter?",
+       "answer": "A C-level interface that lets objects (`bytes`, `bytearray`, `array`, NumPy arrays, `mmap`) expose their raw memory so that others can read or write it without copying. `memoryview` is the Python face, and it is how large binary data is handled efficiently."
+      }
+     ]
+    },
+    {
+     "type": "markdown",
+     "text": "#### Troubleshooting Playbook and Diagnostics Toolbox"
+    },
+    {
+     "type": "questions",
+     "items": [
+      {
+       "question": "How do you find out why a Python process is stuck?",
+       "answer": "Dump the stacks of all threads: `py-spy dump --pid`, `faulthandler.dump_traceback_later` or a signal-triggered dump. Look at what each thread (or the single event-loop thread) is waiting on: a lock, a socket read without timeout, a queue, a blocking call inside a coroutine."
+      },
+      {
+       "question": "What does `python -X dev` give you?",
+       "answer": "Development mode enables additional runtime checks: warnings for resource leaks (unclosed files), asyncio debug mode, faulthandler, stricter memory-allocator checks and more visible deprecation warnings. Use it in tests and CI to catch problems early."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
