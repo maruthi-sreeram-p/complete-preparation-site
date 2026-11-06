@@ -13,6 +13,8 @@ npm run build
 ## Architecture
 
 ```
+
+
 content/                    YOUR data (roadmap + topic JSON). No UI code. See content/README.md
 src/
   lib/                      framework-free logic, unit-tested
